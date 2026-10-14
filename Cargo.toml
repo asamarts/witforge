@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/witforge", "crates/witforge-cli"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/asamarts/witforge"
+
+[workspace.dependencies]
+# Pinned exactly: wit-parser makes breaking 0.x releases roughly monthly and its
+# enums are exhaustive, so every bump is deliberate (see docs/design/overview.md).
+wit-parser = { version = "=0.262.0", default-features = false, features = ["std"] }
+anyhow = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

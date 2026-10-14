@@ -1,0 +1,19 @@
+[package]
+name = "witforge"
+description = "A WIT-first contract compiler: generate plain Rust types and traits and a protobuf schema with stable field numbers from one WIT package."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["wit", "wasm", "protobuf", "codegen", "idl"]
+categories = ["development-tools", "wasm", "encoding"]
+publish = false
+
+[dependencies]
+wit-parser.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

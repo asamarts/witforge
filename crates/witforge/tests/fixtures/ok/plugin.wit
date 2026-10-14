@@ -1,0 +1,44 @@
+package example:plugin@0.1.0;
+
+/// Shared contract types.
+interface types {
+    /// A byte range in a resource.
+    record span {
+        start: u64,
+        end: u64,
+    }
+
+    enum applicability {
+        safe,
+        unsafe,
+        suggestion,
+        never,
+    }
+
+    flags caps {
+        git,
+        environment,
+    }
+
+    variant edit {
+        replace(span),
+        delete-file,
+    }
+
+    record finding {
+        message: string,
+        primary: option<span>,
+        related: list<span>,
+        payload: list<u8>,
+    }
+}
+
+interface analyzer {
+    use types.{finding};
+
+    analyze: func(path: string, bytes: list<u8>) -> result<list<finding>, string>;
+}
+
+world plugin {
+    export analyzer;
+}
