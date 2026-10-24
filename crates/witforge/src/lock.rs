@@ -7,6 +7,8 @@
 //!
 //! - a new member gets the next free number in its parent, skipping protobuf's reserved range;
 //! - a removed member stays in the file, marked `reserved`, so its number is never reused;
+//! - a removed member's name stays reserved too (the protobuf schema reserves both), so a member
+//!   that comes back under that name is reported, never renumbered or revived;
 //! - nothing is ever renumbered or deleted.
 //!
 //! The text format is one entry per line, sorted by key: `key = N` or `key = N reserved`.
@@ -46,13 +48,17 @@ pub struct Changes {
     pub added: Vec<(String, u32)>,
     /// Members that disappeared from the contract and are now reserved.
     pub reserved: Vec<(String, u32)>,
+    /// Members of the contract whose key is reserved: they were removed and have come back
+    /// under the same name. They stay reserved and have no number, so the contract must give
+    /// them a new name.
+    pub reintroduced: Vec<(String, u32)>,
 }
 
 impl Changes {
-    /// Whether the lockfile is already up to date.
+    /// Whether the lockfile already matches the contract: nothing to add, reserve, or refuse.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.reserved.is_empty()
+        self.added.is_empty() && self.reserved.is_empty() && self.reintroduced.is_empty()
     }
 }
 
@@ -114,7 +120,9 @@ impl WireLock {
     }
 
     /// Bring the lockfile up to date with `members`: assign numbers to new members and reserve
-    /// removed ones. Existing numbers never change.
+    /// removed ones. Existing numbers never change, and a member whose key is already reserved
+    /// is left reserved and reported in [`Changes::reintroduced`]; the caller must refuse the
+    /// contract.
     pub fn reconcile(&mut self, members: &[Member]) -> Changes {
         let live: BTreeSet<String> = members.iter().map(Member::key).collect();
         let mut changes = Changes::default();
@@ -127,10 +135,15 @@ impl WireLock {
         }
         for member in members {
             let key = member.key();
-            if self.entries.contains_key(&key) {
-                // A reserved key that reappears keeps its reservation: the member is new, so it
-                // gets a new number under a new name; reusing the old one would change meaning.
-                continue;
+            match self.entries.get(&key) {
+                // A removed member came back under its old name. Reusing its number could change
+                // what the number means, and the name is reserved alongside it.
+                Some(entry) if entry.reserved => {
+                    changes.reintroduced.push((key, entry.number));
+                    continue;
+                }
+                Some(_) => continue,
+                None => {}
             }
             let number = self.next_number(&member.parent);
             self.entries.insert(
@@ -145,8 +158,9 @@ impl WireLock {
         changes
     }
 
-    /// Members of the contract that the lockfile does not number, and live lockfile entries whose
-    /// member no longer exists. Both empty means the lockfile is current.
+    /// Members of the contract that the lockfile does not number, live lockfile entries whose
+    /// member no longer exists, and removed members that came back. All empty means the
+    /// lockfile is current.
     #[must_use]
     pub fn drift(&self, members: &[Member]) -> Changes {
         let mut copy = self.clone();

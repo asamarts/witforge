@@ -1,0 +1,9 @@
+package example:bad@0.1.0;
+
+interface types {
+    record pair {
+        both: tuple<u32, u32>,
+    }
+
+    split: func(text: string) -> tuple<string, string>;
+}

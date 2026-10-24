@@ -33,14 +33,16 @@ $ witforge check wit/     subset rules + the lockfile is current       (CI)
 $ witforge lock  wit/     number new members, reserve removed ones
 ```
 
-- **The subset.** Contracts stay inside a pure, portable subset of WIT: no resources or handles,
-  no `future` or `stream`, no `map`, no fixed-length lists, no `char`, no tuples, and no types
-  defined directly in a world. Anything unrecognised is refused, never passed through.
+- **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
+  resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length
+  lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors, and nothing from
+  another package. Types and functions live in the package's named interfaces, which worlds
+  import and export. Anything unrecognised is refused, never passed through.
 - **The lockfile.** WIT members carry no field numbers, so `wire.lock` maps every record field,
   variant case, enum case, and flag (`namespace:package/interface/type.member`) to a number that
   never changes. New members get the next free number in their type; removed members stay,
-  marked `reserved`; nothing is renumbered or deleted, and the package version is not part of the
-  key, so version bumps never renumber anything.
+  marked `reserved`, and their names cannot come back; nothing is renumbered or deleted, and the
+  package version is not part of the key, so version bumps never renumber anything.
 
 The design is in [docs/design/overview.md](docs/design/overview.md).
 

@@ -1,0 +1,1 @@
+example:bad/analyzer#analyze: `async` functions are not supported; the contract is synchronous

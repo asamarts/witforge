@@ -1,0 +1,5 @@
+package example:bad@0.1.0;
+
+world plugin {
+    import example:other/host@1.0.0;
+}

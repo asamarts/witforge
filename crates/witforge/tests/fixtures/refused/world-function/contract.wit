@@ -1,0 +1,6 @@
+package example:bad@0.1.0;
+
+world plugin {
+    import log: func(message: string);
+    export run: func(path: string);
+}

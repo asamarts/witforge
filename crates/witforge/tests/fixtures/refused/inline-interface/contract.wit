@@ -1,0 +1,7 @@
+package example:bad@0.1.0;
+
+world plugin {
+    export analyzer: interface {
+        analyze: func(path: string);
+    }
+}

@@ -1,0 +1,2 @@
+example:bad/types/letter.value: `char` is not supported; use `string`
+example:bad/types/initial: `char` is not supported; use `string`

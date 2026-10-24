@@ -1,0 +1,2 @@
+example:bad/types/pair.both: tuples are not supported; use a named record
+example:bad/types#split -> result: tuples are not supported; use a named record

@@ -1,0 +1,1 @@
+example:bad: the contract package needs a version (`package ns:name@x.y.z;`) so `@since` gates and evolution checks are possible

@@ -1,0 +1,2 @@
+example:bad/types/blob: uses `blob` from another package (`example:other@1.0.0`); a contract must be self-contained
+example:bad/types/label: uses `label` from another package (`example:other@1.0.0`); a contract must be self-contained

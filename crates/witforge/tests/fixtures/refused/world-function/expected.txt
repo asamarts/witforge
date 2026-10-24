@@ -1,0 +1,2 @@
+example:bad/plugin#log: functions must be defined in an interface; export the interface from the world
+example:bad/plugin#run: functions must be defined in an interface; export the interface from the world

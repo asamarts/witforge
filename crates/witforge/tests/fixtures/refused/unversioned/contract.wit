@@ -1,0 +1,7 @@
+package example:bad;
+
+interface types {
+    record span {
+        start: u64,
+    }
+}

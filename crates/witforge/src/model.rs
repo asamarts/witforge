@@ -1,6 +1,6 @@
 //! The members of a contract that need stable wire numbers.
 
-use wit_parser::{TypeDefKind, TypeOwner};
+use wit_parser::TypeDefKind;
 
 use crate::Contract;
 
@@ -35,17 +35,14 @@ pub fn members(contract: &Contract) -> Vec<Member> {
         let iface = &resolve.interfaces[iface_id];
         for (type_name, &type_id) in &iface.types {
             let def = &resolve.types[type_id];
-            // `use` brings foreign types in as aliases owned by this interface; number them
-            // only where they are defined.
-            if def.owner != TypeOwner::Interface(iface_id) {
-                continue;
-            }
             let parent = format!("{pkg}/{iface_name}/{type_name}");
             let names: Vec<&str> = match &def.kind {
                 TypeDefKind::Record(r) => r.fields.iter().map(|f| f.name.as_str()).collect(),
                 TypeDefKind::Variant(v) => v.cases.iter().map(|c| c.name.as_str()).collect(),
                 TypeDefKind::Enum(e) => e.cases.iter().map(|c| c.name.as_str()).collect(),
                 TypeDefKind::Flags(f) => f.flags.iter().map(|f| f.name.as_str()).collect(),
+                // Includes `use` aliases (`TypeDefKind::Type`), which `wit-parser` creates owned
+                // by the interface that names them: members are numbered only where defined.
                 _ => continue,
             };
             out.extend(names.into_iter().map(|name| Member {

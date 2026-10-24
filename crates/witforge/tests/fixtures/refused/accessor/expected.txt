@@ -1,0 +1,2 @@
+example:bad/config#[get]limit: `get` and `set` accessors are not supported; use a function
+example:bad/config#[set]limit: `get` and `set` accessors are not supported; use a function

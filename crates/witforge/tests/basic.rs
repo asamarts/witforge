@@ -1,17 +1,17 @@
 //! End-to-end tests over the fixture contracts.
 
+use std::fs;
 use std::path::Path;
 
 use witforge::lock::WireLock;
 use witforge::{load, model, subset};
 
+fn fixtures() -> &'static Path {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))
+}
+
 fn fixture(name: &str) -> witforge::Contract {
-    load(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name),
-    )
-    .unwrap()
+    load(&fixtures().join(name)).unwrap()
 }
 
 #[test]
@@ -20,19 +20,33 @@ fn valid_contract_passes_the_subset() {
     assert!(violations.is_empty(), "{violations:#?}");
 }
 
+/// Each directory under `fixtures/refused` holds one refused construct and either
+/// `expected.txt` (the exact violations, one per line) or `parse-error.txt` (text the load error
+/// must contain, for constructs `wit-parser` already rejects).
 #[test]
-fn invalid_contract_reports_every_construct() {
-    let messages: Vec<String> = subset::check(&fixture("bad"))
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    let has = |needle: &str| messages.iter().any(|m| m.contains(needle));
-    assert!(has("needs a version"), "{messages:#?}");
-    assert!(has("resources and handles"), "{messages:#?}");
-    assert!(has("tuples are not supported"), "{messages:#?}");
-    assert!(has("`char` is not supported"), "{messages:#?}");
-    assert!(has("`map` is not supported"), "{messages:#?}");
-    assert!(has("not directly in a world"), "{messages:#?}");
+fn every_refused_construct_is_reported() {
+    let mut cases = 0;
+    for entry in fs::read_dir(fixtures().join("refused")).unwrap() {
+        let dir = entry.unwrap().path();
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        if let Ok(expected) = fs::read_to_string(dir.join("parse-error.txt")) {
+            let err = format!("{:#}", load(&dir).unwrap_err());
+            assert!(err.contains(expected.trim()), "{name}: {err}");
+        } else {
+            let expected = fs::read_to_string(dir.join("expected.txt"))
+                .unwrap_or_else(|_| panic!("{name}: expected.txt or parse-error.txt is missing"));
+            let actual: Vec<String> = subset::check(&load(&dir).unwrap())
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(actual, expected.lines().collect::<Vec<_>>(), "{name}");
+        }
+        cases += 1;
+    }
+    assert!(
+        cases >= 18,
+        "only {cases} refused-construct fixtures were found"
+    );
 }
 
 #[test]
@@ -97,6 +111,31 @@ fn lock_is_append_only_across_changes() {
 
     // The rendered file round-trips.
     assert_eq!(WireLock::parse(&lock.render()).unwrap(), lock);
+}
+
+#[test]
+fn a_reintroduced_member_stays_reserved_and_is_reported() {
+    let members = model::members(&fixture("ok"));
+    let mut lock = WireLock::default();
+    lock.reconcile(&members);
+    let without_end: Vec<_> = members
+        .iter()
+        .filter(|m| m.key() != "example:plugin/types/span.end")
+        .cloned()
+        .collect();
+    lock.reconcile(&without_end);
+    let older = lock.clone();
+
+    // `span.end` comes back under its old name.
+    let changes = lock.reconcile(&members);
+    let expected = vec![("example:plugin/types/span.end".to_string(), 2)];
+    assert_eq!(changes.reintroduced, expected);
+    assert!(changes.added.is_empty() && changes.reserved.is_empty());
+    assert!(!changes.is_empty());
+    assert_eq!(lock.drift(&members).reintroduced, expected);
+    let end = lock.get("example:plugin/types/span.end").unwrap();
+    assert!(end.reserved && end.number == 2);
+    assert_eq!(lock, older);
 }
 
 #[test]

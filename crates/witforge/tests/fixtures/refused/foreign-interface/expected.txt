@@ -1,0 +1,1 @@
+example:bad/plugin: imports `example:other/host@1.0.0` from another package; a contract must be self-contained

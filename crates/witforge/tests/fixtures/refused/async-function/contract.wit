@@ -1,0 +1,5 @@
+package example:bad@0.1.0;
+
+interface analyzer {
+    analyze: async func(path: string);
+}

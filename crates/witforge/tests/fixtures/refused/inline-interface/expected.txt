@@ -1,0 +1,1 @@
+example:bad/plugin/analyzer: inline interfaces are not supported; define a named interface in the package and import or export it

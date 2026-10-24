@@ -1,0 +1,1 @@
+example:bad/types/pending.value: `future` and `stream` are not supported; the contract is synchronous

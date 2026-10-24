@@ -63,6 +63,15 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
             );
         }
         let changes = lock.reconcile(&members);
+        if !changes.reintroduced.is_empty() {
+            for (key, number) in &changes.reintroduced {
+                eprintln!("error: {}", reintroduced(key, *number));
+            }
+            bail!(
+                "{} removed member(s) reintroduced; the lockfile was not updated",
+                changes.reintroduced.len()
+            );
+        }
         for (key, number) in &changes.added {
             println!("added    {key} = {number}");
         }
@@ -81,11 +90,18 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
     for (key, number) in &drift.reserved {
         eprintln!("error: {key} = {number} is no longer in the contract; run `witforge lock` to reserve it");
     }
+    for (key, number) in &drift.reintroduced {
+        eprintln!("error: {}", reintroduced(key, *number));
+    }
     if violations.is_empty() && drift.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::from(1))
     }
+}
+
+fn reintroduced(key: &str, number: u32) -> String {
+    format!("{key} was removed and its name and number {number} stay reserved; give the member a new name")
 }
 
 fn read_lock(path: &Path) -> Result<WireLock> {

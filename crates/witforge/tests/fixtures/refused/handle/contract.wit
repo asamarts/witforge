@@ -1,0 +1,11 @@
+package example:bad@0.1.0;
+
+interface types {
+    resource blob;
+
+    record opened {
+        blob: own<blob>,
+    }
+
+    close: func(blob: borrow<blob>);
+}

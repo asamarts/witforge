@@ -40,5 +40,8 @@ interface analyzer {
 }
 
 world plugin {
+    // A `use` in a world only names a type; it defines nothing.
+    use types.{finding};
+
     export analyzer;
 }

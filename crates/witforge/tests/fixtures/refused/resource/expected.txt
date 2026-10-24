@@ -1,0 +1,1 @@
+example:bad/types/blob: resources and handles are not supported; contract operations are pure functions over values

@@ -1,0 +1,12 @@
+package example:other@1.0.0;
+
+interface types {
+    record blob {
+        bytes: list<u8>,
+    }
+
+    enum label {
+        low,
+        high,
+    }
+}

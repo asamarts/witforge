@@ -1,0 +1,1 @@
+example:bad/types/failure.cause: `error-context` is not supported

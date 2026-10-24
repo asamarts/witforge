@@ -11,6 +11,8 @@ publish = false
 [[bin]]
 name = "witforge"
 path = "src/main.rs"
+# The library crate is also named `witforge`; documenting both would write to one path.
+doc = false
 
 [dependencies]
 witforge = { path = "../witforge" }

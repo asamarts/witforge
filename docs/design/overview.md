@@ -39,14 +39,23 @@ Refused, each with the supported alternative:
 |---|---|---|
 | `resource`, `own`, `borrow` | no value representation on the wire; the contract is pure functions over values | records and ids |
 | `future`, `stream` | the contract is synchronous | lists |
+| `error-context` | part of async; the contract is synchronous | a record or variant describing the error |
+| `async` functions | the contract is synchronous | a plain function |
+| `get` and `set` accessors | no protobuf or plain-Rust counterpart | a function |
 | `map<K, V>` | new in WIT; protobuf maps restrict keys and values | `list<record>` |
 | fixed-length lists | no protobuf equivalent | `list` |
 | `char` | a one-scalar string on the wire, error-prone | `string` |
 | tuples | positional, unnamed fields | a named record |
 | empty records | rejected by WIT tooling; no useful message | a variant case without payload |
 | types defined in a world | lockfile keys are per interface | define the type in an interface |
+| functions defined in a world, inline interfaces | traits, method ids, and lockfile keys are per named interface | a named interface the world imports or exports |
+| types or interfaces from another package | the lockfile and the emitters cover one package, so a foreign type would have no numbers and no bindings | define the type in the contract's package |
 | an unversioned package | `@since` gates and evolution checks need a version | `package ns:name@x.y.z;` |
 | anything unrecognised | a new `wit-parser` construct must not slip into generated code | extend the checker deliberately |
+
+A `use` in a world is allowed: it names a type defined in an interface and defines nothing.
+`wit-parser` already rejects empty records (and empty variants, enums, and flags) at parse time;
+the checker keeps its own empty-record rule in case a `wit-parser` bump stops doing so.
 
 ## 4. Type mapping
 
@@ -102,6 +111,8 @@ WIT has no field numbers, so the compiler keeps a committed, append-only `wire.l
 
 - a new member gets the next free number (skipping protobuf's reserved 19000 to 19999 range);
 - a removed member is emitted as `reserved` (number and name) and its number is never reused;
+- a member that comes back under a removed member's name is refused (`check` fails and `lock`
+  writes nothing), because the emitted schema reserves the name as well as the number;
 - a rename is a removal plus an addition unless the WIT doc comment carries an explicit
   rename marker;
 - CI fails if the lockfile loses or changes a line against the merge base, if a member is
@@ -159,7 +170,8 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 - Round-trip tests: generated Rust values encoded to protobuf and proto3-JSON and decoded back.
 - Lockfile property tests: reconcile is idempotent, never renumbers, and the append-only check
   holds across random sequences of member additions and removals.
-- Subset tests: every refused construct has a fixture.
+- Subset tests: every refused construct has a fixture (`tests/fixtures/refused/<construct>/`)
+  with the exact violations it must produce.
 - CI: Linux, macOS, Windows; MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings
   denied.
 

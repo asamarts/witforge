@@ -1,0 +1,1 @@
+example:bad/types/feed.chunks: `future` and `stream` are not supported; the contract is synchronous

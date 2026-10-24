@@ -1,0 +1,6 @@
+package example:bad@0.1.0;
+
+interface config {
+    limit: get() -> u32;
+    limit: set(value: u32);
+}

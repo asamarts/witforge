@@ -11,7 +11,7 @@ engineer-weeks for one experienced Rust engineer.
 - [x] Append-only wire lockfile: parse, render, reconcile, drift check, append-only check
       against an older lockfile.
 - [x] `witforge check` and `witforge lock`.
-- [ ] CI on Linux, macOS, and Windows; MSRV 1.88 (the `wit-parser` floor).
+- [x] CI on Linux, macOS, and Windows; MSRV 1.88 (the `wit-parser` floor).
 
 ## 0.1: the MVP alint needs (about 12 to 18 weeks in total)
 

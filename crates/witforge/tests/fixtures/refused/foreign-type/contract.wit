@@ -1,0 +1,9 @@
+package example:bad@0.1.0;
+
+interface types {
+    use example:other/types@1.0.0.{blob, label};
+
+    record finding {
+        data: blob,
+    }
+}
