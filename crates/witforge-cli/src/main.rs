@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use witforge::lock::WireLock;
 use witforge::{load, model, subset};
 
@@ -88,7 +88,9 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
         eprintln!("error: {key} has no wire number; run `witforge lock`");
     }
     for (key, number) in &drift.reserved {
-        eprintln!("error: {key} = {number} is no longer in the contract; run `witforge lock` to reserve it");
+        eprintln!(
+            "error: {key} = {number} is no longer in the contract; run `witforge lock` to reserve it"
+        );
     }
     for (key, number) in &drift.reintroduced {
         eprintln!("error: {}", reintroduced(key, *number));
@@ -101,7 +103,9 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
 }
 
 fn reintroduced(key: &str, number: u32) -> String {
-    format!("{key} was removed and its name and number {number} stay reserved; give the member a new name")
+    format!(
+        "{key} was removed and its name and number {number} stay reserved; give the member a new name"
+    )
 }
 
 fn read_lock(path: &Path) -> Result<WireLock> {

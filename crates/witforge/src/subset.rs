@@ -181,7 +181,11 @@ fn check_def(contract: &Contract, id: TypeId, at: &str, out: &mut Vec<Violation>
         TypeDefKind::Record(r) => {
             // `wit-parser` already rejects empty records; kept in case a bump stops doing so.
             if r.fields.is_empty() {
-                refuse(out, at, "empty records are not supported; add a field or use a variant case without payload");
+                refuse(
+                    out,
+                    at,
+                    "empty records are not supported; add a field or use a variant case without payload",
+                );
             }
             for field in &r.fields {
                 check_type(contract, &field.ty, &format!("{at}.{}", field.name), out);
@@ -210,9 +214,15 @@ fn check_def(contract: &Contract, id: TypeId, at: &str, out: &mut Vec<Violation>
             "resources and handles are not supported; contract operations are pure functions over values",
         ),
         TypeDefKind::Map(..) => refuse(out, at, "`map` is not supported yet; use `list<record>`"),
-        TypeDefKind::FixedLengthList(..) => refuse(out, at, "fixed-length lists are not supported; use `list`"),
+        TypeDefKind::FixedLengthList(..) => {
+            refuse(out, at, "fixed-length lists are not supported; use `list`");
+        }
         TypeDefKind::Future(_) | TypeDefKind::Stream(_) => {
-            refuse(out, at, "`future` and `stream` are not supported; the contract is synchronous");
+            refuse(
+                out,
+                at,
+                "`future` and `stream` are not supported; the contract is synchronous",
+            );
         }
         TypeDefKind::Unknown => refuse(out, at, "unresolved type"),
     }
