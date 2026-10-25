@@ -1,0 +1,45 @@
+# Image for witforge's self-hosted GitHub Actions runner. Built by `ci/runner/setup.sh`.
+
+FROM debian:bookworm-slim
+
+# Bump both together (the checksum is in the release notes) and re-run `ci/runner/setup.sh`.
+ARG RUNNER_VERSION=2.338.1
+ARG RUNNER_SHA256=08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    libicu72 \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# Stable for the lint and test jobs, 1.88 for the MSRV job. The cargo registry is a volume, so
+# the directory must exist in the image for the volume to inherit its owner.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH="/usr/local/cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable \
+    && rustup component add clippy rustfmt \
+    && rustup toolchain install 1.88 --profile minimal \
+    && mkdir -p /usr/local/cargo/registry
+
+RUN useradd -m -d /home/runner -s /bin/bash runner
+
+WORKDIR /home/runner/actions-runner
+RUN curl -fsSL -o runner.tar.gz \
+       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+    && echo "${RUNNER_SHA256}  runner.tar.gz" | sha256sum -c - \
+    && tar xzf runner.tar.gz \
+    && rm runner.tar.gz \
+    && ./bin/installdependencies.sh \
+    && mkdir -p /home/runner/_config \
+    && chown -R runner:runner /home/runner /usr/local/cargo /usr/local/rustup
+
+COPY runner/entrypoint.sh /home/runner/entrypoint.sh
+RUN chmod +x /home/runner/entrypoint.sh
+
+USER runner
+ENTRYPOINT ["/home/runner/entrypoint.sh"]

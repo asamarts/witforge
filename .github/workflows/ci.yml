@@ -15,10 +15,14 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
+# Every job runs on the self-hosted runner of ci/README.md while the repository is private.
+# When it goes public, switch back to GitHub-hosted runners (and restore the Linux, macOS, and
+# Windows test matrix): a self-hosted runner must never serve a public repository.
+
 jobs:
   lint:
     name: fmt, clippy, docs
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, witforge]
     permissions:
       contents: read
     steps:
@@ -36,14 +40,10 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: test
+    runs-on: [self-hosted, linux, witforge]
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -55,7 +55,7 @@ jobs:
 
   msrv:
     name: MSRV (1.88)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, witforge]
     permissions:
       contents: read
     steps:
