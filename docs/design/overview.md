@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14). The decision to build witforge, and its role in
+Status: living design document (2026-10-14; decisions of 2026-10-24 in section 9). The decision to build witforge, and its role in
 alint's plugin architecture, are recorded in alint's
 [ADR-0019](https://github.com/asamarts/alint/blob/main/docs/adr/0019-general-linter-program-and-plugin-architecture.md)
 and [`plugin-architecture.md`](https://github.com/asamarts/alint/blob/main/docs/design/plugin-architecture.md)
@@ -24,7 +24,8 @@ WIT directory
   -> subset checker                                 subset::check
   -> internal model (types, docs, stability)        model
   -> wire lockfile reconcile / drift check          lock
-  -> emitters: Rust, protobuf, later JSON Schema    emit (0.1)
+  -> emitters: Rust, protobuf, prost glue,          emit (0.1)
+     later JSON Schema
 ```
 
 `wit-parser` is pinned to an exact version: it makes breaking 0.x releases roughly monthly and its
@@ -87,9 +88,27 @@ the checker keeps its own empty-record rule in case a `wit-parser` bump stops do
 | `type a = b` | `pub type` | inlined | n/a | clean |
 | `map<K, V>` | `BTreeMap` | `map<K, V>` for string or integer keys | object | disallowed in v1; use `list<record>` |
 | `future`, `stream`, fixed-length lists | n/a | n/a | n/a | refused by the subset checker |
-| function | trait method | request and response messages plus a method id | n/a | convention |
-| interface | trait or module | method-id enum | n/a | convention |
+| function | trait method | request message (parameters numbered from the lockfile) and response message, plus a method id | n/a | convention |
+| interface | trait or module | method-id enum, numbers from the lockfile | n/a | convention |
 | package `ns:name@x.y.z` | Rust module | proto package `ns.name.vX` | n/a | major version only on the protobuf side |
+
+### 4.1 Generated Rust
+
+Each version directory is generated into its own module (`v0_1`, `v0_2`, and so on) of plain,
+exhaustive structs and enums, without `#[non_exhaustive]`: plugin authors build values with
+struct literals and match exhaustively. A released module never changes (its WIT is frozen), so
+a crate of generated modules stays semver-compatible by adding modules; the old-to-new
+conversions of section 5.3 connect them.
+
+### 4.2 Protobuf glue
+
+An optional output converts between the plain Rust types and the types `prost` generates from
+the emitted `.proto` (the consumer runs `prost-build`, through `protox` so no `protoc` binary is
+needed, and `pbjson-build` for proto3-JSON). The conversions carry every decode rule of the
+table above: range checks for `u8`, `u16`, `s8`, and `s16`; closed enums (zero or an unknown
+value is an error); presence checks for non-optional message fields; and an error for an
+unknown variant case. So the mapping lives in one place, and witforge's round-trip tests use the
+same code its consumers do. `prost` is pinned and bumped deliberately, like `wit-parser`.
 
 
 ## 5. Wire identity and evolution
@@ -106,18 +125,39 @@ the strictest rule.
 
 ### 5.2 Stable field numbers: the lockfile
 
-WIT has no field numbers, so the compiler keeps a committed, append-only `wire.lock` mapping
-`ns:pkg/interface/type.member` to a number:
+WIT has no field numbers, so the compiler keeps a committed, append-only `wire.lock` that maps
+each numbered member to a number unique within its parent:
 
+| Member | Key | Parent (numbers unique within) |
+|---|---|---|
+| record field, variant case, enum case, flag | `ns:pkg/interface/type.member` | the type |
+| function (its method id) | `ns:pkg/interface.function` | the interface |
+| function parameter | `ns:pkg/interface#function.parameter` | the function's request message |
+
+Function method ids and parameters are planned (decided 2026-10-24), like the member types and
+the draft rule below; the implementation covers type members so far.
+
+- each entry records its member's type in canonical form (aliases expanded, named types by
+  name, no spaces), for example `ns:pkg/iface/span.start = 1 u64`; a method-id entry records
+  the function's result type; enum cases, flags, and payload-less variant cases record none.
+  `check` fails when a type differs, which catches changes the protobuf projection cannot see
+  (`u8` to `u16` are both `uint32`);
 - a new member gets the next free number (skipping protobuf's reserved 19000 to 19999 range);
 - a removed member is emitted as `reserved` (number and name) and its number is never reused;
 - a member that comes back under a removed member's name is refused (`check` fails and `lock`
   writes nothing), because the emitted schema reserves the name as well as the number;
-- a rename is a removal plus an addition unless the WIT doc comment carries an explicit
-  rename marker;
-- CI fails if the lockfile loses or changes a line against the merge base, if a member is
-  unlocked, or if generated output is stale; `buf breaking` at the WIRE_JSON level runs on the
-  emitted schema as a second check;
+- names are identity, as they are in proto3-JSON, the component model, and Rust: a rename is a
+  removal plus an addition, and there are no rename markers. A badly named published member is
+  replaced by adding a new member, deprecating the old one in its docs, and removing it at the
+  next major version;
+- each version directory has its own lockfile, started as a copy of the previous version's.
+  `check` and `lock` with `--against <previous version's wire.lock>` prove continuity (no entry
+  removed, renumbered, un-reserved, or retyped) and apply the draft rule: a member that is not in
+  the previous version's lockfile is a draft, and renaming or removing it drops its entry instead
+  of reserving it, so names that never shipped leave no `reserved` gaps;
+- CI fails if a released version's lockfile changes at all against the merge base, if a member
+  is unlocked, or if generated output is stale; `buf breaking` on the emitted schema is an
+  optional extra check;
 - the lockfile is designed to be replaced by in-source numbers if the WIT annotations proposal
   (component-model issue 695) lands with a suitable annotation.
 
@@ -125,7 +165,8 @@ WIT has no field numbers, so the compiler keeps a committed, append-only `wire.l
 
 1. A published contract version is frozen.
 2. Changes ship as a new minor version (`0.x` while unstable), with the previous WIT kept in the
-   tree (`wit/v0.1/`, `wit/v0.2/`, and so on).
+   tree (`wit/v0.1/`, `wit/v0.2/`, and so on), each with its own `wire.lock` (section 5.2). A new
+   major version starts a fresh lockfile.
 3. New members must be defaulted (`option<T>` or `list<T>`), so the compiler can generate the
    old-to-new conversions; enum values and variant cases are append-only; reorders, renames, and
    type changes are forbidden.
@@ -172,12 +213,27 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
   holds across random sequences of member additions and removals.
 - Subset tests: every refused construct has a fixture (`tests/fixtures/refused/<construct>/`)
   with the exact violations it must produce.
-- CI: Linux, macOS, Windows; MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings
-  denied.
+- CI: MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings denied. Linux only (a
+  self-hosted runner, `ci/README.md`) while the repository is private; Linux, macOS, and Windows
+  on GitHub-hosted runners once it is public.
 
 ## 8. Relationship to alint
 
 alint consumes witforge to generate its `alint-plugin-api` crate and the `.proto` schema its
-out-of-process plugin protocol uses. alint keeps the host glue (wasmtime bindings, the process
-codec, version adapters). The repository stays private until alint's contract `0.x` consumes
+out-of-process plugin protocol uses, and the conversions between the two (section 4.2). alint
+keeps the host glue: wasmtime bindings, the process protocol's framing and session, and the
+version adapters. The repository stays private until alint's contract `0.x` consumes
 witforge, then goes public with 0.1.
+
+## 9. Decision log
+
+| Date | Decision | Where |
+|---|---|---|
+| 2026-10-24 | The subset refuses functions defined in a world, inline interfaces, `async` functions, `get`/`set` accessors, and anything from another package | section 3 |
+| 2026-10-24 | Function method ids and parameters are locked like type members | section 5.2 |
+| 2026-10-24 | Lockfile entries record their member's type; `check` fails on a type change, and `buf breaking` becomes optional | section 5.2 |
+| 2026-10-24 | One lockfile per version directory, with `--against` the previous version's | sections 5.2 and 5.3 |
+| 2026-10-24 | Names are identity: no rename markers; drafts (members not yet released) may be renamed or removed freely | section 5.2 |
+| 2026-10-24 | Generated Rust is frozen, exhaustive types in one module per version | section 4.1 |
+| 2026-10-24 | witforge emits the conversions between the plain types and `prost` types, with the decode rules | section 4.2 |
+| 2026-10-24 | Rust edition 2024; CI on a self-hosted Linux runner while the repository is private | `Cargo.toml`, `ci/README.md` |
