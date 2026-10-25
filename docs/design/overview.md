@@ -1,7 +1,8 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions of 2026-10-24 in section 9). The decision to build witforge, and its role in
-alint's plugin architecture, are recorded in alint's
+Status: living design document (2026-10-14; the decisions of 2026-10-24 are logged in section 9).
+The decision to build witforge, and its role in alint's plugin architecture, are recorded in
+alint's
 [ADR-0019](https://github.com/asamarts/alint/blob/main/docs/adr/0019-general-linter-program-and-plugin-architecture.md)
 and [`plugin-architecture.md`](https://github.com/asamarts/alint/blob/main/docs/design/plugin-architecture.md)
 (sections 6 to 8). This document is canonical for witforge's own internals.

@@ -18,7 +18,8 @@ tie their output to a runtime.
 
 > **Status: pre-release, private.** The first slice is implemented: loading a WIT package with
 > every feature enabled, the restricted-subset checker, and the append-only wire lockfile, with
-> `witforge check` and `witforge lock`. The Rust and protobuf emitters are next; see
+> `witforge check` and `witforge lock`. Next are the decided lockfile extensions (function
+> numbers, member types, one lockfile per version), then the Rust and protobuf emitters; see
 > [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
