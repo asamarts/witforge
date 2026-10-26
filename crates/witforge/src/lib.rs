@@ -17,12 +17,13 @@ use anyhow::{Context, Result};
 use wit_parser::{PackageId, Resolve};
 
 /// A parsed WIT package together with the resolve that owns it.
+///
+/// The fields are crate-private so that `wit-parser` types do not become part of witforge's
+/// public API. Callers use [`load`] and the model/subset/lock modules instead.
 #[derive(Debug)]
 pub struct Contract {
-    /// Every package reachable from the root, as resolved by `wit-parser`.
-    pub resolve: Resolve,
-    /// The root package (the contract itself).
-    pub package: PackageId,
+    pub(crate) resolve: Resolve,
+    pub(crate) package: PackageId,
 }
 
 /// Load the WIT package in `dir`.

@@ -12,3 +12,21 @@ All notable changes to this project are documented here. The format follows
 - The restricted-subset checker.
 - The append-only wire lockfile (`wire.lock`).
 - The `witforge check` and `witforge lock` commands.
+
+### Documentation
+
+- Specified the internal model that isolates `wit-parser` from the lockfile and emitters.
+- Specified the v2 lockfile format and its `check`/`lock` semantics, including typed entries,
+  canonical types, function/parameter locking, draft/release handling, and version directories.
+- Specified the Rust and protobuf emitter conventions, generated output layout, and `--check`
+  behavior.
+
+### Fixed
+
+- Refuse patch, pre-release, and build-metadata contract versions, which have no supported
+  version-directory mapping.
+- Refuse unknown WIT `Type` variants instead of silently accepting them.
+- Refuse lockfile number assignment beyond protobuf's maximum field number.
+- Keep `wit-parser` types out of the public `Contract` API.
+- Accept `--help` on subcommands and add `--version`.
+- Guard the CI runner cleanup trap against signaling its own process group.

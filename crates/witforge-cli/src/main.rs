@@ -3,6 +3,7 @@
 //! ```text
 //! witforge check <wit-dir> [--lock <path>]   subset rules + lockfile is current
 //! witforge lock  <wit-dir> [--lock <path>]   assign numbers to new members, reserve removed ones
+//! witforge --help | --version
 //! ```
 //!
 //! The lockfile defaults to `<wit-dir>/wire.lock`.
@@ -27,10 +28,18 @@ fn main() -> ExitCode {
 fn run(args: Vec<String>) -> Result<ExitCode> {
     let mut args = args.into_iter();
     let command = args.next().unwrap_or_default();
+    if command == "--version" || command == "-V" {
+        println!("witforge {}", env!("CARGO_PKG_VERSION"));
+        return Ok(ExitCode::SUCCESS);
+    }
     let mut dir: Option<PathBuf> = None;
     let mut lock_path: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "-h" | "--help" => {
+                usage();
+                return Ok(ExitCode::SUCCESS);
+            }
             "--lock" => lock_path = Some(args.next().context("`--lock` needs a path")?.into()),
             _ if dir.is_none() && !arg.starts_with('-') => dir = Some(arg.into()),
             _ => bail!("unexpected argument `{arg}`"),
@@ -39,7 +48,7 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
     match command.as_str() {
         "check" | "lock" => {}
         "" | "-h" | "--help" | "help" => {
-            println!("usage: witforge <check|lock> <wit-dir> [--lock <path>]");
+            usage();
             return Ok(ExitCode::SUCCESS);
         }
         other => bail!("unknown command `{other}` (expected `check` or `lock`)"),
@@ -62,7 +71,7 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
                 violations.len()
             );
         }
-        let changes = lock.reconcile(&members);
+        let changes = lock.reconcile(&members)?;
         if !changes.reintroduced.is_empty() {
             for (key, number) in &changes.reintroduced {
                 eprintln!("error: {}", reintroduced(key, *number));
@@ -83,7 +92,7 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let drift = lock.drift(&members);
+    let drift = lock.drift(&members)?;
     for (key, _) in &drift.added {
         eprintln!("error: {key} has no wire number; run `witforge lock`");
     }
@@ -100,6 +109,12 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
     } else {
         Ok(ExitCode::from(1))
     }
+}
+
+fn usage() {
+    println!(
+        "usage: witforge <check|lock> <wit-dir> [--lock <path>]\n       witforge --help | --version"
+    );
 }
 
 fn reintroduced(key: &str, number: u32) -> String {

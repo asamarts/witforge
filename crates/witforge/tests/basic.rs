@@ -71,14 +71,14 @@ fn members_are_keyed_without_the_version_and_skip_aliases() {
 fn lock_is_append_only_across_changes() {
     let members = model::members(&fixture("ok"));
     let mut lock = WireLock::default();
-    let first = lock.reconcile(&members);
+    let first = lock.reconcile(&members).unwrap();
     assert_ne!(
         first.added.len(),
         0,
         "the first reconcile must number every member"
     );
     assert!(
-        lock.reconcile(&members).is_empty(),
+        lock.reconcile(&members).unwrap().is_empty(),
         "second reconcile must be a no-op"
     );
     let start = lock.get("example:plugin/types/span.start").unwrap().number;
@@ -94,7 +94,7 @@ fn lock_is_append_only_across_changes() {
         name: "line".into(),
     });
     let older = lock.clone();
-    let changes = lock.reconcile(&edited);
+    let changes = lock.reconcile(&edited).unwrap();
     assert_eq!(
         changes.reserved,
         vec![("example:plugin/types/span.end".to_string(), 2)]
@@ -117,22 +117,22 @@ fn lock_is_append_only_across_changes() {
 fn a_reintroduced_member_stays_reserved_and_is_reported() {
     let members = model::members(&fixture("ok"));
     let mut lock = WireLock::default();
-    lock.reconcile(&members);
+    lock.reconcile(&members).unwrap();
     let without_end: Vec<_> = members
         .iter()
         .filter(|m| m.key() != "example:plugin/types/span.end")
         .cloned()
         .collect();
-    lock.reconcile(&without_end);
+    lock.reconcile(&without_end).unwrap();
     let older = lock.clone();
 
     // `span.end` comes back under its old name.
-    let changes = lock.reconcile(&members);
+    let changes = lock.reconcile(&members).unwrap();
     let expected = vec![("example:plugin/types/span.end".to_string(), 2)];
     assert_eq!(changes.reintroduced, expected);
     assert!(changes.added.is_empty() && changes.reserved.is_empty());
     assert!(!changes.is_empty());
-    assert_eq!(lock.drift(&members).reintroduced, expected);
+    assert_eq!(lock.drift(&members).unwrap().reintroduced, expected);
     let end = lock.get("example:plugin/types/span.end").unwrap();
     assert!(end.reserved && end.number == 2);
     assert_eq!(lock, older);
@@ -147,6 +147,29 @@ fn append_only_check_refuses_renumbering_and_deletion() {
     assert!(deleted.check_append_only(&older).is_err());
     let unreserved = WireLock::parse("a:b/i/t.x = 1\na:b/i/t.y = 2\n").unwrap();
     assert!(unreserved.check_append_only(&older).is_err());
+}
+
+#[test]
+fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum() {
+    // 18999 is the last usable number before protobuf's reserved range.
+    let mut lock = WireLock::parse("a:b/i/t.x = 18999\n").unwrap();
+    let member = model::Member {
+        parent: "a:b/i/t".into(),
+        name: "y".into(),
+    };
+    let changes = lock.reconcile(&[member]).unwrap();
+    assert_eq!(changes.added, vec![("a:b/i/t.y".to_string(), 20_000)]);
+    assert_eq!(lock.get("a:b/i/t.y").unwrap().number, 20_000);
+
+    // The last valid field number cannot be followed by another member in the same parent.
+    let mut full = WireLock::parse("a:b/i/t.x = 536870911\n").unwrap();
+    let member = model::Member {
+        parent: "a:b/i/t".into(),
+        name: "y".into(),
+    };
+    let err = full.reconcile(&[member]).unwrap_err();
+    assert!(format!("{err:#}").contains("no protobuf field numbers left"));
+    assert!(full.get("a:b/i/t.y").is_none());
 }
 
 #[test]

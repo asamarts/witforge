@@ -44,8 +44,19 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
         refuse(
             &mut out,
             &pkg,
-            "the contract package needs a version (`package ns:name@x.y.z;`) so `@since` gates \
+            "the contract package needs a version (`package ns:name@x.y.0;`) so `@since` gates \
              and evolution checks are possible",
+        );
+    } else if let Some(version) = &package.name.version
+        && (version.patch != 0
+            || !version.pre.as_str().is_empty()
+            || !version.build.as_str().is_empty())
+    {
+        refuse(
+            &mut out,
+            &pkg,
+            "the contract version must be `<major>.<minor>.0`; patch, pre-release, and \
+             build metadata are not supported",
         );
     }
 
@@ -230,6 +241,20 @@ fn check_def(contract: &Contract, id: TypeId, at: &str, out: &mut Vec<Violation>
 
 fn check_type(contract: &Contract, ty: &Type, at: &str, out: &mut Vec<Violation>) {
     match ty {
+        // Supported primitives. Listed explicitly so a new `wit-parser` type variant is a
+        // compile error rather than silently passing the subset.
+        Type::Bool
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::S8
+        | Type::S16
+        | Type::S32
+        | Type::S64
+        | Type::F32
+        | Type::F64
+        | Type::String => {}
         Type::Char => refuse(out, at, "`char` is not supported; use `string`"),
         Type::ErrorContext => refuse(out, at, "`error-context` is not supported"),
         Type::Id(id) => {
@@ -258,7 +283,6 @@ fn check_type(contract: &Contract, ty: &Type, at: &str, out: &mut Vec<Violation>
                 }
             }
         }
-        _ => {}
     }
 }
 

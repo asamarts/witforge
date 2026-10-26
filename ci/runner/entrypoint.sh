@@ -46,7 +46,9 @@ done
 # and only `ci/runner/teardown.sh --purge` means the runner is going away.
 # shellcheck disable=SC2329  # invoked through the trap
 cleanup() {
-    kill -TERM "${AGENT_PID:-0}" 2>/dev/null || true
+    if [[ -n "${AGENT_PID:-}" ]]; then
+        kill -TERM "${AGENT_PID}" 2>/dev/null || true
+    fi
 }
 trap cleanup SIGTERM SIGINT
 

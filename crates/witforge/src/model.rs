@@ -41,9 +41,22 @@ pub fn members(contract: &Contract) -> Vec<Member> {
                 TypeDefKind::Variant(v) => v.cases.iter().map(|c| c.name.as_str()).collect(),
                 TypeDefKind::Enum(e) => e.cases.iter().map(|c| c.name.as_str()).collect(),
                 TypeDefKind::Flags(f) => f.flags.iter().map(|f| f.name.as_str()).collect(),
-                // Includes `use` aliases (`TypeDefKind::Type`), which `wit-parser` creates owned
-                // by the interface that names them: members are numbered only where defined.
-                _ => continue,
+                // All remaining kinds have no numbered members. They are either structural
+                // (`list`, `option`, `result`, aliases) or refused by the subset checker
+                // (resources, handles, tuples, maps, fixed lists, futures, streams, unknown).
+                // Listing them explicitly makes a new `wit-parser` kind a compile error.
+                TypeDefKind::Type(_)
+                | TypeDefKind::List(_)
+                | TypeDefKind::Option(_)
+                | TypeDefKind::Result(_)
+                | TypeDefKind::Resource
+                | TypeDefKind::Handle(_)
+                | TypeDefKind::Tuple(_)
+                | TypeDefKind::Map(..)
+                | TypeDefKind::FixedLengthList(..)
+                | TypeDefKind::Future(_)
+                | TypeDefKind::Stream(_)
+                | TypeDefKind::Unknown => continue,
             };
             out.extend(names.into_iter().map(|name| Member {
                 parent: parent.clone(),

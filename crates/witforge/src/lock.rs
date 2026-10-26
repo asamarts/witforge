@@ -123,7 +123,11 @@ impl WireLock {
     /// removed ones. Existing numbers never change, and a member whose key is already reserved
     /// is left reserved and reported in [`Changes::reintroduced`]; the caller must refuse the
     /// contract.
-    pub fn reconcile(&mut self, members: &[Member]) -> Changes {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a parent has used every usable protobuf field number.
+    pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
         let live: BTreeSet<String> = members.iter().map(Member::key).collect();
         let mut changes = Changes::default();
 
@@ -145,7 +149,7 @@ impl WireLock {
                 Some(_) => continue,
                 None => {}
             }
-            let number = self.next_number(&member.parent);
+            let number = self.next_number(&member.parent)?;
             self.entries.insert(
                 key.clone(),
                 Entry {
@@ -155,14 +159,17 @@ impl WireLock {
             );
             changes.added.push((key, number));
         }
-        changes
+        Ok(changes)
     }
 
     /// Members of the contract that the lockfile does not number, live lockfile entries whose
     /// member no longer exists, and removed members that came back. All empty means the
     /// lockfile is current.
-    #[must_use]
-    pub fn drift(&self, members: &[Member]) -> Changes {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a parent has used every usable protobuf field number.
+    pub fn drift(&self, members: &[Member]) -> Result<Changes> {
         let mut copy = self.clone();
         copy.reconcile(members)
     }
@@ -206,7 +213,7 @@ impl WireLock {
         Ok(())
     }
 
-    fn next_number(&self, parent: &str) -> u32 {
+    fn next_number(&self, parent: &str) -> Result<u32> {
         let max = self
             .entries
             .iter()
@@ -214,11 +221,16 @@ impl WireLock {
             .map(|(_, entry)| entry.number)
             .max()
             .unwrap_or(0);
-        let mut next = max + 1;
+        let mut next = max
+            .checked_add(1)
+            .with_context(|| format!("no protobuf field numbers left in `{parent}`"))?;
         if PROTOBUF_RESERVED.contains(&next) {
             next = PROTOBUF_RESERVED.end() + 1;
         }
-        next
+        if next > PROTOBUF_MAX {
+            bail!("no protobuf field numbers left in `{parent}`");
+        }
+        Ok(next)
     }
 
     fn validate(&self) -> Result<()> {

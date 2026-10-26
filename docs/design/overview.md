@@ -1,11 +1,15 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; the decisions of 2026-10-24 are logged in section 9).
-The decision to build witforge, and its role in alint's plugin architecture, are recorded in
+Status: living design document (2026-10-14; decisions through 2026-10-25 are logged in section
+9). The internal model, lockfile format, and Rust/protobuf emitter conventions are specified
+normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
+[`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
+architecture, are recorded in
 alint's
 [ADR-0019](https://github.com/asamarts/alint/blob/main/docs/adr/0019-general-linter-program-and-plugin-architecture.md)
 and [`plugin-architecture.md`](https://github.com/asamarts/alint/blob/main/docs/design/plugin-architecture.md)
-(sections 6 to 8). This document is canonical for witforge's own internals.
+(sections 6 to 8). This document is canonical for witforge's architecture; the linked
+specifications are normative for their areas.
 
 ## 1. Purpose and scope
 
@@ -31,7 +35,7 @@ WIT directory
 
 `wit-parser` is pinned to an exact version: it makes breaking 0.x releases roughly monthly and its
 enums are exhaustive. The internal model isolates the emitters from its types, so a bump touches
-one module.
+one module. The model is specified in [`model.md`](model.md).
 
 ## 3. The subset (version 1)
 
@@ -52,7 +56,8 @@ Refused, each with the supported alternative:
 | types defined in a world | lockfile keys are per interface | define the type in an interface |
 | functions defined in a world, inline interfaces | traits, method ids, and lockfile keys are per named interface | a named interface the world imports or exports |
 | types or interfaces from another package | the lockfile and the emitters cover one package, so a foreign type would have no numbers and no bindings | define the type in the contract's package |
-| an unversioned package | `@since` gates and evolution checks need a version | `package ns:name@x.y.z;` |
+| an unversioned package | `@since` gates and evolution checks need a version | `package ns:name@x.y.0;` |
+| a version other than `<major>.<minor>.0` (patch, pre-release, build metadata) | one version directory maps to one Rust module and one proto major; patch and pre-release variants are out of scope for 0.1 | `package ns:name@x.y.0;` |
 | anything unrecognised | a new `wit-parser` construct must not slip into generated code | extend the checker deliberately |
 
 A `use` in a world is allowed: it names a type defined in an interface and defines nothing.
@@ -70,36 +75,38 @@ the checker keeps its own empty-record rule in case a `wit-parser` bump stops do
 | `s8`, `s16` | `i8`, `i16` | `sint32` | number | range-checked on decode |
 | `s32`, `s64` | `i32`, `i64` | `sint32`, `sint64` | number, string | clean |
 | `f32`, `f64` | `f32`, `f64` | `float`, `double` | number or "NaN" / "Infinity" | clean |
-| `char` | `char` | `string` of one scalar value | string | avoided in the contract |
+| `char` | `char` | `string` of one scalar value | string | refused by the subset checker; use `string` |
 | `string` | `String` | `string` | string | UTF-8 on both sides |
 | `list<u8>` | `Vec<u8>` | `bytes` | base64 | clean |
-| `list<T>` | `Vec<T>` | `repeated T` | array | clean for scalars and messages |
-| `list<list<T>>`, `list<option<T>>` | nested | repeated wrapper message | array of objects | synthesized wrapper |
+| `list<T>` | `Vec<T>` | `repeated singular(T)` | array | wraps nested list/option elements |
+| `list<list<T>>`, `list<option<T>>` | nested | repeated wrapper message, or `repeated bytes` when the inner type is `list<u8>` | array of objects, or array of base64 strings | synthesized wrapper |
 | `option<T>` (scalar, string, enum) | `Option<T>` | `optional T` | absent or null | clean |
 | `option<T>` (record) | `Option<T>` | message field | absent or null | non-optional message fields are presence-checked on decode |
-| `option<list<T>>`, `option<option<T>>` | nested | wrapper message | object | synthesized wrapper |
-| `result<T, E>` | `Result<T, E>` | message with `oneof { T ok; E err }`; a missing side is `Empty` | `{"ok": ...}` / `{"err": ...}` | convention |
-| `tuple<A, B>` | `(A, B)` | message with `_0`, `_1` | object | avoided; use named records |
+| `option<list<T>>`, `option<option<T>>` | nested | wrapper message, or `optional bytes` for `option<list<u8>>` | object, or base64 string | synthesized wrapper |
+| `result<T, E>` | `Result<T, E>` | message with `oneof value { singular(T) ok = 1; singular(E) err = 2; }`; `_` payloads are `Empty`; list/option payloads are wrapped to a singular message | `{"ok": ...}` / `{"err": ...}` | one-sided and bare results use `_` |
+| `tuple<A, B>` | `(A, B)` | message with `_0`, `_1` | object | refused by the subset checker; use named records |
 | `record` | `struct` | message, numbers from the lockfile | object, lowerCamelCase keys | clean once locked |
-| `variant` with payload | `enum` with data | message with `oneof`, numbers from the lockfile | `{"case": {...}}` | a list or option payload needs a wrapper; an unknown case is a decode error |
-| `variant` case without payload | unit variant | `Empty` in the `oneof` | `{"case": {}}` | convention |
-| `enum` | `enum` | `X_UNSPECIFIED = 0`, then locked cases | name string | zero or an unknown value is a decode error (closed enums) |
+| `variant` with payload | `enum` with data | message with `oneof witforge_value`, numbers from the lockfile | `{"<case>": ...}` | a list or option payload needs a wrapper; an unknown case is a decode error |
+| `variant` case without payload | unit variant | `Empty` in the `oneof` | `{"<case>": {}}` | convention |
+| `enum` | `enum` | `<ENUM_NAME>_UNSPECIFIED = 0`, then locked cases | name string | zero or an unknown value is a decode error (closed enums) |
 | `flags` | struct of bools | message of bools | object | preferred over a bitmask (readable JSON, no 64-flag cap) |
-| `resource`, `own`, `borrow` | handle | opaque id message | n/a | disallowed in contract v1 |
+| `resource`, `own`, `borrow` | handle | opaque id message | n/a | refused by the subset checker |
 | `type a = b` | `pub type` | inlined | n/a | clean |
-| `map<K, V>` | `BTreeMap` | `map<K, V>` for string or integer keys | object | disallowed in v1; use `list<record>` |
+| `map<K, V>` | `BTreeMap` | `map<K, V>` for string or integer keys | object | refused by the subset checker; use `list<record>` |
 | `future`, `stream`, fixed-length lists | n/a | n/a | n/a | refused by the subset checker |
 | function | trait method | request message (parameters numbered from the lockfile) and response message, plus a method id | n/a | convention |
 | interface | trait or module | method-id enum, numbers from the lockfile | n/a | convention |
-| package `ns:name@x.y.z` | Rust module | proto package `ns.name.vX` | n/a | major version only on the protobuf side |
+| package `ns:name@x.y.0` | Rust module `v<major>_<minor>` | proto package `ns.name.vX` | n/a | major version only on the protobuf side |
 
 ### 4.1 Generated Rust
 
 Each version directory is generated into its own module (`v0_1`, `v0_2`, and so on) of plain,
 exhaustive structs and enums, without `#[non_exhaustive]`: plugin authors build values with
-struct literals and match exhaustively. A released module never changes (its WIT is frozen), so
-a crate of generated modules stays semver-compatible by adding modules; the old-to-new
-conversions of section 5.3 connect them.
+struct literals and match exhaustively. Within a version module, types are grouped into one
+submodule per defining interface, and interface traits are re-exported at the version root. A
+released module never changes (its WIT is frozen), so a crate of generated modules stays
+semver-compatible by adding modules; the old-to-new conversions of section 5.3 connect them. The
+concrete layout, naming, derives, and trait conventions are in [`emitters.md`](emitters.md).
 
 ### 4.2 Protobuf glue
 
@@ -109,7 +116,9 @@ needed, and `pbjson-build` for proto3-JSON). The conversions carry every decode 
 table above: range checks for `u8`, `u16`, `s8`, and `s16`; closed enums (zero or an unknown
 value is an error); presence checks for non-optional message fields; and an error for an
 unknown variant case. So the mapping lives in one place, and witforge's round-trip tests use the
-same code its consumers do. `prost` is pinned and bumped deliberately, like `wit-parser`.
+same code its consumers do. `prost` is pinned and bumped deliberately, like `wit-parser`. The
+protobuf schema and generated-file conventions are in [`emitters.md`](emitters.md); the glue
+decode rules are recorded there, while its calling convention is still deferred.
 
 
 ## 5. Wire identity and evolution
@@ -122,55 +131,75 @@ adding a record field, a variant case, an enum value, or a flag is a breaking ch
 patch versions of a `0.x` package may differ, and then only in docs. Protobuf tolerates new
 fields by stable number, renames are wire-compatible but break proto3-JSON, and renumbering or
 retyping is breaking. Rust tolerates new fields with `#[non_exhaustive]`. The contract follows
-the strictest rule.
+the strictest rule. witforge 0.1 does not support patch contract versions in the tree: a change
+ships as a new `v<major>.<minor>` directory (see [`lockfile.md`](lockfile.md)).
 
 ### 5.2 Stable field numbers: the lockfile
 
 WIT has no field numbers, so the compiler keeps a committed, append-only `wire.lock` that maps
-each numbered member to a number unique within its parent:
+each numbered member to a number unique within its parent. The normative format and
+`check`/`lock` semantics are in [`lockfile.md`](lockfile.md).
 
-| Member | Key | Parent (numbers unique within) |
-|---|---|---|
-| record field, variant case, enum case, flag | `ns:pkg/interface/type.member` | the type |
-| function (its method id) | `ns:pkg/interface.function` | the interface |
-| function parameter | `ns:pkg/interface#function.parameter` | the function's request message |
+| Member | Key | Parent (numbers unique within) | Entry kind |
+|---|---|---|---|
+| record field, variant case, enum case, flag | `ns:pkg/interface/type.member` | the type | `field`, `variant-case`, `enum-case`, `flag` |
+| function (its method id) | `ns:pkg/interface.function` | the interface | `method` |
+| function parameter | `ns:pkg/interface#function.parameter` | the function | `param` |
 
-Function method ids and parameters are planned (decided 2026-10-24), like the member types and
-the draft rule below; the implementation covers type members so far.
+Function method ids and parameters are specified (decided 2026-10-24, format fixed 2026-10-25);
+the implementation covers type members so far. The v2 format and the rules in this section are
+implemented by the lockfile v2 roadmap slice; the current code still emits the v1 format.
 
-- each entry records its member's type in canonical form (aliases expanded, named types by
-  name, no spaces), for example `ns:pkg/iface/span.start = 1 u64`; a method-id entry records
-  the function's result type; enum cases, flags, and payload-less variant cases record none.
-  `check` fails when a type differs, which catches changes the protobuf projection cannot see
-  (`u8` to `u16` are both `uint32`);
-- a new member gets the next free number (skipping protobuf's reserved 19000 to 19999 range);
-- a removed member is emitted as `reserved` (number and name) and its number is never reused;
-- a member that comes back under a removed member's name is refused (`check` fails and `lock`
-  writes nothing), because the emitted schema reserves the name as well as the number;
+- each entry records its member's kind and, where it has one, its type in canonical form
+  (aliases and named list/option/result definitions expanded, named record/variant/enum/flags by
+  `interface/type`, no spaces), for example `ns:pkg/iface/span.start = 1 field u64`; a method-id
+  entry records the function's result type; enum cases, flags, and payload-less variant cases
+  record no type. `check` fails when a kind or type differs, which catches changes the protobuf
+  projection cannot see (`u8` to `u16` are both `uint32`, and a payload-less variant can become
+  an enum without changing names);
+- a new member gets the next free number (maximum existing number plus one, skipping protobuf's
+  reserved 19000 to 19999 range); numbers are never reused;
+- a removed member is emitted as `reserved` (number and name) with its kind and type retained,
+  and its number is never reused;
+- a member that comes back under a removed released member's name is refused (`check` fails and
+  `lock` writes nothing), because the emitted schema reserves the name as well as the number;
+  a removed draft leaves no reservation and may return;
 - names are identity, as they are in proto3-JSON, the component model, and Rust: a rename is a
   removal plus an addition, and there are no rename markers. A badly named published member is
   replaced by adding a new member, deprecating the old one in its docs, and removing it at the
   next major version;
 - each version directory has its own lockfile, started as a copy of the previous version's.
   `check` and `lock` with `--against <previous version's wire.lock>` prove continuity (no entry
-  removed, renumbered, un-reserved, or retyped) and apply the draft rule: a member that is not in
-  the previous version's lockfile is a draft, and renaming or removing it drops its entry instead
-  of reserving it, so names that never shipped leave no `reserved` gaps;
-- CI fails if a released version's lockfile changes at all against the merge base, if a member
-  is unlocked, or if generated output is stale; `buf breaking` on the emitted schema is an
-  optional extra check;
+  removed, renumbered, un-reserved, re-kinded, or retyped) and apply the draft rule: a member
+  that is not in the previous version's lockfile is a draft, and renaming or removing it drops
+  its entry instead of reserving it, so names that never shipped leave no `reserved` gaps.
+  `--first` bootstraps a version with no previous lockfile (the first version or a new major)
+  with every entry treated as a draft;
+- `wit/released` lists released version directories; their version directories are frozen
+  (shared `mod.rs`/proto output advances append-only as described in section 5.3). `lock`
+  refuses them, and CI fails if anything in a released version directory changes against the
+  merge base. A new minor is developed with the previous version as its `--against` baseline;
+- CI fails if a member is unlocked, if a released directory changes, or if generated output is
+  stale; `buf breaking` on the emitted schema is an optional extra check;
 - the lockfile is designed to be replaced by in-source numbers if the WIT annotations proposal
   (component-model issue 695) lands with a suitable annotation.
 
 ### 5.3 Evolution policy
 
-1. A published contract version is frozen.
+1. A published contract version is frozen. `wit/released` lists the released version
+   directories; their WIT, lockfile, and per-version generated Rust module are immutable. The
+   shared `mod.rs` and per-major proto schema may change when a new minor is added; their
+   released members are protected by the lockfile and `--check`, and the proto schema is
+   append-only.
 2. Changes ship as a new minor version (`0.x` while unstable), with the previous WIT kept in the
    tree (`wit/v0.1/`, `wit/v0.2/`, and so on), each with its own `wire.lock` (section 5.2). A new
-   major version starts a fresh lockfile.
+   major version starts a fresh lockfile. Package versions are `<major>.<minor>.0`; patch,
+   pre-release, and build-metadata contract versions are out of scope for 0.1 (see
+   [`lockfile.md`](lockfile.md)).
 3. New members must be defaulted (`option<T>` or `list<T>`), so the compiler can generate the
    old-to-new conversions; enum values and variant cases are append-only; reorders, renames, and
-   type changes are forbidden.
+   type changes are forbidden. The 0.1 lockfile does not track declaration order: released
+   directories freeze it, and a pre-golive task evaluates an order fingerprint.
 4. The host keeps one adapter per supported contract version and converts each into the latest
    plain types; the supported range is published.
 5. On the process wire, one protobuf package per major version; field numbers are stable across
@@ -208,10 +237,13 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 ## 7. Testing strategy
 
 - Golden tests: one fixture contract per mapping row, with committed expected Rust and protobuf
-  output.
+  output; at least one generated Rust fixture is compiled and one proto schema is parsed.
 - Round-trip tests: generated Rust values encoded to protobuf and proto3-JSON and decoded back.
-- Lockfile property tests: reconcile is idempotent, never renumbers, and the append-only check
-  holds across random sequences of member additions and removals.
+- Lockfile property tests with `proptest`: reconcile is idempotent, never renumbers, and the
+  append-only/draft rules hold across random sequences of member additions, removals, renames,
+  and type changes. The cases are listed in [`lockfile.md`](lockfile.md#14-testing-requirements).
+- CLI integration tests with `assert_cmd` and `tempfile` for `check`, `lock`, `--against`,
+  `--first`, `--released`, `rust`, `proto`, and `--check`.
 - Subset tests: every refused construct has a fixture (`tests/fixtures/refused/<construct>/`)
   with the exact violations it must produce.
 - CI: MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings denied. Linux only (a
@@ -238,3 +270,20 @@ witforge, then goes public with 0.1.
 | 2026-10-24 | Generated Rust is frozen, exhaustive types in one module per version | section 4.1 |
 | 2026-10-24 | witforge emits the conversions between the plain types and `prost` types, with the decode rules | section 4.2 |
 | 2026-10-24 | Rust edition 2024; CI on a self-hosted Linux runner while the repository is private | `Cargo.toml`, `ci/README.md` |
+| 2026-10-25 | Lockfile v2: versioned header, `key = number kind [type] [reserved]` entries, explicit member kinds; reserved entries keep kind and type | [`lockfile.md`](lockfile.md) |
+| 2026-10-25 | The internal model is owned and independent of `wit-parser`, preserves source order/docs/stability/aliases, and exposes canonical types and lockfile members | [`model.md`](model.md) |
+| 2026-10-25 | Canonical types fully qualify named types as `interface/type`, expand aliases and named list/option/result structurally, and spell both result slots with `_` | [`lockfile.md`](lockfile.md) |
+| 2026-10-25 | `--against` is development-only; `--first` bootstraps a version with no previous lockfile (the first version or a new major); `wit/released` lists frozen version directories and per-version Rust modules, while shared output evolves append-only | [`lockfile.md`](lockfile.md) |
+| 2026-10-25 | Declaration order is not tracked in the MVP; a pre-golive task evaluates the order-fingerprint option | section 5.2, `ROADMAP.md` |
+| 2026-10-25 | `@unstable` and `@since` are metadata; every item in a version directory is part of that version | [`lockfile.md`](lockfile.md) |
+| 2026-10-25 | Functions get per-function request/response messages; the response always has `result = 1`; result oneofs use `Empty` for missing payloads | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Generated Rust groups types into per-interface submodules, re-exports interface traits at the version root, and uses `&self` with owned parameters/returns and no extra bounds | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Generated Rust derives `Debug`, `Clone`, and `PartialEq`; `Eq`, `Hash`, and `Default` are deferred | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Rust name conversion uses raw identifiers where possible, a trailing `_` for `self`/`Self`/`crate`/`super`, fully qualified `::std` paths, and hard errors on collisions | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Protobuf emits one file per major, a flat interface-prefixed package, a shared `Empty`, and inlines named list/option/result definitions | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Anonymous protobuf wrappers use deduplicated structural `Witforge...` names; enum and method values are prefixed with `UNSPECIFIED = 0`; reserved members emit number and proto name | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Named `option`/`list` types keep their name for the direct wrapper form; a differing oneof-singular form uses an anonymous `Witforge...` wrapper | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Generation takes the WIT root; `rust` and `proto` are separate subcommands with fixed output layout and header-owned `--check` semantics | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Version directories are `v<major>.<minor>`, package versions are `<major>.<minor>.0`, Rust modules are `v<major>_<minor>`, proto packages are `v<major>` | [`lockfile.md`](lockfile.md) |
+| 2026-10-25 | CLI uses `clap`; lockfile properties use `proptest`; CLI tests use `assert_cmd` and `tempfile`; golden expectations are plain committed files | section 7, `Cargo.toml` |
+| 2026-10-25 | Worlds generate no Rust or protobuf code in the MVP; world metadata is a later option | [`emitters.md`](emitters.md) |

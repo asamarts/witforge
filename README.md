@@ -18,32 +18,44 @@ tie their output to a runtime.
 
 > **Status: pre-release, private.** The first slice is implemented: loading a WIT package with
 > every feature enabled, the restricted-subset checker, and the append-only wire lockfile, with
-> `witforge check` and `witforge lock`. Next are the decided lockfile extensions (function
-> numbers, member types, one lockfile per version), then the Rust and protobuf emitters; see
-> [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
+> `witforge check` and `witforge lock`. The internal model, v2 lockfile format, and Rust/protobuf
+> emitter conventions are specified in
+> [docs/design/model.md](docs/design/model.md),
+> [docs/design/lockfile.md](docs/design/lockfile.md), and
+> [docs/design/emitters.md](docs/design/emitters.md); implementation comes next, then the
+> emitters themselves. See [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
 ## How it works
 
 ```text
-wit/                      hand-written contract (the source of truth)
-  *.wit
-  wire.lock               append-only protobuf numbers, committed
+wit/                      hand-written contracts (the source of truth)
+  released                released version directories
+  v0.1/
+    *.wit
+    wire.lock             append-only protobuf numbers, committed
+  v0.2/
+    *.wit
+    wire.lock
 
-$ witforge check wit/     subset rules + the lockfile is current       (CI)
-$ witforge lock  wit/     number new members, reserve removed ones
+$ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
+$ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number new members
+$ witforge lock  wit/v0.1 --first                        bootstrap a version
 ```
 
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
   resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length
-  lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors, and nothing from
-  another package. Types and functions live in the package's named interfaces, which worlds
-  import and export. Anything unrecognised is refused, never passed through.
+  lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors, nothing from
+  another package, and package versions are `<major>.<minor>.0`. Types and functions live in
+  the package's named interfaces, which worlds import and export. Anything unrecognised is
+  refused, never passed through.
 - **The lockfile.** WIT members carry no field numbers, so `wire.lock` maps every record field,
-  variant case, enum case, and flag (`namespace:package/interface/type.member`) to a number that
-  never changes. New members get the next free number in their type; removed members stay,
+  variant case, enum case, flag, function method id, and function parameter to a number that
+  never changes. New members get the next free number in their parent; removed members stay,
   marked `reserved`, and their names cannot come back; nothing is renumbered or deleted, and the
-  package version is not part of the key, so version bumps never renumber anything.
+  package version is not part of the key, so version bumps never renumber anything. Entries also
+  record their kind and canonical type, so a type or kind change is caught even when protobuf
+  would not see it.
 
 The design is in [docs/design/overview.md](docs/design/overview.md).
 

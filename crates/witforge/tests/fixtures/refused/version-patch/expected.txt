@@ -1,0 +1,1 @@
+example:bad: the contract version must be `<major>.<minor>.0`; patch, pre-release, and build metadata are not supported
