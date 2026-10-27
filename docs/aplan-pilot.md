@@ -73,6 +73,10 @@ The first plan was audited before implementation and corrected:
   documentation task, and the missing `W4-007` dependency to consumer validation.
 - Split overlapping test scope: canonical/unit tests stay in the model tasks;
   the comprehensive fixtures and property tests belong to `W2-006`/`W1-004`.
+- Moved the released renumbering/type checks from `W2-003` to `W2-004`, where
+  the previous-baseline mode exists, and kept `W2-003` on default-mode reconcile.
+- Added documentation paths to `W6-001` and `W6-009` so their design/release
+  changes are covered by evidence.
 - Corrected the pre-emitter CLI acceptance: `W2-005` wires `check`/`lock`, while
   `W3-003`, `W4-007`, and `W4-006` wire their own subcommands.
 - Added the missing Cargo path coverage for new dependencies and the missing
