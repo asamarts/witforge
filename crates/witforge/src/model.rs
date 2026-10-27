@@ -5,6 +5,7 @@
 //! subset checker runs before construction; the conversion also refuses anything it cannot
 //! represent, such as resources, tuples, foreign types, and world-defined types.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -281,6 +282,125 @@ impl Model {
             .types
             .iter()
             .find(|def| def.name == name.name)
+    }
+
+    /// Render `ty` in the canonical wire form used by the lockfile.
+    ///
+    /// Named references resolve through this model: aliases expand recursively, named
+    /// `list`/`option`/`result` definitions expand structurally, and record, variant, enum, and
+    /// flags types are written as `interface/type`. The result contains no whitespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `ty` names a type that is not in this model, or if aliases or named
+    /// structural definitions form a cycle.
+    pub fn canonical_type(&self, ty: &TypeExpr) -> Result<String> {
+        self.canonical_type_inner(ty, &mut HashSet::new())
+    }
+
+    fn canonical_type_inner(
+        &self,
+        ty: &TypeExpr,
+        visiting: &mut HashSet<QualifiedName>,
+    ) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::U8 => Ok("u8".to_string()),
+            TypeExpr::U16 => Ok("u16".to_string()),
+            TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U64 => Ok("u64".to_string()),
+            TypeExpr::S8 => Ok("s8".to_string()),
+            TypeExpr::S16 => Ok("s16".to_string()),
+            TypeExpr::S32 => Ok("s32".to_string()),
+            TypeExpr::S64 => Ok("s64".to_string()),
+            TypeExpr::F32 => Ok("f32".to_string()),
+            TypeExpr::F64 => Ok("f64".to_string()),
+            TypeExpr::String => Ok("string".to_string()),
+            TypeExpr::Named(name) => self.canonical_named(name, visiting),
+            TypeExpr::List(element) => Ok(format!(
+                "list<{}>",
+                self.canonical_type_inner(element, visiting)?
+            )),
+            TypeExpr::Option(payload) => Ok(format!(
+                "option<{}>",
+                self.canonical_type_inner(payload, visiting)?
+            )),
+            TypeExpr::Result(result) => self.canonical_result(result, visiting),
+        }
+    }
+
+    fn canonical_result(
+        &self,
+        result: &ResultExpr,
+        visiting: &mut HashSet<QualifiedName>,
+    ) -> Result<String> {
+        let ok = match &result.ok {
+            Some(ty) => self.canonical_type_inner(ty, visiting)?,
+            None => "_".to_string(),
+        };
+        let err = match &result.err {
+            Some(ty) => self.canonical_type_inner(ty, visiting)?,
+            None => "_".to_string(),
+        };
+        Ok(format!("result<{ok},{err}>"))
+    }
+
+    fn canonical_named(
+        &self,
+        name: &QualifiedName,
+        visiting: &mut HashSet<QualifiedName>,
+    ) -> Result<String> {
+        if !visiting.insert(name.clone()) {
+            bail!("canonical type cycle at `{name}`");
+        }
+        let result = match self.type_def(name) {
+            Some(TypeDef {
+                kind:
+                    TypeDefKind::Record(_)
+                    | TypeDefKind::Variant(_)
+                    | TypeDefKind::Enum(_)
+                    | TypeDefKind::Flags(_),
+                ..
+            }) => Ok(name.to_string()),
+            Some(TypeDef {
+                kind: TypeDefKind::Alias(target),
+                ..
+            }) => self.canonical_type_inner(target, visiting),
+            Some(TypeDef {
+                kind: TypeDefKind::List(element),
+                ..
+            }) => Ok(format!(
+                "list<{}>",
+                self.canonical_type_inner(element, visiting)?
+            )),
+            Some(TypeDef {
+                kind: TypeDefKind::Option(payload),
+                ..
+            }) => Ok(format!(
+                "option<{}>",
+                self.canonical_type_inner(payload, visiting)?
+            )),
+            Some(TypeDef {
+                kind: TypeDefKind::Result(result),
+                ..
+            }) => self.canonical_result(result, visiting),
+            None => bail!("type `{name}` is not in the model"),
+        };
+        visiting.remove(name);
+        result
+    }
+}
+
+impl TypeExpr {
+    /// Render this type in canonical wire form using `model`.
+    ///
+    /// This is a convenience wrapper around [`Model::canonical_type`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Model::canonical_type`].
+    pub fn canonical(&self, model: &Model) -> Result<String> {
+        model.canonical_type(self)
     }
 }
 

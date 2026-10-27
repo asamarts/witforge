@@ -4,7 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use witforge::load;
-use witforge::model::{self, Model, QualifiedName, ResultExpr, Stability, TypeDefKind, TypeExpr};
+use witforge::model::{
+    self, Model, QualifiedName, ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr,
+};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -155,6 +157,7 @@ fn assert_world_and_lookup(model: &Model) {
 #[test]
 fn build_carries_docs_and_stability_and_keeps_unstable_items() {
     let (dir, model) = stability_model();
+    assert_eq!(model.package.docs.trim(), "Package docs.");
     let types = model.interface("types").unwrap();
     assert_eq!(types.docs.trim(), "A stable interface.");
     assert_eq!(
@@ -251,7 +254,8 @@ fn stability_model() -> (PathBuf, Model) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("contract.wit"),
-        r"package example:stability@0.1.0;
+        r"/// Package docs.
+package example:stability@0.1.0;
 
 /// A stable interface.
 @since(version = 0.1.0)
@@ -282,6 +286,335 @@ world plugin {
     /// The exported types interface.
     @since(version = 0.1.0)
     export types;
+}
+",
+    )
+    .unwrap();
+
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    (dir, model)
+}
+
+fn named(interface: &str, name: &str) -> TypeExpr {
+    TypeExpr::Named(QualifiedName {
+        interface: interface.into(),
+        name: name.into(),
+    })
+}
+
+#[test]
+fn canonical_types_cover_primitives_and_nesting() {
+    let model = build("ok");
+    let primitives = [
+        (TypeExpr::Bool, "bool"),
+        (TypeExpr::U8, "u8"),
+        (TypeExpr::U16, "u16"),
+        (TypeExpr::U32, "u32"),
+        (TypeExpr::U64, "u64"),
+        (TypeExpr::S8, "s8"),
+        (TypeExpr::S16, "s16"),
+        (TypeExpr::S32, "s32"),
+        (TypeExpr::S64, "s64"),
+        (TypeExpr::F32, "f32"),
+        (TypeExpr::F64, "f64"),
+        (TypeExpr::String, "string"),
+    ];
+    for (ty, expected) in primitives {
+        assert_eq!(model.canonical_type(&ty).unwrap(), expected);
+    }
+
+    for name in ["span", "applicability", "caps", "edit"] {
+        assert_eq!(
+            model.canonical_type(&named("types", name)).unwrap(),
+            format!("types/{name}")
+        );
+    }
+    assert_eq!(
+        model.canonical_type(&named("analyzer", "finding")).unwrap(),
+        "types/finding"
+    );
+    assert_eq!(
+        named("analyzer", "finding").canonical(&model).unwrap(),
+        "types/finding"
+    );
+    assert_eq!(
+        model
+            .canonical_type(&model.interfaces[1].functions[0].result.clone().unwrap())
+            .unwrap(),
+        "result<list<types/finding>,string>"
+    );
+
+    let nested = TypeExpr::List(Box::new(TypeExpr::Option(Box::new(TypeExpr::Result(
+        ResultExpr {
+            ok: Some(Box::new(TypeExpr::U8)),
+            err: Some(Box::new(TypeExpr::String)),
+        },
+    )))));
+    assert_eq!(
+        model.canonical_type(&nested).unwrap(),
+        "list<option<result<u8,string>>>"
+    );
+    assert_eq!(
+        model
+            .canonical_type(&TypeExpr::Result(ResultExpr::default()))
+            .unwrap(),
+        "result<_,_>"
+    );
+    assert_eq!(
+        model
+            .canonical_type(&TypeExpr::Result(ResultExpr {
+                ok: Some(Box::new(TypeExpr::U32)),
+                err: None,
+            }))
+            .unwrap(),
+        "result<u32,_>"
+    );
+    assert_eq!(
+        model
+            .canonical_type(&TypeExpr::Result(ResultExpr {
+                ok: None,
+                err: Some(Box::new(TypeExpr::String)),
+            }))
+            .unwrap(),
+        "result<_,string>"
+    );
+    assert_eq!(
+        model
+            .canonical_type(&TypeExpr::Result(ResultExpr {
+                ok: Some(Box::new(named("analyzer", "finding"))),
+                err: Some(Box::new(named("analyzer", "finding"))),
+            }))
+            .unwrap(),
+        "result<types/finding,types/finding>"
+    );
+}
+
+#[test]
+fn canonical_types_expand_named_structural_types_and_use_aliases() {
+    let (dir, model) = canonical_model();
+    let cases = [
+        ("span", "base/span"),
+        ("tags", "list<string>"),
+        ("maybe-span", "option<base/span>"),
+        ("outcome", "result<base/span,string>"),
+        ("bare", "result<_,_>"),
+        ("only-ok", "result<base/span,_>"),
+        ("only-err", "result<_,string>"),
+        ("number", "u64"),
+        ("alias-number", "u64"),
+        ("bytes", "list<u8>"),
+        ("result-tags", "result<list<string>,string>"),
+        ("span-alias", "base/span"),
+        ("outcome-alias", "result<base/span,string>"),
+        ("alias-tags", "list<string>"),
+        ("alias-alias", "list<string>"),
+        ("list-maybe", "list<option<base/span>>"),
+        ("maybe-tags", "option<list<string>>"),
+    ];
+    for (name, expected) in cases {
+        let canonical = model.canonical_type(&named("base", name)).unwrap();
+        assert_eq!(canonical, expected, "base/{name}");
+        assert!(
+            !canonical.chars().any(char::is_whitespace),
+            "canonical `{canonical}` contains whitespace"
+        );
+    }
+    assert_eq!(
+        model.canonical_type(&named("user", "local-span")).unwrap(),
+        "base/span"
+    );
+    assert_eq!(
+        model.canonical_type(&named("user", "tags")).unwrap(),
+        "list<string>"
+    );
+    assert_eq!(
+        model.canonical_type(&named("user", "maybe-span")).unwrap(),
+        "option<base/span>"
+    );
+    assert_eq!(
+        model.canonical_type(&named("user", "outcome")).unwrap(),
+        "result<base/span,string>"
+    );
+    assert_eq!(
+        model.canonical_type(&named("user", "alias-alias")).unwrap(),
+        "list<string>"
+    );
+    let read = &model.interface("user").unwrap().functions[0];
+    assert_eq!(
+        model.canonical_type(&read.params[0].ty).unwrap(),
+        "base/span"
+    );
+    assert_eq!(
+        model.canonical_type(read.result.as_ref().unwrap()).unwrap(),
+        "list<string>"
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn canonical_types_reject_missing_types_and_cycles() {
+    let mut model = build("ok");
+    assert!(model.canonical_type(&named("types", "missing")).is_err());
+
+    let cycle = QualifiedName {
+        interface: "analyzer".into(),
+        name: "cycle".into(),
+    };
+    model.interfaces[1].types.push(TypeDef {
+        name: "cycle".into(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Alias(TypeExpr::Named(cycle.clone())),
+    });
+    assert!(model.canonical_type(&TypeExpr::Named(cycle)).is_err());
+}
+
+#[test]
+fn build_preserves_escaped_names_and_use_as_aliases() {
+    let dir = std::env::temp_dir().join(format!("witforge-model-escaped-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        r"package example:escaped@0.1.0;
+
+interface %type {
+    record %where {
+        %self: u32,
+    }
+
+    %func: func(%self: u32) -> %where;
+}
+
+interface user {
+    use %type.{%where as local-where};
+
+    call: func(value: local-where) -> local-where;
+}
+",
+    )
+    .unwrap();
+
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let types = model.interface("type").unwrap();
+    let record = &types.types[0];
+    assert_eq!(record.name, "where");
+    match &record.kind {
+        TypeDefKind::Record(fields) => assert_eq!(fields[0].name, "self"),
+        other => panic!("where should be a record, got {other:?}"),
+    }
+    assert_eq!(types.functions[0].name, "func");
+    assert_eq!(types.functions[0].params[0].name, "self");
+
+    let user = model.interface("user").unwrap();
+    let alias = &user.types[0];
+    assert_eq!(alias.name, "local-where");
+    match &alias.kind {
+        TypeDefKind::Alias(TypeExpr::Named(target)) => {
+            assert_eq!(target.interface, "type");
+            assert_eq!(target.name, "where");
+        }
+        other => panic!("local-where should be an alias, got {other:?}"),
+    }
+    let call = &user.functions[0];
+    assert_eq!(call.params[0].name, "value");
+    assert_eq!(
+        call.params[0].ty,
+        TypeExpr::Named(QualifiedName {
+            interface: "user".into(),
+            name: "local-where".into(),
+        })
+    );
+    assert_eq!(call.result, Some(call.params[0].ty.clone()));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn build_accepts_included_world_use_aliases_and_interfaces() {
+    let dir = std::env::temp_dir().join(format!("witforge-model-include-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        r"package example:included@0.1.0;
+
+interface types {
+    record span {
+        start: u64,
+    }
+}
+
+world base {
+    export types;
+    use types.{span};
+}
+
+world plugin {
+    include base;
+}
+",
+    )
+    .unwrap();
+
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let world_names: Vec<&str> = model
+        .worlds
+        .iter()
+        .map(|world| world.name.as_str())
+        .collect();
+    assert_eq!(world_names, ["base", "plugin"]);
+    let plugin = model
+        .worlds
+        .iter()
+        .find(|world| world.name == "plugin")
+        .unwrap();
+    let exports: Vec<&str> = plugin
+        .exports
+        .iter()
+        .map(|interface| interface.interface.as_str())
+        .collect();
+    assert_eq!(exports, ["types"]);
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+fn canonical_model() -> (PathBuf, Model) {
+    let dir = std::env::temp_dir().join(format!("witforge-model-canonical-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        r"package example:canonical@0.1.0;
+
+interface base {
+    record span {
+        start: u64,
+    }
+
+    type tags = list<string>;
+    type maybe-span = option<span>;
+    type outcome = result<span, string>;
+    type bare = result;
+    type only-ok = result<span>;
+    type only-err = result<_, string>;
+    type number = u64;
+    type alias-number = number;
+    type bytes = list<u8>;
+    type result-tags = result<tags, string>;
+    type span-alias = span;
+    type outcome-alias = outcome;
+    type alias-tags = tags;
+    type alias-alias = alias-tags;
+    type list-maybe = list<maybe-span>;
+    type maybe-tags = option<tags>;
+}
+
+interface user {
+    use base.{span as local-span, tags, maybe-span, outcome, bare, only-ok, only-err, number, alias-number, bytes, result-tags, span-alias, outcome-alias, alias-tags, alias-alias, list-maybe, maybe-tags};
+
+    read: func(value: local-span) -> tags;
 }
 ",
     )

@@ -21,6 +21,13 @@ use wit_parser::{PackageId, Resolve};
 ///
 /// The fields are crate-private so that `wit-parser` types do not become part of witforge's
 /// public API. Callers use [`load`] and the model/subset/lock modules instead.
+///
+/// The boundary is compile-time enforced; external code cannot reach the resolved package:
+///
+/// ```compile_fail
+/// let contract = witforge::load(".").unwrap();
+/// let _ = contract.resolve;
+/// ```
 #[derive(Debug)]
 pub struct Contract {
     pub(crate) resolve: Resolve,
