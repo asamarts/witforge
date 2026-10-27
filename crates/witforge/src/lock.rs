@@ -10,6 +10,9 @@
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
@@ -307,6 +310,15 @@ impl WireLock {
     /// Returns an error when a member key is malformed, a live member's kind or type changed,
     /// or a parent has used every usable protobuf field number.
     pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
+        // Work on a copy so a kind/type error or exhausted number space leaves the caller's
+        // lockfile untouched. This is what makes the CLI's no-write-on-error rule true.
+        let mut staged = self.clone();
+        let changes = staged.reconcile_in_place(members)?;
+        *self = staged;
+        Ok(changes)
+    }
+
+    fn reconcile_in_place(&mut self, members: &[Member]) -> Result<Changes> {
         let live: BTreeMap<MemberKey, &Member> = members
             .iter()
             .map(|member| Ok((MemberKey::from_member(member)?, member)))
@@ -386,6 +398,44 @@ impl WireLock {
             out.push('\n');
         }
         out
+    }
+
+    /// Write the rendered lockfile atomically in its destination directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error from creating, writing, syncing, or renaming the temporary file.
+    pub fn write_atomic(&self, path: &Path) -> Result<()> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let name = path
+            .file_name()
+            .with_context(|| format!("lockfile path `{}` has no file name", path.display()))?;
+        let temporary = parent.join(format!(
+            ".{}.{}.tmp",
+            name.to_string_lossy(),
+            std::process::id()
+        ));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .with_context(|| format!("failed to create {}", temporary.display()))?;
+            file.write_all(self.render().as_bytes())
+                .with_context(|| format!("failed to write {}", temporary.display()))?;
+            file.sync_all()
+                .with_context(|| format!("failed to sync {}", temporary.display()))?;
+            fs::rename(&temporary, path)
+                .with_context(|| format!("failed to replace {}", path.display()))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
 
     /// Check that an older lockfile's entries all survive unchanged in this one, so CI can

@@ -1,5 +1,6 @@
 //! Typed lockfile v2 parsing, rendering, keys, and entry-matrix tests.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use witforge::load;
@@ -251,4 +252,43 @@ fn append_only_check_rejects_kind_and_type_changes() {
     ))
     .unwrap();
     assert!(kind_changed.check_append_only(&older).is_err());
+}
+
+#[test]
+fn reconcile_does_not_mutate_on_error() {
+    let members = [Member {
+        parent: "a:b/i/t".into(),
+        name: "x".into(),
+        kind: MemberKind::Field,
+        ty: Some("u64".into()),
+    }];
+    let mut lock = WireLock::default();
+    lock.reconcile(&members).unwrap();
+    let before = lock.clone();
+    let changed = [Member {
+        parent: "a:b/i/t".into(),
+        name: "x".into(),
+        kind: MemberKind::Field,
+        ty: Some("u16".into()),
+    }];
+    assert!(lock.reconcile(&changed).is_err());
+    assert_eq!(lock, before);
+}
+
+#[test]
+fn atomic_write_replaces_the_lockfile_without_leaving_temporaries() {
+    let dir = std::env::temp_dir().join(format!("witforge-lock-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("wire.lock");
+    let lock = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    lock.write_atomic(&path).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), lock.render());
+    lock.write_atomic(&path).unwrap();
+    let names: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["wire.lock"]);
+    fs::remove_dir_all(&dir).unwrap();
 }

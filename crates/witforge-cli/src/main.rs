@@ -93,8 +93,7 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
         for (key, number) in &changes.reserved {
             println!("reserved {key} = {number}");
         }
-        std::fs::write(&lock_path, lock.render())
-            .with_context(|| format!("failed to write {}", lock_path.display()))?;
+        lock.write_atomic(&lock_path)?;
         return Ok(ExitCode::SUCCESS);
     }
 
