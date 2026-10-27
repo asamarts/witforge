@@ -61,7 +61,13 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
     for violation in &violations {
         eprintln!("error: {violation}");
     }
-    let members = model::members(&contract);
+    // A subset violation can make the owned model unbuildable. Report the violations first and
+    // leave the member set empty; the command paths below still return the existing exit codes.
+    let members = if violations.is_empty() {
+        model::members(&contract)?
+    } else {
+        Vec::new()
+    };
     let mut lock = read_lock(&lock_path)?;
 
     if command == "lock" {

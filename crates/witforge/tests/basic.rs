@@ -52,6 +52,7 @@ fn every_refused_construct_is_reported() {
 #[test]
 fn members_are_keyed_without_the_version_and_skip_aliases() {
     let keys: Vec<String> = model::members(&fixture("ok"))
+        .unwrap()
         .iter()
         .map(model::Member::key)
         .collect();
@@ -69,7 +70,7 @@ fn members_are_keyed_without_the_version_and_skip_aliases() {
 
 #[test]
 fn lock_is_append_only_across_changes() {
-    let members = model::members(&fixture("ok"));
+    let members = model::members(&fixture("ok")).unwrap();
     let mut lock = WireLock::default();
     let first = lock.reconcile(&members).unwrap();
     assert_ne!(
@@ -92,6 +93,8 @@ fn lock_is_append_only_across_changes() {
     edited.push(model::Member {
         parent: "example:plugin/types/span".into(),
         name: "line".into(),
+        kind: model::MemberKind::Field,
+        ty: Some("u64".into()),
     });
     let older = lock.clone();
     let changes = lock.reconcile(&edited).unwrap();
@@ -115,7 +118,7 @@ fn lock_is_append_only_across_changes() {
 
 #[test]
 fn a_reintroduced_member_stays_reserved_and_is_reported() {
-    let members = model::members(&fixture("ok"));
+    let members = model::members(&fixture("ok")).unwrap();
     let mut lock = WireLock::default();
     lock.reconcile(&members).unwrap();
     let without_end: Vec<_> = members
@@ -156,6 +159,8 @@ fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum(
     let member = model::Member {
         parent: "a:b/i/t".into(),
         name: "y".into(),
+        kind: model::MemberKind::Field,
+        ty: Some("u64".into()),
     };
     let changes = lock.reconcile(&[member]).unwrap();
     assert_eq!(changes.added, vec![("a:b/i/t.y".to_string(), 20_000)]);
@@ -166,6 +171,8 @@ fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum(
     let member = model::Member {
         parent: "a:b/i/t".into(),
         name: "y".into(),
+        kind: model::MemberKind::Field,
+        ty: Some("u64".into()),
     };
     let err = full.reconcile(&[member]).unwrap_err();
     assert!(format!("{err:#}").contains("no protobuf field numbers left"));

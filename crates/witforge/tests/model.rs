@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use witforge::load;
 use witforge::model::{
-    self, Model, QualifiedName, ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr,
+    self, MemberKind, Model, QualifiedName, ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -156,7 +156,7 @@ fn assert_world_and_lookup(model: &Model) {
 
 #[test]
 fn build_carries_docs_and_stability_and_keeps_unstable_items() {
-    let (dir, model) = stability_model();
+    let (dir, model) = stability_model("docs");
     assert_eq!(model.package.docs.trim(), "Package docs.");
     let types = model.interface("types").unwrap();
     assert_eq!(types.docs.trim(), "A stable interface.");
@@ -248,8 +248,11 @@ fn build_carries_docs_and_stability_and_keeps_unstable_items() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-fn stability_model() -> (PathBuf, Model) {
-    let dir = std::env::temp_dir().join(format!("witforge-model-stability-{}", std::process::id()));
+fn stability_model(name: &str) -> (PathBuf, Model) {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-model-stability-{name}-{}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(
@@ -391,7 +394,7 @@ fn canonical_types_cover_primitives_and_nesting() {
 
 #[test]
 fn canonical_types_expand_named_structural_types_and_use_aliases() {
-    let (dir, model) = canonical_model();
+    let (dir, model) = canonical_model("canonical");
     let cases = [
         ("span", "base/span"),
         ("tags", "list<string>"),
@@ -526,6 +529,174 @@ fn canonical_types_reject_missing_types_and_cycles() {
 }
 
 #[test]
+fn members_extract_types_functions_and_parameters_in_source_order() {
+    let contract = load(&fixture("ok")).unwrap();
+    let model = model::build(&contract).unwrap();
+    let members = model.members().unwrap();
+    let actual: Vec<(String, MemberKind, Option<String>)> = members
+        .iter()
+        .map(|member| (member.key(), member.kind, member.ty.clone()))
+        .collect();
+    let expected: Vec<(String, MemberKind, Option<String>)> = expected_ok_members()
+        .into_iter()
+        .map(|(key, kind, ty)| (key.to_string(), kind, ty.map(str::to_string)))
+        .collect();
+    assert_eq!(actual, expected);
+    assert_eq!(model::members(&contract).unwrap(), members);
+}
+
+fn expected_ok_members() -> Vec<(&'static str, MemberKind, Option<&'static str>)> {
+    vec![
+        (
+            "example:plugin/types/span.start",
+            MemberKind::Field,
+            Some("u64"),
+        ),
+        (
+            "example:plugin/types/span.end",
+            MemberKind::Field,
+            Some("u64"),
+        ),
+        (
+            "example:plugin/types/applicability.safe",
+            MemberKind::EnumCase,
+            None,
+        ),
+        (
+            "example:plugin/types/applicability.unsafe",
+            MemberKind::EnumCase,
+            None,
+        ),
+        (
+            "example:plugin/types/applicability.suggestion",
+            MemberKind::EnumCase,
+            None,
+        ),
+        (
+            "example:plugin/types/applicability.never",
+            MemberKind::EnumCase,
+            None,
+        ),
+        ("example:plugin/types/caps.git", MemberKind::Flag, None),
+        (
+            "example:plugin/types/caps.environment",
+            MemberKind::Flag,
+            None,
+        ),
+        (
+            "example:plugin/types/edit.replace",
+            MemberKind::VariantCase,
+            Some("types/span"),
+        ),
+        (
+            "example:plugin/types/edit.delete-file",
+            MemberKind::VariantCase,
+            None,
+        ),
+        (
+            "example:plugin/types/finding.message",
+            MemberKind::Field,
+            Some("string"),
+        ),
+        (
+            "example:plugin/types/finding.primary",
+            MemberKind::Field,
+            Some("option<types/span>"),
+        ),
+        (
+            "example:plugin/types/finding.related",
+            MemberKind::Field,
+            Some("list<types/span>"),
+        ),
+        (
+            "example:plugin/types/finding.payload",
+            MemberKind::Field,
+            Some("list<u8>"),
+        ),
+        (
+            "example:plugin/analyzer.analyze",
+            MemberKind::Method,
+            Some("result<list<types/finding>,string>"),
+        ),
+        (
+            "example:plugin/analyzer#analyze.path",
+            MemberKind::Param,
+            Some("string"),
+        ),
+        (
+            "example:plugin/analyzer#analyze.bytes",
+            MemberKind::Param,
+            Some("list<u8>"),
+        ),
+    ]
+}
+
+#[test]
+fn members_omit_aliases_and_named_structural_types() {
+    let (dir, model) = canonical_model("members");
+    let members = model.members().unwrap();
+    let keys: Vec<String> = members.iter().map(model::Member::key).collect();
+    assert!(keys.contains(&"example:canonical/base/span.start".to_string()));
+    assert!(keys.contains(&"example:canonical/user.read".to_string()));
+    assert!(keys.contains(&"example:canonical/user#read.value".to_string()));
+    for skipped in [
+        "example:canonical/base/tags",
+        "example:canonical/base/maybe-span",
+        "example:canonical/base/outcome",
+        "example:canonical/base/bare",
+        "example:canonical/base/alias-tags",
+        "example:canonical/user/local-span",
+        "example:canonical/user/local-tags",
+    ] {
+        assert!(
+            !keys.iter().any(|key| key.starts_with(skipped)),
+            "`{skipped}` must not produce members: {keys:#?}"
+        );
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn member_methods_without_results_have_no_type() {
+    let (dir, model) = stability_model("members");
+    let members = model.members().unwrap();
+    let read = members
+        .iter()
+        .find(|member| member.key() == "example:stability/types.read")
+        .unwrap();
+    assert_eq!(read.kind, MemberKind::Method);
+    assert_eq!(read.ty.as_deref(), Some("types/span"));
+    let write = members
+        .iter()
+        .find(|member| member.key() == "example:stability/types.write")
+        .unwrap();
+    assert_eq!(write.kind, MemberKind::Method);
+    assert_eq!(write.ty, None);
+    let methods: Vec<&str> = members
+        .iter()
+        .filter(|member| member.kind == MemberKind::Method)
+        .map(|member| member.name.as_str())
+        .collect();
+    assert_eq!(methods, ["read", "write"]);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn member_kinds_round_trip_lockfile_tokens() {
+    for kind in [
+        MemberKind::Field,
+        MemberKind::VariantCase,
+        MemberKind::EnumCase,
+        MemberKind::Flag,
+        MemberKind::Method,
+        MemberKind::Param,
+    ] {
+        assert_eq!(kind.as_str().parse::<MemberKind>().unwrap(), kind);
+        assert_eq!(kind.to_string(), kind.as_str());
+    }
+}
+
+#[test]
 fn build_preserves_escaped_names_and_use_as_aliases() {
     let dir = std::env::temp_dir().join(format!("witforge-model-escaped-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -635,8 +806,11 @@ world plugin {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-fn canonical_model() -> (PathBuf, Model) {
-    let dir = std::env::temp_dir().join(format!("witforge-model-canonical-{}", std::process::id()));
+fn canonical_model(name: &str) -> (PathBuf, Model) {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-model-canonical-{name}-{}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(

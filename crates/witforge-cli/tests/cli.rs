@@ -64,6 +64,25 @@ fn lock_then_check_succeeds() {
 }
 
 #[test]
+fn check_reports_subset_violations_without_a_model_failure() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../witforge/tests/fixtures/refused/resource")
+        .canonicalize()
+        .unwrap();
+    let check = witforge().arg("check").arg(&dir).output().unwrap();
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains("resources and handles are not supported"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("contract does not satisfy the subset"),
+        "the CLI should report the violations, not the model-build error: {stderr}"
+    );
+}
+
+#[test]
 fn check_reports_an_unlocked_member() {
     let dir = temp_contract("unlocked");
     let check = witforge().arg("check").arg(&dir).output().unwrap();

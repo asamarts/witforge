@@ -833,17 +833,82 @@ fn stability(stability: &WitStability) -> Stability {
     }
 }
 
-/// One numbered member: a record field, a variant case, an enum case, or a flag.
+/// The kind of a numbered lockfile member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemberKind {
+    /// A record field.
+    Field,
+    /// A variant case.
+    VariantCase,
+    /// An enum case.
+    EnumCase,
+    /// A flags member.
+    Flag,
+    /// A function method id.
+    Method,
+    /// A function parameter.
+    Param,
+}
+
+impl MemberKind {
+    /// The lockfile token for this kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Field => "field",
+            Self::VariantCase => "variant-case",
+            Self::EnumCase => "enum-case",
+            Self::Flag => "flag",
+            Self::Method => "method",
+            Self::Param => "param",
+        }
+    }
+}
+
+impl fmt::Display for MemberKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for MemberKind {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "field" => Ok(Self::Field),
+            "variant-case" => Ok(Self::VariantCase),
+            "enum-case" => Ok(Self::EnumCase),
+            "flag" => Ok(Self::Flag),
+            "method" => Ok(Self::Method),
+            "param" => Ok(Self::Param),
+            _ => Err("unknown member kind"),
+        }
+    }
+}
+
+/// One numbered lockfile member: a field, case, flag, method id, or parameter.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Member {
-    /// The owning type, as `namespace:package/interface/type`. Wire numbers are unique within it.
+    /// The parent whose number space the member belongs to.
+    ///
+    /// For a type member this is `namespace:package/interface/type`; for a method it is
+    /// `namespace:package/interface`; for a parameter it is
+    /// `namespace:package/interface#function`.
     pub parent: String,
     /// The member's name within its parent.
     pub name: String,
+    /// The member kind.
+    pub kind: MemberKind,
+    /// The canonical type, when the member has one.
+    ///
+    /// Fields and parameters require one; variant cases and methods have an optional type;
+    /// enum cases and flags have none.
+    pub ty: Option<String>,
 }
 
 impl Member {
-    /// The lockfile key, `namespace:package/interface/type.member`.
+    /// The lockfile key, `parent.name`.
     ///
     /// The package version is deliberately not part of the key, so a version bump never
     /// renumbers anything.
@@ -853,48 +918,115 @@ impl Member {
     }
 }
 
-/// Every numbered member of the root package's interface types, in a deterministic order.
-///
-/// This is the v1 member set. W1-003 extends the model's extraction to functions and
-/// parameters for lockfile v2.
-#[must_use]
-pub fn members(contract: &Contract) -> Vec<Member> {
-    let resolve = &contract.resolve;
-    let package = &resolve.packages[contract.package];
-    let pkg = format!("{}:{}", package.name.namespace, package.name.name);
-    let mut out = Vec::new();
-    for (iface_name, &iface_id) in &package.interfaces {
-        let iface = &resolve.interfaces[iface_id];
-        for (type_name, &type_id) in &iface.types {
-            let def = &resolve.types[type_id];
-            let parent = format!("{pkg}/{iface_name}/{type_name}");
-            let names: Vec<&str> = match &def.kind {
-                WitTypeDefKind::Record(r) => r.fields.iter().map(|f| f.name.as_str()).collect(),
-                WitTypeDefKind::Variant(v) => v.cases.iter().map(|c| c.name.as_str()).collect(),
-                WitTypeDefKind::Enum(e) => e.cases.iter().map(|c| c.name.as_str()).collect(),
-                WitTypeDefKind::Flags(f) => f.flags.iter().map(|f| f.name.as_str()).collect(),
-                // All remaining kinds have no numbered members. They are either structural
-                // (`list`, `option`, `result`, aliases) or refused by the subset checker
-                // (resources, handles, tuples, maps, fixed lists, futures, streams, unknown).
-                // Listing them explicitly makes a new `wit-parser` kind a compile error.
-                WitTypeDefKind::Type(_)
-                | WitTypeDefKind::List(_)
-                | WitTypeDefKind::Option(_)
-                | WitTypeDefKind::Result(_)
-                | WitTypeDefKind::Resource
-                | WitTypeDefKind::Handle(_)
-                | WitTypeDefKind::Tuple(_)
-                | WitTypeDefKind::Map(..)
-                | WitTypeDefKind::FixedLengthList(..)
-                | WitTypeDefKind::Future(_)
-                | WitTypeDefKind::Stream(_)
-                | WitTypeDefKind::Unknown => continue,
-            };
-            out.extend(names.into_iter().map(|name| Member {
-                parent: parent.clone(),
-                name: name.to_string(),
-            }));
+impl Model {
+    /// Every numbered member of the model, in deterministic source order.
+    ///
+    /// Members are emitted for interfaces, their types in source order, the members within
+    /// each type in source order, then functions and their parameters in source order. Aliases,
+    /// named `list`/`option`/`result` definitions, interfaces, and worlds produce no members.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a member's type cannot be rendered canonically.
+    pub fn members(&self) -> Result<Vec<Member>> {
+        let package = format!("{}:{}", self.package.namespace, self.package.name);
+        let mut out = Vec::new();
+        for interface in &self.interfaces {
+            for def in &interface.types {
+                let parent = format!("{package}/{}/{}", interface.name, def.name);
+                match &def.kind {
+                    TypeDefKind::Record(fields) => {
+                        for field in fields {
+                            out.push(Member {
+                                parent: parent.clone(),
+                                name: field.name.clone(),
+                                kind: MemberKind::Field,
+                                ty: Some(self.canonical_type(&field.ty).with_context(|| {
+                                    format!("member `{parent}.{}`", field.name)
+                                })?),
+                            });
+                        }
+                    }
+                    TypeDefKind::Variant(cases) => {
+                        for case in cases {
+                            out.push(Member {
+                                parent: parent.clone(),
+                                name: case.name.clone(),
+                                kind: MemberKind::VariantCase,
+                                ty: case
+                                    .payload
+                                    .as_ref()
+                                    .map(|ty| self.canonical_type(ty))
+                                    .transpose()
+                                    .with_context(|| format!("member `{parent}.{}`", case.name))?,
+                            });
+                        }
+                    }
+                    TypeDefKind::Enum(cases) => {
+                        out.extend(cases.iter().map(|case| Member {
+                            parent: parent.clone(),
+                            name: case.name.clone(),
+                            kind: MemberKind::EnumCase,
+                            ty: None,
+                        }));
+                    }
+                    TypeDefKind::Flags(flags) => {
+                        out.extend(flags.iter().map(|flag| Member {
+                            parent: parent.clone(),
+                            name: flag.name.clone(),
+                            kind: MemberKind::Flag,
+                            ty: None,
+                        }));
+                    }
+                    TypeDefKind::Alias(_)
+                    | TypeDefKind::List(_)
+                    | TypeDefKind::Option(_)
+                    | TypeDefKind::Result(_) => {}
+                }
+            }
+
+            for function in &interface.functions {
+                let parent = format!("{package}/{}", interface.name);
+                let method_key = format!("{parent}.{}", function.name);
+                out.push(Member {
+                    parent: parent.clone(),
+                    name: function.name.clone(),
+                    kind: MemberKind::Method,
+                    ty: function
+                        .result
+                        .as_ref()
+                        .map(|ty| self.canonical_type(ty))
+                        .transpose()
+                        .with_context(|| format!("member `{method_key}`"))?,
+                });
+
+                let param_parent = format!("{parent}#{}", function.name);
+                for param in &function.params {
+                    out.push(Member {
+                        parent: param_parent.clone(),
+                        name: param.name.clone(),
+                        kind: MemberKind::Param,
+                        ty: Some(
+                            self.canonical_type(&param.ty).with_context(|| {
+                                format!("member `{param_parent}.{}`", param.name)
+                            })?,
+                        ),
+                    });
+                }
+            }
         }
+        Ok(out)
     }
-    out
+}
+
+/// Build the model and return its numbered members.
+///
+/// This is a convenience wrapper around [`Model::members`].
+///
+/// # Errors
+///
+/// Returns an error if the contract is outside the subset, cannot be modelled, or a member's
+/// type cannot be rendered canonically.
+pub fn members(contract: &Contract) -> Result<Vec<Member>> {
+    build(contract)?.members()
 }
