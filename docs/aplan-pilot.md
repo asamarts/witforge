@@ -19,20 +19,22 @@ the upstream issue when it is reproducible and relevant beyond this repository.
   `root: aplan/tasks` makes `add` write files where the plan README describes
   them; the default root is the plan directory itself.
 - `aplan add --from` accepts a JSON list as YAML. This made it practical to
-  generate a 43-task, seven-cut plan from one reviewed data structure rather
-  than hand-editing frontmatter.
+  generate a 44-task (37 work tasks plus 7 milestones), seven-cut plan from one
+  reviewed data structure rather than hand-editing frontmatter.
 - Creating a cut with its work in one batch works as documented: `cut: M-pN`
   joins the task to the milestone, and the milestone holds the members.
 - Trace anchors are strict GitHub slugs. `## 5. Output, \`--check\`, and CLI`
   resolves as `5-output---check-and-cli`; the dash count is easy to get wrong.
   `add --from` refused the whole batch with the exact bad anchor, which is the
   right failure mode.
-- The initial plan validates: `aplan check` reports 43 tasks, 0 warnings, an
+- The initial plan validates: `aplan check` reports 44 tasks, 0 warnings, an
   acyclic DAG; `aplan verify` resolves evidence (none closed yet);
   `aplan export-agents-md --check` passes; `aplan check-docs` sees 10 documents
   and no dangling task reference.
-- `aplan summary` reports 105 effort days across the six delivery cuts plus the
-  adoption cut, and `aplan roadmap` renders the cut rollups and critical path.
+- `aplan summary` reports 109 effort days across the six delivery cuts plus the
+  adoption cut. At 4 productive effort days/week that is 19.3 weeks to 0.1 and
+  27.2 weeks to 1.0, inside the roadmap's 13–20 and 26–45 week ranges; the
+  earlier 5-day assumption put the full plan below the 1.0 range.
 - The `add --from` body is the right hook for authored `## Why` and
   `## Acceptance criteria` sections; the scaffold prompt is avoided entirely.
 - `deny_warnings` plus `require_effort` and `require_cut_membership` make the
@@ -59,6 +61,25 @@ the upstream issue when it is reproducible and relevant beyond this repository.
    outside the generated markers, and gate the block with `--check`.
 5. **Pre-release surface.** Aplan changes behavior between `0.5.0-dev` builds;
    pin the binary used for a release decision, not just `aplan` on `PATH`.
+
+## Adversarial audit of the first plan
+
+The first plan was audited before implementation and corrected:
+
+- Added `W4-007` for the missing proto command/output/`--check` surface.
+- Made every post-0.1 task depend on the 0.1 release (`W5-005`), so `ready`
+  cannot offer phase-6 work before 0.1 ships.
+- Added the missing `W2-006` dependency to the CI gate and the two-version
+  documentation task, and the missing `W4-007` dependency to consumer validation.
+- Split overlapping test scope: canonical/unit tests stay in the model tasks;
+  the comprehensive fixtures and property tests belong to `W2-006`/`W1-004`.
+- Corrected the pre-emitter CLI acceptance: `W2-005` wires `check`/`lock`, while
+  `W3-003`, `W4-007`, and `W4-006` wire their own subcommands.
+- Added the missing Cargo path coverage for new dependencies and the missing
+  `W5-003`/`W5-004`/world/config dependency edges.
+- Raised the CLI and release estimates after reviewing their scope.
+- Narrowed `W5-004` to measurement/triage; the individual pre-golive decisions
+  belong to `W6-001` through `W6-006`.
 
 ## Actions
 

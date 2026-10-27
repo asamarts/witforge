@@ -14,7 +14,7 @@ evidence:
   require_min_strength: [test]
   exempt_tags: [untestable, milestone]
 owners: [asamarts]
-effort_days_per_week: 5
+effort_days_per_week: 4
 docs:
   paths:
     - AGENTS.md

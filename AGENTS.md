@@ -49,6 +49,10 @@ They are not in issues, TODO comments, chat, or prose. The plan is validated by
   `aplan:end` markers. Edit the plan or `.aplan.yml`, then regenerate with
   `aplan export-agents-md --write AGENTS.md`; do not hand-edit inside the
   markers. `CLAUDE.md` is a symlink to this file.
+- If a done task’s traced section or mutable file evidence changes after
+  re-review, run `aplan close <id> --restamp`; never edit the fingerprints by
+  hand. Closing or changing a task can also make the generated agent block
+  stale; regenerate it and rerun `aplan export-agents-md --check AGENTS.md`.
 
 ## Dogfooding
 

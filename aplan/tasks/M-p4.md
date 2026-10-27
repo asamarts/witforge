@@ -10,6 +10,7 @@ blocked_by:
 - W4-004
 - W4-005
 - W4-006
+- W4-007
 tags:
 - milestone
 - p4
@@ -21,3 +22,4 @@ tags:
 - [ ] function request/response messages and method ids are generated
 - [ ] glue type conversions, `GlueError`, and function helpers are generated
 - [ ] proto and JSON round-trip tests pass
+- [ ] the proto command writes deterministic output and supports `--check`
