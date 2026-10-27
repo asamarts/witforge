@@ -2,12 +2,15 @@
 id: M-p0
 title: Adopt aplan for witforge tasking and dogfooding
 phase: 0
-status: todo
+status: done
 blocked_by:
 - W0-001
 tags:
 - milestone
 - p0
+evidence:
+  - kind: commit
+    ref: d1bf275
 ---
 
 ## Exit criteria
