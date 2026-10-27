@@ -15,6 +15,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Documentation
 
+- Adopted `aplan` for task-level planning, dependencies, and closure evidence; added the
+  `aplan/` plan, `AGENTS.md`, and the `CLAUDE.md` symlink, with dogfooding notes in
+  `docs/aplan-pilot.md`.
 - Specified the internal model that isolates `wit-parser` from the lockfile and emitters.
 - Specified the v2 lockfile format and its `check`/`lock` semantics, including typed entries,
   canonical types, function/parameter locking, draft/release handling, and version directories.

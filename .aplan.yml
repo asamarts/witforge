@@ -1,0 +1,36 @@
+# witforge's aplan policy. The task-level plan is under aplan/tasks/.
+#
+# Build/evidence policy: code tasks close on a named cargo test; documentation,
+# research, CI-only and release work carries `untestable` and says why in its body.
+# `milestone` is exempt because a cut is proved by its members.
+root: aplan/tasks
+require_effort: true
+stale_after_days: 30
+deny_warnings: true
+detect_drift: true
+require_cut_membership: true
+id_strategy: sequential
+evidence:
+  require_min_strength: [test]
+  exempt_tags: [untestable, milestone]
+owners: [asamarts]
+effort_days_per_week: 5
+docs:
+  paths:
+    - AGENTS.md
+    - README.md
+    - ROADMAP.md
+    - CHANGELOG.md
+    - docs/**/*.md
+    - aplan/README.md
+test:
+  - name: witforge
+    covers: [crates/witforge/**]
+    list: [cargo, test, -q, -p, witforge, --, --list]
+    run: [cargo, test, -q, -p, witforge, --, --exact, '{test}']
+    skipped: [cargo, test, -q, -p, witforge, --, --list, --ignored]
+  - name: witforge-cli
+    covers: [crates/witforge-cli/**]
+    list: [cargo, test, -q, -p, witforge-cli, --, --list]
+    run: [cargo, test, -q, -p, witforge-cli, --, --exact, '{test}']
+    skipped: [cargo, test, -q, -p, witforge-cli, --, --list, --ignored]

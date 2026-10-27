@@ -4,6 +4,9 @@ witforge is built for its first consumer, the alint plugin contract, and its sco
 to what that contract needs until the contract's first version ships. Estimates are
 engineer-weeks for one experienced Rust engineer.
 
+Task-level planning, dependencies, and closure evidence live in [`aplan/`](aplan/README.md) and
+are validated with `aplan check` and `aplan verify`. This document is the narrative sequence.
+
 ## 0.0.x: foundations (in progress)
 
 - [x] Load a WIT package with every feature enabled (`@unstable` items kept).

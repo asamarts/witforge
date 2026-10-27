@@ -26,6 +26,12 @@ tie their output to a runtime.
 > emitters themselves. See [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
+## Plan
+
+Task-level planning, dependencies, and closure evidence live in [`aplan/`](aplan/README.md)
+and are validated with `aplan check` and `aplan verify`. [`ROADMAP.md`](ROADMAP.md) is the
+narrative sequence; the plan is the task-level source of truth.
+
 ## How it works
 
 ```text
