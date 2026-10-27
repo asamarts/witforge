@@ -410,6 +410,8 @@ fn canonical_types_expand_named_structural_types_and_use_aliases() {
         ("alias-alias", "list<string>"),
         ("list-maybe", "list<option<base/span>>"),
         ("maybe-tags", "option<list<string>>"),
+        ("list-tags", "list<list<string>>"),
+        ("maybe-outcome", "option<result<base/span,string>>"),
     ];
     for (name, expected) in cases {
         let canonical = model.canonical_type(&named("base", name)).unwrap();
@@ -438,6 +440,20 @@ fn canonical_types_expand_named_structural_types_and_use_aliases() {
     assert_eq!(
         model.canonical_type(&named("user", "alias-alias")).unwrap(),
         "list<string>"
+    );
+    assert_eq!(
+        model.canonical_type(&named("user", "local-tags")).unwrap(),
+        "list<string>"
+    );
+    assert_eq!(
+        model.canonical_type(&named("user", "local-maybe")).unwrap(),
+        "option<base/span>"
+    );
+    assert_eq!(
+        model
+            .canonical_type(&named("user", "local-outcome"))
+            .unwrap(),
+        "result<base/span,string>"
     );
     let read = &model.interface("user").unwrap().functions[0];
     assert_eq!(
@@ -468,6 +484,45 @@ fn canonical_types_reject_missing_types_and_cycles() {
         kind: TypeDefKind::Alias(TypeExpr::Named(cycle.clone())),
     });
     assert!(model.canonical_type(&TypeExpr::Named(cycle)).is_err());
+
+    for (name, kind) in [
+        (
+            "cycle-list",
+            TypeDefKind::List(TypeExpr::Named(QualifiedName {
+                interface: "analyzer".into(),
+                name: "cycle-list".into(),
+            })),
+        ),
+        (
+            "cycle-option",
+            TypeDefKind::Option(TypeExpr::Named(QualifiedName {
+                interface: "analyzer".into(),
+                name: "cycle-option".into(),
+            })),
+        ),
+        (
+            "cycle-result",
+            TypeDefKind::Result(ResultExpr {
+                ok: Some(Box::new(TypeExpr::Named(QualifiedName {
+                    interface: "analyzer".into(),
+                    name: "cycle-result".into(),
+                }))),
+                err: None,
+            }),
+        ),
+    ] {
+        let name = QualifiedName {
+            interface: "analyzer".into(),
+            name: name.into(),
+        };
+        model.interfaces[1].types.push(TypeDef {
+            name: name.name.clone(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            kind,
+        });
+        assert!(model.canonical_type(&TypeExpr::Named(name)).is_err());
+    }
 }
 
 #[test]
@@ -609,10 +664,12 @@ interface base {
     type alias-alias = alias-tags;
     type list-maybe = list<maybe-span>;
     type maybe-tags = option<tags>;
+    type list-tags = list<tags>;
+    type maybe-outcome = option<outcome>;
 }
 
 interface user {
-    use base.{span as local-span, tags, maybe-span, outcome, bare, only-ok, only-err, number, alias-number, bytes, result-tags, span-alias, outcome-alias, alias-tags, alias-alias, list-maybe, maybe-tags};
+    use base.{span as local-span, tags, tags as local-tags, maybe-span, maybe-span as local-maybe, outcome, outcome as local-outcome, bare, only-ok, only-err, number, alias-number, bytes, result-tags, span-alias, outcome-alias, alias-tags, alias-alias, list-maybe, maybe-tags, list-tags, maybe-outcome};
 
     read: func(value: local-span) -> tags;
 }
