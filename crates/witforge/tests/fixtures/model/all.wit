@@ -1,0 +1,163 @@
+/// Model coverage package.
+package example:model@1.2.0;
+
+/// Every primitive and the structural forms built from them.
+@since(version = 1.2.0)
+interface primitives {
+    /// A record containing every primitive.
+    @since(version = 1.2.0)
+    record all {
+        /// A boolean.
+        a-bool: bool,
+        /// An unsigned 8-bit integer.
+        a-u8: u8,
+        /// An unsigned 16-bit integer.
+        a-u16: u16,
+        /// An unsigned 32-bit integer.
+        a-u32: u32,
+        /// An unsigned 64-bit integer.
+        a-u64: u64,
+        /// A signed 8-bit integer.
+        a-s8: s8,
+        /// A signed 16-bit integer.
+        a-s16: s16,
+        /// A signed 32-bit integer.
+        a-s32: s32,
+        /// A signed 64-bit integer.
+        a-s64: s64,
+        /// A 32-bit float.
+        a-f32: f32,
+        /// A 64-bit float.
+        a-f64: f64,
+        /// A string.
+        a-string: string,
+    }
+
+    /// A variant with one payload case and one payload-less case.
+    variant choice {
+        /// A payload.
+        with-payload(all),
+        /// No payload.
+        without-payload,
+    }
+
+    /// An enum.
+    enum status {
+        /// Ready.
+        ready,
+        /// Done.
+        done,
+    }
+
+    /// Flags.
+    flags permissions {
+        /// Read permission.
+        read,
+        /// Write permission.
+        write,
+    }
+
+    /// A named list.
+    type strings = list<string>;
+
+    /// A named option.
+    type maybe-all = option<all>;
+
+    /// A named result.
+    type outcome = result<all, string>;
+
+    /// A bare result.
+    type bare = result;
+
+    /// A result with only the success slot.
+    type only-ok = result<all>;
+
+    /// A result with only the error slot.
+    type only-err = result<_, string>;
+
+    /// A named list of a named type.
+    type all-list = list<all>;
+
+    /// A named option of a named result.
+    type maybe-outcome = option<outcome>;
+
+    /// A named result whose success payload is a named list.
+    type list-result = result<list<all>, string>;
+
+    /// An alias to a record.
+    type all-alias = all;
+
+    /// An alias to a named list.
+    type strings-alias = strings;
+
+    /// An alias to an alias.
+    type strings-alias-alias = strings-alias;
+
+    /// An experimental type; retained even without the feature.
+    @unstable(feature = experimental)
+    type experimental = result<all, string>;
+
+    /// A function with every parameter kind and a result.
+    @since(version = 1.2.0)
+    all-params: func(
+        a-bool: bool,
+        a-u8: u8,
+        a-u16: u16,
+        a-u32: u32,
+        a-u64: u64,
+        a-s8: s8,
+        a-s16: s16,
+        a-s32: s32,
+        a-s64: s64,
+        a-f32: f32,
+        a-f64: f64,
+        a-string: string,
+        a-list: list<u8>,
+        a-option: option<string>,
+        a-result: result<u8, string>,
+        a-nested: list<option<result<u8, string>>>,
+    ) -> result<list<all>, string>;
+
+    /// A function with no result.
+    no-result: func(value: all);
+}
+
+/// An interface that uses aliases from `primitives`.
+@since(version = 1.2.0)
+interface aliases {
+    use primitives.{
+        all as local-all,
+        strings as local-strings,
+        outcome as local-outcome,
+        all-alias,
+        strings-alias-alias as local-alias-alias,
+    };
+
+    /// A function using the interface-local aliases.
+    call: func(value: local-all, tags: local-strings) -> local-outcome;
+}
+
+/// Escaped keyword identifiers remain raw names.
+@since(version = 1.2.0)
+interface %type {
+    /// An escaped record.
+    record %where {
+        /// An escaped field.
+        %self: u32,
+    }
+
+    /// An escaped function.
+    %func: func(%self: u32) -> %where;
+}
+
+/// A world with documented and stable roles.
+@since(version = 1.2.0)
+world %world {
+    /// The primitive interface is imported.
+    @since(version = 1.2.0)
+    import primitives;
+
+    /// The alias interface is exported.
+    @unstable(feature = experimental)
+    export aliases;
+}

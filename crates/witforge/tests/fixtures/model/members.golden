@@ -1,0 +1,43 @@
+example:model/primitives/all.a-bool	field	bool
+example:model/primitives/all.a-u8	field	u8
+example:model/primitives/all.a-u16	field	u16
+example:model/primitives/all.a-u32	field	u32
+example:model/primitives/all.a-u64	field	u64
+example:model/primitives/all.a-s8	field	s8
+example:model/primitives/all.a-s16	field	s16
+example:model/primitives/all.a-s32	field	s32
+example:model/primitives/all.a-s64	field	s64
+example:model/primitives/all.a-f32	field	f32
+example:model/primitives/all.a-f64	field	f64
+example:model/primitives/all.a-string	field	string
+example:model/primitives/choice.with-payload	variant-case	primitives/all
+example:model/primitives/choice.without-payload	variant-case
+example:model/primitives/status.ready	enum-case
+example:model/primitives/status.done	enum-case
+example:model/primitives/permissions.read	flag
+example:model/primitives/permissions.write	flag
+example:model/primitives.all-params	method	result<list<primitives/all>,string>
+example:model/primitives#all-params.a-bool	param	bool
+example:model/primitives#all-params.a-u8	param	u8
+example:model/primitives#all-params.a-u16	param	u16
+example:model/primitives#all-params.a-u32	param	u32
+example:model/primitives#all-params.a-u64	param	u64
+example:model/primitives#all-params.a-s8	param	s8
+example:model/primitives#all-params.a-s16	param	s16
+example:model/primitives#all-params.a-s32	param	s32
+example:model/primitives#all-params.a-s64	param	s64
+example:model/primitives#all-params.a-f32	param	f32
+example:model/primitives#all-params.a-f64	param	f64
+example:model/primitives#all-params.a-string	param	string
+example:model/primitives#all-params.a-list	param	list<u8>
+example:model/primitives#all-params.a-option	param	option<string>
+example:model/primitives#all-params.a-result	param	result<u8,string>
+example:model/primitives#all-params.a-nested	param	list<option<result<u8,string>>>
+example:model/primitives.no-result	method
+example:model/primitives#no-result.value	param	primitives/all
+example:model/aliases.call	method	result<primitives/all,string>
+example:model/aliases#call.value	param	primitives/all
+example:model/aliases#call.tags	param	list<string>
+example:model/type/where.self	field	u32
+example:model/type.func	method	type/where
+example:model/type#func.self	param	u32

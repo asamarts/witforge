@@ -18,6 +18,534 @@ fn build(name: &str) -> Model {
     model::build(&load(&fixture(name)).unwrap()).unwrap()
 }
 
+fn model_fixture() -> Model {
+    build("model")
+}
+
+#[test]
+fn model_fixture_preserves_shape_docs_stability_and_escaped_names() {
+    let model = model_fixture();
+    assert_fixture_package_and_order(&model);
+    assert_fixture_shapes(&model);
+    assert_fixture_type_docs(&model);
+    assert_fixture_function_and_world_docs(&model);
+}
+
+fn assert_fixture_package_and_order(model: &Model) {
+    assert_eq!(model.package.namespace, "example");
+    assert_eq!(model.package.name, "model");
+    assert_eq!(model.package.version.to_string(), "1.2.0");
+    assert_eq!(model.package.docs.trim(), "Model coverage package.");
+
+    let interfaces: Vec<&str> = model
+        .interfaces
+        .iter()
+        .map(|interface| interface.name.as_str())
+        .collect();
+    assert_eq!(interfaces, ["primitives", "aliases", "type"]);
+
+    let primitives = model.interface("primitives").unwrap();
+    let type_names: Vec<&str> = primitives
+        .types
+        .iter()
+        .map(|def| def.name.as_str())
+        .collect();
+    assert_eq!(
+        type_names,
+        [
+            "all",
+            "choice",
+            "status",
+            "permissions",
+            "strings",
+            "maybe-all",
+            "outcome",
+            "bare",
+            "only-ok",
+            "only-err",
+            "all-list",
+            "maybe-outcome",
+            "list-result",
+            "all-alias",
+            "strings-alias",
+            "strings-alias-alias",
+            "experimental",
+        ]
+    );
+    let function_names: Vec<&str> = primitives
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+    assert_eq!(function_names, ["all-params", "no-result"]);
+
+    let aliases = model.interface("aliases").unwrap();
+    let alias_names: Vec<&str> = aliases.types.iter().map(|def| def.name.as_str()).collect();
+    assert_eq!(
+        alias_names,
+        [
+            "local-all",
+            "local-strings",
+            "local-outcome",
+            "all-alias",
+            "local-alias-alias",
+        ]
+    );
+    assert_eq!(aliases.functions[0].name, "call");
+
+    let escaped = model.interface("type").unwrap();
+    assert_eq!(escaped.name, "type");
+    assert_eq!(escaped.types[0].name, "where");
+    assert_eq!(escaped.functions[0].name, "func");
+
+    let worlds: Vec<&str> = model
+        .worlds
+        .iter()
+        .map(|world| world.name.as_str())
+        .collect();
+    assert_eq!(worlds, ["world"]);
+    let world = &model.worlds[0];
+    assert_eq!(world.imports[0].interface, "primitives");
+    assert_eq!(world.exports[0].interface, "aliases");
+}
+
+fn assert_fixture_shapes(model: &Model) {
+    let all = model
+        .type_def(&QualifiedName {
+            interface: "primitives".into(),
+            name: "all".into(),
+        })
+        .unwrap();
+    match &all.kind {
+        TypeDefKind::Record(fields) => {
+            let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "a-bool", "a-u8", "a-u16", "a-u32", "a-u64", "a-s8", "a-s16", "a-s32", "a-s64",
+                    "a-f32", "a-f64", "a-string",
+                ]
+            );
+            assert_eq!(fields[0].ty, TypeExpr::Bool);
+            assert_eq!(fields[11].ty, TypeExpr::String);
+        }
+        other => panic!("all should be a record, got {other:?}"),
+    }
+
+    let choice = model
+        .type_def(&QualifiedName {
+            interface: "primitives".into(),
+            name: "choice".into(),
+        })
+        .unwrap();
+    match &choice.kind {
+        TypeDefKind::Variant(cases) => {
+            assert_eq!(cases[0].name, "with-payload");
+            assert_eq!(cases[0].payload, Some(named("primitives", "all")));
+            assert_eq!(cases[1].name, "without-payload");
+            assert_eq!(cases[1].payload, None);
+        }
+        other => panic!("choice should be a variant, got {other:?}"),
+    }
+
+    for (name, matches_kind) in [
+        ("status", "enum"),
+        ("permissions", "flags"),
+        ("all", "record"),
+    ] {
+        let def = model
+            .type_def(&QualifiedName {
+                interface: "primitives".into(),
+                name: name.into(),
+            })
+            .unwrap();
+        match (matches_kind, &def.kind) {
+            ("enum", TypeDefKind::Enum(_))
+            | ("flags", TypeDefKind::Flags(_))
+            | ("record", TypeDefKind::Record(_)) => {}
+            (_, other) => panic!("{name} should be {matches_kind}, got {other:?}"),
+        }
+    }
+
+    let ewhere = model
+        .type_def(&QualifiedName {
+            interface: "type".into(),
+            name: "where".into(),
+        })
+        .unwrap();
+    match &ewhere.kind {
+        TypeDefKind::Record(fields) => {
+            assert_eq!(fields[0].name, "self");
+            assert_eq!(fields[0].ty, TypeExpr::U32);
+        }
+        other => panic!("where should be a record, got {other:?}"),
+    }
+}
+
+fn assert_fixture_type_docs(model: &Model) {
+    let primitives = model.interface("primitives").unwrap();
+    assert_eq!(
+        primitives.docs.trim(),
+        "Every primitive and the structural forms built from them."
+    );
+    assert_eq!(
+        primitives.stability,
+        Stability::Stable {
+            since: model.package.version
+        }
+    );
+    let all = model
+        .type_def(&QualifiedName {
+            interface: "primitives".into(),
+            name: "all".into(),
+        })
+        .unwrap();
+    assert_eq!(all.docs.trim(), "A record containing every primitive.");
+    assert_eq!(
+        all.stability,
+        Stability::Stable {
+            since: model.package.version
+        }
+    );
+    let fields = match &all.kind {
+        TypeDefKind::Record(fields) => fields,
+        other => panic!("all should be a record, got {other:?}"),
+    };
+    assert_eq!(fields[0].docs.trim(), "A boolean.");
+    assert_eq!(fields[11].docs.trim(), "A string.");
+
+    let choice = model
+        .type_def(&QualifiedName {
+            interface: "primitives".into(),
+            name: "choice".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        choice.docs.trim(),
+        "A variant with one payload case and one payload-less case."
+    );
+    let cases = match &choice.kind {
+        TypeDefKind::Variant(cases) => cases,
+        other => panic!("choice should be a variant, got {other:?}"),
+    };
+    assert_eq!(cases[0].docs.trim(), "A payload.");
+    assert_eq!(cases[1].docs.trim(), "No payload.");
+
+    let status = model
+        .type_def(&QualifiedName {
+            interface: "primitives".into(),
+            name: "status".into(),
+        })
+        .unwrap();
+    assert_eq!(status.docs.trim(), "An enum.");
+    let status_cases = match &status.kind {
+        TypeDefKind::Enum(cases) => cases,
+        other => panic!("status should be an enum, got {other:?}"),
+    };
+    assert_eq!(status_cases[0].docs.trim(), "Ready.");
+    assert_eq!(status_cases[1].docs.trim(), "Done.");
+
+    let permissions = model
+        .type_def(&QualifiedName {
+            interface: "primitives".into(),
+            name: "permissions".into(),
+        })
+        .unwrap();
+    assert_eq!(permissions.docs.trim(), "Flags.");
+    let flags = match &permissions.kind {
+        TypeDefKind::Flags(flags) => flags,
+        other => panic!("permissions should be flags, got {other:?}"),
+    };
+    assert_eq!(flags[0].docs.trim(), "Read permission.");
+    assert_eq!(flags[1].docs.trim(), "Write permission.");
+
+    let experimental = model
+        .type_def(&QualifiedName {
+            interface: "primitives".into(),
+            name: "experimental".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        experimental.stability,
+        Stability::Unstable {
+            feature: "experimental".into()
+        }
+    );
+    assert_eq!(
+        experimental.docs.trim(),
+        "An experimental type; retained even without the feature."
+    );
+}
+
+fn assert_fixture_function_and_world_docs(model: &Model) {
+    let primitives = model.interface("primitives").unwrap();
+
+    let all_params = &primitives.functions[0];
+    assert_eq!(all_params.name, "all-params");
+    assert_eq!(
+        all_params.docs.trim(),
+        "A function with every parameter kind and a result."
+    );
+    assert_eq!(
+        all_params.stability,
+        Stability::Stable {
+            since: model.package.version
+        }
+    );
+    assert_eq!(primitives.functions[1].name, "no-result");
+    assert_eq!(
+        primitives.functions[1].docs.trim(),
+        "A function with no result."
+    );
+
+    let aliases = model.interface("aliases").unwrap();
+    assert_eq!(
+        aliases.docs.trim(),
+        "An interface that uses aliases from `primitives`."
+    );
+    assert_eq!(
+        aliases.stability,
+        Stability::Stable {
+            since: model.package.version
+        }
+    );
+    let escaped = model.interface("type").unwrap();
+    assert_eq!(
+        escaped.docs.trim(),
+        "Escaped keyword identifiers remain raw names."
+    );
+    assert_eq!(escaped.types[0].docs.trim(), "An escaped record.");
+    assert_eq!(escaped.functions[0].docs.trim(), "An escaped function.");
+
+    let world = &model.worlds[0];
+    assert_eq!(
+        world.docs.trim(),
+        "A world with documented and stable roles."
+    );
+    assert_eq!(
+        world.stability,
+        Stability::Stable {
+            since: model.package.version
+        }
+    );
+    assert_eq!(
+        world.imports[0].docs.trim(),
+        "The primitive interface is imported."
+    );
+    assert_eq!(
+        world.imports[0].stability,
+        Stability::Stable {
+            since: model.package.version
+        }
+    );
+    assert_eq!(
+        world.exports[0].docs.trim(),
+        "The alias interface is exported."
+    );
+    assert_eq!(
+        world.exports[0].stability,
+        Stability::Unstable {
+            feature: "experimental".into()
+        }
+    );
+}
+
+#[test]
+fn model_fixture_canonical_goldens() {
+    let model = model_fixture();
+    assert_fixture_primitive_canonical(&model);
+    assert_fixture_named_canonical(&model);
+    assert_fixture_function_canonical(&model);
+}
+
+fn assert_fixture_primitive_canonical(model: &Model) {
+    for (ty, expected) in [
+        (TypeExpr::Bool, "bool"),
+        (TypeExpr::U8, "u8"),
+        (TypeExpr::U16, "u16"),
+        (TypeExpr::U32, "u32"),
+        (TypeExpr::U64, "u64"),
+        (TypeExpr::S8, "s8"),
+        (TypeExpr::S16, "s16"),
+        (TypeExpr::S32, "s32"),
+        (TypeExpr::S64, "s64"),
+        (TypeExpr::F32, "f32"),
+        (TypeExpr::F64, "f64"),
+        (TypeExpr::String, "string"),
+    ] {
+        assert_fixture_canonical(model, &ty, expected);
+    }
+}
+
+fn assert_fixture_named_canonical(model: &Model) {
+    for (interface, name, expected) in [
+        ("primitives", "all", "primitives/all"),
+        ("primitives", "choice", "primitives/choice"),
+        ("primitives", "status", "primitives/status"),
+        ("primitives", "permissions", "primitives/permissions"),
+        ("primitives", "strings", "list<string>"),
+        ("primitives", "maybe-all", "option<primitives/all>"),
+        ("primitives", "outcome", "result<primitives/all,string>"),
+        ("primitives", "bare", "result<_,_>"),
+        ("primitives", "only-ok", "result<primitives/all,_>"),
+        ("primitives", "only-err", "result<_,string>"),
+        ("primitives", "all-list", "list<primitives/all>"),
+        (
+            "primitives",
+            "maybe-outcome",
+            "option<result<primitives/all,string>>",
+        ),
+        (
+            "primitives",
+            "list-result",
+            "result<list<primitives/all>,string>",
+        ),
+        ("primitives", "all-alias", "primitives/all"),
+        ("primitives", "strings-alias", "list<string>"),
+        ("primitives", "strings-alias-alias", "list<string>"),
+        (
+            "primitives",
+            "experimental",
+            "result<primitives/all,string>",
+        ),
+        ("aliases", "local-all", "primitives/all"),
+        ("aliases", "local-strings", "list<string>"),
+        ("aliases", "local-outcome", "result<primitives/all,string>"),
+        ("aliases", "all-alias", "primitives/all"),
+        ("aliases", "local-alias-alias", "list<string>"),
+        ("type", "where", "type/where"),
+    ] {
+        assert_fixture_canonical(model, &named(interface, name), expected);
+    }
+}
+
+fn assert_fixture_function_canonical(model: &Model) {
+    let primitives = model.interface("primitives").unwrap();
+    let all_params = &primitives.functions[0];
+    let param_names: Vec<&str> = all_params
+        .params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect();
+    assert_eq!(
+        param_names,
+        [
+            "a-bool", "a-u8", "a-u16", "a-u32", "a-u64", "a-s8", "a-s16", "a-s32", "a-s64",
+            "a-f32", "a-f64", "a-string", "a-list", "a-option", "a-result", "a-nested",
+        ]
+    );
+    for (index, expected) in [
+        "bool",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "s8",
+        "s16",
+        "s32",
+        "s64",
+        "f32",
+        "f64",
+        "string",
+        "list<u8>",
+        "option<string>",
+        "result<u8,string>",
+        "list<option<result<u8,string>>>",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_fixture_canonical(model, &all_params.params[index].ty, expected);
+    }
+    assert_eq!(
+        all_params
+            .result
+            .as_ref()
+            .map(|ty| model.canonical_type(ty).unwrap()),
+        Some("result<list<primitives/all>,string>".to_string())
+    );
+    assert_eq!(primitives.functions[1].result, None);
+    assert_eq!(
+        named("primitives", "strings-alias-alias")
+            .canonical(model)
+            .unwrap(),
+        "list<string>"
+    );
+
+    let call = &model.interface("aliases").unwrap().functions[0];
+    assert_fixture_canonical(model, &call.params[0].ty, "primitives/all");
+    assert_fixture_canonical(model, &call.params[1].ty, "list<string>");
+    assert_eq!(
+        call.result
+            .as_ref()
+            .map(|ty| model.canonical_type(ty).unwrap()),
+        Some("result<primitives/all,string>".to_string())
+    );
+
+    let escaped = &model.interface("type").unwrap().functions[0];
+    assert_fixture_canonical(model, &escaped.params[0].ty, "u32");
+    assert_eq!(
+        escaped
+            .result
+            .as_ref()
+            .map(|ty| model.canonical_type(ty).unwrap()),
+        Some("type/where".to_string())
+    );
+}
+
+fn assert_fixture_canonical(model: &Model, ty: &TypeExpr, expected: &str) {
+    let actual = model.canonical_type(ty).unwrap();
+    assert_eq!(actual, expected);
+    assert!(
+        !actual.chars().any(char::is_whitespace),
+        "canonical `{actual}` contains whitespace"
+    );
+}
+
+#[test]
+fn model_fixture_member_goldens() {
+    let model = model_fixture();
+    let members = model.members().unwrap();
+    let golden = fs::read_to_string(fixture("model").join("members.golden")).unwrap();
+    let expected = parse_member_golden(&golden);
+    assert_eq!(members.len(), expected.len());
+    for (index, (member, (key, kind, ty))) in members.iter().zip(expected).enumerate() {
+        assert_eq!(member.key(), key, "member {index} key");
+        assert_eq!(member.kind, kind, "member {index} kind");
+        assert_eq!(member.ty.as_deref(), ty.as_deref(), "member {index} type");
+    }
+
+    let contract = load(&fixture("model")).unwrap();
+    assert_eq!(model::members(&contract).unwrap(), members);
+}
+
+fn parse_member_golden(golden: &str) -> Vec<(String, MemberKind, Option<String>)> {
+    golden
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(index, line)| {
+            let line_no = index + 1;
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert!(
+                (2..=3).contains(&fields.len()),
+                "golden line {line_no}: expected key, kind, and optional type"
+            );
+            let kind = fields[1]
+                .parse::<MemberKind>()
+                .unwrap_or_else(|error| panic!("golden line {line_no}: {error}"));
+            let ty = fields.get(2).and_then(|value| {
+                if value.is_empty() {
+                    None
+                } else {
+                    Some((*value).to_string())
+                }
+            });
+            (fields[0].to_string(), kind, ty)
+        })
+        .collect()
+}
+
 #[test]
 fn build_preserves_package_shape_order_and_docs() {
     let model = build("ok");
