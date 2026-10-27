@@ -1,7 +1,10 @@
 //! Typed lockfile v2 parsing, rendering, keys, and entry-matrix tests.
 
+use std::path::{Path, PathBuf};
+
+use witforge::load;
 use witforge::lock::{HEADER, MemberKey, WireLock};
-use witforge::model::{Member, MemberKind};
+use witforge::model::{self, Member, MemberKind};
 
 #[test]
 fn v2_round_trip_sorts_and_renders_typed_entries() {
@@ -174,4 +177,70 @@ fn reconcile_records_and_checks_kind_and_type() {
         reintroduced.reintroduced,
         vec![("a:b/i/t.x".to_string(), 1)]
     );
+}
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
+#[test]
+fn model_members_lock_kinds_canonical_types_and_parameters() {
+    let model = model::build(&load(&fixture("model")).unwrap()).unwrap();
+    let members = model.members().unwrap();
+    let mut lock = WireLock::default();
+    lock.reconcile(&members).unwrap();
+    for member in &members {
+        let entry = lock.get(&member.key()).unwrap();
+        assert_eq!(entry.kind, member.kind, "{} kind", member.key());
+        assert_eq!(entry.ty, member.ty, "{} type", member.key());
+    }
+
+    let no_result = lock.get("example:model/primitives.no-result").unwrap();
+    assert_eq!(no_result.kind, MemberKind::Method);
+    assert_eq!(no_result.ty, None);
+    let result = lock.get("example:model/primitives.all-params").unwrap();
+    assert_eq!(
+        result.ty.as_deref(),
+        Some("result<list<primitives/all>,string>")
+    );
+    assert_eq!(
+        lock.get("example:model/primitives#all-params.a-nested")
+            .unwrap()
+            .ty
+            .as_deref(),
+        Some("list<option<result<u8,string>>>")
+    );
+    assert_eq!(
+        lock.get("example:model/primitives/status.ready")
+            .unwrap()
+            .kind,
+        MemberKind::EnumCase
+    );
+    assert_eq!(
+        lock.get("example:model/primitives/choice.with-payload")
+            .unwrap()
+            .ty
+            .as_deref(),
+        Some("primitives/all")
+    );
+}
+
+#[test]
+fn append_only_check_rejects_kind_and_type_changes() {
+    let older = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 variant-case\n"
+    ))
+    .unwrap();
+    let type_changed = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u16\na:b/i/t.y = 2 variant-case\n"
+    ))
+    .unwrap();
+    assert!(type_changed.check_append_only(&older).is_err());
+    let kind_changed = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 enum-case\n"
+    ))
+    .unwrap();
+    assert!(kind_changed.check_append_only(&older).is_err());
 }
