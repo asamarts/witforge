@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use witforge::lock::WireLock;
+use witforge::lock::{HEADER, WireLock};
 use witforge::{load, model, subset};
 
 fn fixtures() -> &'static Path {
@@ -143,19 +143,28 @@ fn a_reintroduced_member_stays_reserved_and_is_reported() {
 
 #[test]
 fn append_only_check_refuses_renumbering_and_deletion() {
-    let older = WireLock::parse("a:b/i/t.x = 1\na:b/i/t.y = 2 reserved\n").unwrap();
-    let renumbered = WireLock::parse("a:b/i/t.x = 3\na:b/i/t.y = 2 reserved\n").unwrap();
+    let older = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 field u64 reserved\n"
+    ))
+    .unwrap();
+    let renumbered = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 3 field u64\na:b/i/t.y = 2 field u64 reserved\n"
+    ))
+    .unwrap();
     assert!(renumbered.check_append_only(&older).is_err());
-    let deleted = WireLock::parse("a:b/i/t.x = 1\n").unwrap();
+    let deleted = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
     assert!(deleted.check_append_only(&older).is_err());
-    let unreserved = WireLock::parse("a:b/i/t.x = 1\na:b/i/t.y = 2\n").unwrap();
+    let unreserved = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 field u64\n"
+    ))
+    .unwrap();
     assert!(unreserved.check_append_only(&older).is_err());
 }
 
 #[test]
 fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum() {
     // 18999 is the last usable number before protobuf's reserved range.
-    let mut lock = WireLock::parse("a:b/i/t.x = 18999\n").unwrap();
+    let mut lock = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 18999 field u64\n")).unwrap();
     let member = model::Member {
         parent: "a:b/i/t".into(),
         name: "y".into(),
@@ -167,7 +176,8 @@ fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum(
     assert_eq!(lock.get("a:b/i/t.y").unwrap().number, 20_000);
 
     // The last valid field number cannot be followed by another member in the same parent.
-    let mut full = WireLock::parse("a:b/i/t.x = 536870911\n").unwrap();
+    let mut full =
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 536870911 field u64\n")).unwrap();
     let member = model::Member {
         parent: "a:b/i/t".into(),
         name: "y".into(),
@@ -182,13 +192,23 @@ fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum(
 #[test]
 fn parse_rejects_bad_lockfiles() {
     for bad in [
-        "a:b/i/t.x = 1\na:b/i/t.x = 2\n", // duplicate key
-        "a:b/i/t.x = 1\na:b/i/t.y = 1\n", // shared number in one parent
-        "a:b/i/t.x = 19500\n",            // protobuf-reserved range
-        "a:b/i/t.x = 0\n",                // zero
-        "a:b/i/t.x = 1 maybe\n",          // unknown flag
-        "nonsense\n",                     // not key = value
+        format!("{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.x = 2 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 1 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 19500 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 0 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 maybe\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field u64 extra\n"),
+        format!("{HEADER}\na:b/i/t.x = 01 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 enum-case string\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 param\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field list<>\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field char\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field result<u8>\n"),
+        "nonsense\n".to_string(),
+        "# witforge wire lockfile: append-only. Do not edit numbers by hand.\na:b/i/t.x = 1\n"
+            .to_string(),
     ] {
-        assert!(WireLock::parse(bad).is_err(), "{bad:?} should fail");
+        assert!(WireLock::parse(&bad).is_err(), "{bad:?} should fail");
     }
 }

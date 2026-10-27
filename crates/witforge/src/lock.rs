@@ -2,35 +2,209 @@
 //!
 //! WIT records, variants, enums, and flags are positional and carry no field numbers, but the
 //! protobuf projection needs a number per member that never changes. The lockfile maps every
-//! member key (`namespace:package/interface/type.member`) to a number, unique within its parent
-//! type, and is append-only:
+//! numbered member to a number, unique within its parent, and is append-only.
 //!
-//! - a new member gets the next free number in its parent, skipping protobuf's reserved range;
-//! - a removed member stays in the file, marked `reserved`, so its number is never reused;
-//! - a removed member's name stays reserved too (the protobuf schema reserves both), so a member
-//!   that comes back under that name is reported, never renumbered or revived;
-//! - nothing is ever renumbered or deleted.
-//!
-//! The text format is one entry per line, sorted by key: `key = N` or `key = N reserved`.
-//! Lines starting with `#` are comments and blank lines are ignored.
+//! The v2 text format is one entry per line, sorted by key:
+//! `key = number kind [type] [reserved]`. Lines after the first header line starting with `#`
+//! are comments, and blank lines are ignored.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
+use std::collections::BTreeMap;
+use std::fmt::{self, Write as _};
 
 use anyhow::{Context, Result, bail};
 
-use crate::model::Member;
+use crate::model::{Member, MemberKind};
+
+/// The exact first line of every v2 lockfile.
+pub const HEADER: &str = "# witforge wire lockfile v2";
 
 /// Protobuf reserves field numbers 19000 to 19999 for its own implementation.
 const PROTOBUF_RESERVED: std::ops::RangeInclusive<u32> = 19_000..=19_999;
 /// The largest valid protobuf field number.
 const PROTOBUF_MAX: u32 = 536_870_911;
 
+/// A package name in a lockfile key: `namespace:name`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PackageName {
+    /// The package namespace.
+    pub namespace: String,
+    /// The package name.
+    pub name: String,
+}
+
+impl fmt::Display for PackageName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.namespace, self.name)
+    }
+}
+
+/// A parsed, typed lockfile key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemberKey {
+    /// `package/interface/type.member`.
+    TypeMember {
+        /// The owning package.
+        package: PackageName,
+        /// The defining interface.
+        interface: String,
+        /// The defining type.
+        type_name: String,
+        /// The member within the type.
+        member: String,
+    },
+    /// `package/interface.function`.
+    Method {
+        /// The owning package.
+        package: PackageName,
+        /// The defining interface.
+        interface: String,
+        /// The function.
+        function: String,
+    },
+    /// `package/interface#function.parameter`.
+    Parameter {
+        /// The owning package.
+        package: PackageName,
+        /// The defining interface.
+        interface: String,
+        /// The function.
+        function: String,
+        /// The parameter within the function.
+        parameter: String,
+    },
+}
+
+impl MemberKey {
+    /// Parse a lockfile key into its typed scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown shape, an empty component, or a component that is not a
+    /// WIT identifier.
+    pub fn parse(value: &str) -> Result<Self> {
+        let (package, rest) = value
+            .split_once('/')
+            .with_context(|| format!("malformed key `{value}`: missing `/`"))?;
+        let package = parse_package(package)?;
+
+        if let Some((interface, tail)) = rest.split_once('#') {
+            ensure_no_separator("interface", interface, '#')?;
+            let (function, parameter) = tail
+                .split_once('.')
+                .with_context(|| format!("malformed parameter key `{value}`: missing `.`"))?;
+            ensure_ident("function", function)?;
+            ensure_ident("parameter", parameter)?;
+            return Ok(Self::Parameter {
+                package,
+                interface: interface.to_string(),
+                function: function.to_string(),
+                parameter: parameter.to_string(),
+            });
+        }
+
+        if let Some((interface, tail)) = rest.split_once('/') {
+            let (type_name, member) = tail
+                .split_once('.')
+                .with_context(|| format!("malformed type-member key `{value}`: missing `.`"))?;
+            ensure_ident("interface", interface)?;
+            ensure_ident("type", type_name)?;
+            ensure_ident("member", member)?;
+            return Ok(Self::TypeMember {
+                package,
+                interface: interface.to_string(),
+                type_name: type_name.to_string(),
+                member: member.to_string(),
+            });
+        }
+
+        let (interface, function) = rest
+            .split_once('.')
+            .with_context(|| format!("malformed method key `{value}`: missing `.`"))?;
+        ensure_ident("interface", interface)?;
+        ensure_ident("function", function)?;
+        Ok(Self::Method {
+            package,
+            interface: interface.to_string(),
+            function: function.to_string(),
+        })
+    }
+
+    /// Build a typed key from a model member.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the member's generated key is malformed.
+    pub fn from_member(member: &Member) -> Result<Self> {
+        Self::parse(&member.key()).with_context(|| {
+            format!(
+                "member `{}.{}` has an invalid key",
+                member.parent, member.name
+            )
+        })
+    }
+
+    /// The parent whose number space this key belongs to.
+    #[must_use]
+    pub fn parent(&self) -> String {
+        match self {
+            Self::TypeMember {
+                package,
+                interface,
+                type_name,
+                ..
+            } => format!("{package}/{interface}/{type_name}"),
+            Self::Method {
+                package, interface, ..
+            } => format!("{package}/{interface}"),
+            Self::Parameter {
+                package,
+                interface,
+                function,
+                ..
+            } => format!("{package}/{interface}#{function}"),
+        }
+    }
+
+    /// The canonical lockfile key.
+    #[must_use]
+    pub fn key(&self) -> String {
+        match self {
+            Self::TypeMember {
+                package,
+                interface,
+                type_name,
+                member,
+            } => format!("{package}/{interface}/{type_name}.{member}"),
+            Self::Method {
+                package,
+                interface,
+                function,
+            } => format!("{package}/{interface}.{function}"),
+            Self::Parameter {
+                package,
+                interface,
+                function,
+                parameter,
+            } => format!("{package}/{interface}#{function}.{parameter}"),
+        }
+    }
+}
+
+impl fmt::Display for MemberKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.key())
+    }
+}
+
 /// One lockfile entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    /// The wire number, unique within the member's parent type.
+    /// The wire number, unique within the member's parent.
     pub number: u32,
+    /// The member kind.
+    pub kind: MemberKind,
+    /// The canonical type, when the kind has one.
+    pub ty: Option<String>,
     /// Whether the member was removed (its number stays taken).
     pub reserved: bool,
 }
@@ -38,7 +212,7 @@ pub struct Entry {
 /// A parsed lockfile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WireLock {
-    entries: BTreeMap<String, Entry>,
+    entries: BTreeMap<MemberKey, Entry>,
 }
 
 /// What [`WireLock::reconcile`] changed.
@@ -63,46 +237,48 @@ impl Changes {
 }
 
 impl WireLock {
-    /// Parse the lockfile text.
+    /// Parse the v2 lockfile text.
     ///
     /// # Errors
     ///
-    /// Returns an error for a malformed line, a duplicate key, an invalid number, or two members
-    /// of one parent sharing a number.
+    /// Returns an error for a missing or unknown header, a malformed key or entry, an invalid
+    /// number, a bad canonical type, a duplicate key, or two members of one parent sharing a
+    /// number. A v1 lockfile is refused rather than migrated.
     pub fn parse(text: &str) -> Result<Self> {
+        let mut lines = text.lines();
+        let Some(first) = lines.next() else {
+            bail!("empty lockfile: expected `{HEADER}`");
+        };
+        if first != HEADER {
+            bail!("line 1: expected `{HEADER}`");
+        }
+
         let mut entries = BTreeMap::new();
-        for (index, raw) in text.lines().enumerate() {
-            let line_no = index + 1;
+        for (index, raw) in lines.enumerate() {
+            let line_no = index + 2;
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (key, rest) = line
+            let (key_text, rest) = line
                 .split_once('=')
-                .with_context(|| format!("line {line_no}: expected `key = number`"))?;
-            let key = key.trim();
-            if key.is_empty() || parent_of(key).is_none() {
-                bail!("line {line_no}: malformed key `{key}`");
-            }
-            let mut words = rest.split_whitespace();
-            let number: u32 = words
-                .next()
-                .with_context(|| format!("line {line_no}: missing number"))?
-                .parse()
-                .with_context(|| format!("line {line_no}: invalid number"))?;
-            let reserved = match words.next() {
-                None => false,
-                Some("reserved") => true,
-                Some(other) => bail!("line {line_no}: unexpected `{other}`"),
-            };
-            if words.next().is_some() {
-                bail!("line {line_no}: trailing text");
-            }
+                .with_context(|| format!("line {line_no}: expected `key = number kind [type]`"))?;
+            let key =
+                MemberKey::parse(key_text.trim()).with_context(|| format!("line {line_no}"))?;
+            let (number, kind, ty, reserved) = parse_entry(rest, line_no)?;
             if !valid_number(number) {
                 bail!("line {line_no}: {number} is not a usable protobuf field number");
             }
             if entries
-                .insert(key.to_string(), Entry { number, reserved })
+                .insert(
+                    key.clone(),
+                    Entry {
+                        number,
+                        kind,
+                        ty,
+                        reserved,
+                    },
+                )
                 .is_some()
             {
                 bail!("line {line_no}: duplicate key `{key}`");
@@ -116,48 +292,66 @@ impl WireLock {
     /// The entry for a member key, if any.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<Entry> {
-        self.entries.get(key).copied()
+        MemberKey::parse(key)
+            .ok()
+            .and_then(|key| self.entries.get(&key).cloned())
     }
 
     /// Bring the lockfile up to date with `members`: assign numbers to new members and reserve
-    /// removed ones. Existing numbers never change, and a member whose key is already reserved
-    /// is left reserved and reported in [`Changes::reintroduced`]; the caller must refuse the
-    /// contract.
+    /// removed ones. Existing numbers never change. A member whose key is already reserved is
+    /// left reserved and reported in [`Changes::reintroduced`]; the caller must refuse the
+    /// contract. A live member whose kind or canonical type differs is an error.
     ///
     /// # Errors
     ///
-    /// Returns an error when a parent has used every usable protobuf field number.
+    /// Returns an error when a member key is malformed, a live member's kind or type changed,
+    /// or a parent has used every usable protobuf field number.
     pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
-        let live: BTreeSet<String> = members.iter().map(Member::key).collect();
+        let live: BTreeMap<MemberKey, &Member> = members
+            .iter()
+            .map(|member| Ok((MemberKey::from_member(member)?, member)))
+            .collect::<Result<_>>()?;
         let mut changes = Changes::default();
 
         for (key, entry) in &mut self.entries {
-            if !entry.reserved && !live.contains(key) {
+            if !entry.reserved && !live.contains_key(key) {
                 entry.reserved = true;
-                changes.reserved.push((key.clone(), entry.number));
+                changes.reserved.push((key.key(), entry.number));
             }
         }
+
         for member in members {
-            let key = member.key();
+            let key = MemberKey::from_member(member)?;
             match self.entries.get(&key) {
-                // A removed member came back under its old name. Reusing its number could change
-                // what the number means, and the name is reserved alongside it.
                 Some(entry) if entry.reserved => {
-                    changes.reintroduced.push((key, entry.number));
+                    changes.reintroduced.push((key.key(), entry.number));
                     continue;
+                }
+                Some(entry)
+                    if entry.kind != member.kind || entry.ty.as_deref() != member.ty.as_deref() =>
+                {
+                    bail!(
+                        "`{key}` changed kind or type from `{} {}` to `{} {}`; run `witforge lock` only for drafts or add a new member",
+                        entry.kind,
+                        entry.ty.as_deref().unwrap_or("-"),
+                        member.kind,
+                        member.ty.as_deref().unwrap_or("-")
+                    );
                 }
                 Some(_) => continue,
                 None => {}
             }
-            let number = self.next_number(&member.parent)?;
+            let number = self.next_number(&key.parent())?;
             self.entries.insert(
                 key.clone(),
                 Entry {
                     number,
+                    kind: member.kind,
+                    ty: member.ty.clone(),
                     reserved: false,
                 },
             );
-            changes.added.push((key, number));
+            changes.added.push((key.key(), number));
         }
         Ok(changes)
     }
@@ -168,7 +362,7 @@ impl WireLock {
     ///
     /// # Errors
     ///
-    /// Returns an error when a parent has used every usable protobuf field number.
+    /// Returns the same errors as [`WireLock::reconcile`].
     pub fn drift(&self, members: &[Member]) -> Result<Changes> {
         let mut copy = self.clone();
         copy.reconcile(members)
@@ -177,10 +371,15 @@ impl WireLock {
     /// Render the lockfile text (sorted, stable, LF line endings).
     #[must_use]
     pub fn render(&self) -> String {
-        let mut out =
-            String::from("# witforge wire lockfile: append-only. Do not edit numbers by hand.\n");
-        for (key, entry) in &self.entries {
-            let _ = write!(out, "{key} = {}", entry.number);
+        let mut out = format!("{HEADER}\n");
+        let mut keys: Vec<&MemberKey> = self.entries.keys().collect();
+        keys.sort_by_key(|key| key.key());
+        for key in keys {
+            let entry = &self.entries[key];
+            let _ = write!(out, "{} = {} {}", key.key(), entry.number, entry.kind);
+            if let Some(ty) = &entry.ty {
+                let _ = write!(out, " {ty}");
+            }
             if entry.reserved {
                 out.push_str(" reserved");
             }
@@ -190,11 +389,12 @@ impl WireLock {
     }
 
     /// Check that an older lockfile's entries all survive unchanged in this one, so CI can
-    /// refuse a lockfile edit that deletes or renumbers anything.
+    /// refuse a lockfile edit that deletes, renumbers, changes, or un-reserves anything.
     ///
     /// # Errors
     ///
-    /// Returns an error naming the first entry that was removed, renumbered, or un-reserved.
+    /// Returns an error naming the first entry that was removed, renumbered, changed, or
+    /// un-reserved.
     pub fn check_append_only(&self, older: &WireLock) -> Result<()> {
         for (key, old) in &older.entries {
             match self.entries.get(key) {
@@ -204,6 +404,9 @@ impl WireLock {
                     old.number,
                     new.number
                 ),
+                Some(new) if new.kind != old.kind || new.ty != old.ty => {
+                    bail!("`{key}` changed kind or type; entries are append-only")
+                }
                 Some(new) if old.reserved && !new.reserved => {
                     bail!("`{key}` was un-reserved; a reserved number is never reused");
                 }
@@ -217,7 +420,7 @@ impl WireLock {
         let max = self
             .entries
             .iter()
-            .filter(|(key, _)| parent_of(key) == Some(parent))
+            .filter(|(key, _)| key.parent() == parent)
             .map(|(_, entry)| entry.number)
             .max()
             .unwrap_or(0);
@@ -234,10 +437,9 @@ impl WireLock {
     }
 
     fn validate(&self) -> Result<()> {
-        let mut seen: BTreeMap<(&str, u32), &str> = BTreeMap::new();
+        let mut seen: BTreeMap<(String, u32), &MemberKey> = BTreeMap::new();
         for (key, entry) in &self.entries {
-            let parent = parent_of(key).unwrap_or_default();
-            if let Some(other) = seen.insert((parent, entry.number), key) {
+            if let Some(other) = seen.insert((key.parent(), entry.number), key) {
                 bail!("`{other}` and `{key}` share number {}", entry.number);
             }
         }
@@ -245,11 +447,200 @@ impl WireLock {
     }
 }
 
-fn parent_of(key: &str) -> Option<&str> {
-    let (parent, member) = key.rsplit_once('.')?;
-    (!parent.is_empty() && !member.is_empty() && parent.contains('/')).then_some(parent)
+fn parse_entry(rest: &str, line_no: usize) -> Result<(u32, MemberKind, Option<String>, bool)> {
+    let mut words = rest.split_whitespace();
+    let number_token = words
+        .next()
+        .with_context(|| format!("line {line_no}: missing number"))?;
+    if number_token.len() > 1 && number_token.starts_with('0') {
+        bail!("line {line_no}: number `{number_token}` has a leading zero");
+    }
+    let number: u32 = number_token
+        .parse()
+        .with_context(|| format!("line {line_no}: invalid number `{number_token}`"))?;
+    let kind_token = words
+        .next()
+        .with_context(|| format!("line {line_no}: missing member kind"))?;
+    let kind: MemberKind = kind_token
+        .parse()
+        .map_err(|_| anyhow::anyhow!("line {line_no}: unknown member kind `{kind_token}`"))?;
+
+    let (ty, reserved) = match words.next() {
+        None => (None, false),
+        Some("reserved") => (None, true),
+        Some(ty) => {
+            validate_canonical_type(ty)
+                .with_context(|| format!("line {line_no}: invalid canonical type"))?;
+            let reserved = match words.next() {
+                None => false,
+                Some("reserved") => true,
+                Some(other) => bail!("line {line_no}: unexpected `{other}`"),
+            };
+            (Some(ty.to_string()), reserved)
+        }
+    };
+    if words.next().is_some() {
+        bail!("line {line_no}: trailing text");
+    }
+
+    let requires_type = matches!(kind, MemberKind::Field | MemberKind::Param);
+    let forbids_type = matches!(kind, MemberKind::EnumCase | MemberKind::Flag);
+    if requires_type && ty.is_none() {
+        bail!("line {line_no}: `{kind}` requires a canonical type");
+    }
+    if forbids_type && ty.is_some() {
+        bail!("line {line_no}: `{kind}` forbids a canonical type");
+    }
+    Ok((number, kind, ty, reserved))
 }
 
-fn valid_number(n: u32) -> bool {
-    (1..=PROTOBUF_MAX).contains(&n) && !PROTOBUF_RESERVED.contains(&n)
+fn parse_package(value: &str) -> Result<PackageName> {
+    let (namespace, name) = value
+        .split_once(':')
+        .with_context(|| format!("malformed package `{value}`: missing `:`"))?;
+    ensure_ident("package namespace", namespace)?;
+    ensure_ident("package name", name)?;
+    Ok(PackageName {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    })
+}
+
+fn ensure_ident(what: &str, value: &str) -> Result<()> {
+    if !valid_ident(value) {
+        bail!("malformed {what} `{value}`: expected a WIT identifier");
+    }
+    Ok(())
+}
+
+fn ensure_no_separator(what: &str, value: &str, separator: char) -> Result<()> {
+    if value.contains(separator) {
+        bail!("malformed {what} `{value}`: contains `{separator}`");
+    }
+    Ok(())
+}
+
+fn valid_ident(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn valid_number(number: u32) -> bool {
+    (1..=PROTOBUF_MAX).contains(&number) && !PROTOBUF_RESERVED.contains(&number)
+}
+
+/// Validate the lockfile's canonical type grammar.
+fn validate_canonical_type(value: &str) -> Result<()> {
+    let mut parser = CanonicalTypeParser::new(value);
+    parser.parse_type()?;
+    if parser.position != value.len() {
+        bail!("trailing text `{}`", &value[parser.position..]);
+    }
+    Ok(())
+}
+
+struct CanonicalTypeParser<'a> {
+    input: &'a str,
+    position: usize,
+}
+
+impl<'a> CanonicalTypeParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, position: 0 }
+    }
+
+    fn parse_type(&mut self) -> Result<()> {
+        let ident = self.ident()?;
+        if ident == "list" && self.eat('<') {
+            self.parse_type()?;
+            self.expect('>')?;
+            return Ok(());
+        }
+        if ident == "option" && self.eat('<') {
+            self.parse_type()?;
+            self.expect('>')?;
+            return Ok(());
+        }
+        if ident == "result" && self.eat('<') {
+            self.parse_slot()?;
+            self.expect(',')?;
+            self.parse_slot()?;
+            self.expect('>')?;
+            return Ok(());
+        }
+        if self.peek() == Some('/') {
+            self.expect('/')?;
+            self.ident()?;
+            return Ok(());
+        }
+        if matches!(
+            ident,
+            "bool"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "s8"
+                | "s16"
+                | "s32"
+                | "s64"
+                | "f32"
+                | "f64"
+                | "string"
+        ) {
+            return Ok(());
+        }
+        bail!("unknown type name `{ident}`")
+    }
+
+    fn parse_slot(&mut self) -> Result<()> {
+        if self.eat('_') {
+            Ok(())
+        } else {
+            self.parse_type()
+        }
+    }
+
+    fn ident(&mut self) -> Result<&'a str> {
+        let start = self.position;
+        let first = self
+            .input
+            .get(start..)
+            .and_then(|rest| rest.chars().next())
+            .context("missing type name")?;
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            bail!("invalid type name start `{first}`");
+        }
+        self.position += first.len_utf8();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                self.position += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        Ok(&self.input[start..self.position])
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.input[self.position..].chars().next()
+    }
+
+    fn eat(&mut self, expected: char) -> bool {
+        if self.peek() == Some(expected) {
+            self.position += expected.len_utf8();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, expected: char) -> Result<()> {
+        if self.eat(expected) {
+            Ok(())
+        } else {
+            bail!("expected `{expected}`")
+        }
+    }
 }

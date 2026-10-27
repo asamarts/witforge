@@ -36,6 +36,6 @@ adaptations needed to express it in WIT instead of silently editing them away:
    foreign or world-defined types are not needed. If a future alint draft adds one, record it
    here as a design finding and change the subset deliberately rather than silently dropping
    the construct.
-6. **The checked-in lockfile is transitional.** It is the current v1 lockfile produced by the
-   existing CLI so `witforge check` can exercise the fixture end to end. Lockfile v2 and its
-   canonical types/functions/parameters replace it during the lockfile-v2 slice.
+6. **The checked-in lockfile is v2.** It is produced by the current CLI so `witforge check`
+   exercises the fixture end to end, including canonical type tokens, method ids, and
+   parameters. Regenerate it with `witforge lock` if the derived contract changes.
