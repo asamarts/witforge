@@ -73,6 +73,10 @@ fn member_keys_parse_and_render_typed_scopes() {
         "a:b/i/t.x#y",
         "a:b:/i/t.x",
         "a:b/i/t.x ",
+        "aB:b/i/t.x",
+        "a:b/i/T_x.x",
+        "a:b/i/t.x_y",
+        "a:b/i/t.x-y-",
     ] {
         assert!(MemberKey::parse(bad).is_err(), "{bad:?} should fail");
     }
@@ -126,6 +130,10 @@ fn canonical_type_tokens_accept_the_supported_grammar() {
     ] {
         let text = format!("{HEADER}\na:b/i/t.x = 1 field {good}\n");
         assert!(WireLock::parse(&text).is_ok(), "{good:?} should parse");
+    }
+    for bad in ["types/SpAn", "types/span_x", "types/span-", "types//span"] {
+        let text = format!("{HEADER}\na:b/i/t.x = 1 field {bad}\n");
+        assert!(WireLock::parse(&text).is_err(), "{bad:?} should fail");
     }
 }
 

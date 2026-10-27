@@ -521,9 +521,37 @@ fn ensure_no_separator(what: &str, value: &str, separator: char) -> Result<()> {
 }
 
 fn valid_ident(value: &str) -> bool {
-    let mut chars = value.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    if value.is_empty() {
+        return false;
+    }
+    for (index, part) in value.split('-').enumerate() {
+        let Some(first) = part.chars().next() else {
+            return false;
+        };
+        if index == 0 && !first.is_ascii_alphabetic() {
+            return false;
+        }
+        let mut upper = None;
+        for ch in part.chars() {
+            if ch.is_ascii_digit() {
+                continue;
+            }
+            if ch.is_ascii_uppercase() {
+                if upper == Some(false) {
+                    return false;
+                }
+                upper = Some(true);
+            } else if ch.is_ascii_lowercase() {
+                if upper == Some(true) {
+                    return false;
+                }
+                upper = Some(false);
+            } else {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn valid_number(number: u32) -> bool {
@@ -609,18 +637,22 @@ impl<'a> CanonicalTypeParser<'a> {
             .get(start..)
             .and_then(|rest| rest.chars().next())
             .context("missing type name")?;
-        if !(first.is_ascii_alphabetic() || first == '_') {
+        if !first.is_ascii_alphabetic() {
             bail!("invalid type name start `{first}`");
         }
         self.position += first.len_utf8();
         while let Some(c) = self.peek() {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            if c.is_ascii_alphanumeric() || c == '-' {
                 self.position += c.len_utf8();
             } else {
                 break;
             }
         }
-        Ok(&self.input[start..self.position])
+        let ident = &self.input[start..self.position];
+        if !valid_ident(ident) {
+            bail!("invalid type identifier `{ident}`");
+        }
+        Ok(ident)
     }
 
     fn peek(&self) -> Option<char> {
