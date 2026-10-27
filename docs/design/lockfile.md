@@ -36,10 +36,11 @@ directories are frozen as a whole, which covers those cases.
   version is treated as released. An explicitly supplied missing manifest is an error.
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
-  `v<major>.proto`) may change when a new minor is added; their released members are protected
-  by the lockfile and `--check`, and the proto schema is append-only. CI enforces that nothing
-  under the version directory changes against the merge base, and the consumer's CI freezes the
-  version's committed generated files and verifies the shared output with `--check`.
+  `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
+  released members are protected by the lockfile and `--check`, and the proto schema is
+  append-only. CI enforces that nothing under the version directory changes against the merge
+  base, and the consumer's CI freezes the version's committed generated files and verifies the
+  shared output with `--check`.
 - `lock` refuses to modify a released version directory. `check`, `rust`, and `proto` are
   allowed; they verify or reproduce the frozen contract.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the

@@ -16,7 +16,7 @@ engineer-weeks for one experienced Rust engineer.
 - [x] CI: fmt, pedantic Clippy, rustdoc, tests, and the MSRV 1.88 build (the `wit-parser` floor),
       on a self-hosted Linux runner while the repository is private ([ci/README.md](ci/README.md)).
 - [x] Rust edition 2024.
-- [x] Specification for the internal model, lockfile v2, and the Rust/protobuf emitter
+- [x] Specification for the internal model, lockfile v2, and the Rust/protobuf/glue emitter
       conventions ([model.md](docs/design/model.md), [lockfile.md](docs/design/lockfile.md),
       [emitters.md](docs/design/emitters.md)).
 - [ ] Implement lockfile v2 as specified: typed keys and entries, member kinds, canonical types,
@@ -36,17 +36,17 @@ engineer-weeks for one experienced Rust engineer.
       removed members, wrappers for nested `list` and `option`, `oneof` for variants and
       `result`, closed enums with a zero `UNSPECIFIED` value, request/response messages, and a
       method-id enum per interface.
-- [ ] Protobuf glue: decide and document the generated API (free functions vs conversions, error
-      type, module paths) and implement conversions between the plain types and `prost`-generated
-      types (built with `protox` and `pbjson-build`), carrying every decode rule in
-      [emitters.md](docs/design/emitters.md).
+- [ ] Protobuf glue as specified in [emitters.md](docs/design/emitters.md): free-function type
+      conversions, per-function request/response helpers and method constants, the shared
+      `GlueError`, and `--plain-root`/`--proto-root` output, exercised by round-trip tests through
+      `prost`/`pbjson`.
 - [ ] `--check` mode for generated outputs (stale output fails CI); LF-only, deterministic output.
 - [ ] Golden tests for every mapping row and round-trip tests through the protobuf glue (Rust
       value to protobuf to Rust value; proto3-JSON and back).
 - [ ] CI guard that released directories (WIT, lockfile, and per-version Rust module) never
-      change against the merge base, that shared per-major proto files remain append-only, that
-      `wit/released` is append-only, and documentation for running `buf breaking` on the emitted
-      schema as an optional extra check.
+      change against the merge base, that shared per-major proto/glue files remain append-only,
+      that `wit/released` is append-only, and documentation for running `buf breaking` on the
+      emitted schema as an optional extra check.
 - [ ] Public repository and the first crates.io release once alint's contract `0.x` consumes it;
       CI moves back to GitHub-hosted Linux, macOS, and Windows runners, and the self-hosted
       runner is torn down.
@@ -57,6 +57,8 @@ engineer-weeks for one experienced Rust engineer.
       unreleased version is caught by `check --against` rather than review alone.
 - [ ] Measure the cost of owned Rust parameters and consider borrowed parameters (`&str`,
       `&[T]`) in a new contract version.
+- [ ] Evaluate a leaner glue surface that skips trivial structural aliases (the glue Option C)
+      while keeping message-backed and `use` aliases.
 - [ ] Evaluate conditional `Eq`/`Hash` and a narrow `Default` policy for generated Rust types.
 - [ ] Explore generated world metadata (the world Option D) if alint needs role information in
       generated code.

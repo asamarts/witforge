@@ -1,7 +1,7 @@
-# witforge emitter conventions (Rust and protobuf)
+# witforge emitter conventions (Rust, protobuf, glue)
 
-Status: specified 2026-10-25; implementation pending. This document is normative for generated
-Rust and protobuf output. The lockfile format and `check`/`lock` semantics are in
+Status: specified 2026-10-26; implementation pending. This document is normative for generated
+Rust, protobuf, and glue output. The lockfile format and `check`/`lock` semantics are in
 [`lockfile.md`](lockfile.md); the product decisions are logged in
 [`overview.md`](overview.md#9-decision-log).
 
@@ -285,8 +285,8 @@ pub type Tags = ::std::vec::Vec<::std::string::String>;
 ### 4.2 Messages and enums
 
 - A record becomes a message. Field names are snake_case; field numbers come from the lockfile.
-  Fields carry `//` docs. Record fields are required by WIT; the glue presence-checks
-  non-optional message fields on decode.
+  Fields carry `//` docs. Record fields are required by WIT; required scalar/string/bool/float/
+  enum/bytes fields use proto3 `optional`, and the glue presence-checks every required field.
 - A variant becomes a message with a `oneof witforge_value`. Each case is a field named in
   snake_case; a payload case uses `singular(payload)` from section 4.3, so a list or option
   payload is wrapped; a payload-less case uses `Empty`. Numbers come from the lockfile. A case
@@ -300,11 +300,15 @@ pub type Tags = ::std::vec::Vec<::std::string::String>;
 - A named record/variant/enum/flags type is a message/enum named
   `<InterfacePascal><TypePascal>`.
 - A `type a = b` alias is inlined.
-- A named `list`, `option`, or `result` is inlined structurally at every use site; it does not
-  create a separate alias type in proto. When the structural projection requires a message (a
-  result, or an option of a list/option), that message is named as described in section 4.4.
+- A named `list`, `option`, or `result` does not create a separate alias type in proto; its
+  structural projection is used at each site. When that projection requires a message (a named
+  result, or an option of a list/option), the message is named as described in section 4.4.
 
 ### 4.3 Type mapping
+
+The table gives the proto value type. Required scalar/string/bool/float/enum/bytes occurrences
+add `optional`; required message fields use message presence; repeated fields use `repeated`.
+See Presence below for the required/optional distinction.
 
 | WIT | proto |
 |---|---|
@@ -333,9 +337,38 @@ pub type Tags = ::std::vec::Vec<::std::string::String>;
 | `type a = b` | inlined |
 | named `list`/`option`/`result` | inlined structurally |
 
+#### Presence
+
+Proto3 scalar, string, bool, float, enum, and `bytes` fields have implicit defaults. To preserve
+WIT’s required-field semantics, every **required** occurrence of one of those types in a record
+field, request parameter, or response result whose type is one of those forms is emitted with
+`optional`, and the glue rejects absence with `MissingField`:
+
+```proto
+message TypesSpan {
+  optional uint64 start = 1;
+  optional uint64 end = 2;
+}
+```
+
+The schema alone cannot tell a required `optional T` from an `option<T>` field; the model does,
+and the glue applies different rules:
+
+- required `optional T`: `None` is `MissingField`; `Some(value)` is validated and unwrapped;
+- WIT `option<T>`: `None` is `None`; `Some(value)` is validated;
+- required `bytes` (`list<u8>`) is `optional bytes`; `None` is `MissingField`;
+- `option<list<u8>>` is also `optional bytes`, but `None` is a valid `None`;
+- a required `repeated` field (`list<T>`) may be empty; absence and empty are the same and both
+  are valid;
+- a required message field uses message presence; `None` is `MissingField`;
+- oneof members (result sides and variant payloads) do not use `optional`; selecting the oneof
+  member provides presence, and an unset/unknown oneof is `UnknownCase`.
+
 Nested shapes are defined by two recursive mappings:
 
-- `direct(T)` is the type used for a normal message field. It may be repeated or optional.
+- `direct(T)` is the type used for a normal message field. It may be repeated or optional. For a
+  required scalar/string/bool/float/enum/bytes occurrence, the emitter adds `optional` as
+  described under Presence; `direct(T)` names the value type.
 - `singular(T)` is a singular, non-optional type usable as a `oneof` member or a repeated
   element.
 
@@ -527,13 +560,16 @@ witforge lock  <version-dir> [--lock <path>] [--against <path> | --first]
                             [--released <path>]
 witforge rust  <wit-root> --out <dir> [--check] [--released <path>]
 witforge proto <wit-root> --out <dir> [--check] [--released <path>]
-witforge glue  <wit-root> --out <dir> [--check] [--released <path>]   # later
+witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
+                            [--check] [--released <path>]
 ```
 
 - `check` and `lock` take one version directory; the default lockfile is
   `<version-dir>/wire.lock`.
 - `rust`, `proto`, and `glue` take the WIT root and require every version directory to be
   valid and locked.
+- `glue` additionally requires `--plain-root` and `--proto-root`; it covers the highest minor of
+  each major, so older plain modules get no glue.
 - The released manifest default is `<version-dir>/../released` for `check`/`lock`, and
   `<wit-root>/released` for generation.
 - `--first` and `--against` are mutually exclusive. They are defined in
@@ -549,10 +585,10 @@ witforge glue  <wit-root> --out <dir> [--check] [--released <path>]   # later
   the header. It validates every version before writing the first file; a failed run may leave a
   partial set, and rerunning after fixing the input completes it.
 - A consumer's CI SHOULD freeze the committed per-version Rust module and `wire.lock` for a
-  released version together with the `wit/released` entries. `mod.rs` and the per-major
-  `v<major>.proto` are shared across versions and may change when a new minor is added; their
-  released members are protected by the lockfile, `--check`, and proto compatibility checks.
-  `--check` is the tool-side verification.
+  released version together with the `wit/released` entries. `mod.rs`, the per-major
+  `v<major>.proto`, and the per-major glue module are shared across versions and may change when
+  a new minor is added; their released members are protected by the lockfile, `--check`, and
+  proto compatibility checks. `--check` is the tool-side verification.
 - Exit codes: `0` success; `1` contract, lockfile, or output drift; `2` usage, IO, parse,
   released-directory refusal, or internal error.
 - The CLI uses `clap`; every command supports `--help`, and the binary supports `--version`.
@@ -563,49 +599,306 @@ witforge glue  <wit-root> --out <dir> [--check] [--released <path>]   # later
 |---|---|
 | `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version |
 | `proto` | `v<major>.proto` for every major |
-| `glue` | later; one module per major or per version, to be specified |
+| `glue` | `mod.rs`, `v<major>.rs` for every major |
 
 Rust per-version files contain inline interface modules. `mod.rs` declares every version module
-in ascending order. Proto files are generated from the highest minor in each major.
+in ascending order. Proto files are generated from the highest minor in each major. Glue files
+are generated from that same highest minor and reference its plain module.
 
 ## 6. Testing requirements
 
-- Golden tests for every mapping row, with committed expected `.rs` and `.proto` files.
-- At least one generated Rust fixture is compiled as part of the test suite; at least one
+- Golden tests for every mapping row, with committed expected `.rs`, `.proto`, and glue files.
+- At least one generated Rust/glue fixture is compiled as part of the test suite; at least one
   generated proto fixture is parsed/compiled with `protox` or `protoc`.
 - Golden tests cover docs, keyword escaping, name collisions, aliases, named
   list/option/result, nested wrappers, direct-vs-singular wrapper forms for named options,
   one-sided results, payload-less variants, flags, and reserved members.
 - Determinism tests: two runs produce byte-identical output; LF only; no timestamps.
 - `--check` tests: missing, changed, extra generated, and unrelated files.
-- CLI integration tests with `assert_cmd` and `tempfile`.
+- CLI integration tests with `assert_cmd` and `tempfile` for `rust`, `proto`, `glue`, and
+  `--check`.
 - Lockfile property tests with `proptest`.
-- Protobuf glue round-trip tests (Rust value -> proto -> Rust; JSON -> Rust) once the glue
-  emitter lands.
+- Protobuf glue round-trip tests (Rust value -> proto -> Rust; proto -> JSON -> proto -> Rust)
+  through the generated glue and helpers.
 
-## 7. Deferred: protobuf glue
+## 7. Protobuf glue
 
-The optional `glue` emitter converts between the plain Rust types and `prost`/`pbjson` types.
-It is part of 0.1 but its API is deliberately not fixed yet; the decode rules below are
-normative, while the calling convention needs a separate decision before implementation:
+The `glue` emitter converts between the plain Rust types and the `prost`/`pbjson` types. It is
+generated from the highest minor of each major; older plain modules remain for native adapters
+and the later version-conversion layer.
 
-- free functions (`to_proto_<type>`, `from_proto_<type>`) versus generated `TryFrom`/`From`
-  implementations (the orphan rule matters if the prost types live in another crate);
-- the generated error type and its variants;
-- the output module layout and how the generated code imports the plain and prost modules;
-- whether the prost-generated types are assumed to be in the same crate;
-- the proto3-JSON entry points.
+### 7.1 Coverage and input
 
-The conversion rules must include:
+- Glue covers every named type in the highest minor of each major, including records, variants,
+  enums, flags, aliases, `use` aliases, named `list`/`option`/`result`, and named structural
+  forms.
+- Glue covers every interface function in that version.
+- Older minors get no glue module; they are not the proto schema’s source version.
+- The emitter uses the same model, canonical types, collision rules, and naming conversion as
+  the Rust and proto emitters. WIT docs are carried to glue module/function docs where they
+  describe the type or function; synthesized helpers get a short doc comment.
+- A type or function that the subset checker refuses never reaches glue.
 
-- range checks for `u8`, `u16`, `s8`, `s16`;
-- closed enums (zero and unknown values are errors);
-- presence checks for non-optional message fields;
-- an error for an unknown variant case;
-- correct handling of `option<list>`, `option<option>`, and one-sided results;
-- proto3-JSON via `pbjson`.
+### 7.2 CLI, output layout, and module paths
 
-`prost`, `protox`, and `pbjson` are pinned and bumped deliberately, like `wit-parser`.
+```text
+witforge glue <wit-root> --out <dir> \
+  --plain-root <rust-module-path> \
+  --proto-root <rust-module-path> \
+  [--check] [--released <path>]
+```
+
+- `--plain-root` is the Rust module that contains `v<major>_<minor>` modules, for example
+  `crate::generated`.
+- `--proto-root` is the Rust module that contains `v<major>` modules, for example
+  `crate::proto::example::plugin`.
+- Both roots are required. The tool does not guess them.
+- Each root MUST be a valid Rust module path: `crate`, `self`, `super`, or identifiers (including
+  raw identifiers) separated by `::`; empty segments, trailing `::`, generics, and whitespace are
+  errors.
+- Generated references:
+  - plain: `<plain-root>::v<major>_<minor>::...`
+  - proto: `<proto-root>::v<major>::...`
+- Output:
+
+  ```text
+  <out>/mod.rs      // GlueError and v0, v1, ...
+  <out>/v0.rs
+  <out>/v1.rs
+  ```
+
+- One glue module per major, matching the one-proto-per-major rule. `mod.rs` declares the major
+  modules in ascending order.
+- `--check`, generated-header ownership, stale-file removal, LF-only output, and the rule that
+  the output root must not be the WIT root or inside a version directory are the same as the
+  Rust/proto emitters.
+- A root with no version directories is an error.
+- Glue `v<major>.rs` is shared across the major’s minors and may change when a new minor is
+  added. Released per-version plain Rust modules are frozen; glue is current-schema output and
+  is verified by `--check`, not frozen per minor.
+
+### 7.3 Module layout
+
+`mod.rs` defines the root error type and declares the major modules:
+
+```rust
+pub enum GlueError { ... }
+
+pub mod v0;
+```
+
+`v0.rs` mirrors interfaces:
+
+```rust
+pub mod types {
+    pub mod span { /* to_proto / from_proto */ }
+}
+
+pub mod analyzer {
+    pub mod finding { /* type conversions */ }
+    pub mod functions {
+        pub mod analyze { /* request/response helpers */ }
+    }
+}
+```
+
+- Types are direct children of their interface module: `glue::types::span`.
+- Functions live under a `functions` container: `glue::analyzer::functions::analyze`.
+- The converted module name `functions` is reserved for that container; a type whose converted
+  name is `functions` is a hard error.
+- Type and function module names use the Rust snake_case conversion and collision rules. A
+  collision is a hard error.
+- `GlueError` is reachable as `<glue-root>::GlueError`. The emitter imports it with
+  `use super::GlueError;` in every module that names it (version, interface, `functions`, type,
+  and function modules), so generated signatures can name `GlueError` directly without deep
+  `super::` chains. Generated modules never define a user item named `GlueError` in the same
+  scope.
+
+### 7.4 `GlueError`
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GlueError {
+    IntegerOutOfRange {
+        field: &'static str,
+        value: i64,
+    },
+    MissingField {
+        field: &'static str,
+    },
+    UnknownEnumValue {
+        enumeration: &'static str,
+        value: i32,
+    },
+    UnknownCase {
+        message: &'static str,
+    },
+    InvalidState {
+        message: &'static str,
+    },
+}
+```
+
+- One error type is shared by all majors in the glue root.
+- `field`, `enumeration`, and `message` carry canonical WIT identities where possible.
+- `MissingField` covers a required proto3 `optional` scalar/string/bool/float/enum/bytes value
+  and a required message field.
+- `Display` names the failing field/type and the reason; `std::error::Error` is implemented.
+- `#[non_exhaustive]` allows a new decode rule to add a variant without breaking exhaustive
+  matches.
+- No `anyhow`, `thiserror`, `serde_json`, or other runtime dependency is used.
+- `from_proto`, `from_request`, and `from_response` return `Result<_, GlueError>`.
+- `to_proto`, `to_request`, and `to_response` are infallible.
+- JSON conversion errors are not part of `GlueError` (section 7.7).
+
+### 7.5 Type conversions
+
+One module per named type:
+
+```rust
+pub mod span {
+    pub fn to_proto(
+        value: &<plain-root>::v0_2::types::Span,
+    ) -> <proto-root>::v0::TypesSpan;
+
+    pub fn from_proto(
+        value: <proto-root>::v0::TypesSpan,
+    ) -> Result<<plain-root>::v0_2::types::Span, GlueError>;
+}
+```
+
+- `to_proto` takes a reference and is infallible.
+- `from_proto` takes the owned proto value and is fallible.
+- The proto type is the named type’s **direct** projection:
+  - record/variant/flags → the named message;
+  - enum → the named enum;
+  - result → the named result message;
+  - named `option<list>` / `option<option>` → its named direct wrapper message;
+  - named `list<T>` → the direct repeated representation, for example
+    `::std::vec::Vec<ProtoT>`;
+  - named `option<T>` → `::std::option::Option<ProtoT>` for singular projections, or the direct
+    wrapper message as a field for list/option projections;
+  - alias / `use` alias → the target’s direct proto type.
+- A `to_proto` for an alias or a structural named type delegates to the target conversion or
+  maps elements/options.
+- Anonymous `list`/`option`/`result` shapes have no module; the containing field, variant case,
+  result side, or function helper converts them inline using the same rules.
+- The module per named type is generated even when its direct projection is a scalar, `Vec`, or
+  `Option`, so every named type is addressable. Trivial functions are acceptable.
+- A field, list element, or oneof payload uses the direct or singular projection required by
+  section 4.3. The named type modules expose the **direct** conversion; a parent conversion that
+  needs a singular oneof/repeated-element form wraps the direct value in the required wrapper.
+  This keeps one public conversion pair per named type while still handling every nested shape.
+- Conversion rules:
+  - `u8`/`u16`/`s8`/`s16` are range-checked on decode (`IntegerOutOfRange`);
+  - closed enums reject zero and unknown values (`UnknownEnumValue`);
+  - a required `optional` scalar/string/bool/float/enum/bytes field with `None` is
+    `MissingField`; an `option<T>` field with `None` is `None`;
+  - a required message field with `None` is `MissingField`; an `option<message>` field with
+    `None` is `None`;
+  - a required `repeated` field may be empty; absence and empty are both valid;
+  - a required `optional bytes` field (`list<u8>`) with `None` is `MissingField`;
+  - an unset or unknown variant/result oneof is `UnknownCase`;
+  - an invalid option wrapper state is `InvalidState`;
+  - list elements and option payloads recurse through the same rules;
+  - `flags` bools, `list<u8>` bytes, and nested wrappers follow section 4.3.
+- The glue conversion is the only place that applies these rules; the proto schema itself does
+  not encode them.
+
+### 7.6 Function helpers
+
+Under `<interface>::functions`, one module per function. For a function with one parameter and
+one result:
+
+```rust
+pub mod analyze {
+    pub const METHOD: <proto-root>::v0::AnalyzerMethod =
+        <proto-root>::v0::AnalyzerMethod::Analyze;
+
+    pub fn to_request(
+        path: &::std::string::String,
+        bytes: &::std::vec::Vec<u8>,
+    ) -> <proto-root>::v0::AnalyzerAnalyzeRequest;
+
+    pub fn from_request(
+        value: <proto-root>::v0::AnalyzerAnalyzeRequest,
+    ) -> Result<
+        (::std::string::String, ::std::vec::Vec<u8>),
+        GlueError,
+    >;
+
+    pub fn to_response(
+        value: &::std::result::Result<
+            ::std::vec::Vec<...>,
+            ::std::string::String,
+        >,
+    ) -> <proto-root>::v0::AnalyzerAnalyzeResponse;
+
+    pub fn from_response(
+        value: <proto-root>::v0::AnalyzerAnalyzeResponse,
+    ) -> Result<
+        ::std::result::Result<::std::vec::Vec<...>, ::std::string::String>,
+        GlueError,
+    >;
+}
+```
+
+Arity rules:
+
+- `to_request`: one reference argument per parameter, or no arguments.
+- `from_request`: returns `()` for no parameters, the direct value for one, or a tuple for
+  several.
+- `to_response`: takes a reference to the plain result, or no arguments for no result.
+- `from_response`: returns `()` for no result, or the direct result for one result.
+- `METHOD` is the proto method-id enum value; the method id is locked by the lockfile, while the
+  enum’s zero `UNSPECIFIED` value is not.
+- Request parameters that are required scalars/strings/bytes/enums are proto3 `optional`;
+  `to_request` sets `Some`, and `from_request` reports `MissingField` for `None`. `option<T>`
+  parameters may be `None`. Required message parameters use message presence; required `list<T>`
+  parameters may be empty.
+- A required scalar/string/bytes/enum response result is proto3 `optional`; `to_response` sets
+  `Some`, and `from_response` reports `MissingField` for `None`. An `option<T>` result may be
+  `None`. Required message results use message presence; required `list<T>` results may be empty.
+- Request parameter names use the Rust snake_case conversion and keyword rules; field numbers
+  are the lockfile’s parameter numbers.
+- Response uses the generated response message with `result = 1`.
+- Function module names use the Rust snake_case conversion; a collision is a hard error.
+
+### 7.7 Proto3-JSON and binary encoding
+
+- Glue has no JSON or binary encoding helpers.
+- Consumers use `prost::Message::encode`/`decode` for the protobuf binary form.
+- Consumers use the `pbjson`-generated serde impls and their JSON library for proto3-JSON.
+- Glue tests use those same paths: plain → proto → binary/JSON → proto → plain.
+- The proto3-JSON rules are the generated schema’s rules: lowerCamelCase names, `u64`/`s64`
+  decimal strings, bytes as base64, non-finite floats as strings, enums as names, `result` as
+  `ok`/`err`, and option presence as absence/null or absence. A required `optional` scalar/bytes/
+  enum field that is absent or null is rejected by the glue as `MissingField`; an `option<T>`
+  field may be absent/null. Required message fields are presence-checked; required `repeated`
+  fields may be empty.
+
+### 7.8 Testing requirements
+
+- Golden files for type conversions, request/response helpers, and `GlueError` display.
+- Compile at least one glue module against generated plain and prost types.
+- Round-trip every named type and every function helper through prost and proto3-JSON.
+- Error tests for each `GlueError` variant: range, missing field, closed enum zero/unknown,
+  unknown oneof case, invalid option state.
+- Presence tests: required `optional` scalars/bytes/enums reject absent/null; `option<T>` accepts
+  them; required message fields reject absence; required `repeated` fields accept empty.
+- Arity tests for zero, one, and many parameters/results.
+- Alias, `use` alias, named list/option/result, one-sided result, and nested wrapper coverage.
+- `--check`, stale-file, and module-path validation tests.
+- A released per-version plain module remains frozen while glue for its major updates with a new
+  minor.
+
+### 7.9 Deferred
+
+- Version-to-version conversions (after 0.1).
+- A leaner glue surface that skips structural aliases (pre-golive Option C).
+- JSON helpers; JSON stays on the pbjson/prost side.
+- A configuration file wrapping the two module-root flags.
 
 ## 8. Deferred and pre-golive
 

@@ -1,7 +1,7 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-10-25 are logged in section
-9). The internal model, lockfile format, and Rust/protobuf emitter conventions are specified
+Status: living design document (2026-10-14; decisions through 2026-10-26 are logged in section
+9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
 architecture, are recorded in
@@ -81,7 +81,7 @@ the checker keeps its own empty-record rule in case a `wit-parser` bump stops do
 | `list<T>` | `Vec<T>` | `repeated singular(T)` | array | wraps nested list/option elements |
 | `list<list<T>>`, `list<option<T>>` | nested | repeated wrapper message, or `repeated bytes` when the inner type is `list<u8>` | array of objects, or array of base64 strings | synthesized wrapper |
 | `option<T>` (scalar, string, enum) | `Option<T>` | `optional T` | absent or null | clean |
-| `option<T>` (record) | `Option<T>` | message field | absent or null | non-optional message fields are presence-checked on decode |
+| `option<T>` (record) | `Option<T>` | message field | absent or null | presence-checked on decode; required scalars use `optional` |
 | `option<list<T>>`, `option<option<T>>` | nested | wrapper message, or `optional bytes` for `option<list<u8>>` | object, or base64 string | synthesized wrapper |
 | `result<T, E>` | `Result<T, E>` | message with `oneof value { singular(T) ok = 1; singular(E) err = 2; }`; `_` payloads are `Empty`; list/option payloads are wrapped to a singular message | `{"ok": ...}` / `{"err": ...}` | one-sided and bare results use `_` |
 | `tuple<A, B>` | `(A, B)` | message with `_0`, `_1` | object | refused by the subset checker; use named records |
@@ -97,6 +97,14 @@ the checker keeps its own empty-record rule in case a `wit-parser` bump stops do
 | function | trait method | request message (parameters numbered from the lockfile) and response message, plus a method id | n/a | convention |
 | interface | trait or module | method-id enum, numbers from the lockfile | n/a | convention |
 | package `ns:name@x.y.0` | Rust module `v<major>_<minor>` | proto package `ns.name.vX` | n/a | major version only on the protobuf side |
+
+Presence: every **required** scalar, string, bool, float, enum, or `list<u8>` occurrence in a
+record field, request parameter, or response result is emitted as proto3 `optional`, and the
+glue rejects absence with `MissingField`. A WIT `option<T>` uses the same optional/wrapper shape
+but permits absence. Required message fields use message presence; required `repeated` fields
+may be empty; oneof selection carries presence for result and variant payloads. The schema cannot
+tell a required `optional T` from `option<T>`; the model does, so the glue applies the right
+rule.
 
 ### 4.1 Generated Rust
 
@@ -114,11 +122,12 @@ An optional output converts between the plain Rust types and the types `prost` g
 the emitted `.proto` (the consumer runs `prost-build`, through `protox` so no `protoc` binary is
 needed, and `pbjson-build` for proto3-JSON). The conversions carry every decode rule of the
 table above: range checks for `u8`, `u16`, `s8`, and `s16`; closed enums (zero or an unknown
-value is an error); presence checks for non-optional message fields; and an error for an
-unknown variant case. So the mapping lives in one place, and witforge's round-trip tests use the
-same code its consumers do. `prost` is pinned and bumped deliberately, like `wit-parser`. The
+value is an error); presence checks for every required field, including proto3 `optional`
+scalars, strings, bytes, and enums (absence is `MissingField`); and an error for an unknown
+variant case. So the mapping lives in one place, and witforge's round-trip tests use the same
+code its consumers do. `prost` is pinned and bumped deliberately, like `wit-parser`. The
 protobuf schema and generated-file conventions are in [`emitters.md`](emitters.md); the glue
-decode rules are recorded there, while its calling convention is still deferred.
+decode rules and its free-function API are specified there.
 
 
 ## 5. Wire identity and evolution
@@ -176,9 +185,9 @@ implemented by the lockfile v2 roadmap slice; the current code still emits the v
   `--first` bootstraps a version with no previous lockfile (the first version or a new major)
   with every entry treated as a draft;
 - `wit/released` lists released version directories; their version directories are frozen
-  (shared `mod.rs`/proto output advances append-only as described in section 5.3). `lock`
-  refuses them, and CI fails if anything in a released version directory changes against the
-  merge base. A new minor is developed with the previous version as its `--against` baseline;
+  (shared `mod.rs`, proto, and glue output advances append-only as described in section 5.3).
+  `lock` refuses them, and CI fails if anything in a released version directory changes against
+  the merge base. A new minor is developed with the previous version as its `--against` baseline;
 - CI fails if a member is unlocked, if a released directory changes, or if generated output is
   stale; `buf breaking` on the emitted schema is an optional extra check;
 - the lockfile is designed to be replaced by in-source numbers if the WIT annotations proposal
@@ -188,8 +197,8 @@ implemented by the lockfile v2 roadmap slice; the current code still emits the v
 
 1. A published contract version is frozen. `wit/released` lists the released version
    directories; their WIT, lockfile, and per-version generated Rust module are immutable. The
-   shared `mod.rs` and per-major proto schema may change when a new minor is added; their
-   released members are protected by the lockfile and `--check`, and the proto schema is
+   shared `mod.rs`, per-major proto schema, and glue output may change when a new minor is added;
+   their released members are protected by the lockfile and `--check`, and the proto schema is
    append-only.
 2. Changes ship as a new minor version (`0.x` while unstable), with the previous WIT kept in the
    tree (`wit/v0.1/`, `wit/v0.2/`, and so on), each with its own `wire.lock` (section 5.2). A new
@@ -236,14 +245,16 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 
 ## 7. Testing strategy
 
-- Golden tests: one fixture contract per mapping row, with committed expected Rust and protobuf
-  output; at least one generated Rust fixture is compiled and one proto schema is parsed.
-- Round-trip tests: generated Rust values encoded to protobuf and proto3-JSON and decoded back.
+- Golden tests: one fixture contract per mapping row, with committed expected Rust, protobuf,
+  and glue output; at least one generated Rust/glue fixture is compiled and one proto schema is
+  parsed.
+- Round-trip tests: generated Rust values encoded to protobuf and proto3-JSON and decoded back;
+  glue conversions and per-function request/response helpers are exercised through the same path.
 - Lockfile property tests with `proptest`: reconcile is idempotent, never renumbers, and the
   append-only/draft rules hold across random sequences of member additions, removals, renames,
   and type changes. The cases are listed in [`lockfile.md`](lockfile.md#14-testing-requirements).
 - CLI integration tests with `assert_cmd` and `tempfile` for `check`, `lock`, `--against`,
-  `--first`, `--released`, `rust`, `proto`, and `--check`.
+  `--first`, `--released`, `rust`, `proto`, `glue`, and `--check`.
 - Subset tests: every refused construct has a fixture (`tests/fixtures/refused/<construct>/`)
   with the exact violations it must produce.
 - CI: MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings denied. Linux only (a
@@ -287,3 +298,9 @@ witforge, then goes public with 0.1.
 | 2026-10-25 | Version directories are `v<major>.<minor>`, package versions are `<major>.<minor>.0`, Rust modules are `v<major>_<minor>`, proto packages are `v<major>` | [`lockfile.md`](lockfile.md) |
 | 2026-10-25 | CLI uses `clap`; lockfile properties use `proptest`; CLI tests use `assert_cmd` and `tempfile`; golden expectations are plain committed files | section 7, `Cargo.toml` |
 | 2026-10-25 | Worlds generate no Rust or protobuf code in the MVP; world metadata is a later option | [`emitters.md`](emitters.md) |
+| 2026-10-26 | Glue uses free functions per named type, grouped by interface and type, with infallible `to_proto` and fallible `from_proto`; every named type in the highest minor is covered | [`emitters.md`](emitters.md) |
+| 2026-10-26 | Glue covers only the highest minor of each major; older plain modules are for native adapters and later version conversions | [`emitters.md`](emitters.md) |
+| 2026-10-26 | Glue has a separate output root with required `--plain-root` and `--proto-root`, one `v<major>.rs` per major, and the same `--check`/ownership rules | [`emitters.md`](emitters.md) |
+| 2026-10-26 | Glue generates per-function `to_request`/`from_request`/`to_response`/`from_response` helpers and a `METHOD` constant, with ergonomic zero/one/many arity and functions under a `functions` module | [`emitters.md`](emitters.md) |
+| 2026-10-26 | Glue returns one structured, non-exhaustive `GlueError`; JSON and binary encoding stay on the pbjson/prost side | [`emitters.md`](emitters.md) |
+| 2026-10-26 | Required scalar/string/bool/float/enum/bytes fields, parameters, and response results use proto3 `optional` and reject absence; `option<T>` permits absence | [`emitters.md`](emitters.md) |

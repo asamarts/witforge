@@ -18,8 +18,8 @@ tie their output to a runtime.
 
 > **Status: pre-release, private.** The first slice is implemented: loading a WIT package with
 > every feature enabled, the restricted-subset checker, and the append-only wire lockfile, with
-> `witforge check` and `witforge lock`. The internal model, v2 lockfile format, and Rust/protobuf
-> emitter conventions are specified in
+> `witforge check` and `witforge lock`. The internal model, v2 lockfile format, and
+> Rust/protobuf/glue emitter conventions are specified in
 > [docs/design/model.md](docs/design/model.md),
 > [docs/design/lockfile.md](docs/design/lockfile.md), and
 > [docs/design/emitters.md](docs/design/emitters.md); implementation comes next, then the

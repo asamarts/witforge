@@ -20,6 +20,10 @@ All notable changes to this project are documented here. The format follows
   canonical types, function/parameter locking, draft/release handling, and version directories.
 - Specified the Rust and protobuf emitter conventions, generated output layout, and `--check`
   behavior.
+- Specified the protobuf glue API: free-function type conversions, per-function request/response
+  helpers, the shared `GlueError`, and the `--plain-root`/`--proto-root` output layout.
+- Specified proto3 `optional` presence for required scalar/string/bool/float/enum/bytes fields,
+  parameters, and scalar results; the glue rejects absence for required values.
 
 ### Fixed
 

@@ -144,7 +144,9 @@ pub enum Stability {
 `semver` dependency for the model. Contract versions are restricted to `major.minor.0`.
 
 Implementation may use `Box`/`Vec`/`Option` or compact indices; the public semantics above are
-normative. Names are WIT names with `%` escaping removed.
+normative. Names are WIT names with `%` escaping removed. Requiredness is structural: a field,
+parameter, or result is optional only when its `TypeExpr` is `Option`; the proto and glue
+emitters use this distinction for presence checks.
 
 ## 3. Construction and invariants
 
@@ -170,8 +172,10 @@ model::build(&Contract) -> Result<Model>
 - It MUST keep `type a = b` and `use` aliases as `TypeDefKind::Alias`; aliases create no lockfile
   members and are expanded for canonical types. Rust emits them as aliases; proto inlines them.
 - It MUST keep named `list`, `option`, and `result` types as their structural kinds (not as
-  aliases); the Rust emitter emits an alias, the proto emitter inlines them, and the lockfile
-  expands them at use sites.
+  aliases). The Rust emitter emits an alias; the proto emitter applies the structural
+  projection, using a named message when that projection requires one (a named result, or an
+  option of a list/option), as specified in [`emitters.md`](emitters.md); the lockfile expands
+  them at use sites.
 - A named reference MUST resolve to the defining interface. A reference to a type in a world,
   another package, or an interface outside the package is an error.
 - `TypeExpr::Named` preserves the name written at the reference site, including a `use` alias or
