@@ -335,7 +335,7 @@ See Presence below for the required/optional distinction.
 | enum | enum |
 | flags | message of `bool` fields |
 | `type a = b` | inlined |
-| named `list`/`option`/`result` | inlined structurally |
+| named `list`/`option`/`result` | structural projection; named message when required (section 4.4) |
 
 #### Presence
 
@@ -363,6 +363,9 @@ and the glue applies different rules:
 - a required message field uses message presence; `None` is `MissingField`;
 - oneof members (result sides and variant payloads) do not use `optional`; selecting the oneof
   member provides presence, and an unset/unknown oneof is `UnknownCase`.
+
+Requiredness is carried by the model and the generated glue, not by the proto schema alone: a
+consumer that uses the `.proto` without witforge’s glue must enforce required presence itself.
 
 Nested shapes are defined by two recursive mappings:
 
@@ -545,7 +548,9 @@ particular:
 - non-finite floats are `"NaN"` / `"Infinity"` strings;
 - enums are name strings;
 - `result` is `{"ok": ...}` or `{"err": ...}`;
-- option presence is absence or `null` for message fields, and absence for proto3 `optional`.
+- option presence is absence or `null` for message fields, and absence for proto3 `optional`;
+  required `optional`/message fields use the same JSON shapes, but the glue rejects
+  absence/null as `MissingField`.
 
 The glue tests in section 6 must cover these rules.
 
@@ -791,6 +796,9 @@ pub mod span {
   needs a singular oneof/repeated-element form wraps the direct value in the required wrapper.
   This keeps one public conversion pair per named type while still handling every nested shape.
 - Conversion rules:
+  - in the encode direction, every required proto3 `optional` scalar/string/bool/float/enum/bytes
+    field is set to `Some`, required message fields are set, and required `repeated` fields map
+    to `Vec`; a required value is never encoded as absent;
   - `u8`/`u16`/`s8`/`s16` are range-checked on decode (`IntegerOutOfRange`);
   - closed enums reject zero and unknown values (`UnknownEnumValue`);
   - a required `optional` scalar/string/bool/float/enum/bytes field with `None` is
@@ -873,10 +881,10 @@ Arity rules:
 - Glue tests use those same paths: plain → proto → binary/JSON → proto → plain.
 - The proto3-JSON rules are the generated schema’s rules: lowerCamelCase names, `u64`/`s64`
   decimal strings, bytes as base64, non-finite floats as strings, enums as names, `result` as
-  `ok`/`err`, and option presence as absence/null or absence. A required `optional` scalar/bytes/
-  enum field that is absent or null is rejected by the glue as `MissingField`; an `option<T>`
-  field may be absent/null. Required message fields are presence-checked; required `repeated`
-  fields may be empty.
+  `ok`/`err`, and option presence as absence/null or absence. A required `optional`
+  scalar/string/bytes/enum field that is absent or null is rejected by the glue as
+  `MissingField`; an `option<T>` field may be absent/null. Required message fields are
+  presence-checked; required `repeated` fields may be empty.
 
 ### 7.8 Testing requirements
 
@@ -885,8 +893,9 @@ Arity rules:
 - Round-trip every named type and every function helper through prost and proto3-JSON.
 - Error tests for each `GlueError` variant: range, missing field, closed enum zero/unknown,
   unknown oneof case, invalid option state.
-- Presence tests: required `optional` scalars/bytes/enums reject absent/null; `option<T>` accepts
-  them; required message fields reject absence; required `repeated` fields accept empty.
+- Presence tests: required `optional` scalars/strings/bytes/enums reject absent/null;
+  `option<T>` accepts them; required message fields reject absence; required `repeated` fields
+  accept empty.
 - Arity tests for zero, one, and many parameters/results.
 - Alias, `use` alias, named list/option/result, one-sided result, and nested wrapper coverage.
 - `--check`, stale-file, and module-path validation tests.

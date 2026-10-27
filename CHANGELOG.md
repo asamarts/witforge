@@ -23,7 +23,9 @@ All notable changes to this project are documented here. The format follows
 - Specified the protobuf glue API: free-function type conversions, per-function request/response
   helpers, the shared `GlueError`, and the `--plain-root`/`--proto-root` output layout.
 - Specified proto3 `optional` presence for required scalar/string/bool/float/enum/bytes fields,
-  parameters, and scalar results; the glue rejects absence for required values.
+  parameters, and response results; the glue rejects absence for required values.
+- Clarified required-field presence in proto3-JSON and the encode direction, and the structural
+  projection of named list/option/result types.
 
 ### Fixed
 
@@ -34,3 +36,4 @@ All notable changes to this project are documented here. The format follows
 - Keep `wit-parser` types out of the public `Contract` API.
 - Accept `--help` on subcommands and add `--version`.
 - Guard the CI runner cleanup trap against signaling its own process group.
+- Run the full test suite in the MSRV CI job, not only a build.

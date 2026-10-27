@@ -69,4 +69,4 @@ jobs:
         with:
           toolchain: "1.88"
       # 1.88 is the floor set by wit-parser.
-      - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked

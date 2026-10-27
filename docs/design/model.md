@@ -144,9 +144,10 @@ pub enum Stability {
 `semver` dependency for the model. Contract versions are restricted to `major.minor.0`.
 
 Implementation may use `Box`/`Vec`/`Option` or compact indices; the public semantics above are
-normative. Names are WIT names with `%` escaping removed. Requiredness is structural: a field,
-parameter, or result is optional only when its `TypeExpr` is `Option`; the proto and glue
-emitters use this distinction for presence checks.
+normative. Names are WIT names with `%` escaping removed. Requiredness is structural: a field or
+parameter value is optional only when its `TypeExpr` is `Option`; a function result is absent
+(`None`) or carries a type whose optionality follows that type. The proto and glue emitters use
+this distinction for presence checks.
 
 ## 3. Construction and invariants
 

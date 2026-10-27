@@ -13,8 +13,9 @@ engineer-weeks for one experienced Rust engineer.
 - [x] Append-only wire lockfile: parse, render, reconcile, drift check, append-only check
       against an older lockfile.
 - [x] `witforge check` and `witforge lock`.
-- [x] CI: fmt, pedantic Clippy, rustdoc, tests, and the MSRV 1.88 build (the `wit-parser` floor),
-      on a self-hosted Linux runner while the repository is private ([ci/README.md](ci/README.md)).
+- [x] CI: fmt, pedantic Clippy, rustdoc, tests, and the MSRV 1.88 build and tests (the
+      `wit-parser` floor), on a self-hosted Linux runner while the repository is private
+      ([ci/README.md](ci/README.md)).
 - [x] Rust edition 2024.
 - [x] Specification for the internal model, lockfile v2, and the Rust/protobuf/glue emitter
       conventions ([model.md](docs/design/model.md), [lockfile.md](docs/design/lockfile.md),

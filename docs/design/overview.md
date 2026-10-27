@@ -291,7 +291,7 @@ witforge, then goes public with 0.1.
 | 2026-10-25 | Generated Rust groups types into per-interface submodules, re-exports interface traits at the version root, and uses `&self` with owned parameters/returns and no extra bounds | [`emitters.md`](emitters.md) |
 | 2026-10-25 | Generated Rust derives `Debug`, `Clone`, and `PartialEq`; `Eq`, `Hash`, and `Default` are deferred | [`emitters.md`](emitters.md) |
 | 2026-10-25 | Rust name conversion uses raw identifiers where possible, a trailing `_` for `self`/`Self`/`crate`/`super`, fully qualified `::std` paths, and hard errors on collisions | [`emitters.md`](emitters.md) |
-| 2026-10-25 | Protobuf emits one file per major, a flat interface-prefixed package, a shared `Empty`, and inlines named list/option/result definitions | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Protobuf emits one file per major, a flat interface-prefixed package, a shared `Empty`, and structural projections for named list/option/result definitions (named messages where required) | [`emitters.md`](emitters.md) |
 | 2026-10-25 | Anonymous protobuf wrappers use deduplicated structural `Witforge...` names; enum and method values are prefixed with `UNSPECIFIED = 0`; reserved members emit number and proto name | [`emitters.md`](emitters.md) |
 | 2026-10-25 | Named `option`/`list` types keep their name for the direct wrapper form; a differing oneof-singular form uses an anonymous `Witforge...` wrapper | [`emitters.md`](emitters.md) |
 | 2026-10-25 | Generation takes the WIT root; `rust` and `proto` are separate subcommands with fixed output layout and header-owned `--check` semantics | [`emitters.md`](emitters.md) |
