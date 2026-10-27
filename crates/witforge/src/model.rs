@@ -10,7 +10,7 @@ use std::fmt;
 
 use anyhow::{Context, Result, bail, ensure};
 use wit_parser::{
-    Docs as WitDocs, Function as WitFunction, FunctionKind, InterfaceId, PackageId, Resolve,
+    Docs as WitDocs, Function as WitFunction, FunctionKind, InterfaceId, PackageId, Resolve, Span,
     Stability as WitStability, Type, TypeDefKind as WitTypeDefKind, TypeId, TypeOwner, WorldId,
     WorldItem, WorldKey,
 };
@@ -450,14 +450,17 @@ pub fn build(contract: &Contract) -> Result<Model> {
         docs: docs(&wit_package.docs),
     };
 
-    let interfaces = wit_package
-        .interfaces
-        .iter()
+    let mut interface_ids: Vec<_> = wit_package.interfaces.iter().collect();
+    interface_ids.sort_by_key(|(_, id)| source_key(resolve.interfaces[**id].span));
+    let interfaces = interface_ids
+        .into_iter()
         .map(|(name, id)| build_interface(resolve, root, name, *id))
         .collect::<Result<Vec<_>>>()?;
-    let worlds = wit_package
-        .worlds
-        .iter()
+
+    let mut world_ids: Vec<_> = wit_package.worlds.iter().collect();
+    world_ids.sort_by_key(|(_, id)| source_key(resolve.worlds[**id].span));
+    let worlds = world_ids
+        .into_iter()
         .map(|(name, id)| build_world(resolve, root, name, *id))
         .collect::<Result<Vec<_>>>()?;
 
@@ -475,14 +478,17 @@ fn build_interface(
     id: InterfaceId,
 ) -> Result<Interface> {
     let interface = &resolve.interfaces[id];
-    let types = interface
-        .types
-        .iter()
+    let mut type_ids: Vec<_> = interface.types.iter().collect();
+    type_ids.sort_by_key(|(_, id)| source_key(resolve.types[**id].span));
+    let types = type_ids
+        .into_iter()
         .map(|(type_name, type_id)| build_type_def(resolve, root, type_name, *type_id))
         .collect::<Result<Vec<_>>>()?;
-    let functions = interface
-        .functions
-        .iter()
+
+    let mut function_ids: Vec<_> = interface.functions.iter().collect();
+    function_ids.sort_by_key(|(_, function)| source_key(function.span));
+    let functions = function_ids
+        .into_iter()
         .map(|(function_name, function)| build_function(resolve, root, function_name, function))
         .collect::<Result<Vec<_>>>()?;
     Ok(Interface {
@@ -647,6 +653,8 @@ fn build_world_side<'a>(
     verb: &str,
     items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
 ) -> Result<Vec<WorldInterface>> {
+    let mut items: Vec<_> = items.collect();
+    items.sort_by_key(|(_, item)| source_key(item.span()));
     let mut out = Vec::new();
     for (key, item) in items {
         match (key, item) {
@@ -830,6 +838,14 @@ fn stability(stability: &WitStability) -> Stability {
                 patch: since.patch,
             },
         },
+    }
+}
+
+fn source_key(span: Span) -> (u8, u32) {
+    if span.is_known() {
+        (0, span.start())
+    } else {
+        (1, 0)
     }
 }
 

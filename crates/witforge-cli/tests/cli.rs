@@ -64,6 +64,20 @@ fn lock_then_check_succeeds() {
 }
 
 #[test]
+fn alint_contract_check_succeeds() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../witforge/tests/fixtures/contracts/alint-plugin")
+        .canonicalize()
+        .unwrap();
+    let check = witforge().arg("check").arg(&dir).output().unwrap();
+    assert!(
+        check.status.success(),
+        "check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+#[test]
 fn check_reports_subset_violations_without_a_model_failure() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../witforge/tests/fixtures/refused/resource")
