@@ -3,8 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use witforge::load;
 use witforge::model::{self, MemberKind, Model, QualifiedName, TypeDefKind};
-use witforge::{load, subset};
+use witforge::subset::{self, Violation};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/contracts/alint-plugin")
@@ -17,7 +18,7 @@ fn model() -> Model {
 #[test]
 fn alint_contract_passes_subset_and_model() {
     let contract = load(&fixture_dir()).unwrap();
-    assert!(subset::check(&contract).is_empty());
+    assert_eq!(subset::check(&contract), Vec::<Violation>::new());
     let model = model::build(&contract).unwrap();
     assert_eq!(model.package.namespace, "alint");
     assert_eq!(model.package.name, "plugin");
