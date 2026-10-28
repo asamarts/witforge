@@ -1,0 +1,7 @@
+# witforge wire lockfile v2
+example:evolve/types/user.name = 1 field string
+example:evolve/types/user.new-field = 5 field string
+example:evolve/types/user.old-field = 2 field u32 reserved
+example:evolve/types/user.removed = 4 field bool reserved
+example:evolve/types/user.rename-me = 3 field string reserved
+example:evolve/types/user.renamed = 6 field string

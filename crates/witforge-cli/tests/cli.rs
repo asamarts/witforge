@@ -25,6 +25,28 @@ fn temp_contract(name: &str) -> PathBuf {
     dir
 }
 
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn versions(name: &str) -> PathBuf {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../witforge/tests/fixtures/versions");
+    let destination =
+        std::env::temp_dir().join(format!("witforge-versions-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&destination);
+    copy_tree(&source, &destination);
+    destination
+}
+
 #[test]
 fn help_version_and_subcommand_help() {
     let version = witforge().arg("--version").output().unwrap();
@@ -255,4 +277,138 @@ fn lock_refuses_a_released_directory() {
     );
     fs::remove_file(manifest).unwrap();
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn evolution_fixture_check_and_lock_against_are_clean() {
+    let root = versions("clean");
+    let v01 = root.join("wit/v0.1");
+    let v02 = root.join("wit/v0.2");
+    let baseline = v01.join("wire.lock");
+    let check = witforge()
+        .arg("check")
+        .arg(&v02)
+        .arg("--against")
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{check:?}");
+    let before = fs::read(v02.join("wire.lock")).unwrap();
+    let lock = witforge()
+        .arg("lock")
+        .arg(&v02)
+        .arg("--against")
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    assert_eq!(fs::read(v02.join("wire.lock")).unwrap(), before);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn released_v0_1_refuses_locking() {
+    let root = versions("released");
+    let v01 = root.join("wit/v0.1");
+    let output = witforge().arg("lock").arg(&v01).output().unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("released"),
+        "{output:?}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn reintroduced_overlay_is_refused_without_writing() {
+    let root = versions("reintroduced");
+    let v01 = root.join("wit/v0.1");
+    let v02 = root.join("wit/v0.2");
+    fs::copy(
+        root.join("reintroduced/contract.wit"),
+        v02.join("contract.wit"),
+    )
+    .unwrap();
+    let before = fs::read(v02.join("wire.lock")).unwrap();
+    let check = witforge()
+        .arg("check")
+        .arg(&v02)
+        .arg("--against")
+        .arg(v01.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains(
+            "example:evolve/types/user.removed was removed and its name and number 4 stay reserved"
+        ),
+        "{stderr}"
+    );
+    let lock = witforge()
+        .arg("lock")
+        .arg(&v02)
+        .arg("--against")
+        .arg(v01.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert_eq!(lock.status.code(), Some(2), "{lock:?}");
+    assert_eq!(fs::read(v02.join("wire.lock")).unwrap(), before);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn retyped_draft_is_updated_by_against() {
+    let root = versions("retyped");
+    let v01 = root.join("wit/v0.1");
+    let v02 = root.join("wit/v0.2");
+    fs::copy(root.join("retyped/contract.wit"), v02.join("contract.wit")).unwrap();
+    let lock = witforge()
+        .arg("lock")
+        .arg(&v02)
+        .arg("--against")
+        .arg(v01.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    let text = fs::read_to_string(v02.join("wire.lock")).unwrap();
+    assert!(
+        text.contains("example:evolve/types/user.new-field = 5 field u16"),
+        "{text}"
+    );
+    let check = witforge()
+        .arg("check")
+        .arg(&v02)
+        .arg("--against")
+        .arg(v01.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{check:?}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn first_mode_drops_stale_drafts() {
+    let root = versions("first");
+    let v02 = root.join("wit/v0.2");
+    let lock = witforge()
+        .arg("lock")
+        .arg(&v02)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    let stdout = String::from_utf8_lossy(&lock.stdout);
+    for key in [
+        "example:evolve/types/user.old-field",
+        "example:evolve/types/user.rename-me",
+        "example:evolve/types/user.removed",
+    ] {
+        assert!(stdout.contains(key), "{stdout}");
+    }
+    let text = fs::read_to_string(v02.join("wire.lock")).unwrap();
+    assert!(!text.contains("old-field"), "{text}");
+    assert!(!text.contains("rename-me"), "{text}");
+    assert!(!text.contains("removed"), "{text}");
+    fs::remove_dir_all(&root).unwrap();
 }

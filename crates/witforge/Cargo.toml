@@ -15,5 +15,8 @@ publish = false
 wit-parser.workspace = true
 anyhow.workspace = true
 
+[dev-dependencies]
+proptest = "1.10"
+
 [lints]
 workspace = true

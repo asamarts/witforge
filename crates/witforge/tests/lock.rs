@@ -1,8 +1,10 @@
 //! Typed lockfile v2 parsing, rendering, keys, and entry-matrix tests.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use proptest::prelude::*;
 use witforge::lock::{HEADER, LockMode, MemberKey, WireLock};
 use witforge::model::{self, Member, MemberKind};
 use witforge::{ReleasedManifest, ensure_not_released, load, load_released_manifest};
@@ -277,6 +279,43 @@ fn reconcile_does_not_mutate_on_error() {
     }];
     assert!(lock.reconcile(&changed).is_err());
     assert_eq!(lock, before);
+}
+
+#[test]
+fn evolution_fixture_records_add_remove_rename_and_reserve() {
+    let root = fixture("versions/wit");
+    let v01 = WireLock::parse(&fs::read_to_string(root.join("v0.1/wire.lock")).unwrap()).unwrap();
+    assert_eq!(
+        v01.get("example:evolve/types/user.removed").unwrap().number,
+        4
+    );
+    assert!(
+        v01.get("example:evolve/types/user.removed")
+            .unwrap()
+            .reserved
+    );
+
+    let v02 = WireLock::parse(&fs::read_to_string(root.join("v0.2/wire.lock")).unwrap()).unwrap();
+    assert_eq!(v02.get("example:evolve/types/user.name").unwrap().number, 1);
+    assert_eq!(
+        v02.get("example:evolve/types/user.new-field")
+            .unwrap()
+            .number,
+        5
+    );
+    assert_eq!(
+        v02.get("example:evolve/types/user.renamed").unwrap().number,
+        6
+    );
+    for (key, number) in [
+        ("example:evolve/types/user.old-field", 2),
+        ("example:evolve/types/user.removed", 4),
+        ("example:evolve/types/user.rename-me", 3),
+    ] {
+        let entry = v02.get(key).unwrap();
+        assert_eq!(entry.number, number);
+        assert!(entry.reserved, "{key}");
+    }
 }
 
 #[test]
@@ -581,4 +620,63 @@ fn released_manifest_validates_entries_and_blocks_locking() {
     fs::write(&manifest_path, "v0.1\n").unwrap();
     assert!(ReleasedManifest::load(&manifest_path).is_err());
     fs::remove_dir_all(&root).unwrap();
+}
+
+fn generated_members(indices: &[(u8, u8)]) -> Vec<Member> {
+    let mut seen = BTreeSet::new();
+    let mut members = Vec::new();
+    for (parent, field) in indices {
+        let parent = format!("a:b/i/t{parent}");
+        let name = format!("x{field}");
+        if seen.insert((parent.clone(), name.clone())) {
+            members.push(Member {
+                parent,
+                name,
+                kind: MemberKind::Field,
+                ty: Some("u64".into()),
+            });
+        }
+    }
+    members
+}
+
+proptest! {
+    #[test]
+    fn reconcile_is_idempotent(indices in prop::collection::vec((0u8..4, 0u8..6), 0..20)) {
+        let members = generated_members(&indices);
+        let mut lock = WireLock::default();
+        lock.reconcile(&members).unwrap();
+        let before = lock.clone();
+        let changes = lock.reconcile(&members).unwrap();
+        prop_assert!(changes.is_empty());
+        prop_assert_eq!(lock, before);
+    }
+
+    #[test]
+    fn reconcile_preserves_numbers_and_append_only(
+        indices in prop::collection::vec((0u8..4, 0u8..6), 1..20),
+        remove_hint in 0usize..64,
+    ) {
+        let members = generated_members(&indices);
+        prop_assume!(!members.is_empty());
+        let mut lock = WireLock::default();
+        lock.reconcile(&members).unwrap();
+        let before = lock.clone();
+        let remove = remove_hint % members.len();
+        let remaining: Vec<Member> = members
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != remove)
+            .map(|(_, member)| member.clone())
+            .collect();
+        let changes = lock.reconcile(&remaining).unwrap();
+        prop_assert!(changes.reintroduced.is_empty());
+        prop_assert!(lock.check_append_only(&before).is_ok());
+        for member in &remaining {
+            prop_assert_eq!(
+                lock.get(&member.key()).unwrap().number,
+                before.get(&member.key()).unwrap().number
+            );
+        }
+    }
 }
