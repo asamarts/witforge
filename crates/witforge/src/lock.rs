@@ -365,6 +365,14 @@ impl WireLock {
     ) -> Result<()> {
         if let Some(first) = previous.entries.keys().next() {
             let expected = first.package();
+            for key in previous.entries.keys() {
+                if key.package() != expected {
+                    bail!(
+                        "previous lockfile contains package `{}`, expected `{expected}`",
+                        key.package()
+                    );
+                }
+            }
             for key in self.entries.keys().chain(live.keys()) {
                 if key.package() != expected {
                     bail!(

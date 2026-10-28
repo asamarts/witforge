@@ -478,6 +478,16 @@ fn against_mode_rejects_a_different_package() {
             .reconcile_with(&[], LockMode::Against(&previous))
             .is_err()
     );
+    let mixed = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\nc:d/i/t.y = 2 field u64\n"
+    ))
+    .unwrap();
+    let mut current = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    assert!(
+        current
+            .reconcile_with(&[], LockMode::Against(&mixed))
+            .is_err()
+    );
 }
 
 #[test]
