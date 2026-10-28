@@ -275,3 +275,79 @@ interface types {
     );
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn named_options_use_mapped_singular_wrappers_and_canonical_alias_names() {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-proto-named-options-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:named-options@0.1.0;\n\
+interface types {\n\
+  record small { value: string }\n\
+  type text = option<string>;\n\
+  type maybe-record = option<small>;\n\
+  type maybe-list = option<list<small>>;\n\
+  type maybe-maybe = option<option<string>>;\n\
+  type alias-record = small;\n\
+  type alias-list = list<small>;\n\
+  type maybe-alias = option<alias-record>;\n\
+  record direct {\n\
+    text: text,\n\
+    maybe-record: maybe-record,\n\
+    maybe-list: maybe-list,\n\
+    maybe-maybe: maybe-maybe,\n\
+    option-alias-list: option<alias-list>,\n\
+    alias-list: list<alias-list>,\n\
+  }\n\
+  variant singular {\n\
+    text(text),\n\
+    %record(maybe-record),\n\
+    %list(maybe-list),\n\
+    maybe(maybe-maybe),\n\
+    alias(maybe-alias),\n\
+  }\n\
+  record repeated {\n\
+    text: list<text>,\n\
+    %list: list<maybe-list>,\n\
+    alias: list<alias-list>,\n\
+    option-alias-list: list<option<alias-list>>,\n\
+  }\n\
+}\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let schema = proto::emit_major(&model, &lock_for(&model)).unwrap();
+    for expected in [
+        "optional string text = 1;",
+        "TypesSmall maybe_record = 2;",
+        "TypesMaybeList maybe_list = 3;",
+        "TypesMaybeMaybe maybe_maybe = 4;",
+        "WitforgeListOfTypesSmall option_alias_list = 5;",
+        "repeated WitforgeListOfTypesSmall alias_list = 6;",
+        "WitforgeOptionOfString text = 1;",
+        "WitforgeOptionOfTypesSmall record = 2;",
+        "WitforgeOptionOfTypesMaybeList list = 3;",
+        "WitforgeOptionOfTypesMaybeMaybe maybe = 4;",
+        "WitforgeOptionOfTypesSmall alias = 5;",
+        "repeated WitforgeOptionOfString text = 1;",
+        "repeated WitforgeOptionOfTypesMaybeList list = 2;",
+        "repeated WitforgeListOfTypesSmall alias = 3;",
+        "repeated WitforgeOptionOfListOfTypesSmall option_alias_list = 4;",
+        "message WitforgeOptionOfString {",
+        "message WitforgeOptionOfTypesSmall {",
+        "message WitforgeOptionOfTypesMaybeList {",
+        "message WitforgeOptionOfTypesMaybeMaybe {",
+        "message WitforgeOptionOfListOfTypesSmall {",
+    ] {
+        assert!(
+            schema.contains(expected),
+            "missing `{expected}` in:\n{schema}"
+        );
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}

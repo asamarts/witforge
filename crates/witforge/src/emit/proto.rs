@@ -646,22 +646,16 @@ impl<'a> Emitter<'a> {
     ) -> Result<String> {
         let wrapper_name = if let Some(name) = named {
             if let Some(direct) = self.named_option_wrapper(name, payload)? {
-                let wrapper = format!(
-                    "WitforgeOptionOf{}",
-                    shape_name(&TypeExpr::Named(name.clone()))
-                );
+                let wrapper = format!("WitforgeOptionOf{direct}");
                 return self.ensure_wrapper(
                     wrapper,
                     WrapperKind::OptionValue(direct),
                     format!("option {name}"),
                 );
             }
-            format!(
-                "WitforgeOptionOf{}",
-                shape_name(&TypeExpr::Named(name.clone()))
-            )
+            format!("WitforgeOptionOf{}", self.shape_name(payload)?)
         } else {
-            format!("WitforgeOptionOf{}", shape_name(payload))
+            format!("WitforgeOptionOf{}", self.shape_name(payload)?)
         };
         let some = self.singular(payload)?;
         self.ensure_wrapper(
@@ -733,7 +727,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn list_wrapper(&mut self, element: &TypeExpr) -> Result<String> {
-        let name = format!("WitforgeListOf{}", shape_name(element));
+        let name = format!("WitforgeListOf{}", self.shape_name(element)?);
         self.ensure_wrapper(
             name.clone(),
             WrapperKind::List(element.clone()),
@@ -743,9 +737,8 @@ impl<'a> Emitter<'a> {
 
     fn ensure_result_wrapper(&mut self, result: &ResultExpr) -> Result<String> {
         let name = format!(
-            "WitforgeResultOf{}And{}",
-            shape_name_slot(result.ok.as_deref()),
-            shape_name_slot(result.err.as_deref())
+            "Witforge{}",
+            self.shape_name(&TypeExpr::Result(result.clone()))?
         );
         self.ensure_wrapper(
             name.clone(),
@@ -827,6 +820,59 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    fn shape_name(&self, ty: &TypeExpr) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("Bool".to_string()),
+            TypeExpr::U8 => Ok("U8".to_string()),
+            TypeExpr::U16 => Ok("U16".to_string()),
+            TypeExpr::U32 => Ok("U32".to_string()),
+            TypeExpr::U64 => Ok("U64".to_string()),
+            TypeExpr::S8 => Ok("S8".to_string()),
+            TypeExpr::S16 => Ok("S16".to_string()),
+            TypeExpr::S32 => Ok("S32".to_string()),
+            TypeExpr::S64 => Ok("S64".to_string()),
+            TypeExpr::F32 => Ok("F32".to_string()),
+            TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::String => Ok("String".to_string()),
+            TypeExpr::List(element) => Ok(format!("ListOf{}", self.shape_name(element)?)),
+            TypeExpr::Option(payload) => Ok(format!("OptionOf{}", self.shape_name(payload)?)),
+            TypeExpr::Result(result) => self.result_shape_name(result),
+            TypeExpr::Named(name) => {
+                let def = self.named(name)?;
+                match &def.kind {
+                    TypeDefKind::Alias(target) => self.shape_name(target),
+                    TypeDefKind::List(element) => {
+                        Ok(format!("ListOf{}", self.shape_name(element)?))
+                    }
+                    TypeDefKind::Option(payload) => {
+                        Ok(format!("OptionOf{}", self.shape_name(payload)?))
+                    }
+                    TypeDefKind::Result(result) => self.result_shape_name(result),
+                    TypeDefKind::Record(_)
+                    | TypeDefKind::Variant(_)
+                    | TypeDefKind::Enum(_)
+                    | TypeDefKind::Flags(_) => Ok(format!(
+                        "{}{}",
+                        pascal_case(&name.interface),
+                        pascal_case(&name.name)
+                    )),
+                }
+            }
+        }
+    }
+
+    fn result_shape_name(&self, result: &ResultExpr) -> Result<String> {
+        Ok(format!(
+            "ResultOf{}And{}",
+            self.shape_name_slot(result.ok.as_deref())?,
+            self.shape_name_slot(result.err.as_deref())?
+        ))
+    }
+
+    fn shape_name_slot(&self, slot: Option<&TypeExpr>) -> Result<String> {
+        slot.map_or_else(|| Ok("Empty".to_string()), |ty| self.shape_name(ty))
+    }
+
     fn named(&self, name: &QualifiedName) -> Result<&TypeDef> {
         self.model.type_def(name).with_context(|| {
             format!(
@@ -901,39 +947,6 @@ fn optional(ty: &str, required: bool) -> String {
 
 fn is_u8(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::U8)
-}
-
-fn shape_name_slot(slot: Option<&TypeExpr>) -> String {
-    slot.map_or_else(|| "Empty".to_string(), shape_name)
-}
-
-fn shape_name(ty: &TypeExpr) -> String {
-    match ty {
-        TypeExpr::Bool => "Bool".to_string(),
-        TypeExpr::U8 => "U8".to_string(),
-        TypeExpr::U16 => "U16".to_string(),
-        TypeExpr::U32 => "U32".to_string(),
-        TypeExpr::U64 => "U64".to_string(),
-        TypeExpr::S8 => "S8".to_string(),
-        TypeExpr::S16 => "S16".to_string(),
-        TypeExpr::S32 => "S32".to_string(),
-        TypeExpr::S64 => "S64".to_string(),
-        TypeExpr::F32 => "F32".to_string(),
-        TypeExpr::F64 => "F64".to_string(),
-        TypeExpr::String => "String".to_string(),
-        TypeExpr::Named(name) => format!(
-            "{}{}",
-            pascal_case(&name.interface),
-            pascal_case(&name.name)
-        ),
-        TypeExpr::List(element) => format!("ListOf{}", shape_name(element)),
-        TypeExpr::Option(payload) => format!("OptionOf{}", shape_name(payload)),
-        TypeExpr::Result(result) => format!(
-            "ResultOf{}And{}",
-            shape_name_slot(result.ok.as_deref()),
-            shape_name_slot(result.err.as_deref())
-        ),
-    }
 }
 
 fn field_name(name: &str) -> Result<String> {

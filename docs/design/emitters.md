@@ -278,9 +278,11 @@ pub type Tags = ::std::vec::Vec<::std::string::String>;
   mapping collides with another generated package or is not a valid proto identifier, generation
   fails.
 - Proto has no raw identifiers. The emitter keeps a proto keyword/reserved-word table; a
-  converted field/enum/message name that is a proto keyword or otherwise invalid is a hard error
-  naming the WIT item. The table is covered by golden tests. Silent suffixing or renaming is not
-  allowed because it would change proto3-JSON names unpredictably.
+  converted message, enum, wrapper, enum-value, package, or other type-position name that is a
+  proto keyword or otherwise invalid is a hard error naming the WIT item. Field-position names
+  may be proto keywords because protobuf accepts them there; the real alint contract depends on
+  a field named `message`. The table is covered by golden tests. Silent suffixing or renaming is
+  not allowed because it would change proto3-JSON names unpredictably.
 
 ### 4.2 Messages and enums
 
@@ -479,9 +481,10 @@ Naming rules for named types:
   named type's interface-prefixed name and is used as a message field for normal occurrences.
 - A named option in a oneof or repeated context uses an anonymous `WitforgeOptionOf...` wrapper
   around its direct representation; if the direct representation is already the named option
-  wrapper, the anonymous wrapper has that message as its `some` field.
+  wrapper, the anonymous wrapper is named for that wrapper and has it as its `some` field.
 - Named options of scalar, string, enum, bytes, record, variant, flags, or result have no direct
-  wrapper; their singular form is an anonymous option wrapper around the mapped type.
+  wrapper; their singular form is an anonymous option wrapper around the mapped payload type,
+  named structurally from that payload.
 - Anonymous shapes always use the `Witforge...` names.
 - Identical anonymous shapes share one wrapper within the package.
 - A wrapper name collision with a user type or another wrapper is a hard error.
@@ -492,8 +495,8 @@ For each interface function:
 
 ```proto
 message AnalyzerAnalyzeRequest {
-  string path = 1;      // locked: analyzer#analyze.path
-  bytes bytes = 2;      // locked: analyzer#analyze.bytes
+  optional string path = 1;      // locked: analyzer#analyze.path
+  optional bytes bytes = 2;      // locked: analyzer#analyze.bytes
 }
 
 message AnalyzerAnalyzeResponse {
@@ -532,6 +535,7 @@ reserved "old_field", "older_field";
 - Record/flag/variant fields reserve their message field numbers and snake_case names.
 - Enum cases reserve their enum numbers and UPPER_SNAKE names.
 - Method ids reserve their enum numbers and UPPER_SNAKE names.
+- Request parameters of a live function reserve their request field numbers and snake_case names.
 - Request/response messages of a removed function are no longer emitted; proto has no
   message-name reservation, and the reserved method id prevents wire reuse.
 - If a new WIT member would map to a reserved proto name, generation fails; the contract must
