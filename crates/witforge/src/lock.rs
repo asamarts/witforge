@@ -324,6 +324,11 @@ impl WireLock {
         Ok(lock)
     }
 
+    /// Iterate entries in canonical key order.
+    pub fn entries(&self) -> impl Iterator<Item = (&MemberKey, &Entry)> {
+        self.entries.iter()
+    }
+
     /// The entry for a member key, if any.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<Entry> {

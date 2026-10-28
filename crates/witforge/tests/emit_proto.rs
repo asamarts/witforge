@@ -158,3 +158,120 @@ fn named_result_messages_are_interface_prefixed() {
     assert!(schema.contains("message PrimitivesOnlyOk {"), "{schema}");
     assert!(schema.contains("message PrimitivesOnlyErr {"), "{schema}");
 }
+
+#[test]
+fn emits_function_messages_and_method_ids() {
+    let model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
+    let schema = proto::emit_major(&model, &lock_for(&model)).unwrap();
+    assert!(
+        schema.contains("message AnalyzerAnalyzeRequest {"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("optional string path = 1;\n  optional bytes bytes = 2;"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("message AnalyzerAnalyzeResponse {"),
+        "{schema}"
+    );
+    assert!(schema.contains("result = 1;"), "{schema}");
+    assert!(schema.contains("enum AnalyzerMethod {"), "{schema}");
+    assert!(
+        schema.contains("ANALYZER_METHOD_UNSPECIFIED = 0;"),
+        "{schema}"
+    );
+    assert!(schema.contains("ANALYZER_METHOD_ANALYZE = 1;"), "{schema}");
+
+    let model = model::build(&load(&fixture("model")).unwrap()).unwrap();
+    let schema = proto::emit_major(&model, &lock_for(&model)).unwrap();
+    assert!(
+        schema.contains("message PrimitivesAllParamsRequest {"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("message PrimitivesNoResultRequest {"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("message PrimitivesNoResultResponse {"),
+        "{schema}"
+    );
+    assert!(schema.contains("enum PrimitivesMethod {"), "{schema}");
+    assert!(
+        schema.contains("PRIMITIVES_METHOD_ALL_PARAMS = 1;"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("PRIMITIVES_METHOD_NO_RESULT = 2;"),
+        "{schema}"
+    );
+}
+
+#[test]
+fn emits_reserved_type_fields_cases_flags_methods_and_parameters() {
+    let model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
+    let mut lock = lock_for(&model);
+    let mut text = lock.render();
+    text.push_str(
+        "example:plugin/types/span.old = 9 field u64 reserved\n\
+example:plugin/types/applicability.old = 9 enum-case reserved\n\
+example:plugin/types/caps.old = 9 flag reserved\n\
+example:plugin/types/edit.old = 9 variant-case reserved\n\
+example:plugin/analyzer.removed = 9 method string reserved\n\
+example:plugin/analyzer#analyze.removed = 9 param string reserved\n",
+    );
+    lock = WireLock::parse(&text).unwrap();
+    let schema = proto::emit_major(&model, &lock).unwrap();
+    assert!(schema.contains("reserved 9;"), "{schema}");
+    assert!(schema.contains("reserved \"old\";"), "{schema}");
+    assert!(
+        schema.contains("reserved \"TYPES_APPLICABILITY_OLD\";"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("reserved \"ANALYZER_METHOD_REMOVED\";"),
+        "{schema}"
+    );
+    assert!(schema.contains("reserved \"removed\";"), "{schema}");
+}
+
+#[test]
+fn named_option_alias_wrappers_resolve_through_aliases() {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-proto-option-alias-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:option-alias@0.1.0;
+interface types {
+  record payload { name: string }
+  type payloads = list<payload>;
+  type maybe-payloads = option<payloads>;
+  type text = option<string>;
+  type maybe-text = option<text>;
+  record holder {
+    maybe-payloads: maybe-payloads,
+    maybe-text: maybe-text,
+  }
+}
+",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let schema = proto::emit_major(&model, &lock_for(&model)).unwrap();
+    assert!(schema.contains("message TypesMaybePayloads {"), "{schema}");
+    assert!(schema.contains("message TypesMaybeText {"), "{schema}");
+    assert!(
+        schema.contains("TypesMaybePayloads maybe_payloads = 1;"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("TypesMaybeText maybe_text = 2;"),
+        "{schema}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
