@@ -31,7 +31,12 @@ impl GeneratedFiles {
     pub fn insert(&mut self, name: impl Into<String>, contents: impl Into<String>) -> Result<()> {
         let name = name.into();
         let path = Path::new(&name);
-        if name.is_empty() || path.is_absolute() || path.components().count() != 1 {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || path.is_absolute()
+            || path.components().count() != 1
+        {
             bail!("generated file name `{name}` must be a simple name");
         }
         self.files.insert(name, contents.into());

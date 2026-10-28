@@ -217,3 +217,13 @@ fn generates_layout_check_drift_and_ownership() {
     assert!(rust::generate(&root, &root.join("out")).is_err());
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+fn generated_file_names_reject_dots_and_separators() {
+    use witforge::emit::output::GeneratedFiles;
+    let mut files = GeneratedFiles::new(rust::HEADER);
+    assert!(files.insert(".", "x").is_err());
+    assert!(files.insert("..", "x").is_err());
+    assert!(files.insert("dir/file.rs", "x").is_err());
+    files.insert("ok.rs", "x").unwrap();
+}
