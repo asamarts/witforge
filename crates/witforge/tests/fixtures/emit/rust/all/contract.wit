@@ -1,0 +1,143 @@
+/// Rust mapping fixture.
+package example:rust@0.1.0;
+
+/// Every primitive, container, and alias mapping.
+interface values {
+    /// A payload shared by several rows.
+    record payload {
+        /// A string.
+        name: string,
+        /// Raw bytes.
+        bytes: list<u8>,
+    }
+
+    /// A record with every primitive and structural row.
+    record record-value {
+        /// A boolean.
+        bool-field: bool,
+        /// An unsigned byte.
+        u8-field: u8,
+        /// An unsigned 16-bit integer.
+        u16-field: u16,
+        /// An unsigned 32-bit integer.
+        u32-field: u32,
+        /// An unsigned 64-bit integer.
+        u64-field: u64,
+        /// A signed byte.
+        s8-field: s8,
+        /// A signed 16-bit integer.
+        s16-field: s16,
+        /// A signed 32-bit integer.
+        s32-field: s32,
+        /// A signed 64-bit integer.
+        s64-field: s64,
+        /// A 32-bit float.
+        f32-field: f32,
+        /// A 64-bit float.
+        f64-field: f64,
+        /// A string.
+        string-field: string,
+        /// A byte list.
+        bytes-field: list<u8>,
+        /// A string list.
+        list-field: list<string>,
+        /// A nested container.
+        nested-field: list<option<string>>,
+        /// An optional string.
+        option-field: option<string>,
+        /// An optional record.
+        option-payload: option<payload>,
+        /// A full result.
+        result-field: result<u32, string>,
+        /// A success-only result.
+        result-ok: result<u32>,
+        /// An error-only result.
+        result-err: result<_, string>,
+        /// A bare result.
+        result-bare: result,
+        /// A variant payload.
+        variant-field: variant-value,
+    }
+
+    /// A variant with and without a payload.
+    variant variant-value {
+        /// A payload case.
+        with-payload(payload),
+        /// A payload-less case.
+        no-payload,
+    }
+
+    /// A closed enum.
+    enum enum-value {
+        /// First.
+        first,
+        /// Second.
+        second,
+    }
+
+    /// A flags type.
+    flags flag-value {
+        /// First flag.
+        one,
+        /// Second flag.
+        two,
+    }
+
+    /// A named list.
+    type list-value = list<string>;
+
+    /// A named option.
+    type option-value = option<string>;
+
+    /// A named result.
+    type result-value = result<u32, string>;
+
+    /// An alias to a record.
+    type alias-value = payload;
+
+    /// An alias to an alias.
+    type alias-chain = alias-value;
+
+    /// A function with every parameter shape and a result.
+    all-params: func(
+        bool-value: bool,
+        byte: u8,
+        bytes: list<u8>,
+        payload: payload,
+        values: list<string>,
+        maybe: option<string>,
+        outcome: result<u32, string>,
+    ) -> result<list<payload>, string>;
+
+    /// A function with no result.
+    no-result: func(value: payload);
+}
+
+/// A consumer of interface-local aliases.
+interface user {
+    use values.{
+        payload as local-payload,
+        list-value as local-list,
+        result-value as local-result,
+    };
+
+    /// A cross-interface call.
+    call: func(value: local-payload, tags: local-list) -> local-result;
+}
+
+/// Escaped keyword identifiers.
+interface %type {
+    /// An escaped record.
+    record %where {
+        /// An escaped field.
+        %self: u32,
+    }
+
+    /// An escaped function.
+    %func: func(%self: u32) -> %where;
+}
+
+/// Worlds generate no Rust code.
+world ignored {
+    export user;
+}

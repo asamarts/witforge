@@ -86,6 +86,34 @@ fn escapes_keywords_and_compiles_generated_code() {
 }
 
 #[test]
+fn emits_every_rust_mapping_row_as_a_golden() {
+    let model = model::build(&load(&fixture("emit/rust/all")).unwrap()).unwrap();
+    let actual = rust::emit_version(&model).unwrap();
+    let expected = fs::read_to_string(fixture("emit/rust/all/expected.rs")).unwrap();
+    assert_eq!(actual, expected);
+
+    let dir = std::env::temp_dir().join(format!("witforge-emit-golden-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("generated.rs");
+    let output = dir.join("generated.rmeta");
+    fs::write(&source, expected).unwrap();
+    let status = Command::new("rustc")
+        .args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "--emit=metadata",
+            "-o",
+        ])
+        .arg(&output)
+        .arg(&source)
+        .status()
+        .unwrap();
+    assert!(status.success(), "golden Rust did not compile");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn root_module_and_trait_collisions_are_rejected() {
     let dir = std::env::temp_dir().join(format!("witforge-emit-root-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
