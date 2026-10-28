@@ -2,7 +2,7 @@
 id: M-p2
 title: Wire lockfile v2
 phase: 2
-status: todo
+status: done
 blocked_by:
 - W2-001
 - W2-002
@@ -14,6 +14,9 @@ blocked_by:
 tags:
 - milestone
 - p2
+evidence:
+  - kind: commit
+    ref: 1b8c9e77c7beeb4ab950a44fd9380d5a675bbd03
 ---
 
 ## Exit criteria
