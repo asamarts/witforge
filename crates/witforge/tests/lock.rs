@@ -672,6 +672,13 @@ proptest! {
         let changes = lock.reconcile(&remaining).unwrap();
         prop_assert!(changes.reintroduced.is_empty());
         prop_assert!(lock.check_append_only(&before).is_ok());
+        let removed = &members[remove];
+        let removed_entry = lock.get(&removed.key()).unwrap();
+        prop_assert!(removed_entry.reserved);
+        prop_assert_eq!(
+            removed_entry.number,
+            before.get(&removed.key()).unwrap().number
+        );
         for member in &remaining {
             prop_assert_eq!(
                 lock.get(&member.key()).unwrap().number,

@@ -339,11 +339,9 @@ fn reintroduced_overlay_is_refused_without_writing() {
         .unwrap();
     assert_eq!(check.status.code(), Some(1), "{check:?}");
     let stderr = String::from_utf8_lossy(&check.stderr);
-    assert!(
-        stderr.contains(
-            "example:evolve/types/user.removed was removed and its name and number 4 stay reserved"
-        ),
-        "{stderr}"
+    assert_eq!(
+        stderr.trim(),
+        "error: example:evolve/types/user.removed was removed and its name and number 4 stay reserved; give the member a new name"
     );
     let lock = witforge()
         .arg("lock")
@@ -371,6 +369,10 @@ fn retyped_draft_is_updated_by_against() {
         .output()
         .unwrap();
     assert!(lock.status.success(), "{lock:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&lock.stdout).trim(),
+        "updated  example:evolve/types/user.new-field"
+    );
     let text = fs::read_to_string(v02.join("wire.lock")).unwrap();
     assert!(
         text.contains("example:evolve/types/user.new-field = 5 field u16"),
@@ -399,13 +401,14 @@ fn first_mode_drops_stale_drafts() {
         .unwrap();
     assert!(lock.status.success(), "{lock:?}");
     let stdout = String::from_utf8_lossy(&lock.stdout);
-    for key in [
-        "example:evolve/types/user.old-field",
-        "example:evolve/types/user.rename-me",
-        "example:evolve/types/user.removed",
-    ] {
-        assert!(stdout.contains(key), "{stdout}");
-    }
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            "dropped  example:evolve/types/user.old-field = 2",
+            "dropped  example:evolve/types/user.removed = 4",
+            "dropped  example:evolve/types/user.rename-me = 3",
+        ]
+    );
     let text = fs::read_to_string(v02.join("wire.lock")).unwrap();
     assert!(!text.contains("old-field"), "{text}");
     assert!(!text.contains("rename-me"), "{text}");
