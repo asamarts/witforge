@@ -23,13 +23,13 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Specification for the internal model, lockfile v2, and the Rust/protobuf/glue emitter
       conventions ([model.md](docs/design/model.md), [lockfile.md](docs/design/lockfile.md),
       [emitters.md](docs/design/emitters.md)).
-- [ ] Implement lockfile v2 as specified: typed keys and entries, member kinds, canonical types,
+- [x] Implement lockfile v2 as specified: typed keys and entries, member kinds, canonical types,
       function method ids and parameters, strict parsing/rendering, number limits, `--first`,
       `--against`, `wit/released`, and the CLI exit/write rules, with property and CLI tests.
 
 ## 0.1: the MVP alint needs (about 13 to 20 weeks in total)
 
-- [ ] Internal model as specified in [model.md](docs/design/model.md): resolved types, docs,
+- [x] Internal model as specified in [model.md](docs/design/model.md): resolved types, docs,
       stability, aliases, worlds, canonical type representation, lockfile member extraction, and
       diagnostics, independent of `wit-parser`'s types.
 - [ ] Rust emitter as specified in [emitters.md](docs/design/emitters.md): per-interface

@@ -10,11 +10,18 @@ All notable changes to this project are documented here. The format follows
 
 - WIT package loading with every feature enabled.
 - The restricted-subset checker.
-- The append-only wire lockfile (`wire.lock`).
-- The `witforge check` and `witforge lock` commands.
+- The owned internal model with canonical types, source order, docs, stability, and
+  lockfile-member extraction.
+- The append-only v2 wire lockfile (`wire.lock`) with typed keys, member kinds, canonical types,
+  functions, parameters, reservations, draft/release modes, and atomic writes.
+- The clap-based `witforge check` and `witforge lock` commands with `--first`, `--against`, and
+  `--released`, plus the v2 evolution fixture and property/CLI tests.
+- The representative alint plugin contract fixture.
 
 ### Documentation
 
+- Implemented lockfile v2 as specified and aligned the model/lockfile documentation with the
+  shipped behavior.
 - Adopted `aplan` for task-level planning, dependencies, and closure evidence; added the
   `aplan/` plan, `AGENTS.md`, and the `CLAUDE.md` symlink, with dogfooding notes in
   `docs/aplan-pilot.md`.

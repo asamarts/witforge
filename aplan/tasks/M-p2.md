@@ -18,8 +18,8 @@ tags:
 
 ## Exit criteria
 
-- [ ] typed keys and entries parse and render strictly
-- [ ] canonical member types, functions, and parameters are locked
-- [ ] draft/release modes, `--first`, and `--against` are implemented
-- [ ] `wit/released` and released-directory behavior are implemented
-- [ ] the two-version fixture and property/CLI tests pass
+- [x] typed keys and entries parse and render strictly
+- [x] canonical member types, functions, and parameters are locked
+- [x] draft/release modes, `--first`, and `--against` are implemented
+- [x] `wit/released` and released-directory behavior are implemented
+- [x] the two-version fixture and property/CLI tests pass

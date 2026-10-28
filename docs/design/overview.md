@@ -155,9 +155,9 @@ each numbered member to a number unique within its parent. The normative format 
 | function (its method id) | `ns:pkg/interface.function` | the interface | `method` |
 | function parameter | `ns:pkg/interface#function.parameter` | the function | `param` |
 
-Function method ids and parameters are specified (decided 2026-10-24, format fixed 2026-10-25);
-the implementation covers type members so far. The v2 format and the rules in this section are
-implemented by the lockfile v2 roadmap slice; the current code still emits the v1 format.
+Function method ids and parameters are specified (decided 2026-10-24, format fixed 2026-10-25)
+and implemented in v2, including draft/release modes, `--first`, `--against`, and `--released`.
+The rules in this section describe the implemented format.
 
 - each entry records its member's kind and, where it has one, its type in canonical form
   (aliases and named list/option/result definitions expanded, named record/variant/enum/flags by

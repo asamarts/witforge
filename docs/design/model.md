@@ -1,6 +1,6 @@
 # witforge internal model
 
-Status: specified 2026-10-25; implementation pending. This document is normative for the model
+Status: specified 2026-10-25; implemented 2026-10-28. This document is normative for the model
 that sits between `wit-parser` and the lockfile/emitters. The lockfile format is in
 [`lockfile.md`](lockfile.md), the generated-code conventions are in [`emitters.md`](emitters.md),
 and the decisions are logged in [`overview.md`](overview.md#9-decision-log).

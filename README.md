@@ -16,14 +16,12 @@ while the reverse directions are lossy. witforge exists because no tool performs
 projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
 tie their output to a runtime.
 
-> **Status: pre-release, private.** The first slice is implemented: loading a WIT package with
-> every feature enabled, the restricted-subset checker, and the append-only wire lockfile, with
-> `witforge check` and `witforge lock`. The internal model, v2 lockfile format, and
+> **Status: pre-release, private.** The loading, subset-checker, internal-model, and v2
+> append-only lockfile slices are implemented, with clap-based `witforge check` and
+> `witforge lock`, `--first`, `--against`, and `--released` handling. The
 > Rust/protobuf/glue emitter conventions are specified in
-> [docs/design/model.md](docs/design/model.md),
-> [docs/design/lockfile.md](docs/design/lockfile.md), and
-> [docs/design/emitters.md](docs/design/emitters.md); implementation comes next, then the
-> emitters themselves. See [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
+> [docs/design/emitters.md](docs/design/emitters.md); implementation of the emitters comes next.
+> See [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
 ## Plan
@@ -47,6 +45,7 @@ wit/                      hand-written contracts (the source of truth)
 $ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
 $ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number new members
 $ witforge lock  wit/v0.1 --first                        bootstrap a version
+$ witforge lock  wit/v0.1 --released wit/released        refuse a released version
 ```
 
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no

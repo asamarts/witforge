@@ -1,6 +1,6 @@
 # witforge wire lockfile (v2)
 
-Status: specified 2026-10-25; implementation pending. This document is normative for the
+Status: specified 2026-10-25; implemented 2026-10-28. This document is normative for the
 lockfile format and for the `check`/`lock` semantics. The decisions behind it are logged in
 [`overview.md`](overview.md#9-decision-log).
 
@@ -93,9 +93,8 @@ The file starts with exactly this header line:
 # witforge wire lockfile v2
 ```
 
-The current implementation still emits the pre-v2 single-line format. The v2 implementation will
-reject v1 files rather than migrate them; no real lockfiles exist yet, so switching is a one-time
-format change. Do not hand-edit either format.
+The v2 format is implemented. The reader rejects v1 files rather than migrating them. Do not
+hand-edit the file; `witforge lock` renders the canonical form.
 
 Every other non-comment line has the form:
 
