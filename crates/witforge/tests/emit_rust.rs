@@ -166,7 +166,7 @@ fn generates_layout_check_drift_and_ownership() {
     assert!(mod_file.contains("pub mod v0_2;"));
     assert!(!mod_file.contains('\r'));
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
-    assert!(rust::check(&root, &out).unwrap().is_empty());
+    assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
 
     fs::write(out.join("v0_1.rs"), "changed\n").unwrap();
     let messages = rust::check(&root, &out).unwrap();
@@ -199,7 +199,7 @@ fn generates_layout_check_drift_and_ownership() {
     rust::generate(&root, &out).unwrap();
     assert!(!extra.exists());
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
-    assert!(rust::check(&root, &out).unwrap().is_empty());
+    assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
 
     let status = Command::new("rustc")
         .args([
