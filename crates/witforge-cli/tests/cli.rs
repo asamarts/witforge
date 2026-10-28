@@ -415,3 +415,58 @@ fn first_mode_drops_stale_drafts() {
     assert!(!text.contains("removed"), "{text}");
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn rust_generates_mod_and_version_files_and_checks_drift() {
+    let root = versions("rust");
+    let out = root
+        .parent()
+        .unwrap()
+        .join(format!("rust-out-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    let generate = witforge()
+        .arg("rust")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(generate.status.success(), "{generate:?}");
+    for name in ["mod.rs", "v0_1.rs", "v0_2.rs"] {
+        assert!(out.join(name).is_file(), "{name}");
+    }
+    let check = witforge()
+        .arg("rust")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{check:?}");
+
+    fs::write(out.join("v0_1.rs"), "changed\n").unwrap();
+    let check = witforge()
+        .arg("rust")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    assert!(String::from_utf8_lossy(&check.stderr).contains("changed generated"));
+
+    let inside = root.join("wit/out");
+    let output = witforge()
+        .arg("rust")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&inside)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(!inside.exists());
+    fs::remove_dir_all(&out).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}

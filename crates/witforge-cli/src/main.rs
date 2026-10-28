@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
+use witforge::emit;
 use witforge::lock::{LockMode, WireLock};
 use witforge::{ensure_not_released, load, model, subset};
 
@@ -30,6 +31,24 @@ enum Command {
     Check(Options),
     /// Assign wire numbers to new members and reserve removed ones.
     Lock(Options),
+    /// Generate plain Rust types and interface traits.
+    Rust(RustOptions),
+}
+
+#[derive(Debug, Args)]
+struct RustOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: PathBuf,
+    /// Output root for generated Rust files.
+    #[arg(long, value_name = "DIR")]
+    out: PathBuf,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Released-version manifest; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -66,6 +85,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Check(options) => check(&options),
         Command::Lock(options) => lock(&options),
+        Command::Rust(options) => rust(&options),
     }
 }
 
@@ -146,6 +166,25 @@ fn lock(options: &Options) -> Result<ExitCode> {
         println!("added    {key} = {number}");
     }
     lock.write_atomic(&lock_path)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn rust(options: &RustOptions) -> Result<ExitCode> {
+    // The emitter validates every version and lockfile before writing. The released manifest
+    // participates in the released-directory check in the later release slice.
+    let _ = &options.released;
+    if options.check {
+        let messages = emit::rust::check(&options.root, &options.out)?;
+        for message in &messages {
+            eprintln!("error: {message}");
+        }
+        return if messages.is_empty() {
+            Ok(ExitCode::SUCCESS)
+        } else {
+            Ok(ExitCode::from(1))
+        };
+    }
+    emit::rust::generate(&options.root, &options.out)?;
     Ok(ExitCode::SUCCESS)
 }
 
