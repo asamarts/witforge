@@ -527,11 +527,12 @@ fn missing_default_released_manifest_means_nothing_is_released() {
     let v01 = wit.join("v0.1");
     fs::create_dir_all(&v01).unwrap();
     fs::write(v01.join("wire.lock"), format!("{HEADER}\n")).unwrap();
-    assert!(
+    assert_eq!(
         load_released_manifest(&v01, None)
             .unwrap()
             .directories()
-            .is_empty()
+            .len(),
+        0
     );
     ensure_not_released(&v01, None).unwrap();
     fs::remove_dir_all(&root).unwrap();
