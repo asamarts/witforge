@@ -5,9 +5,10 @@
 //! committed, append-only lockfile of wire numbers so the protobuf projection stays stable across
 //! versions, and (in later milestones) emits plain Rust types and traits and a `.proto` schema.
 //!
-//! This first slice provides [`load`], the [`subset`] checker, the owned [`model`], and the
-//! [`lock`] lockfile.
+//! The implemented slices provide [`load`], the [`subset`] checker, the owned [`model`],
+//! the [`lock`] lockfile, and the [`emit`] emitters.
 
+pub mod emit;
 pub mod lock;
 pub mod model;
 pub mod subset;
