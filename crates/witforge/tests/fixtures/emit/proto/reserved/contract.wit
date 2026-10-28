@@ -1,0 +1,35 @@
+/// Reserved-member coverage.
+package example:reserved-proto@0.1.0;
+
+/// Types with reserved descendants.
+interface types {
+    /// A record with a reserved field.
+    record kept {
+        /// The live field.
+        live: string,
+    }
+
+    /// An enum with a reserved case.
+    enum status {
+        /// The live case.
+        live,
+    }
+
+    /// Flags with a reserved member.
+    flags caps {
+        /// The live flag.
+        live,
+    }
+
+    /// A variant with a reserved case.
+    variant choice {
+        /// The live case.
+        live,
+    }
+}
+
+/// A service with a reserved method and parameter.
+interface service {
+    /// A live function.
+    call: func(live: string) -> string;
+}

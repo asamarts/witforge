@@ -351,3 +351,69 @@ interface types {\n\
     }
     fs::remove_dir_all(&dir).unwrap();
 }
+
+fn proto_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/emit/proto")
+        .join(name)
+}
+
+fn compile_proto(path: &Path) {
+    protox::compile([path], [path.parent().unwrap()])
+        .unwrap_or_else(|error| panic!("{} does not compile: {error}", path.display()));
+}
+
+#[test]
+fn mapping_golden_is_deterministic_and_compiles() {
+    let dir = proto_fixture("mapping");
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let lock = lock_for(&model);
+    let first = proto::emit_major(&model, &lock).unwrap();
+    let second = proto::emit_major(&model, &lock).unwrap();
+    assert_eq!(first, second, "proto emission is not deterministic");
+    assert!(!first.contains('\r'), "proto output contains CRLF");
+    assert!(first.ends_with('\n'), "proto output has no final newline");
+    let expected = fs::read_to_string(dir.join("contract.proto")).unwrap();
+    assert_eq!(first, expected, "mapping schema drifted");
+    compile_proto(&dir.join("contract.proto"));
+}
+
+#[test]
+fn reserved_golden_is_deterministic_and_compiles() {
+    let dir = proto_fixture("reserved");
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let lock = WireLock::parse(&fs::read_to_string(dir.join("wire.lock")).unwrap()).unwrap();
+    let first = proto::emit_major(&model, &lock).unwrap();
+    let second = proto::emit_major(&model, &lock).unwrap();
+    assert_eq!(first, second, "proto emission is not deterministic");
+    assert!(!first.contains('\r'), "proto output contains CRLF");
+    assert!(first.ends_with('\n'), "proto output has no final newline");
+    let expected = fs::read_to_string(dir.join("contract.proto")).unwrap();
+    assert_eq!(first, expected, "reserved schema drifted");
+    compile_proto(&dir.join("contract.proto"));
+}
+
+#[test]
+fn proto_name_collisions_are_refused() {
+    let dir = std::env::temp_dir().join(format!("witforge-proto-collision-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:collision@0.1.0;\n\
+interface types {\n\
+  record call-request { value: string }\n\
+  call: func() -> string;\n\
+}\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let error = proto::emit_major(&model, &lock_for(&model)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("proto name `TypesCallRequest` is produced by both"),
+        "{error}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

@@ -1,0 +1,13 @@
+# witforge wire lockfile v2
+example:reserved-proto/service#call.live = 1 param string
+example:reserved-proto/service#call.old = 9 param u64 reserved
+example:reserved-proto/service.call = 1 method string
+example:reserved-proto/service.removed = 9 method string reserved
+example:reserved-proto/types/caps.live = 1 flag
+example:reserved-proto/types/caps.old = 9 flag reserved
+example:reserved-proto/types/choice.live = 1 variant-case
+example:reserved-proto/types/choice.old = 9 variant-case reserved
+example:reserved-proto/types/kept.live = 1 field string
+example:reserved-proto/types/kept.old = 9 field u64 reserved
+example:reserved-proto/types/status.live = 1 enum-case
+example:reserved-proto/types/status.old = 9 enum-case reserved

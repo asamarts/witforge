@@ -1,0 +1,259 @@
+/// Protobuf mapping coverage.
+package example:mapping@2.3.0;
+
+/// Every mapping row, named structural type, and wrapper shape.
+interface types {
+    /// Every primitive.
+    record primitives {
+        /// A boolean.
+        a-bool: bool,
+        /// An unsigned 8-bit integer.
+        a-u8: u8,
+        /// An unsigned 16-bit integer.
+        a-u16: u16,
+        /// An unsigned 32-bit integer.
+        a-u32: u32,
+        /// An unsigned 64-bit integer.
+        a-u64: u64,
+        /// A signed 8-bit integer.
+        a-s8: s8,
+        /// A signed 16-bit integer.
+        a-s16: s16,
+        /// A signed 32-bit integer.
+        a-s32: s32,
+        /// A signed 64-bit integer.
+        a-s64: s64,
+        /// A 32-bit float.
+        a-f32: f32,
+        /// A 64-bit float.
+        a-f64: f64,
+        /// A string.
+        a-string: string,
+    }
+
+    /// A small record used by wrappers and results.
+    record small {
+        /// The value.
+        value: string,
+    }
+
+    /// A payload-less variant case.
+    variant choice {
+        /// A payload.
+        with-small(small),
+        /// No payload.
+        empty,
+    }
+
+    /// An enum.
+    enum status {
+        /// Ready.
+        ready,
+        /// Done.
+        done,
+    }
+
+    /// Flags.
+    flags permissions {
+        /// Read.
+        read,
+        /// Write.
+        write,
+    }
+
+    /// A named list of strings.
+    type strings = list<string>;
+    /// A named list of bytes.
+    type bytes-list = list<u8>;
+    /// A named option of a record.
+    type maybe-small = option<small>;
+    /// A named option of a string.
+    type maybe-string = option<string>;
+    /// A named option of a list.
+    type maybe-list = option<list<small>>;
+    /// A named option of bytes.
+    type maybe-bytes = option<list<u8>>;
+    /// A named option of an option.
+    type maybe-maybe = option<option<string>>;
+    /// A named result.
+    type outcome = result<small, string>;
+    /// A bare result.
+    type bare = result;
+    /// A one-sided successful result.
+    type only-ok = result<small>;
+    /// A one-sided error result.
+    type only-err = result<_, string>;
+    /// An alias to a record.
+    type all-alias = small;
+    /// An alias to a named list.
+    type strings-alias = strings;
+    /// A named option of an alias.
+    type maybe-alias = option<all-alias>;
+
+    /// Every direct mapping row.
+    record coverage {
+        /// A required boolean.
+        a-bool: bool,
+        /// A required u8.
+        a-u8: u8,
+        /// A required u16.
+        a-u16: u16,
+        /// A required u32.
+        a-u32: u32,
+        /// A required u64.
+        a-u64: u64,
+        /// A required s8.
+        a-s8: s8,
+        /// A required s16.
+        a-s16: s16,
+        /// A required s32.
+        a-s32: s32,
+        /// A required s64.
+        a-s64: s64,
+        /// A required f32.
+        a-f32: f32,
+        /// A required f64.
+        a-f64: f64,
+        /// A required string.
+        a-string: string,
+        /// Bytes.
+        bytes: list<u8>,
+        /// A list.
+        items: list<small>,
+        /// An optional boolean.
+        opt-bool: option<bool>,
+        /// An optional string.
+        opt-string: option<string>,
+        /// An optional enum.
+        opt-status: option<status>,
+        /// An optional record.
+        opt-small: option<small>,
+        /// An optional variant.
+        opt-choice: option<choice>,
+        /// Optional flags.
+        opt-permissions: option<permissions>,
+        /// An optional result.
+        opt-outcome: option<outcome>,
+        /// Optional bytes.
+        opt-bytes: option<list<u8>>,
+        /// An optional list.
+        opt-list: option<list<small>>,
+        /// An optional option.
+        opt-opt: option<option<string>>,
+        /// A list of options.
+        list-opt: list<option<string>>,
+        /// A result.
+        res: result<small, string>,
+        /// A one-sided successful result.
+        res-ok: only-ok,
+        /// A one-sided error result.
+        res-err: only-err,
+        /// A bare result.
+        res-bare: result,
+        /// A named list.
+        named-list: strings,
+        /// A named bytes list.
+        named-bytes: bytes-list,
+        /// A named option of a record.
+        named-maybe-small: maybe-small,
+        /// A named option of a string.
+        named-maybe-string: maybe-string,
+        /// A named option of a list.
+        named-maybe-list: maybe-list,
+        /// A named option of bytes.
+        named-maybe-bytes: maybe-bytes,
+        /// A named option of an option.
+        named-maybe-maybe: maybe-maybe,
+        /// A named result.
+        named-outcome: outcome,
+        /// A named bare result.
+        named-bare: bare,
+        /// A named one-sided successful result.
+        named-only-ok: only-ok,
+        /// A named one-sided error result.
+        named-only-err: only-err,
+        /// A list through an alias.
+        alias-items: list<all-alias>,
+        /// An option of a list through an alias.
+        option-alias-items: option<list<all-alias>>,
+        /// A nested structural type.
+        nested: list<option<result<u8, string>>>,
+        /// A field whose name is a proto keyword.
+        message: string,
+    }
+
+    /// Singular forms of named options and aliases.
+    variant singular {
+        /// A named option of a string.
+        scalar(maybe-string),
+        /// A named option of a record.
+        %record(maybe-small),
+        /// A named option of a list.
+        %list(maybe-list),
+        /// A named option of bytes.
+        bytes(maybe-bytes),
+        /// A named option of an option.
+        maybe(maybe-maybe),
+        /// A named option of an alias.
+        alias(maybe-alias),
+        /// A named result.
+        named-result(outcome),
+        /// A payload-less case.
+        payload-less,
+    }
+
+    /// Repeated forms of named options and aliases.
+    record repeated {
+        /// Repeated named options.
+        scalars: list<maybe-string>,
+        /// Repeated list options.
+        lists: list<maybe-list>,
+        /// Repeated aliases.
+        aliases: list<all-alias>,
+        /// Repeated options of aliases.
+        options: list<option<all-alias>>,
+    }
+}
+
+/// A service exercising request, response, and method ids.
+interface service {
+    use types.{small};
+    use types.{strings};
+
+    /// A function with every parameter shape and a result.
+    call: func(
+        value: small,
+        items: list<small>,
+        maybe: option<list<small>>,
+        outcome: result<small, string>,
+        bytes: list<u8>,
+        pair: option<list<small>>,
+    ) -> result<list<small>, string>;
+
+    /// A function with no result.
+    no-result: func(value: bool);
+
+    /// A function with no parameters.
+    ping: func() -> string;
+}
+
+/// A keyword-escaped interface and function.
+interface %type {
+    /// A keyword-escaped record.
+    record %where {
+        /// A keyword-escaped field.
+        %self: u32,
+    }
+
+    /// A keyword-escaped function.
+    %func: func(%self: u32) -> %where;
+}
+
+/// An interface proving aliases resolve to their defining types.
+interface alias {
+    use types.{all-alias as local-small};
+    use types.{strings-alias as local-strings};
+
+    /// A function using interface-local aliases.
+    call: func(value: local-small, tags: local-strings) -> local-small;
+}

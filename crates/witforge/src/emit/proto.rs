@@ -106,6 +106,9 @@ impl<'a> Emitter<'a> {
             writeln!(out)?;
             out.push_str(body);
         }
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
         Ok(out)
     }
 
