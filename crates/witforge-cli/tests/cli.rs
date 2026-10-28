@@ -97,6 +97,26 @@ fn check_reports_subset_violations_without_a_model_failure() {
 }
 
 #[test]
+fn lock_does_not_write_when_a_live_type_changes() {
+    let dir = temp_contract("lock-type-change");
+    let first = witforge().arg("lock").arg(&dir).output().unwrap();
+    assert!(first.status.success(), "{first:?}");
+    let path = dir.join("wire.lock");
+    let original = fs::read_to_string(&path).unwrap();
+    let changed = original.replace(
+        "example:plugin/types/span.start = 1 field u64",
+        "example:plugin/types/span.start = 1 field u16",
+    );
+    assert_ne!(changed, original);
+    fs::write(&path, &changed).unwrap();
+
+    let second = witforge().arg("lock").arg(&dir).output().unwrap();
+    assert!(!second.status.success(), "{second:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), changed);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn check_reports_an_unlocked_member() {
     let dir = temp_contract("unlocked");
     let check = witforge().arg("check").arg(&dir).output().unwrap();

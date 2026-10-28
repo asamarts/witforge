@@ -13,6 +13,7 @@ use std::fmt::{self, Write as _};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 
@@ -25,6 +26,8 @@ pub const HEADER: &str = "# witforge wire lockfile v2";
 const PROTOBUF_RESERVED: std::ops::RangeInclusive<u32> = 19_000..=19_999;
 /// The largest valid protobuf field number.
 const PROTOBUF_MAX: u32 = 536_870_911;
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A package name in a lockfile key: `namespace:name`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -413,10 +416,12 @@ impl WireLock {
         let name = path
             .file_name()
             .with_context(|| format!("lockfile path `{}` has no file name", path.display()))?;
+        let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temporary = parent.join(format!(
-            ".{}.{}.tmp",
+            ".{}.{}.{}.tmp",
             name.to_string_lossy(),
-            std::process::id()
+            std::process::id(),
+            sequence
         ));
         let result = (|| {
             let mut file = OpenOptions::new()
@@ -502,6 +507,9 @@ fn parse_entry(rest: &str, line_no: usize) -> Result<(u32, MemberKind, Option<St
     let number_token = words
         .next()
         .with_context(|| format!("line {line_no}: missing number"))?;
+    if !number_token.chars().all(|c| c.is_ascii_digit()) {
+        bail!("line {line_no}: invalid number `{number_token}`");
+    }
     if number_token.len() > 1 && number_token.starts_with('0') {
         bail!("line {line_no}: number `{number_token}` has a leading zero");
     }
