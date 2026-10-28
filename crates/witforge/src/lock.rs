@@ -171,6 +171,16 @@ impl MemberKey {
         }
     }
 
+    /// The package that owns this key.
+    #[must_use]
+    pub fn package(&self) -> &PackageName {
+        match self {
+            Self::TypeMember { package, .. }
+            | Self::Method { package, .. }
+            | Self::Parameter { package, .. } => package,
+        }
+    }
+
     /// The canonical lockfile key.
     #[must_use]
     pub fn key(&self) -> String {
@@ -221,6 +231,17 @@ pub struct WireLock {
     entries: BTreeMap<MemberKey, Entry>,
 }
 
+/// The classification baseline for a lock operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockMode<'a> {
+    /// Treat every existing entry as released; the default conservative mode.
+    Default,
+    /// Treat every existing entry as a draft; for a version with no previous baseline.
+    First,
+    /// Treat entries from `previous` as released and all others as drafts.
+    Against(&'a WireLock),
+}
+
 /// What [`WireLock::reconcile`] changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
@@ -232,13 +253,21 @@ pub struct Changes {
     /// under the same name. They stay reserved and have no number, so the contract must give
     /// them a new name.
     pub reintroduced: Vec<(String, u32)>,
+    /// Draft entries that were dropped because they were removed or reserved.
+    pub dropped: Vec<(String, u32)>,
+    /// Live draft entries whose kind or canonical type was updated.
+    pub updated: Vec<(String, MemberKind, Option<String>)>,
 }
 
 impl Changes {
-    /// Whether the lockfile already matches the contract: nothing to add, reserve, or refuse.
+    /// Whether the lockfile already matches the contract: nothing changed or was refused.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.reserved.is_empty() && self.reintroduced.is_empty()
+        self.added.is_empty()
+            && self.reserved.is_empty()
+            && self.reintroduced.is_empty()
+            && self.dropped.is_empty()
+            && self.updated.is_empty()
     }
 }
 
@@ -303,33 +332,98 @@ impl WireLock {
             .and_then(|key| self.entries.get(&key).cloned())
     }
 
-    /// Bring the lockfile up to date with `members`: assign numbers to new members and reserve
-    /// removed ones. Existing numbers never change. A member whose key is already reserved is
-    /// left reserved and reported in [`Changes::reintroduced`]; the caller must refuse the
-    /// contract. A live member whose kind or canonical type differs is an error.
+    /// Bring the lockfile up to date with `members` in the conservative default mode.
     ///
     /// # Errors
     ///
-    /// Returns an error when a member key is malformed, a live member's kind or type changed,
-    /// or a parent has used every usable protobuf field number.
+    /// Returns an error when a member key is malformed, a released kind/type changed, or a
+    /// parent has used every usable protobuf field number.
     pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
-        // Work on a copy so a kind/type error or exhausted number space leaves the caller's
-        // lockfile untouched. This is what makes the CLI's no-write-on-error rule true.
+        self.reconcile_with(members, LockMode::Default)
+    }
+
+    /// Bring the lockfile up to date with `members` under an explicit classification mode.
+    ///
+    /// The operation is transactional: a released kind/type error, malformed key, or exhausted
+    /// number space leaves this lockfile unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the baseline is inconsistent, a released entry would change,
+    /// a member key is malformed, or a parent has used every usable protobuf field number.
+    pub fn reconcile_with(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
         let mut staged = self.clone();
-        let changes = staged.reconcile_in_place(members)?;
+        let changes = staged.reconcile_in_place(members, mode)?;
         *self = staged;
         Ok(changes)
     }
 
-    fn reconcile_in_place(&mut self, members: &[Member]) -> Result<Changes> {
+    fn validate_against(
+        &self,
+        previous: &WireLock,
+        live: &BTreeMap<MemberKey, &Member>,
+    ) -> Result<()> {
+        if let Some(first) = previous.entries.keys().next() {
+            let expected = first.package();
+            for key in self.entries.keys().chain(live.keys()) {
+                if key.package() != expected {
+                    bail!(
+                        "previous lockfile package `{expected}` does not match `{}`",
+                        key.package()
+                    );
+                }
+            }
+        }
+        for (key, old) in &previous.entries {
+            let Some(current) = self.entries.get(key) else {
+                bail!("released entry `{key}` is missing from the current lockfile");
+            };
+            if current.number != old.number {
+                bail!(
+                    "released entry `{key}` was renumbered from {} to {}; numbers never change",
+                    old.number,
+                    current.number
+                );
+            }
+            if current.kind != old.kind || current.ty != old.ty {
+                bail!("released entry `{key}` changed kind or type");
+            }
+            if old.reserved && !current.reserved {
+                bail!("released entry `{key}` was un-reserved; reserved numbers are never reused");
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile_in_place(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
         let live: BTreeMap<MemberKey, &Member> = members
             .iter()
             .map(|member| Ok((MemberKey::from_member(member)?, member)))
             .collect::<Result<_>>()?;
+        let released: BTreeMap<MemberKey, Entry> = match mode {
+            LockMode::Default => self.entries.clone(),
+            LockMode::First => BTreeMap::new(),
+            LockMode::Against(previous) => previous.entries.clone(),
+        };
+
+        if let LockMode::Against(previous) = mode {
+            self.validate_against(previous, &live)?;
+        }
+
         let mut changes = Changes::default();
+        let mut dropped = Vec::new();
+        for (key, entry) in &self.entries {
+            if !released.contains_key(key) && (entry.reserved || !live.contains_key(key)) {
+                dropped.push((key.clone(), entry.number));
+            }
+        }
+        for (key, number) in &dropped {
+            self.entries.remove(key);
+            changes.dropped.push((key.key(), *number));
+        }
 
         for (key, entry) in &mut self.entries {
-            if !entry.reserved && !live.contains_key(key) {
+            if released.contains_key(key) && !entry.reserved && !live.contains_key(key) {
                 entry.reserved = true;
                 changes.reserved.push((key.key(), entry.number));
             }
@@ -345,13 +439,22 @@ impl WireLock {
                 Some(entry)
                     if entry.kind != member.kind || entry.ty.as_deref() != member.ty.as_deref() =>
                 {
-                    bail!(
-                        "`{key}` changed kind or type from `{} {}` to `{} {}`; run `witforge lock` only for drafts or add a new member",
-                        entry.kind,
-                        entry.ty.as_deref().unwrap_or("-"),
-                        member.kind,
-                        member.ty.as_deref().unwrap_or("-")
-                    );
+                    if released.contains_key(&key) {
+                        bail!(
+                            "released entry `{key}` changed kind or type from `{} {}` to `{} {}`",
+                            entry.kind,
+                            entry.ty.as_deref().unwrap_or("-"),
+                            member.kind,
+                            member.ty.as_deref().unwrap_or("-")
+                        );
+                    }
+                    let entry = self.entries.get_mut(&key).expect("entry exists");
+                    entry.kind = member.kind;
+                    entry.ty.clone_from(&member.ty);
+                    changes
+                        .updated
+                        .push((key.key(), member.kind, member.ty.clone()));
+                    continue;
                 }
                 Some(_) => continue,
                 None => {}
@@ -379,8 +482,17 @@ impl WireLock {
     ///
     /// Returns the same errors as [`WireLock::reconcile`].
     pub fn drift(&self, members: &[Member]) -> Result<Changes> {
+        self.drift_with(members, LockMode::Default)
+    }
+
+    /// Like [`WireLock::drift`] with an explicit classification mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`WireLock::reconcile_with`].
+    pub fn drift_with(&self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
         let mut copy = self.clone();
-        copy.reconcile(members)
+        copy.reconcile_with(members, mode)
     }
 
     /// Render the lockfile text (sorted, stable, LF line endings).

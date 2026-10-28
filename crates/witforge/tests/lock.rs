@@ -3,9 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use witforge::load;
-use witforge::lock::{HEADER, MemberKey, WireLock};
+use witforge::lock::{HEADER, LockMode, MemberKey, WireLock};
 use witforge::model::{self, Member, MemberKind};
+use witforge::{ReleasedManifest, ensure_not_released, load, load_released_manifest};
 
 #[test]
 fn v2_round_trip_sorts_and_renders_typed_entries() {
@@ -295,4 +295,279 @@ fn atomic_write_replaces_the_lockfile_without_leaving_temporaries() {
         .collect();
     assert_eq!(names, ["wire.lock"]);
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn first_mode_updates_drops_and_readds_drafts() {
+    let mut lock = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.old = 2 field u64\na:b/i/t.stale = 3 field u64 reserved\n"
+    ))
+    .unwrap();
+    let members = [
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "x".into(),
+            kind: MemberKind::Field,
+            ty: Some("u16".into()),
+        },
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "y".into(),
+            kind: MemberKind::Field,
+            ty: Some("string".into()),
+        },
+    ];
+    let changes = lock.reconcile_with(&members, LockMode::First).unwrap();
+    assert_eq!(
+        changes.updated,
+        vec![(
+            "a:b/i/t.x".to_string(),
+            MemberKind::Field,
+            Some("u16".to_string())
+        )]
+    );
+    assert_eq!(
+        changes
+            .dropped
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["a:b/i/t.old", "a:b/i/t.stale"]
+    );
+    assert_eq!(changes.added, vec![("a:b/i/t.y".to_string(), 2)]);
+    assert_eq!(lock.get("a:b/i/t.x").unwrap().ty.as_deref(), Some("u16"));
+    assert_eq!(lock.get("a:b/i/t.y").unwrap().number, 2);
+    assert!(lock.get("a:b/i/t.old").is_none());
+    assert!(lock.get("a:b/i/t.stale").is_none());
+}
+
+#[test]
+fn against_mode_updates_drafts_but_protects_released_entries() {
+    let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    let mut current = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 field u64\na:b/i/t.z = 3 field u64 reserved\na:b/i/t.old = 4 field u64\n"
+    ))
+    .unwrap();
+    let members = [
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "x".into(),
+            kind: MemberKind::Field,
+            ty: Some("u64".into()),
+        },
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "y".into(),
+            kind: MemberKind::Field,
+            ty: Some("string".into()),
+        },
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "z".into(),
+            kind: MemberKind::Field,
+            ty: Some("u64".into()),
+        },
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "w".into(),
+            kind: MemberKind::Field,
+            ty: Some("u8".into()),
+        },
+    ];
+    let changes = current
+        .reconcile_with(&members, LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(
+        changes.updated,
+        vec![(
+            "a:b/i/t.y".to_string(),
+            MemberKind::Field,
+            Some("string".to_string())
+        )]
+    );
+    assert_eq!(
+        changes
+            .dropped
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["a:b/i/t.old", "a:b/i/t.z"]
+    );
+    assert_eq!(
+        changes.added,
+        vec![("a:b/i/t.z".to_string(), 3), ("a:b/i/t.w".to_string(), 4)]
+    );
+    assert_eq!(current.get("a:b/i/t.x").unwrap().ty.as_deref(), Some("u64"));
+    assert_eq!(
+        current.get("a:b/i/t.y").unwrap().ty.as_deref(),
+        Some("string")
+    );
+
+    let mut removed = previous.clone();
+    let changes = removed
+        .reconcile_with(&[], LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(changes.reserved, vec![("a:b/i/t.x".to_string(), 1)]);
+    assert!(removed.get("a:b/i/t.x").unwrap().reserved);
+
+    let mut retyped = previous.clone();
+    let changed_members = [Member {
+        parent: "a:b/i/t".into(),
+        name: "x".into(),
+        kind: MemberKind::Field,
+        ty: Some("u16".into()),
+    }];
+    assert!(
+        retyped
+            .reconcile_with(&changed_members, LockMode::Against(&previous))
+            .is_err()
+    );
+    assert_eq!(retyped, previous);
+
+    let reintroduced_previous =
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64 reserved\n")).unwrap();
+    let mut reintroduced = reintroduced_previous.clone();
+    let changes = reintroduced
+        .reconcile_with(
+            &[Member {
+                parent: "a:b/i/t".into(),
+                name: "x".into(),
+                kind: MemberKind::Field,
+                ty: Some("u64".into()),
+            }],
+            LockMode::Against(&reintroduced_previous),
+        )
+        .unwrap();
+    assert_eq!(changes.reintroduced, vec![("a:b/i/t.x".to_string(), 1)]);
+}
+
+#[test]
+fn against_mode_rejects_released_renumbering_and_un_reserving() {
+    let previous = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 field u64 reserved\n"
+    ))
+    .unwrap();
+    let renumbered = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 3 field u64\na:b/i/t.y = 2 field u64 reserved\n"
+    ))
+    .unwrap();
+    let mut renumbered = renumbered;
+    assert!(
+        renumbered
+            .reconcile_with(&[], LockMode::Against(&previous))
+            .is_err()
+    );
+    let unreserved = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 field u64\n"
+    ))
+    .unwrap();
+    let mut unreserved = unreserved;
+    assert!(
+        unreserved
+            .reconcile_with(&[], LockMode::Against(&previous))
+            .is_err()
+    );
+}
+
+#[test]
+fn against_mode_rejects_a_different_package() {
+    let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    let mut current = WireLock::parse(&format!("{HEADER}\nc:d/i/t.x = 1 field u64\n")).unwrap();
+    assert!(
+        current
+            .reconcile_with(&[], LockMode::Against(&previous))
+            .is_err()
+    );
+}
+
+#[test]
+fn against_mode_rejects_a_missing_released_entry() {
+    let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    let mut current = WireLock::default();
+    assert!(
+        current
+            .reconcile_with(&[], LockMode::Against(&previous))
+            .is_err()
+    );
+}
+
+#[test]
+fn first_mode_readds_a_reserved_draft() {
+    let mut lock =
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64 reserved\n")).unwrap();
+    let members = [Member {
+        parent: "a:b/i/t".into(),
+        name: "x".into(),
+        kind: MemberKind::Field,
+        ty: Some("u64".into()),
+    }];
+    let changes = lock.reconcile_with(&members, LockMode::First).unwrap();
+    assert_eq!(changes.dropped, vec![("a:b/i/t.x".to_string(), 1)]);
+    assert_eq!(changes.added, vec![("a:b/i/t.x".to_string(), 1)]);
+    assert!(!lock.get("a:b/i/t.x").unwrap().reserved);
+}
+
+#[test]
+fn against_mode_rejects_a_released_kind_change() {
+    let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    let mut current =
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 variant-case u64\n")).unwrap();
+    assert!(
+        current
+            .reconcile_with(&[], LockMode::Against(&previous))
+            .is_err()
+    );
+}
+
+#[test]
+fn missing_default_released_manifest_means_nothing_is_released() {
+    let root = std::env::temp_dir().join(format!("witforge-no-released-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let wit = root.join("wit");
+    let v01 = wit.join("v0.1");
+    fs::create_dir_all(&v01).unwrap();
+    fs::write(v01.join("wire.lock"), format!("{HEADER}\n")).unwrap();
+    assert!(
+        load_released_manifest(&v01, None)
+            .unwrap()
+            .directories()
+            .is_empty()
+    );
+    ensure_not_released(&v01, None).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn released_manifest_validates_entries_and_blocks_locking() {
+    let root = std::env::temp_dir().join(format!("witforge-released-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let wit = root.join("wit");
+    let v01 = wit.join("v0.1");
+    let v02 = wit.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+    fs::write(v01.join("wire.lock"), format!("{HEADER}\n")).unwrap();
+    fs::write(v02.join("wire.lock"), format!("{HEADER}\n")).unwrap();
+    let manifest_path = wit.join("released");
+    fs::write(&manifest_path, "# released\nv0.1\n").unwrap();
+
+    let manifest = ReleasedManifest::load(&manifest_path).unwrap();
+    assert_eq!(manifest.directories(), ["v0.1"]);
+    assert!(manifest.contains("v0.1"));
+    assert!(!manifest.contains("v0.2"));
+    assert!(ensure_not_released(&v01, Some(&manifest_path)).is_err());
+    ensure_not_released(&v02, Some(&manifest_path)).unwrap();
+    assert!(load_released_manifest(&v01, None).unwrap().contains("v0.1"));
+    ensure_not_released(&v01, None).unwrap_err();
+
+    fs::write(&manifest_path, "v0.1\nv0.1\n").unwrap();
+    assert!(ReleasedManifest::load(&manifest_path).is_err());
+    fs::write(&manifest_path, "../v0.1\n").unwrap();
+    assert!(ReleasedManifest::load(&manifest_path).is_err());
+    fs::write(&manifest_path, "v9.9\n").unwrap();
+    assert!(ReleasedManifest::load(&manifest_path).is_err());
+    fs::remove_file(v01.join("wire.lock")).unwrap();
+    fs::write(&manifest_path, "v0.1\n").unwrap();
+    assert!(ReleasedManifest::load(&manifest_path).is_err());
+    fs::remove_dir_all(&root).unwrap();
 }
