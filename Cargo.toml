@@ -14,6 +14,7 @@ repository = "https://github.com/asamarts/witforge"
 # enums are exhaustive, so every bump is deliberate (see docs/design/overview.md).
 wit-parser = { version = "=0.262.0", default-features = false, features = ["std"] }
 anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -17,6 +17,7 @@ doc = false
 [dependencies]
 witforge = { path = "../witforge" }
 anyhow.workspace = true
+clap.workspace = true
 
 [lints]
 workspace = true

@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use witforge::lock::HEADER;
+
 fn witforge() -> Command {
     Command::new(env!("CARGO_BIN_EXE_witforge"))
 }
@@ -36,7 +38,9 @@ fn help_version_and_subcommand_help() {
         let output = witforge().args(args).output().unwrap();
         assert!(output.status.success(), "{args:?}: {output:?}");
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains("usage: witforge"),
+            String::from_utf8_lossy(&output.stdout)
+                .to_lowercase()
+                .contains("usage: witforge"),
             "{args:?}: {output:?}"
         );
     }
@@ -126,5 +130,129 @@ fn check_reports_an_unlocked_member() {
         "{check:?}"
     );
 
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn first_lock_succeeds_and_check_accepts_it() {
+    let dir = temp_contract("first");
+    let lock = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    let contents = fs::read_to_string(dir.join("wire.lock")).unwrap();
+    assert!(contents.starts_with(&format!("{HEADER}\n")));
+    let check = witforge().arg("check").arg(&dir).output().unwrap();
+    assert!(check.status.success(), "{check:?}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn lock_and_check_accept_an_against_baseline() {
+    let dir = temp_contract("against-ok");
+    let first = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(first.status.success(), "{first:?}");
+    let previous = dir
+        .parent()
+        .unwrap()
+        .join(format!("previous-ok-{}.lock", std::process::id()));
+    fs::copy(dir.join("wire.lock"), &previous).unwrap();
+    let lock = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--against")
+        .arg(&previous)
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    let check = witforge()
+        .arg("check")
+        .arg(&dir)
+        .arg("--against")
+        .arg(&previous)
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{check:?}");
+    fs::remove_file(previous).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn first_and_against_are_mutually_exclusive() {
+    let dir = temp_contract("conflict");
+    let output = witforge()
+        .args([
+            "lock",
+            dir.to_str().unwrap(),
+            "--first",
+            "--against",
+            "previous.lock",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot be used"),
+        "{output:?}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn against_requires_the_current_lockfile() {
+    let dir = temp_contract("against-missing");
+    let previous = dir
+        .parent()
+        .unwrap()
+        .join(format!("previous-{}.lock", std::process::id()));
+    fs::write(&previous, format!("{HEADER}\n")).unwrap();
+    let output = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--against")
+        .arg(&previous)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(!dir.join("wire.lock").exists());
+    fs::remove_file(previous).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn lock_refuses_a_released_directory() {
+    let dir = temp_contract("released");
+    fs::write(dir.join("wire.lock"), format!("{HEADER}\n")).unwrap();
+    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    let manifest = dir
+        .parent()
+        .unwrap()
+        .join(format!("released-{}.txt", std::process::id()));
+    fs::write(&manifest, format!("{name}\n")).unwrap();
+    let output = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--released")
+        .arg(&manifest)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("released"),
+        "{output:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("wire.lock")).unwrap(),
+        format!("{HEADER}\n")
+    );
+    fs::remove_file(manifest).unwrap();
     fs::remove_dir_all(&dir).unwrap();
 }
