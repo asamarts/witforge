@@ -5,7 +5,10 @@ use glue::v0::adapter_api::functions::{
 use glue::v0::analyzer_api::functions::{
     analyze, get_capabilities as analyzer_caps, id as analyzer_id,
 };
-use glue::v0::types::{node, resource_info};
+use glue::v0::types::{
+    adapter_error, adapter_input, adapter_output, finding, limits, node, resource_info, row,
+    row_state,
+};
 use plain::v0_1::types::{
     AdapterError, AdapterInput, AdapterOutput, AnalyzerError, AnalyzerInput, Capabilities, Finding,
     FlatValue, LimitError, Limits, Node, PointerSegment, RecordEntry, RelatedLocation, ResourceInfo,
@@ -94,6 +97,113 @@ fn main() {
         node::from_proto(unknown),
         Err(GlueError::UnknownCase {
             message: "types/node"
+        })
+    ));
+
+    let mut missing_required = resource_proto.clone();
+    missing_required.path = None;
+    assert!(matches!(
+        resource_info::from_proto(missing_required),
+        Err(GlueError::MissingField {
+            field: "types/resource-info.path"
+        })
+    ));
+    let optional_resource = p::TypesResourceInfo {
+        path: Some("optional".to_string()),
+        indexed: Some(false),
+        index: None,
+    };
+    assert_eq!(
+        resource_info::from_proto(optional_resource).unwrap().index,
+        None
+    );
+
+    let finding_proto = finding::to_proto(&Finding {
+        path: None,
+        message: "adversarial".to_string(),
+        line: None,
+        column: None,
+        related: Vec::new(),
+        baseline_key: None,
+        sensitive: false,
+        analysis_failure: None,
+        failure_kind: None,
+        not_fixable: false,
+    });
+    let mut missing_message = finding_proto.clone();
+    missing_message.message = None;
+    assert!(matches!(
+        finding::from_proto(missing_message),
+        Err(GlueError::MissingField {
+            field: "types/finding.message"
+        })
+    ));
+    let optional_finding = p::TypesFinding {
+        message: Some("kept".to_string()),
+        ..finding_proto
+    };
+    assert_eq!(finding::from_proto(optional_finding).unwrap().path, None);
+
+    let limits_proto = limits::to_proto(&Limits { max_rows: 3 });
+    let mut missing_limit = limits_proto;
+    missing_limit.max_rows = None;
+    assert!(matches!(
+        limits::from_proto(missing_limit),
+        Err(GlueError::MissingField {
+            field: "types/limits.max-rows"
+        })
+    ));
+
+    let row_proto = row::to_proto(&row);
+    let mut missing_resource = row_proto.clone();
+    missing_resource.resource = None;
+    assert!(matches!(
+        row::from_proto(missing_resource),
+        Err(GlueError::MissingField {
+            field: "types/row.resource"
+        })
+    ));
+    let mut optional_row = row_proto;
+    optional_row.pointer = None;
+    optional_row.label = None;
+    optional_row.start = None;
+    optional_row.end = None;
+    let decoded_row = row::from_proto(optional_row).unwrap();
+    assert_eq!(decoded_row.pointer, None);
+    assert_eq!(decoded_row.label, None);
+
+    let input_proto = adapter_input::to_proto(&input);
+    let mut missing_bytes = input_proto;
+    missing_bytes.bytes = None;
+    assert!(matches!(
+        adapter_input::from_proto(missing_bytes),
+        Err(GlueError::MissingField {
+            field: "types/adapter-input.bytes"
+        })
+    ));
+    let output_proto = adapter_output::to_proto(&AdapterOutput {
+        rows: Vec::new(),
+        non_strings: Vec::new(),
+        notes: Vec::new(),
+    });
+    assert_eq!(
+        adapter_output::from_proto(output_proto).unwrap(),
+        AdapterOutput {
+            rows: Vec::new(),
+            non_strings: Vec::new(),
+            notes: Vec::new()
+        }
+    );
+    assert!(matches!(
+        row_state::from_proto(p::TypesRowState { witforge_value: None }),
+        Err(GlueError::UnknownCase {
+            message: "types/row-state"
+        })
+    ));
+    assert!(matches!(
+        adapter_error::from_proto(p::TypesAdapterError { witforge_value: None }),
+        Err(GlueError::UnknownCase {
+            message: "types/adapter-error"
         })
     ));
 
