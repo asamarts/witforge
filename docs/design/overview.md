@@ -304,3 +304,59 @@ witforge, then goes public with 0.1.
 | 2026-10-26 | Glue generates per-function `to_request`/`from_request`/`to_response`/`from_response` helpers and a `METHOD` constant, with ergonomic zero/one/many arity and functions under a `functions` module | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue returns one structured, non-exhaustive `GlueError`; JSON and binary encoding stay on the pbjson/prost side | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Required scalar/string/bool/float/enum/bytes fields, parameters, and response results use proto3 `optional` and reject absence; `option<T>` permits absence | [`emitters.md`](emitters.md) |
+| 2026-10-29 | 0.1 generation baseline and ergonomics measured; deferred options assigned to named tasks with triggers, without accepting or implementing any option here | section 10 |
+
+## 10. 0.1 evaluation baseline and deferred-option triage
+
+Measured 2026-10-29 on the shared Linux x86_64 development host with a release build
+(`cargo build --release -p witforge-cli`). Timings are wall-clock time for the whole process,
+including startup; the host is shared, so treat them as an order-of-magnitude baseline rather
+than a benchmark. Each alint figure is the range of five runs; each versions-root figure is the
+range of three runs.
+
+| Fixture | Emitter | Runs | Wall time | Output |
+|---|---|---:|---:|---:|
+| `contracts/alint-plugin` as `v0.1` | `rust` | 5 | 12–18 ms (median 16) | 8.6 KB, 2 files |
+| `contracts/alint-plugin` as `v0.1` | `proto` | 5 | 14–21 ms (median 19) | 7.6 KB, 1 file |
+| `contracts/alint-plugin` as `v0.1` | `glue` | 5 | 10–47 ms (median 22) | 50 KB, 2 files |
+| `fixtures/versions/wit` (`v0.1`, `v0.2`) | `rust` | 3 | 13 ms | 0.8 KB, 3 files |
+| `fixtures/versions/wit` (`v0.1`, `v0.2`) | `proto` | 3 | 8–10 ms | 0.4 KB, 1 file |
+| `fixtures/versions/wit` (`v0.1`, `v0.2`) | `glue` | 3 | 5–15 ms | 3.5 KB, 2 files |
+
+The alint end-to-end test, which also runs `prost-build`, `pbjson-build`, and `rustc`, completes in
+roughly 15–40 seconds on the same host. That is test-toolchain cost, not generation cost.
+
+Ergonomics observations:
+
+- Generation is three explicit commands (`rust`, `proto`, `glue`), because outputs have separate
+  roots and lifecycle. `glue` requires both module roots; consumers cannot accidentally get a
+  guessed dependency.
+- Generated plain Rust and glue have no runtime dependency of their own. Protobuf and JSON
+  encoding stay on the consumer's `prost`/`pbjson` side.
+- Function helpers have zero/one/many arity and a `METHOD` constant; the alint adapter and
+  analyzer APIs compile and round-trip without adapter-specific glue.
+- The three `--check` commands are cheap and deterministic; stale/extra generated files are
+  reported by the shared output owner.
+- The same consumer path still needs three invocations or a wrapper script; that repetition is
+  deliberately assigned to `W6-005`, not solved in 0.1.
+
+W5-003 triage: no adversarial finding required a new task or a contract exception. The recorded
+cases cover absent required fields, option absence, empty repeated fields, unknown oneofs, and
+unknown/zero enum values; the only enum-bearing fixture is the dedicated glue contract because
+the representative alint contract intentionally contains no enum.
+
+Deferred options are assigned as follows. Their owners are all `asamarts`; the trigger is the
+condition under which the owning task should be scheduled. This record does not accept any of
+these options or change generated output.
+
+| Deferred option | Owning task | Trigger |
+|---|---|---|
+| Declaration-order fingerprinting | `W6-001` | A post-0.1 contract reorder is proposed, or a consumer needs reorder detection before 1.0 |
+| Borrowed Rust parameters | `W6-002` | Representative call-path measurements show clone cost, or a consumer requests borrowed inputs; any change needs a new contract version |
+| Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | A consumer needs these bounds for maps or fixtures, and the float rule is explicitly decided |
+| Generated world metadata | `W6-004` | alint confirms that role/import/export metadata is needed in generated code |
+| Configuration file for roots/emitters | `W6-005` | Consumers repeat multi-root flags or run three or more emitters routinely |
+| Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
+| Generated version-to-version conversions | `W6-007` | A host must support multiple released majors side by side |
+| JSON Schema emitter | `W6-008` | A consumer needs a third projection; not a 0.1 requirement |
+| Multi-platform CI and public release | `W5-005` | alint's contract `0.x` consumes witforge and the repository can move off the private self-hosted runner |

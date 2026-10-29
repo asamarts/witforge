@@ -919,6 +919,10 @@ Arity rules:
 
 ## 8. Deferred and pre-golive
 
+The 0.1 evaluation baseline and the owner/trigger for each option below are recorded in
+[`overview.md`](overview.md#10-01-evaluation-baseline-and-deferred-option-triage). That record
+does not accept or implement any option; the W6 tasks make the decisions.
+
 - Borrowed Rust parameters (`&str`, `&[T]`) after measuring the cost of owned parameters.
 - Conditional `Eq`/`Hash` and a narrow `Default` policy.
 - Generated world metadata (the world Option D) if alint needs it.

@@ -32,25 +32,27 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Internal model as specified in [model.md](docs/design/model.md): resolved types, docs,
       stability, aliases, worlds, canonical type representation, lockfile member extraction, and
       diagnostics, independent of `wit-parser`'s types.
-- [ ] Rust emitter as specified in [emitters.md](docs/design/emitters.md): per-interface
+- [x] Rust emitter as specified in [emitters.md](docs/design/emitters.md): per-interface
       submodules in one module per version, plain exhaustive types, traits with `&self` and owned
       values, docs carried from `///` comments, deterministic `mod.rs`/version files.
-- [ ] Protobuf emitter as specified in [emitters.md](docs/design/emitters.md): one file per major,
+- [x] Protobuf emitter as specified in [emitters.md](docs/design/emitters.md): one file per major,
       interface-prefixed messages, messages and enums numbered from `wire.lock`, `reserved` for
       removed members, wrappers for nested `list` and `option`, `oneof` for variants and
       `result`, closed enums with a zero `UNSPECIFIED` value, request/response messages, and a
       method-id enum per interface.
-- [ ] Protobuf glue as specified in [emitters.md](docs/design/emitters.md): free-function type
+- [x] Protobuf glue as specified in [emitters.md](docs/design/emitters.md): free-function type
       conversions, per-function request/response helpers and method constants, the shared
       `GlueError`, and `--plain-root`/`--proto-root` output, exercised by round-trip tests through
       `prost`/`pbjson`.
-- [ ] `--check` mode for generated outputs (stale output fails CI); LF-only, deterministic output.
-- [ ] Golden tests for every mapping row and round-trip tests through the protobuf glue (Rust
+- [x] `--check` mode for generated outputs (stale output fails CI); LF-only, deterministic output.
+- [x] Golden tests for every mapping row and round-trip tests through the protobuf glue (Rust
       value to protobuf to Rust value; proto3-JSON and back).
-- [ ] CI guard that released directories (WIT, lockfile, and per-version Rust module) never
+- [x] CI guard that released directories (WIT, lockfile, and per-version Rust module) never
       change against the merge base, that shared per-major proto/glue files remain append-only,
       that `wit/released` is append-only, and documentation for running `buf breaking` on the
       emitted schema as an optional extra check.
+- [x] 0.1 generation/ergonomics baseline and deferred-option triage (`W5-004`), with every
+      pre-golive option assigned to its owning task and trigger.
 - [ ] Public repository and the first crates.io release once alint's contract `0.x` consumes it;
       CI moves back to GitHub-hosted Linux, macOS, and Windows runners, and the self-hosted
       runner is torn down.
