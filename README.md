@@ -16,11 +16,12 @@ while the reverse directions are lossy. witforge exists because no tool performs
 projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
 tie their output to a runtime.
 
-> **Status: pre-release, private.** The loading, subset-checker, internal-model, v2
-> append-only lockfile, Rust, protobuf, and glue emitters are implemented, with clap-based
-> `witforge check`, `lock`, `rust`, `proto`, and `glue` commands. CI also gates the aplan plan,
-> generated-output drift, release freezes, and an optional `buf breaking` check. See
-> [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
+> **Status: 0.1.0 release preparation, private.** The loading, subset-checker, internal-model,
+> v2 append-only lockfile, Rust, protobuf, and glue emitters are implemented, with clap-based
+> `witforge check`, `lock`, `rust`, `proto`, and `glue` commands. CI gates the aplan plan,
+> generated-output drift, release freezes, and an optional `buf breaking` check. The repository
+> becomes public and publishes to crates.io after alint's contract `0.x` consumes this release;
+> see [ci/release-checklist.md](ci/release-checklist.md). witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
 ## Plan
@@ -43,8 +44,10 @@ wit/                      hand-written contracts (the source of truth)
 
 $ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
 $ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number new members
-$ witforge lock  wit/v0.1 --first                        bootstrap a version
-$ witforge lock  wit/v0.1 --released wit/released        refuse a released version
+$ witforge rust  wit --out generated/rust                plain Rust modules
+$ witforge proto wit --out generated/proto               protobuf schema
+$ witforge glue  wit --out generated/glue \
+    --plain-root crate::generated::rust --proto-root crate::generated::proto
 ```
 
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no

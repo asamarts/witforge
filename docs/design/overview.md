@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-10-26 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-10-29 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin

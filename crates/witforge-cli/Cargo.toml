@@ -15,7 +15,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-witforge = { path = "../witforge" }
+witforge = { path = "../witforge", version = "0.1.0" }
 anyhow.workspace = true
 clap.workspace = true
 

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-29
+
 ### Added
 
 - WIT package loading with every feature enabled.
@@ -16,7 +18,33 @@ All notable changes to this project are documented here. The format follows
   functions, parameters, reservations, draft/release modes, and atomic writes.
 - The clap-based `witforge check` and `witforge lock` commands with `--first`, `--against`, and
   `--released`, plus the v2 evolution fixture and property/CLI tests.
-- The representative alint plugin contract fixture.
+- Plain Rust types and interface traits, protobuf schemas with append-only wire numbers, and
+  prost/pbjson glue with per-function request/response helpers and `METHOD` constants.
+- `witforge rust`, `witforge proto`, and `witforge glue` commands, with highest-minor selection,
+  deterministic output, ownership headers, stale-file cleanup, and `--check`.
+- The representative alint plugin contract end-to-end proof, including compiled plain/glue output
+  and binary/proto3-JSON round-trips.
+- CI gates for the pinned aplan plan, generated output, released-directory freezes, append-only
+  release manifests, and optional `buf breaking`.
+- The 0.1 performance/ergonomics baseline and deferred-option triage.
+
+### Changed
+
+- Workspace and crate metadata now identify the 0.1.0 release candidate.
+
+### Fixed
+
+- Refuse patch, pre-release, and build-metadata contract versions, which have no supported
+  version-directory mapping.
+- Refuse unknown WIT `Type` variants instead of silently accepting them.
+- Refuse lockfile number assignment beyond protobuf's maximum field number.
+- Keep `wit-parser` types out of the public `Contract` API.
+- Accept `--help` on subcommands and add `--version`.
+- Guard the CI runner cleanup trap against signaling its own process group.
+- Run the full test suite in the MSRV CI job, not only a build.
+- Glue named-option singular wrappers and canonical alias/structural names.
+- Final-newline and generated-file-name ownership edge cases.
+- Release-manifest dot-entry validation.
 
 ### Documentation
 
@@ -36,14 +64,5 @@ All notable changes to this project are documented here. The format follows
   parameters, and response results; the glue rejects absence for required values.
 - Clarified required-field presence in proto3-JSON and the encode direction, and the structural
   projection of named list/option/result types.
-
-### Fixed
-
-- Refuse patch, pre-release, and build-metadata contract versions, which have no supported
-  version-directory mapping.
-- Refuse unknown WIT `Type` variants instead of silently accepting them.
-- Refuse lockfile number assignment beyond protobuf's maximum field number.
-- Keep `wit-parser` types out of the public `Contract` API.
-- Accept `--help` on subcommands and add `--version`.
-- Guard the CI runner cleanup trap against signaling its own process group.
-- Run the full test suite in the MSRV CI job, not only a build.
+- Emitter, lockfile, overview, roadmap, and release-checklist documentation now reflect the
+  implemented 0.1 surface.

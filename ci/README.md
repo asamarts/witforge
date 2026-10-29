@@ -2,10 +2,11 @@
 
 While the repository is private, CI runs on one self-hosted Linux runner (labels `self-hosted`,
 `linux`, `witforge`) instead of GitHub-hosted runners, whose minutes are billed for private
-repositories. macOS and Windows are not covered until the repository goes public; then the
-workflow moves back to GitHub-hosted runners with the full three-OS matrix, and this runner is
-torn down (a self-hosted runner must never serve a public repository, where pull requests from
-forks could run code on it).
+repositories. The workflow selects the self-hosted runtime only while
+`github.event.repository.private` is true; once the repository is public it selects Ubuntu for
+lint/docs/plan/generation and the full Linux/macOS/Windows matrix for tests. A self-hosted runner
+must never serve a public repository, where pull requests from forks could run code on it, so the
+release checklist retires this runner explicitly.
 
 ## The runner
 

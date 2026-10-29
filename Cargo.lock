@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "witforge"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "pbjson",
@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "witforge-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",

@@ -1,6 +1,6 @@
 # witforge emitter conventions (Rust, protobuf, glue)
 
-Status: specified 2026-10-26; implementation pending. This document is normative for generated
+Status: specified 2026-10-26; implemented 2026-10-29. This document is normative for generated
 Rust, protobuf, and glue output. The lockfile format and `check`/`lock` semantics are in
 [`lockfile.md`](lockfile.md); the product decisions are logged in
 [`overview.md`](overview.md#9-decision-log).
