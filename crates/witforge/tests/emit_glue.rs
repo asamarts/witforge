@@ -33,6 +33,8 @@ fn emits_glue_error_and_type_modules() {
     let root = fixture("emit/glue/contract");
     let (model, lock) = setup_contract(&root);
     let version = glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap();
+    let again = glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap();
+    assert_eq!(version, again, "glue emission is not deterministic");
     let module = glue::emit_root(&model, &[0]).unwrap();
     for expected in [
         "pub enum GlueError",
