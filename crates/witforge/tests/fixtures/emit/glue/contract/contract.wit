@@ -9,8 +9,13 @@ interface types {
     record numbers {
         u8-value: u8,
         u16-value: u16,
+        u32-value: u32,
+        u64-value: u64,
         s8-value: s8,
         s16-value: s16,
+        s64-value: s64,
+        f32-value: f32,
+        f64-value: f64,
     }
 
     enum status {
@@ -34,6 +39,13 @@ interface types {
     type maybe-list = option<list<small>>;
     type maybe-maybe = option<option<string>>;
     type outcome = result<small, string>;
+    type only-ok = result<small>;
+    type only-err = result<_, string>;
+    type maybe-bytes = option<list<u8>>;
+    type maybe-status = option<status>;
+    type maybe-choice = option<choice>;
+    type maybe-caps = option<caps>;
+    type maybe-outcome = option<outcome>;
     type small-alias = small;
     type small-list-alias = small-list;
     type maybe-string-alias = maybe-string;
@@ -50,6 +62,13 @@ interface types {
         maybe-list: maybe-list,
         maybe-maybe: maybe-maybe,
         outcome: outcome,
+        only-ok: only-ok,
+        only-err: only-err,
+        maybe-bytes: maybe-bytes,
+        maybe-status: maybe-status,
+        maybe-choice: maybe-choice,
+        maybe-caps: maybe-caps,
+        maybe-outcome: maybe-outcome,
         nested: list<option<result<u8, string>>>,
         alias-small: small-alias,
         alias-list: small-list-alias,
@@ -75,4 +94,36 @@ interface alias {
         many: local-list,
         maybe: local-maybe,
     }
+}
+
+/// Function helper coverage with zero, one, and many arities.
+interface service {
+    use types.{small};
+    use types.{maybe-string};
+
+    /// No parameters and one result.
+    ping: func() -> string;
+
+    /// One parameter and one result.
+    echo: func(value: string) -> string;
+
+    /// Many parameters and a result.
+    many: func(
+        item: small,
+        maybe: maybe-string,
+        items: list<small>,
+        flag: bool,
+    ) -> result<list<small>, string>;
+
+    /// One parameter and no result.
+    no-result: func(value: u8);
+
+    /// No parameters and an optional result.
+    maybe-result: func() -> maybe-string;
+
+    /// No parameters and a repeated result.
+    list-result: func() -> list<small>;
+
+    /// A keyword-escaped function and parameter.
+    %type: func(%self: u32) -> u32;
 }

@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use prost::Message as _;
 use witforge::emit::{glue, proto, rust};
 use witforge::load;
 use witforge::lock::WireLock;
@@ -69,6 +70,19 @@ fn emits_glue_error_and_type_modules() {
         "pub fn to_proto(",
         "pub fn from_proto(",
         "super::super::types::small::to_proto",
+        "pub mod service {",
+        "pub mod functions {",
+        "pub mod ping {",
+        "pub mod echo {",
+        "pub mod many {",
+        "pub mod no_result {",
+        "pub mod maybe_result {",
+        "pub mod list_result {",
+        "pub const METHOD:",
+        "pub fn to_request(",
+        "pub fn from_request(",
+        "pub fn to_response(",
+        "pub fn from_response(",
     ] {
         assert!(
             version.contains(expected),
@@ -79,6 +93,19 @@ fn emits_glue_error_and_type_modules() {
     assert!(version.ends_with('\n'), "glue output has no final newline");
 }
 
+#[allow(clippy::too_many_lines)]
+#[test]
+fn glue_output_matches_golden() {
+    let root = fixture("emit/glue/contract");
+    let (model, lock) = setup_contract(&root);
+    let version = glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap();
+    let expected = fs::read_to_string(root.join("expected.rs")).unwrap();
+    assert_eq!(version, expected, "glue golden drifted");
+    assert!(!version.contains('\r'), "glue output contains CRLF");
+    assert!(version.ends_with('\n'), "glue output has no final newline");
+}
+
+#[allow(clippy::too_many_lines)]
 #[test]
 fn conversions_compile_and_run_against_generated_types() {
     let root = fixture("emit/glue/contract");
@@ -101,12 +128,19 @@ fn conversions_compile_and_run_against_generated_types() {
         rust::emit_version(&model).unwrap(),
     )
     .unwrap();
-    fs::write(out.join("proto/mod.rs"), format!("pub mod v{major};\n")).unwrap();
+    fs::write(
+        out.join("proto/mod.rs"),
+        format!(
+            "pub mod v{major} {{\n    include!(\"v{major}.rs\");\n    include!(\"v{major}.serde.rs\");\n}}\n"
+        ),
+    )
+    .unwrap();
 
     let schema = proto::emit_major(&model, &lock).unwrap();
     let proto_path = out.join("proto-work/schema.proto");
     fs::write(&proto_path, schema).unwrap();
     let descriptors = protox::compile([&proto_path], [out.join("proto-work")]).unwrap();
+    let encoded_descriptors = descriptors.encode_to_vec();
     let prost_out = out.join("proto-work/out");
     fs::create_dir_all(&prost_out).unwrap();
     prost_build::Config::new()
@@ -119,6 +153,25 @@ fn conversions_compile_and_run_against_generated_types() {
         .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .expect("prost generated a Rust file");
     fs::copy(generated, out.join(format!("proto/v{major}.rs"))).unwrap();
+
+    let pbjson_out = out.join("proto-work/pbjson");
+    fs::create_dir_all(&pbjson_out).unwrap();
+    pbjson_build::Builder::new()
+        .out_dir(&pbjson_out)
+        .register_descriptors(&encoded_descriptors)
+        .unwrap()
+        .build(&[".example.glue.v0"])
+        .unwrap();
+    let pbjson_generated = fs::read_dir(&pbjson_out)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .expect("pbjson generated a Rust file");
+    fs::copy(
+        pbjson_generated,
+        out.join(format!("proto/v{major}.serde.rs")),
+    )
+    .unwrap();
 
     fs::write(
         out.join("glue/mod.rs"),
@@ -140,49 +193,69 @@ fn conversions_compile_and_run_against_generated_types() {
         .parent()
         .unwrap()
         .to_path_buf();
-    let mut candidates: Vec<PathBuf> = fs::read_dir(&deps)
-        .unwrap()
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let name = path.file_name()?.to_string_lossy();
-            (name.starts_with("libprost-") && name.ends_with(".rlib")).then_some(path)
-        })
-        .collect();
-    candidates.sort();
+    let candidates = |prefix: &str| {
+        let mut paths: Vec<PathBuf> = fs::read_dir(&deps)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                let name = path.file_name()?.to_string_lossy();
+                (name.starts_with(&format!("lib{prefix}-")) && name.ends_with(".rlib"))
+                    .then_some(path)
+            })
+            .collect();
+        paths.sort();
+        paths
+    };
+    let prosts = candidates("prost");
+    let pbjsons = candidates("pbjson");
+    let serdes = candidates("serde");
+    let serde_jsons = candidates("serde_json");
     let mut last_error = None;
-    for prost in candidates {
-        let output = Command::new("rustc")
-            .args([
-                "--edition=2024",
-                "--crate-type=bin",
-                "-L",
-                &format!("dependency={}", deps.display()),
-                "--extern",
-                &format!("prost={}", prost.display()),
-                "-o",
-            ])
-            .arg(&executable)
-            .arg(out.join("main.rs"))
-            .output()
-            .unwrap();
-        if output.status.success() {
-            let run = Command::new(&executable).output().unwrap();
-            assert!(
-                run.status.success(),
-                "generated glue program failed:\n{}",
-                String::from_utf8_lossy(&run.stderr)
-            );
-            fs::remove_dir_all(&out).unwrap();
-            return;
+    for prost in &prosts {
+        for pbjson in &pbjsons {
+            for serde in &serdes {
+                for serde_json in &serde_jsons {
+                    let output = Command::new("rustc")
+                        .args([
+                            "--edition=2024",
+                            "--crate-type=bin",
+                            "-L",
+                            &format!("dependency={}", deps.display()),
+                            "--extern",
+                            &format!("prost={}", prost.display()),
+                            "--extern",
+                            &format!("pbjson={}", pbjson.display()),
+                            "--extern",
+                            &format!("serde={}", serde.display()),
+                            "--extern",
+                            &format!("serde_json={}", serde_json.display()),
+                            "-o",
+                        ])
+                        .arg(&executable)
+                        .arg(out.join("main.rs"))
+                        .output()
+                        .unwrap();
+                    if output.status.success() {
+                        let run = Command::new(&executable).output().unwrap();
+                        assert!(
+                            run.status.success(),
+                            "generated glue program failed:\n{}",
+                            String::from_utf8_lossy(&run.stderr)
+                        );
+                        fs::remove_dir_all(&out).unwrap();
+                        return;
+                    }
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if stderr.contains("E0514") {
+                        last_error = Some(stderr.into_owned());
+                        continue;
+                    }
+                    panic!("generated glue did not compile:\n{stderr}");
+                }
+            }
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("E0514"),
-            "generated glue did not compile:\n{stderr}"
-        );
-        last_error = Some(stderr.into_owned());
     }
-    panic!("no usable prost rlib found: {last_error:?}");
+    panic!("no usable prost/pbjson/serde rlib combination found: {last_error:?}");
 }
 
 #[test]

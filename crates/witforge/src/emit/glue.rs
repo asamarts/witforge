@@ -114,6 +114,7 @@ struct Emitter<'a> {
     proto_root: String,
     major: u64,
     minor: u64,
+    type_prefix: String,
 }
 
 impl<'a> Emitter<'a> {
@@ -136,7 +137,20 @@ impl<'a> Emitter<'a> {
             proto_root: proto_root.trim().to_string(),
             major: model.package.version.major,
             minor: model.package.version.minor,
+            type_prefix: "super::super".to_string(),
         })
+    }
+
+    fn with_type_prefix(&self, prefix: &str) -> Self {
+        Self {
+            model: self.model,
+            lock: self.lock,
+            plain_root: self.plain_root.clone(),
+            proto_root: self.proto_root.clone(),
+            major: self.major,
+            minor: self.minor,
+            type_prefix: prefix.to_string(),
+        }
     }
 
     fn emit(&self) -> Result<String> {
@@ -166,6 +180,9 @@ impl<'a> Emitter<'a> {
                 writeln!(out, "        use super::GlueError;")?;
                 self.emit_type(&mut out, interface, def)?;
                 writeln!(out, "    }}")?;
+            }
+            if !interface.functions.is_empty() {
+                self.emit_functions(&mut out, interface)?;
             }
             writeln!(out, "}}")?;
         }
@@ -203,6 +220,17 @@ impl<'a> Emitter<'a> {
                     );
                 }
             }
+            let mut functions = BTreeMap::new();
+            for function in &interface.functions {
+                let module = rust_ident(&snake_case(&function.name), "function module")?;
+                if let Some(previous) = functions.insert(module.clone(), function.name.clone()) {
+                    bail!(
+                        "function modules `{previous}` and `{}` in interface `{}` both map to `{module}`",
+                        function.name,
+                        interface.name
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -213,6 +241,40 @@ impl<'a> Emitter<'a> {
 
     fn proto_base(&self) -> String {
         format!("{}::v{}", self.proto_root, self.major)
+    }
+
+    fn plain_type(&self, ty: &TypeExpr) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::U8 => Ok("u8".to_string()),
+            TypeExpr::U16 => Ok("u16".to_string()),
+            TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U64 => Ok("u64".to_string()),
+            TypeExpr::S8 => Ok("i8".to_string()),
+            TypeExpr::S16 => Ok("i16".to_string()),
+            TypeExpr::S32 => Ok("i32".to_string()),
+            TypeExpr::S64 => Ok("i64".to_string()),
+            TypeExpr::F32 => Ok("f32".to_string()),
+            TypeExpr::F64 => Ok("f64".to_string()),
+            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::Named(name) => self.plain_named(name),
+            TypeExpr::List(element) => {
+                Ok(format!("::std::vec::Vec<{}>", self.plain_type(element)?))
+            }
+            TypeExpr::Option(payload) => Ok(format!(
+                "::core::option::Option<{}>",
+                self.plain_type(payload)?
+            )),
+            TypeExpr::Result(result) => Ok(format!(
+                "::core::result::Result<{}, {}>",
+                self.plain_slot(result.ok.as_deref())?,
+                self.plain_slot(result.err.as_deref())?
+            )),
+        }
+    }
+
+    fn plain_slot(&self, slot: Option<&TypeExpr>) -> Result<String> {
+        slot.map_or_else(|| Ok("()".to_string()), |ty| self.plain_type(ty))
     }
 
     fn plain_named(&self, name: &QualifiedName) -> Result<String> {
@@ -227,10 +289,10 @@ impl<'a> Emitter<'a> {
         Ok(format!("{}::{interface}::{ty}", self.plain_base()))
     }
 
-    fn plain_type_module(interface: &str, ty: &str) -> Result<String> {
+    fn plain_type_module(&self, interface: &str, ty: &str) -> Result<String> {
         let interface = rust_ident(&snake_case(interface), "interface module")?;
         let ty = rust_ident(&snake_case(ty), "type module")?;
-        Ok(format!("super::super::{interface}::{ty}"))
+        Ok(format!("{}::{interface}::{ty}", self.type_prefix))
     }
 
     fn proto_type(&self, ty: &TypeExpr) -> Result<String> {
@@ -823,7 +885,7 @@ impl Emitter<'_> {
         let proto = self.proto_type(target)?;
         let target_module = match target {
             TypeExpr::Named(target_name) => {
-                Self::plain_type_module(&target_name.interface, &target_name.name)?
+                self.plain_type_module(&target_name.interface, &target_name.name)?
             }
             _ => String::new(),
         };
@@ -1119,6 +1181,179 @@ impl Emitter<'_> {
         Ok(())
     }
 
+    fn emit_functions(&self, out: &mut String, interface: &Interface) -> Result<()> {
+        writeln!(out)?;
+        writeln!(out, "    pub mod functions {{")?;
+        writeln!(out, "        #[allow(unused_imports)]")?;
+        writeln!(out, "        use super::GlueError;")?;
+        let function_emitter = self.with_type_prefix("super::super::super");
+        let mut names = BTreeMap::new();
+        for function in &interface.functions {
+            let module = rust_ident(&snake_case(&function.name), "function module")?;
+            if let Some(previous) = names.insert(module.clone(), function.name.clone()) {
+                bail!(
+                    "function modules `{previous}` and `{}` in interface `{}` both map to `{module}`",
+                    function.name,
+                    interface.name
+                );
+            }
+            writeln!(out)?;
+            write_docs(out, 8, &function.docs)?;
+            writeln!(out, "        pub mod {module} {{")?;
+            writeln!(out, "            use super::GlueError;")?;
+            function_emitter.emit_function(out, interface, function)?;
+            writeln!(out, "        }}")?;
+        }
+        writeln!(out, "    }}")?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_function(
+        &self,
+        out: &mut String,
+        interface: &Interface,
+        function: &crate::model::Function,
+    ) -> Result<()> {
+        let interface_name = &interface.name;
+        let function_pascal = pascal_case(&function.name);
+        let request = self.proto_user_type_path(&format!(
+            "{}{function_pascal}Request",
+            pascal_case(interface_name)
+        ))?;
+        let response = self.proto_user_type_path(&format!(
+            "{}{function_pascal}Response",
+            pascal_case(interface_name)
+        ))?;
+        let method =
+            self.proto_user_type_path(&format!("{}Method", pascal_case(interface_name)))?;
+        let method_variant = rust_ident(&function_pascal, "method variant")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            pub const METHOD: {method} = {method}::{method_variant};"
+        )?;
+
+        let mut request_fields = BTreeMap::new();
+        let mut args = Vec::new();
+        for param in &function.params {
+            let name = rust_ident(&snake_case(&param.name), "parameter")?;
+            if let Some(previous) = request_fields.insert(name.clone(), param.name.clone()) {
+                bail!(
+                    "parameters `{previous}` and `{}` of `{interface_name}#{}` both map to `{name}`",
+                    param.name,
+                    function.name
+                );
+            }
+            let ty = self.plain_type(&param.ty)?;
+            args.push(format!("{name}: &{ty}"));
+        }
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            pub fn to_request({}) -> {request} {{",
+            args.join(", ")
+        )?;
+        if function.params.is_empty() {
+            writeln!(out, "                {request} {{}}")?;
+        } else {
+            writeln!(out, "                {request} {{")?;
+            for param in &function.params {
+                let name = rust_ident(&snake_case(&param.name), "parameter")?;
+                let value = self.encode_field(&name, &param.ty)?;
+                writeln!(out, "                    {name}: {value},")?;
+            }
+            writeln!(out, "                }}")?;
+        }
+        writeln!(out, "            }}")?;
+
+        writeln!(out)?;
+        let return_type = match function.params.len() {
+            0 => "()".to_string(),
+            1 => self.plain_type(&function.params[0].ty)?,
+            _ => format!(
+                "({})",
+                function
+                    .params
+                    .iter()
+                    .map(|param| self.plain_type(&param.ty))
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ")
+            ),
+        };
+        writeln!(
+            out,
+            "            pub fn from_request(value: {request}) -> ::core::result::Result<{return_type}, GlueError> {{"
+        )?;
+        if function.params.is_empty() {
+            writeln!(out, "                let _ = value;")?;
+            writeln!(out, "                ::core::result::Result::Ok(())")?;
+        } else {
+            let decoded = if function.params.len() == 1 {
+                let param = &function.params[0];
+                let name = rust_ident(&snake_case(&param.name), "parameter")?;
+                let identity = format!("{interface_name}#{}.{}", function.name, param.name);
+                self.decode_field(&format!("value.{name}"), &param.ty, &identity)?
+            } else {
+                let mut values = Vec::new();
+                for param in &function.params {
+                    let name = rust_ident(&snake_case(&param.name), "parameter")?;
+                    let identity = format!("{interface_name}#{}.{}", function.name, param.name);
+                    values.push(self.decode_field(
+                        &format!("value.{name}"),
+                        &param.ty,
+                        &identity,
+                    )?);
+                }
+                format!("({})", values.join(", "))
+            };
+            writeln!(out, "                ::core::result::Result::Ok({decoded})")?;
+        }
+        writeln!(out, "            }}")?;
+
+        writeln!(out)?;
+        if let Some(result) = &function.result {
+            let ty = self.plain_type(result)?;
+            writeln!(
+                out,
+                "            pub fn to_response(value: &{ty}) -> {response} {{"
+            )?;
+            writeln!(out, "                {response} {{")?;
+            writeln!(
+                out,
+                "                    result: {},",
+                self.encode_field("value", result)?
+            )?;
+            writeln!(out, "                }}")?;
+            writeln!(out, "            }}")?;
+            writeln!(out)?;
+            let identity = format!("{interface_name}#{}.result", function.name);
+            writeln!(
+                out,
+                "            pub fn from_response(value: {response}) -> ::core::result::Result<{ty}, GlueError> {{"
+            )?;
+            writeln!(
+                out,
+                "                ::core::result::Result::Ok({})",
+                self.decode_field("value.result", result, &identity)?
+            )?;
+            writeln!(out, "            }}")?;
+        } else {
+            writeln!(out, "            pub fn to_response() -> {response} {{")?;
+            writeln!(out, "                {response} {{}}")?;
+            writeln!(out, "            }}")?;
+            writeln!(out)?;
+            writeln!(
+                out,
+                "            pub fn from_response(value: {response}) -> ::core::result::Result<(), GlueError> {{"
+            )?;
+            writeln!(out, "                let _ = value;")?;
+            writeln!(out, "                ::core::result::Result::Ok(())")?;
+            writeln!(out, "            }}")?;
+        }
+        Ok(())
+    }
+
     fn encode_field(&self, expr: &str, ty: &TypeExpr) -> Result<String> {
         match self.form(ty)? {
             Form::List | Form::Option => self.encode_value(expr, ty),
@@ -1162,7 +1397,7 @@ impl Emitter<'_> {
                     | TypeDefKind::Result(_)
                     | TypeDefKind::List(_)
                     | TypeDefKind::Option(_) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::to_proto({expr})"))
                     }
                 }
@@ -1210,11 +1445,11 @@ impl Emitter<'_> {
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Result(_)
                     | TypeDefKind::Enum(_) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::to_proto({expr})"))
                     }
                     TypeDefKind::List(element) if is_u8(element) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::to_proto({expr})"))
                     }
                     TypeDefKind::List(element) => {
@@ -1225,7 +1460,7 @@ impl Emitter<'_> {
                         ))
                     }
                     TypeDefKind::Option(payload) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         let wrapper = self.proto_singular_type(ty)?;
                         let wrapper_name = wrapper.rsplit("::").next().unwrap_or_default();
                         let oneof = self.proto_oneof(wrapper_name, "value")?;
@@ -1285,7 +1520,7 @@ impl Emitter<'_> {
                     | TypeDefKind::Result(_)
                     | TypeDefKind::List(_)
                     | TypeDefKind::Option(_) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::from_proto({expr})?"))
                     }
                 }
@@ -1331,11 +1566,11 @@ impl Emitter<'_> {
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Result(_) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::from_proto({expr})?"))
                     }
                     TypeDefKind::List(element) if is_u8(element) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::from_proto({expr})?"))
                     }
                     TypeDefKind::List(element) => Ok(format!(
@@ -1343,7 +1578,7 @@ impl Emitter<'_> {
                         self.decode_singular("item", element, identity)?
                     )),
                     TypeDefKind::Option(payload) => {
-                        let module = Self::plain_type_module(&name.interface, &name.name)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
                         let wrapper = self.proto_singular_type(ty)?;
                         let wrapper_name = wrapper.rsplit("::").next().unwrap_or_default();
                         let oneof = self.proto_oneof(wrapper_name, "value")?;
