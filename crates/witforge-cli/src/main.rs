@@ -3,6 +3,8 @@
 //! ```text
 //! witforge check <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
 //! witforge lock  <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
+//! witforge rust  <wit-root> --out DIR [--check] [--released PATH]
+//! witforge glue  <wit-root> --out DIR --plain-root PATH --proto-root PATH [--check] [--released PATH]
 //! ```
 
 use std::fs;
@@ -33,6 +35,8 @@ enum Command {
     Lock(Options),
     /// Generate plain Rust types and interface traits.
     Rust(RustOptions),
+    /// Generate protobuf glue conversions and function helpers.
+    Glue(GlueOptions),
 }
 
 #[derive(Debug, Args)]
@@ -43,6 +47,28 @@ struct RustOptions {
     /// Output root for generated Rust files.
     #[arg(long, value_name = "DIR")]
     out: PathBuf,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Released-version manifest; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct GlueOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: PathBuf,
+    /// Output root for generated glue files.
+    #[arg(long, value_name = "DIR")]
+    out: PathBuf,
+    /// Rust module containing the generated plain version modules.
+    #[arg(long, value_name = "PATH")]
+    plain_root: String,
+    /// Rust module containing the generated proto version modules.
+    #[arg(long, value_name = "PATH")]
+    proto_root: String,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -86,6 +112,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Check(options) => check(&options),
         Command::Lock(options) => lock(&options),
         Command::Rust(options) => rust(&options),
+        Command::Glue(options) => glue(&options),
     }
 }
 
@@ -185,6 +212,35 @@ fn rust(options: &RustOptions) -> Result<ExitCode> {
         };
     }
     emit::rust::generate(&options.root, &options.out)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn glue(options: &GlueOptions) -> Result<ExitCode> {
+    // Released plain modules are frozen; glue is current-schema output. The manifest is wired
+    // here for CLI parity with the other generators.
+    let _ = &options.released;
+    if options.check {
+        let messages = emit::glue::check(
+            &options.root,
+            &options.out,
+            &options.plain_root,
+            &options.proto_root,
+        )?;
+        for message in &messages {
+            eprintln!("error: {message}");
+        }
+        return if messages.is_empty() {
+            Ok(ExitCode::SUCCESS)
+        } else {
+            Ok(ExitCode::from(1))
+        };
+    }
+    emit::glue::generate(
+        &options.root,
+        &options.out,
+        &options.plain_root,
+        &options.proto_root,
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
