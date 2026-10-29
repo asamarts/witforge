@@ -98,17 +98,17 @@ Planning, tasking and status live under `aplan/tasks/`, and what judges them is 
 followed by `aplan verify`. Not in issues, not in a TODO comment, not in prose: a document that
 carries status becomes a second copy of it, and the second copy drifts.
 
-Task ids follow this plan's own conventions (`W4-nnn`, `W5-nnn` or `W6-nnn`). If work does not
-fit an existing task, **write the task first**, then do the work: a change with no task is a
-change nobody can find later.
+Task ids follow this plan's own conventions (`W5-nnn` or `W6-nnn`). If work does not fit an
+existing task, **write the task first**, then do the work: a change with no task is a change
+nobody can find later.
 
 ## The loop
 
 ```sh
 aplan ready                 # what can be started now: blockers all done, in a derived order
-aplan why W4-nnn            # why something cannot be started yet
+aplan why W5-nnn            # why something cannot be started yet
 # ... implement, commit ...
-aplan close W4-nnn --evidence commit:COMMIT_SHA --evidence test:REGISTERED_TEST_NAME
+aplan close W5-nnn --evidence commit:COMMIT_SHA --evidence test:REGISTERED_TEST_NAME
 aplan check && aplan verify # what CI will run
 ```
 
