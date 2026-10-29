@@ -40,8 +40,8 @@ while IFS= read -r entry; do
         echo "invalid released entry \`${entry}\` in ${MANIFEST}" >&2
         exit 1
     }
-    [[ "${entry}" == *..* ]] && {
-        echo "released entry \`${entry}\` contains \`..\`" >&2
+    [[ "${entry}" == "." || "${entry}" == *..* ]] && {
+        echo "released entry \`${entry}\` is not a simple directory name" >&2
         exit 1
     }
     [[ -z "${seen[${entry}]:-}" ]] || {
