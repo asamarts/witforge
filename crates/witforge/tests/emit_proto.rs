@@ -383,6 +383,10 @@ fn reserved_golden_is_deterministic_and_compiles() {
     let dir = proto_fixture("reserved");
     let model = model::build(&load(&dir).unwrap()).unwrap();
     let lock = WireLock::parse(&fs::read_to_string(dir.join("wire.lock")).unwrap()).unwrap();
+    assert!(
+        lock.drift(&model.members().unwrap()).unwrap().is_empty(),
+        "reserved fixture lockfile is stale"
+    );
     let first = proto::emit_major(&model, &lock).unwrap();
     let second = proto::emit_major(&model, &lock).unwrap();
     assert_eq!(first, second, "proto emission is not deterministic");
