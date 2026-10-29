@@ -33,3 +33,22 @@ ci/runner/teardown.sh [--purge]          # remove
 
 Both scripts need podman and the `gh` CLI logged in to the account that owns the repository
 (`asamarts` by default; override with `WITFORGE_GH_USER` and `WITFORGE_REPO`).
+
+
+## Gates
+
+The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
+
+- **plan**: installs the pinned aplan archive from `ci/bin`, then runs `aplan check`,
+  `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and `aplan check-docs`.
+- **generated**: builds the CLI, generates all three emitters into a temporary tree with
+  `ci/check-generated.sh`, runs `--check` on each, and runs `ci/check-release-freeze.sh` against
+  the versions fixture and the push/PR base commit.
+- **buf** (workflow dispatch only): optional `buf breaking` against the generated proto output.
+  It is disabled by default because the lockfile is the normative wire check; the manual input is
+  exposed for consumers that also run `buf`.
+
+The aplan binary is 0.5.0-dev, committed as `ci/bin/aplan.gz` with a checksum because no published
+release with this plan surface exists yet. Replace both files together when such a release is
+available. The runner is Linux x86_64 only while the repository is private; the archive is a
+static musl build so it does not depend on the image's glibc.

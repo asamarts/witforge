@@ -16,12 +16,11 @@ while the reverse directions are lossy. witforge exists because no tool performs
 projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
 tie their output to a runtime.
 
-> **Status: pre-release, private.** The loading, subset-checker, internal-model, and v2
-> append-only lockfile slices are implemented, with clap-based `witforge check` and
-> `witforge lock`, `--first`, `--against`, and `--released` handling. The
-> Rust/protobuf/glue emitter conventions are specified in
-> [docs/design/emitters.md](docs/design/emitters.md); implementation of the emitters comes next.
-> See [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
+> **Status: pre-release, private.** The loading, subset-checker, internal-model, v2
+> append-only lockfile, Rust, protobuf, and glue emitters are implemented, with clap-based
+> `witforge check`, `lock`, `rust`, `proto`, and `glue` commands. CI also gates the aplan plan,
+> generated-output drift, release freezes, and an optional `buf breaking` check. See
+> [ROADMAP.md](ROADMAP.md). witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
 ## Plan

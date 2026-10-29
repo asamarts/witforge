@@ -598,6 +598,10 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   `v<major>.proto`, and the per-major glue module are shared across versions and may change when
   a new minor is added; their released members are protected by the lockfile, `--check`, and
   proto compatibility checks. `--check` is the tool-side verification.
+- witforge's CI runs a pinned `aplan` check/verify/export gate, `ci/check-generated.sh` for all
+  three emitters, and `ci/check-release-freeze.sh` for released directories and manifest entries.
+  `ci/check-buf.sh` is an optional extra `buf breaking` check for consumers that use it; the
+  lockfile remains the normative wire gate.
 - Exit codes: `0` success; `1` contract, lockfile, or output drift; `2` usage, IO, parse,
   released-directory refusal, or internal error.
 - The CLI uses `clap`; every command supports `--help`, and the binary supports `--version`.

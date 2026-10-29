@@ -39,8 +39,8 @@ directories are frozen as a whole, which covers those cases.
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
   released members are protected by the lockfile and `--check`, and the proto schema is
   append-only. CI enforces that nothing under the version directory changes against the merge
-  base, and the consumer's CI freezes the version's committed generated files and verifies the
-  shared output with `--check`.
+  base with `ci/check-release-freeze.sh`, validates the manifest, and verifies shared output with
+  `ci/check-generated.sh`; consumers can use the same scripts.
 - `lock` refuses to modify a released version directory. `check`, `rust`, and `proto` are
   allowed; they verify or reproduce the frozen contract.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the

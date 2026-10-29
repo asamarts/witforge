@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      buf_breaking:
+        description: Run the optional buf breaking check
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -70,3 +76,79 @@ jobs:
           toolchain: "1.88"
       # 1.88 is the floor set by wit-parser.
       - run: cargo test --workspace --locked
+
+  plan:
+    name: aplan plan and evidence
+    runs-on: [self-hosted, linux, witforge]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+      - run: ci/install-aplan.sh "$RUNNER_TEMP/aplan"
+      - run: '"$RUNNER_TEMP/aplan" check'
+      - run: '"$RUNNER_TEMP/aplan" verify'
+      - run: '"$RUNNER_TEMP/aplan" export-agents-md --check AGENTS.md'
+      - run: '"$RUNNER_TEMP/aplan" check-docs'
+
+  generated:
+    name: generated output and release freeze
+    runs-on: [self-hosted, linux, witforge]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+      - run: cargo build --locked -p witforge-cli
+      - name: Determine freeze base
+        id: base
+        shell: bash
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            base="${{ github.event.before }}"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "cannot resolve freeze base ${base}" >&2
+            exit 1
+          fi
+          echo "sha=${base}" >> "$GITHUB_OUTPUT"
+      - run: ci/check-generated.sh
+        env:
+          WITFORGE: ${{ github.workspace }}/target/debug/witforge
+      - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit "${{ steps.base.outputs.sha }}"
+
+  buf:
+    name: optional buf breaking
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.buf_breaking }}
+    runs-on: [self-hosted, linux, witforge]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+      - run: cargo build --locked -p witforge-cli
+      - run: ci/check-buf.sh
+        env:
+          WITFORGE: ${{ github.workspace }}/target/debug/witforge
