@@ -39,3 +39,11 @@ adaptations needed to express it in WIT instead of silently editing them away:
 6. **The checked-in lockfile is v2.** It is produced by the current CLI so `witforge check`
    exercises the fixture end to end, including canonical type tokens, method ids, and
    parameters. Regenerate it with `witforge lock` if the derived contract changes.
+
+## End-to-end validation
+
+The W5-001 integration test copies this contract into a temporary `v0.1` version root and runs
+`check`, `rust`, `proto`, and `glue`, verifies each generator with `--check`, then compiles the
+generated plain Rust and glue against prost/pbjson and round-trips the adapter and analyzer
+requests/responses through binary and proto3-JSON. It found no additional contract gap beyond the
+adaptations recorded above.

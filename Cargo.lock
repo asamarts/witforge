@@ -964,6 +964,13 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "pbjson",
+ "pbjson-build",
+ "prost",
+ "prost-build",
+ "protox",
+ "serde",
+ "serde_json",
  "witforge",
 ]
 
