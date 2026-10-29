@@ -17,6 +17,8 @@ anyhow.workspace = true
 
 [dev-dependencies]
 proptest = "1.10"
+prost = "0.14"
+prost-build = "0.14"
 protox = "0.10"
 
 [lints]

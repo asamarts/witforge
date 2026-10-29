@@ -1,0 +1,78 @@
+/// Glue conversion coverage.
+package example:glue@0.4.0;
+
+interface types {
+    record small {
+        value: string,
+    }
+
+    record numbers {
+        u8-value: u8,
+        u16-value: u16,
+        s8-value: s8,
+        s16-value: s16,
+    }
+
+    enum status {
+        one,
+        two,
+    }
+
+    variant choice {
+        small(small),
+        empty,
+    }
+
+    flags caps {
+        a,
+        b,
+    }
+
+    type small-list = list<small>;
+    type maybe-small = option<small>;
+    type maybe-string = option<string>;
+    type maybe-list = option<list<small>>;
+    type maybe-maybe = option<option<string>>;
+    type outcome = result<small, string>;
+    type small-alias = small;
+    type small-list-alias = small-list;
+    type maybe-string-alias = maybe-string;
+
+    record all {
+        numbers: numbers,
+        status: status,
+        choice: choice,
+        %flags: caps,
+        bytes: list<u8>,
+        items: list<small>,
+        maybe: maybe-string,
+        maybe-small: maybe-small,
+        maybe-list: maybe-list,
+        maybe-maybe: maybe-maybe,
+        outcome: outcome,
+        nested: list<option<result<u8, string>>>,
+        alias-small: small-alias,
+        alias-list: small-list-alias,
+        alias-maybe: maybe-string-alias,
+    }
+
+    variant singular {
+        maybe-string(maybe-string),
+        maybe-small(maybe-small),
+        maybe-list(maybe-list),
+        maybe-maybe(maybe-maybe),
+    }
+}
+
+/// Interface-local aliases through `use`.
+interface alias {
+    use types.{small as local-small};
+    use types.{small-list as local-list};
+    use types.{maybe-string as local-maybe};
+
+    record holder {
+        one: local-small,
+        many: local-list,
+        maybe: local-maybe,
+    }
+}
