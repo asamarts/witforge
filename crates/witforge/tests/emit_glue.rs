@@ -325,6 +325,8 @@ fn plan_uses_highest_minor_and_validates_module_roots() {
         "crate::foo-bar",
         "crate::r#self",
         "crate::super",
+        "crate::_",
+        "crate::r#_",
     ] {
         assert!(
             glue::validate_module_root(invalid).is_err(),

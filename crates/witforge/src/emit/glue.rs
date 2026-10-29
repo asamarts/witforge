@@ -150,16 +150,7 @@ pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<Gener
         files.insert(format!("v{major}.rs"), generated)?;
         majors.push(*major);
     }
-    let mut root = String::new();
-    writeln!(root, "{HEADER}")?;
-    writeln!(root, "// source: {namespace}:{name}")?;
-    writeln!(root)?;
-    root.push_str(GLUE_ERROR);
-    for major in majors {
-        writeln!(root)?;
-        writeln!(root, "pub mod v{major};")?;
-    }
-    files.insert("mod.rs", root)?;
+    files.insert("mod.rs", root_source(&namespace, &name, &majors)?)?;
     Ok(files)
 }
 
@@ -223,6 +214,7 @@ pub fn validate_module_root(root: &str) -> Result<()> {
         }
         let identifier = segment.strip_prefix("r#").unwrap_or(segment);
         if identifier.is_empty()
+            || identifier == "_"
             || identifier
                 .chars()
                 .next()
@@ -297,13 +289,13 @@ const RUST_KEYWORDS: &[&str] = &[
 ///
 /// Returns an error when a generated module name is invalid.
 pub fn emit_root(model: &Model, majors: &[u64]) -> Result<String> {
+    root_source(&model.package.namespace, &model.package.name, majors)
+}
+
+fn root_source(namespace: &str, name: &str, majors: &[u64]) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{HEADER}")?;
-    writeln!(
-        out,
-        "// source: {}:{}",
-        model.package.namespace, model.package.name
-    )?;
+    writeln!(out, "// source: {namespace}:{name}")?;
     writeln!(out)?;
     out.push_str(GLUE_ERROR);
     for major in majors {
