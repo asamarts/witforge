@@ -33,10 +33,14 @@ explicit release-owner action.
 
 ## Publish
 
-- [ ] Set `publish = true` in `crates/witforge/Cargo.toml` and
+- [x] Set `publish = true` in `crates/witforge/Cargo.toml` and
       `crates/witforge-cli/Cargo.toml`.
-- [ ] Verify `cargo package -p witforge` and `cargo package -p witforge-cli`.
+- [x] Verify `cargo package -p witforge` and
+      `cargo publish --dry-run -p witforge --allow-dirty`.
 - [ ] `cargo publish -p witforge`
+- [ ] After the library is visible on crates.io, verify `cargo package -p witforge-cli`.
+      The CLI has a registry dependency on `witforge = "0.1.0"`, so it cannot be packaged before
+      the library publish completes.
 - [ ] `cargo publish -p witforge-cli`
 - [ ] Tag the published commit `v0.1.0` and create the GitHub release with the changelog entry.
 - [ ] Verify the published crates install:

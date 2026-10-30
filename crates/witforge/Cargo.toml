@@ -9,7 +9,7 @@ repository.workspace = true
 readme = "../../README.md"
 keywords = ["wit", "wasm", "protobuf", "codegen", "idl"]
 categories = ["development-tools", "wasm", "encoding"]
-publish = false
+publish = true
 
 [dependencies]
 wit-parser.workspace = true
