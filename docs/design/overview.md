@@ -316,9 +316,9 @@ range of three runs.
 
 | Fixture | Emitter | Runs | Wall time | Output |
 |---|---|---:|---:|---:|
-| `contracts/alint-plugin` as `v0.1` | `rust` | 5 | 12–18 ms (median 16) | 8.6 KB, 2 files |
-| `contracts/alint-plugin` as `v0.1` | `proto` | 5 | 14–21 ms (median 19) | 7.6 KB, 1 file |
-| `contracts/alint-plugin` as `v0.1` | `glue` | 5 | 10–47 ms (median 22) | 50 KB, 2 files |
+| `contracts/alint-plugin` as `v0.1` | `rust` | 5 | 3–7 ms (median 3) | 7.7 KB, 2 files |
+| `contracts/alint-plugin` as `v0.1` | `proto` | 5 | 3 ms | 6.6 KB, 1 file |
+| `contracts/alint-plugin` as `v0.1` | `glue` | 5 | 3 ms | 45.6 KB, 2 files |
 | `fixtures/versions/wit` (`v0.1`, `v0.2`) | `rust` | 3 | 13 ms | 0.8 KB, 3 files |
 | `fixtures/versions/wit` (`v0.1`, `v0.2`) | `proto` | 3 | 8–10 ms | 0.4 KB, 1 file |
 | `fixtures/versions/wit` (`v0.1`, `v0.2`) | `glue` | 3 | 5–15 ms | 3.5 KB, 2 files |

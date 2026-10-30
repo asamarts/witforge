@@ -1,246 +1,274 @@
-/// Contract derived from alint's plugin API, pending the committed WIT draft.
+/// The alint plugin contract, draft 0.1.0.
+///
+/// Hosts push all inputs. The contract has no host callbacks, resources, or
+/// handles; rows are flat value node lists because WIT has no recursive types.
 package alint:plugin@0.1.0;
 
-/// Types shared by the adapter and analyzer roles.
+/// Shared contract types.
+@since(version = 0.1.0)
 interface types {
-    /// A repository resource named by the host.
-    record resource-info {
+    /// A confined repository resource.
+    @since(version = 0.1.0)
+    record repo-resource {
         /// Normalized `/`-separated repository path.
         path: string,
         /// Whether the host selected it from the walked index.
         indexed: bool,
-        /// The index position when indexed.
+        /// Index position when `indexed` is true.
         index: option<u32>,
     }
 
-    /// One node of a flat value. Containers name their children by index.
+    /// One flat value node. Containers name children by index.
+    @since(version = 0.1.0)
     variant node {
-        /// JSON null.
+        /// Null.
         null,
-        /// A boolean.
-        boolean(bool),
-        /// A number as its source wrote it.
+        /// Boolean.
+        %bool(bool),
+        /// Number lexeme as written.
         number(string),
-        /// A string.
-        text(string),
+        /// String.
+        %string(string),
         /// Bytes.
         bytes(list<u8>),
-        /// A normalized repository path.
+        /// Normalized repository path.
         path(string),
-        /// A list of child node indices.
+        /// List children.
         %list(list<u32>),
-        /// A record of name to child node index.
-        %record(list<record-entry>),
+        /// Record fields in source order.
+        %record(list<record-field>),
     }
 
-    /// One record field in a flat value.
-    record record-entry {
-        /// The field name.
+    /// One record field and its child node.
+    @since(version = 0.1.0)
+    record record-field {
+        /// Field name.
         name: string,
-        /// The child node index.
-        node: u32,
+        /// Child node index.
+        child: u32,
     }
 
-    /// A flat value: node zero is the root, children follow their parent.
+    /// A flat value: node 0 is the root, children follow parents.
+    @since(version = 0.1.0)
     record flat-value {
-        /// The node list.
+        /// Pre-order nodes.
         nodes: list<node>,
     }
 
-    /// What the adapter found at one row.
+    /// One pointer segment.
+    @since(version = 0.1.0)
+    variant pointer-segment {
+        /// Object key.
+        key(string),
+        /// Array index.
+        index(u64),
+    }
+
+    /// One row state.
+    @since(version = 0.1.0)
     variant row-state {
         /// A value.
         value(flat-value),
         /// A structural key with no value.
         key,
-        /// A missing value.
+        /// The location does not exist.
         missing,
-        /// An error at this row.
+        /// The location exists but could not be extracted.
         error(string),
     }
 
-    /// One step of a row pointer.
-    variant pointer-segment {
-        /// A key step.
-        key(string),
-        /// An index step.
-        index(u64),
-    }
-
-    /// One row with the provenance the contract exposes.
+    /// One adapter row.
+    @since(version = 0.1.0)
     record row {
-        /// The resource.
-        %resource: resource-info,
-        /// The structural pointer, when known.
+        /// Resource provenance.
+        %resource: repo-resource,
+        /// Structural pointer when known.
         pointer: option<list<pointer-segment>>,
-        /// The row label, when known.
+        /// Extractor-chosen label.
         label: option<string>,
-        /// The row ordinal.
+        /// Emission order within the resource.
         ordinal: u32,
-        /// The half-open byte span start, when known.
+        /// Half-open byte start.
         start: option<u64>,
-        /// The half-open byte span end, when known.
+        /// Half-open byte end.
         end: option<u64>,
-        /// The row state.
+        /// Row state.
         state: row-state,
-        /// The value before a transform, in the same flat form.
+        /// Value before a transform.
         original: option<flat-value>,
     }
 
-    /// One related location on a finding.
-    record related-location {
-        /// The related path.
-        path: string,
-        /// The related label.
-        label: string,
-        /// The one-based line, when known.
-        line: option<u32>,
-        /// The one-based column, when known.
-        column: option<u32>,
-    }
-
-    /// A finding produced by an analyzer.
-    record finding {
-        /// The finding path.
-        path: option<string>,
-        /// The finding message.
-        message: string,
-        /// The one-based line, when known.
-        line: option<u32>,
-        /// The one-based column, when known.
-        column: option<u32>,
-        /// Related locations.
-        related: list<related-location>,
-        /// The baseline identity.
-        baseline-key: option<string>,
-        /// Whether the finding is sensitive.
-        sensitive: bool,
-        /// The analysis-failure message.
-        analysis-failure: option<string>,
-        /// One of `resource-read`, `resource-parse`, `resource-limit`, or `resource-unavailable`.
-        failure-kind: option<string>,
-        /// Whether the finding is not fixable.
-        not-fixable: bool,
-    }
-
-    /// Resource and adapter limits pushed by the host.
-    record limits {
-        /// The maximum number of rows.
-        max-rows: u64,
-    }
-
-    /// The input to one adapter extraction.
-    record adapter-input {
-        /// The resource.
-        %resource: resource-info,
-        /// The resource bytes.
-        bytes: list<u8>,
-        /// The limits.
-        limits: limits,
-    }
-
-    /// What one adapter produced for one resource.
+    /// Adapter output.
+    @since(version = 0.1.0)
     record adapter-output {
-        /// The rows.
+        /// Rows.
         rows: list<row>,
-        /// Names of typed values a string-only adapter skipped.
+        /// Non-string kinds skipped by a string-only adapter.
         non-strings: list<string>,
         /// Informational notes.
         notes: list<string>,
     }
 
-    /// The limit values of an adapter or analyzer limit failure.
-    record limit-error {
-        /// The configured limit.
-        limit: u64,
-        /// The reached count.
-        reached: u64,
+    /// Adapter input.
+    @since(version = 0.1.0)
+    record adapter-input {
+        /// Resource.
+        %resource: repo-resource,
+        /// Resource bytes.
+        bytes: list<u8>,
+        /// Row limit.
+        max-rows: u32,
     }
 
-    /// Why an adapter produced no rows.
+    /// Adapter failure.
+    @since(version = 0.1.0)
     variant adapter-error {
-        /// A parse error.
+        /// Parse failure.
         parse(string),
-        /// A limit failure.
+        /// Row limit.
         limit(limit-error),
     }
 
-    /// The input to one analyzer invocation.
-    record analyzer-input {
-        /// The configured rule id.
-        rule-id: string,
-        /// The host-pushed rows in canonical order.
-        rows: list<row>,
-        /// The limits.
-        limits: limits,
+    /// A reached limit.
+    @since(version = 0.1.0)
+    record limit-error {
+        /// Configured limit.
+        limit: u32,
+        /// Reached count.
+        reached: u32,
     }
 
-    /// Why an analyzer could not produce findings.
+    /// Related location.
+    @since(version = 0.1.0)
+    record related-location {
+        /// Path.
+        path: string,
+        /// Label.
+        label: string,
+        /// 1-based line.
+        line: option<u32>,
+        /// 1-based column.
+        column: option<u32>,
+    }
+
+    /// Analyzer finding.
+    @since(version = 0.1.0)
+    record finding {
+        /// Primary path.
+        path: option<string>,
+        /// Message.
+        message: string,
+        /// 1-based line.
+        line: option<u32>,
+        /// 1-based column.
+        column: option<u32>,
+        /// Related locations.
+        related: list<related-location>,
+        /// Stable baseline key.
+        baseline-key: option<string>,
+        /// Sensitive evidence.
+        sensitive: bool,
+        /// Analysis-failure message.
+        analysis-failure: option<string>,
+        /// Analysis-failure kind.
+        failure-kind: option<string>,
+        /// Cannot be auto-fixed.
+        not-fixable: bool,
+    }
+
+    /// Analyzer input.
+    @since(version = 0.1.0)
+    record analyzer-input {
+        /// Rule id.
+        rule-id: string,
+        /// Host-pushed rows.
+        rows: list<row>,
+        /// Finding limit.
+        max-findings: u32,
+    }
+
+    /// Analyzer failure.
+    @since(version = 0.1.0)
     variant analyzer-error {
         /// Invalid input.
         invalid-input(string),
-        /// A limit failure.
+        /// Finding limit.
         limit(limit-error),
     }
 
-    /// Capabilities a host advertises for a plugin.
+    /// Capabilities a plugin may request.
+    @since(version = 0.1.0)
     record capabilities {
-        /// Whether spawning a user command is allowed.
+        /// May spawn a user command.
         spawn-user-command: bool,
-        /// Whether host keyring access is allowed.
+        /// May read the host keyring.
         host-keyring: bool,
+    }
+
+    /// Plugin metadata.
+    @since(version = 0.1.0)
+    record plugin-info {
+        /// Name.
+        name: string,
+        /// Version.
+        version: string,
+        /// Supported contract range.
+        contract: string,
+        /// Requested capabilities.
+        capabilities: capabilities,
     }
 }
 
-/// The host-pushed resource adapter role.
+/// Host-pushed resource adapter.
+@since(version = 0.1.0)
 interface adapter-api {
-    use types.{
-        adapter-error,
-        adapter-input,
-        adapter-output,
-        capabilities,
-        resource-info,
-    };
+    use types.{adapter-error, adapter-input, adapter-output};
 
-    /// The adapter id.
+    /// Stable adapter id.
+    @since(version = 0.1.0)
     id: func() -> string;
 
-    /// Whether the adapter redacts its values by default.
+    /// Whether parse errors may quote sensitive source material.
+    @since(version = 0.1.0)
     redacts-by-default: func() -> bool;
 
-    /// The host capabilities visible to the adapter.
-    get-capabilities: func() -> capabilities;
-
-    /// Extract rows from one resource.
+    /// Decode one resource.
+    @since(version = 0.1.0)
     extract: func(input: adapter-input) -> result<adapter-output, adapter-error>;
 }
 
-/// The pure relation analyzer role.
+/// Host-pushed relation analyzer.
+@since(version = 0.1.0)
 interface analyzer-api {
-    use types.{
-        analyzer-error,
-        analyzer-input,
-        capabilities,
-        finding,
-        row,
-    };
+    use types.{analyzer-error, analyzer-input, finding};
 
-    /// The analyzer id.
+    /// Stable analyzer id.
+    @since(version = 0.1.0)
     id: func() -> string;
 
-    /// The host capabilities visible to the analyzer.
-    get-capabilities: func() -> capabilities;
-
     /// Analyze host-pushed rows.
+    @since(version = 0.1.0)
     analyze: func(input: analyzer-input) -> result<list<finding>, analyzer-error>;
 }
 
-/// The adapter role.
+/// Adapter plugin world.
+@since(version = 0.1.0)
 world adapter {
+    /// Shared contract types.
+    @since(version = 0.1.0)
+    import types;
+    /// Adapter entry points.
+    @since(version = 0.1.0)
     export adapter-api;
 }
 
-/// The analyzer role.
+/// Analyzer plugin world.
+@since(version = 0.1.0)
 world analyzer {
+    /// Shared contract types.
+    @since(version = 0.1.0)
+    import types;
+    /// Analyzer entry points.
+    @since(version = 0.1.0)
     export analyzer-api;
 }

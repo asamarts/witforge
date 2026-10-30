@@ -1,4 +1,4 @@
-//! Acceptance tests for the representative alint plugin contract fixture.
+//! Acceptance tests for the committed alint plugin contract fixture.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,23 +36,23 @@ fn alint_contract_passes_subset_and_model() {
     assert_eq!(
         type_names,
         [
-            "resource-info",
+            "repo-resource",
             "node",
-            "record-entry",
+            "record-field",
             "flat-value",
-            "row-state",
             "pointer-segment",
+            "row-state",
             "row",
+            "adapter-output",
+            "adapter-input",
+            "adapter-error",
+            "limit-error",
             "related-location",
             "finding",
-            "limits",
-            "adapter-input",
-            "adapter-output",
-            "limit-error",
-            "adapter-error",
             "analyzer-input",
             "analyzer-error",
             "capabilities",
+            "plugin-info",
         ]
     );
 
@@ -71,17 +71,14 @@ fn alint_contract_passes_subset_and_model() {
         .iter()
         .map(|function| function.name.as_str())
         .collect();
-    assert_eq!(
-        adapter_functions,
-        ["id", "redacts-by-default", "get-capabilities", "extract"]
-    );
+    assert_eq!(adapter_functions, ["id", "redacts-by-default", "extract"]);
     let analyzer = model.interface("analyzer-api").unwrap();
     let analyzer_functions: Vec<&str> = analyzer
         .functions
         .iter()
         .map(|function| function.name.as_str())
         .collect();
-    assert_eq!(analyzer_functions, ["id", "get-capabilities", "analyze"]);
+    assert_eq!(analyzer_functions, ["id", "analyze"]);
 }
 
 #[test]
@@ -103,7 +100,7 @@ fn alint_contract_shapes_and_members_are_stable() {
     assert_eq!(
         node_cases,
         [
-            "null", "boolean", "number", "text", "bytes", "path", "list", "record"
+            "null", "bool", "number", "string", "bytes", "path", "list", "record"
         ]
     );
 
@@ -128,7 +125,7 @@ fn alint_contract_shapes_and_members_are_stable() {
     );
 
     let members = model.members().unwrap();
-    assert_eq!(members.len(), 69);
+    assert_eq!(members.len(), 70);
     let find = |key: &str| {
         members
             .iter()
@@ -137,13 +134,13 @@ fn alint_contract_shapes_and_members_are_stable() {
     };
     let resource = find("alint:plugin/types/row.resource");
     assert_eq!(resource.kind, MemberKind::Field);
-    assert_eq!(resource.ty.as_deref(), Some("types/resource-info"));
+    assert_eq!(resource.ty.as_deref(), Some("types/repo-resource"));
     let list = find("alint:plugin/types/node.list");
     assert_eq!(list.kind, MemberKind::VariantCase);
     assert_eq!(list.ty.as_deref(), Some("list<u32>"));
     let record = find("alint:plugin/types/node.record");
     assert_eq!(record.kind, MemberKind::VariantCase);
-    assert_eq!(record.ty.as_deref(), Some("list<types/record-entry>"));
+    assert_eq!(record.ty.as_deref(), Some("list<types/record-field>"));
     let extract = find("alint:plugin/adapter-api.extract");
     assert_eq!(extract.kind, MemberKind::Method);
     assert_eq!(
@@ -171,26 +168,30 @@ fn alint_contract_shapes_and_members_are_stable() {
         Some("bool")
     );
     assert_eq!(
-        find("alint:plugin/types/limits.max-rows").ty.as_deref(),
-        Some("u64")
+        find("alint:plugin/types/adapter-input.max-rows")
+            .ty
+            .as_deref(),
+        Some("u32")
+    );
+    assert_eq!(
+        find("alint:plugin/types/plugin-info.capabilities")
+            .ty
+            .as_deref(),
+        Some("types/capabilities")
     );
     assert_eq!(
         find("alint:plugin/adapter-api.id").ty.as_deref(),
         Some("string")
     );
-    assert_eq!(
-        find("alint:plugin/analyzer-api.get-capabilities")
-            .ty
-            .as_deref(),
-        Some("types/capabilities")
-    );
 }
 
 #[test]
-fn alint_contract_source_note_records_adaptations() {
+fn alint_contract_source_note_records_consumption() {
     let note = fs::read_to_string(fixture_dir().join("README.md")).unwrap();
-    assert!(note.contains("ADR-0024"), "{note}");
-    assert!(note.contains("a13703a25a83735c84bc2ad577a397b02d4d08f6"));
-    assert!(note.contains("Design findings"));
-    assert!(note.contains("No subset refusal was required"));
+    assert!(
+        note.contains("alint `wit/alint-plugin/0.1.0/plugin.wit`"),
+        "{note}"
+    );
+    assert!(note.contains("Consumption note"), "{note}");
+    assert!(note.contains("No contract exception"), "{note}");
 }

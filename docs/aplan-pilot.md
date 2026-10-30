@@ -98,9 +98,9 @@ The first plan was audited before implementation and corrected:
 The alint end-to-end test now also exercises the hostile cases that golden output alone cannot
 prove:
 
-- absent required scalars, bytes, and message fields (`resource-info.path`, `finding.message`,
-  `limits.max-rows`, `row.resource`, `adapter-input.bytes`) are `MissingField`;
-- optional `resource-info.index`, `row.pointer`, `row.label`, `finding.path`, and optional
+- absent required scalars, bytes, and message fields (`repo-resource.path`, `finding.message`,
+  `adapter-input.max-rows`, `row.resource`, `adapter-input.bytes`) are `MissingField`;
+- optional `repo-resource.index`, `row.pointer`, `row.label`, `finding.path`, and optional
   timestamp fields accept absence without becoming missing;
 - required repeated collections accept empty lists;
 - unset `Node`, `RowState`, and `AdapterError` oneofs are `UnknownCase`;

@@ -1,18 +1,12 @@
 use glue::GlueError;
-use glue::v0::adapter_api::functions::{
-    extract, get_capabilities as adapter_caps, id as adapter_id, redacts_by_default,
-};
-use glue::v0::analyzer_api::functions::{
-    analyze, get_capabilities as analyzer_caps, id as analyzer_id,
-};
+use glue::v0::adapter_api::functions::{extract, id as adapter_id, redacts_by_default};
+use glue::v0::analyzer_api::functions::{analyze, id as analyzer_id};
 use glue::v0::types::{
-    adapter_error, adapter_input, adapter_output, finding, limits, node, resource_info, row,
-    row_state,
+    adapter_error, adapter_input, adapter_output, finding, node, repo_resource, row, row_state,
 };
 use plain::v0_1::types::{
-    AdapterError, AdapterInput, AdapterOutput, AnalyzerError, AnalyzerInput, Capabilities, Finding,
-    FlatValue, LimitError, Limits, Node, PointerSegment, RecordEntry, RelatedLocation, ResourceInfo,
-    Row, RowState,
+    AdapterError, AdapterInput, AdapterOutput, AnalyzerError, AnalyzerInput, Finding, FlatValue,
+    LimitError, Node, PointerSegment, RecordField, RelatedLocation, RepoResource, Row, RowState,
 };
 use proto::v0 as p;
 
@@ -30,7 +24,7 @@ where
 }
 
 fn main() {
-    let resource = ResourceInfo {
+    let resource = RepoResource {
         path: "src/lib.rs".to_string(),
         indexed: true,
         index: Some(3),
@@ -38,15 +32,15 @@ fn main() {
     let flat = FlatValue {
         nodes: vec![
             Node::Null,
-            Node::Boolean(true),
+            Node::Bool(true),
             Node::Number("12".to_string()),
-            Node::Text("text".to_string()),
+            Node::String("text".to_string()),
             Node::Bytes(vec![0, 1, 2]),
             Node::Path("src/lib.rs".to_string()),
             Node::List(vec![0, 1]),
-            Node::Record(vec![RecordEntry {
+            Node::Record(vec![RecordField {
                 name: "field".to_string(),
-                node: 2,
+                child: 2,
             }]),
         ],
     };
@@ -71,26 +65,34 @@ fn main() {
     let input = AdapterInput {
         resource: resource.clone(),
         bytes: vec![b'{', b'}'],
-        limits: Limits { max_rows: 100 },
-    };
-    let capabilities = Capabilities {
-        spawn_user_command: true,
-        host_keyring: false,
+        max_rows: 100,
     };
 
-    let resource_proto = resource_info::to_proto(&resource);
-    assert_eq!(resource_info::from_proto(roundtrip(&resource_proto)).unwrap(), resource);
+    let resource_proto = repo_resource::to_proto(&resource);
+    assert_eq!(
+        repo_resource::from_proto(roundtrip(&resource_proto)).unwrap(),
+        resource
+    );
     let node_proto = node::to_proto(&flat.nodes[6]);
     assert_eq!(node::from_proto(roundtrip(&node_proto)).unwrap(), flat.nodes[6]);
 
     let mut missing = resource_proto.clone();
     missing.path = None;
     assert!(matches!(
-        resource_info::from_proto(missing),
+        repo_resource::from_proto(missing),
         Err(GlueError::MissingField {
-            field: "types/resource-info.path"
+            field: "types/repo-resource.path"
         })
     ));
+    let optional_resource = p::TypesRepoResource {
+        path: Some("optional".to_string()),
+        indexed: Some(false),
+        index: None,
+    };
+    assert_eq!(
+        repo_resource::from_proto(optional_resource).unwrap().index,
+        None
+    );
     let mut unknown = node_proto;
     unknown.witforge_value = None;
     assert!(matches!(
@@ -99,24 +101,6 @@ fn main() {
             message: "types/node"
         })
     ));
-
-    let mut missing_required = resource_proto.clone();
-    missing_required.path = None;
-    assert!(matches!(
-        resource_info::from_proto(missing_required),
-        Err(GlueError::MissingField {
-            field: "types/resource-info.path"
-        })
-    ));
-    let optional_resource = p::TypesResourceInfo {
-        path: Some("optional".to_string()),
-        indexed: Some(false),
-        index: None,
-    };
-    assert_eq!(
-        resource_info::from_proto(optional_resource).unwrap().index,
-        None
-    );
 
     let finding_proto = finding::to_proto(&Finding {
         path: None,
@@ -144,16 +128,6 @@ fn main() {
     };
     assert_eq!(finding::from_proto(optional_finding).unwrap().path, None);
 
-    let limits_proto = limits::to_proto(&Limits { max_rows: 3 });
-    let mut missing_limit = limits_proto;
-    missing_limit.max_rows = None;
-    assert!(matches!(
-        limits::from_proto(missing_limit),
-        Err(GlueError::MissingField {
-            field: "types/limits.max-rows"
-        })
-    ));
-
     let row_proto = row::to_proto(&row);
     let mut missing_resource = row_proto.clone();
     missing_resource.resource = None;
@@ -173,12 +147,20 @@ fn main() {
     assert_eq!(decoded_row.label, None);
 
     let input_proto = adapter_input::to_proto(&input);
-    let mut missing_bytes = input_proto;
+    let mut missing_bytes = input_proto.clone();
     missing_bytes.bytes = None;
     assert!(matches!(
         adapter_input::from_proto(missing_bytes),
         Err(GlueError::MissingField {
             field: "types/adapter-input.bytes"
+        })
+    ));
+    let mut missing_max_rows = input_proto;
+    missing_max_rows.max_rows = None;
+    assert!(matches!(
+        adapter_input::from_proto(missing_max_rows),
+        Err(GlueError::MissingField {
+            field: "types/adapter-input.max-rows"
         })
     ));
     let output_proto = adapter_output::to_proto(&AdapterOutput {
@@ -208,20 +190,23 @@ fn main() {
     ));
 
     assert_eq!(adapter_id::METHOD, p::AdapterApiMethod::Id);
-    assert_eq!(redacts_by_default::METHOD, p::AdapterApiMethod::RedactsByDefault);
-    assert_eq!(adapter_caps::METHOD, p::AdapterApiMethod::GetCapabilities);
-    assert_eq!(extract::METHOD, p::AdapterApiMethod::Extract);
-    assert_eq!(adapter_id::from_request(roundtrip(&adapter_id::to_request())).unwrap(), ());
     assert_eq!(
-        adapter_id::from_response(roundtrip(&adapter_id::to_response(&"adapter".to_string()))).unwrap(),
+        redacts_by_default::METHOD,
+        p::AdapterApiMethod::RedactsByDefault
+    );
+    assert_eq!(extract::METHOD, p::AdapterApiMethod::Extract);
+    assert_eq!(
+        adapter_id::from_request(roundtrip(&adapter_id::to_request())).unwrap(),
+        ()
+    );
+    assert_eq!(
+        adapter_id::from_response(roundtrip(&adapter_id::to_response(&"adapter".to_string())))
+            .unwrap(),
         "adapter".to_string()
     );
     assert!(
-        redacts_by_default::from_response(roundtrip(&redacts_by_default::to_response(&true))).unwrap()
-    );
-    assert_eq!(
-        adapter_caps::from_response(roundtrip(&adapter_caps::to_response(&capabilities))).unwrap(),
-        capabilities.clone()
+        redacts_by_default::from_response(roundtrip(&redacts_by_default::to_response(&true)))
+            .unwrap()
     );
     let request = extract::to_request(&input);
     assert_eq!(extract::from_request(roundtrip(&request)).unwrap(), input);
@@ -264,23 +249,15 @@ fn main() {
     let analyzer_input = AnalyzerInput {
         rule_id: "rule".to_string(),
         rows: vec![row],
-        limits: Limits { max_rows: 100 },
+        max_findings: 100,
     };
 
     assert_eq!(analyzer_id::METHOD, p::AnalyzerApiMethod::Id);
-    assert_eq!(
-        analyzer_caps::METHOD,
-        p::AnalyzerApiMethod::GetCapabilities
-    );
     assert_eq!(analyze::METHOD, p::AnalyzerApiMethod::Analyze);
     assert_eq!(
         analyzer_id::from_response(roundtrip(&analyzer_id::to_response(&"analyzer".to_string())))
             .unwrap(),
         "analyzer".to_string()
-    );
-    assert_eq!(
-        analyzer_caps::from_response(roundtrip(&analyzer_caps::to_response(&capabilities))).unwrap(),
-        capabilities
     );
     let analyze_request = analyze::to_request(&analyzer_input);
     assert_eq!(
