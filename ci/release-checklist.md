@@ -6,7 +6,10 @@ publication path for the private 0.1.0 candidate.
 ## Before publishing
 
 - [ ] alint's plugin contract consumes the candidate and its CI is green against the generated
-      plain Rust, proto, and glue.
+      plain Rust, proto, and glue. The candidate consumer branch is alint PR #409
+      (`witforge-0.1-consumer-main`); its generated `alint-witforge-consumer` crate compiles and
+      round-trips under the full alint CI matrix. Merge that PR before publication; the draft
+      branch alone does not satisfy this release gate.
 - [ ] `cargo fmt --check`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace --locked`
