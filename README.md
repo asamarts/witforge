@@ -18,8 +18,9 @@ tie their output to a runtime.
 
 > **Status: 0.1.0 release preparation, private.** The loading, subset-checker, internal-model,
 > v2 append-only lockfile, Rust, protobuf, and glue emitters are implemented, with clap-based
-> `witforge check`, `lock`, `rust`, `proto`, and `glue` commands. CI gates the aplan plan,
-> generated-output drift, release freezes, and an optional `buf breaking` check. The repository
+> `witforge check`, `lock`, `rust`, `proto`, and `glue` commands. CI gates generated-output
+> drift, release freezes, and an optional `buf breaking` check; the aplan plan is checked locally
+> until aplan is published. The repository
 > becomes public and publishes to crates.io after alint's contract `0.x` consumes this release;
 > see [ci/release-checklist.md](ci/release-checklist.md). witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.

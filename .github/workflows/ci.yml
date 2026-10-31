@@ -22,7 +22,7 @@ env:
   RUSTFLAGS: -D warnings
 
 # While the repository is private, jobs use the self-hosted runner of ci/README.md. Once it is
-# public, the same workflow selects GitHub-hosted runners: Ubuntu for lint/docs/plan/generation
+# public, the same workflow selects GitHub-hosted runners: Ubuntu for lint/docs/generation
 # and the full Linux/macOS/Windows test matrix. A self-hosted runner must never serve a public
 # repository; the release checklist retires it explicitly.
 
@@ -81,26 +81,6 @@ jobs:
           toolchain: "1.88"
       # 1.88 is the floor set by wit-parser.
       - run: cargo test --workspace --locked
-
-  plan:
-    name: aplan plan and evidence
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: stable
-      - run: ci/install-aplan.sh "$RUNNER_TEMP/aplan"
-      - run: '"$RUNNER_TEMP/aplan" check'
-      - run: '"$RUNNER_TEMP/aplan" verify'
-      - run: '"$RUNNER_TEMP/aplan" export-agents-md --check AGENTS.md'
-      - run: '"$RUNNER_TEMP/aplan" check-docs'
 
   generated:
     name: generated output and release freeze

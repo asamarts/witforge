@@ -17,7 +17,8 @@ publication path for the private 0.1.0 candidate.
 - [ ] `cargo +1.88 test --workspace --locked`
 - [ ] `ci/check-generated.sh`
 - [ ] `ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit <merge-base>`
-- [ ] `aplan check && aplan verify && aplan export-agents-md --check AGENTS.md`
+- [ ] `aplan check && aplan verify && aplan export-agents-md --check AGENTS.md && aplan check-docs`
+      (local until a published aplan release lets CI run it)
 - [ ] README status, `CHANGELOG.md`, and the workspace version say 0.1.0.
 - [ ] The release branch has no unintended generated-file or fixture drift.
 

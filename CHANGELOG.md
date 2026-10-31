@@ -24,8 +24,8 @@ All notable changes to this project are documented here. The format follows
   deterministic output, ownership headers, stale-file cleanup, and `--check`.
 - The representative alint plugin contract end-to-end proof, including compiled plain/glue output
   and binary/proto3-JSON round-trips.
-- CI gates for the pinned aplan plan, generated output, released-directory freezes, append-only
-  release manifests, and optional `buf breaking`.
+- CI gates for generated output, released-directory freezes, append-only release manifests, and
+  optional `buf breaking`.
 - The 0.1 performance/ergonomics baseline and deferred-option triage.
 
 ### Changed
