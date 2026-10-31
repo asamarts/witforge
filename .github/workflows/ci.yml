@@ -100,10 +100,13 @@ jobs:
       - name: Determine freeze base
         id: base
         shell: bash
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
+          base="${PR_BASE}"
           if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-            base="${{ github.event.before }}"
+            base="${PUSH_BEFORE}"
           fi
           if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
             base="$(git rev-parse HEAD^)"
@@ -116,7 +119,9 @@ jobs:
       - run: ci/check-generated.sh
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
-      - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit "${{ steps.base.outputs.sha }}"
+      - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit "${FREEZE_BASE}"
+        env:
+          FREEZE_BASE: ${{ steps.base.outputs.sha }}
 
   buf:
     name: optional buf breaking

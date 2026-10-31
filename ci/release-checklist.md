@@ -61,12 +61,29 @@ explicit release-owner action.
       `cargo publish --dry-run -p witforge --allow-dirty`.
 - [x] `cargo publish --workspace --dry-run`: packages and verifies both crates, the CLI against
       the library through a temporary registry (at `dd0e219`, 2026-10-31).
-- [ ] `cargo publish -p witforge`, then `cargo publish -p witforge-cli` once the library is
-      visible on crates.io (the CLI has a registry dependency on `witforge = "0.1.0"`).
-      `cargo publish --workspace` does both in that order.
-- [ ] Tag the published commit `v0.1.0` and create the GitHub release with the changelog entry.
+- [ ] Set the `CHANGELOG.md` date to the publish date; `ci/check-release.sh` passes.
+- [ ] Publish 0.1.0 by hand. crates.io cannot trust a repository for a crate that does not
+      exist yet, so a new crate's first version needs an API token: create one for the
+      publishing account with only the `publish-new` scope, the crate pattern `witforge*`, and
+      the shortest expiry. From a clean checkout of the release commit on `main`, run
+      `read -rs CARGO_REGISTRY_TOKEN && export CARGO_REGISTRY_TOKEN && ci/publish.sh`, which
+      leaves `~/.cargo/credentials.toml` and the shell history alone. It publishes `witforge`,
+      then `witforge-cli` once the library is on the index; a repeat skips what is published.
+- [ ] On crates.io, add a trusted publisher to each crate (the crate's Settings, Trusted
+      Publishing: GitHub, repository `asamarts/witforge`, workflow `release.yml`, environment
+      `release`), and optionally allow only trusted publishing for the crate. Then revoke the
+      token on crates.io and `unset CARGO_REGISTRY_TOKEN`.
+- [ ] Tag the published commit `v0.1.0` and push the tag. `release.yml` verifies the release,
+      finds nothing left to publish, and creates the GitHub release from the changelog entry.
 - [ ] Verify the published crates install:
       `cargo install witforge-cli --version 0.1.0 --locked`.
+
+## Later releases
+
+Bump the workspace version, add the dated changelog section, merge to `main`, and push the tag
+`vX.Y.Z`. `release.yml` publishes through trusted publishing and creates the GitHub release; a
+failed run is re-run, and skips what is already published. A new crate in the workspace needs
+its first version published by hand, as above.
 
 ## After publishing
 

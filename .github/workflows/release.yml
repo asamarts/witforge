@@ -1,0 +1,112 @@
+name: Release
+
+# Pushing a tag `vX.Y.Z` on main publishes the crates not yet on crates.io and creates the
+# GitHub release from the CHANGELOG.md section. A manual run checks and dry-runs the release
+# from the selected branch and publishes nothing.
+#
+# Publishing uses crates.io trusted publishing: the `publish` job exchanges its GitHub OIDC
+# token for a crates.io token that lasts minutes, so no crates.io secret is stored. Each crate
+# trusts this repository, this workflow file, and the `release` environment (crates.io: the
+# crate's Settings, Trusted Publishing). crates.io cannot trust a repository for a crate that
+# does not exist yet, so a new crate's first version is published by hand with an API token
+# (ci/release-checklist.md); this workflow then skips it.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: check and dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+      - name: Check the version, changelog, and tag
+        id: check
+        shell: bash
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: echo "version=$(ci/check-release.sh "${TAG}")" >> "$GITHUB_OUTPUT"
+      - run: cargo test --workspace --locked
+      - run: ci/publish.sh --dry-run
+
+  publish:
+    name: publish to crates.io
+    needs: verify
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # the OIDC token crates.io exchanges for a publish token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+      - name: Find the crates not yet on crates.io
+        id: missing
+        shell: bash
+        run: echo "crates=$(ci/publish.sh --check | paste -sd ' ' -)" >> "$GITHUB_OUTPUT"
+      # Only when something is left to publish, so a re-run, or a release whose crates were
+      # published by hand, needs no trusted-publisher configuration.
+      - name: Mint a short-lived crates.io token
+        id: auth
+        if: steps.missing.outputs.crates != ''
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish ${{ steps.missing.outputs.crates }}
+        if: steps.missing.outputs.crates != ''
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: ci/publish.sh
+
+  github-release:
+    name: GitHub release
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Create the release from the changelog
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists"
+            exit 0
+          fi
+          RELEASE_NOTES="${RUNNER_TEMP}/notes.md" ci/check-release.sh "${TAG}" >/dev/null
+          gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+            --title "witforge ${VERSION}" --notes-file "${RUNNER_TEMP}/notes.md"

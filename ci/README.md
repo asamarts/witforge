@@ -51,3 +51,23 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
 `aplan check-docs`) is checked locally, as the release checklist says, until a published aplan
 release with this plan surface exists; CI then gains a `plan` job that installs that release.
+
+## Releases
+
+`.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed:
+
+- **verify**: `ci/check-release.sh` requires one version for both crates, a dated
+  `CHANGELOG.md` section with entries for it, and a tag that matches the version, points at the
+  checked-out commit, and is on `main`. Then the tests and `ci/publish.sh --dry-run`.
+- **publish** (environment `release`, which only `v*` tags may use): publishes, library first,
+  each crate whose version is not on crates.io yet (`ci/publish.sh`), with a crates.io token
+  minted through trusted publishing for that job. Nothing to publish skips the token request.
+- **github-release**: creates the GitHub release from the changelog section, unless it exists.
+
+A manual run (`gh workflow run release.yml`) runs only **verify**, on the selected branch.
+
+Each crate trusts this repository, `release.yml`, and the `release` environment on crates.io
+(the crate's Settings, Trusted Publishing). crates.io cannot do that for a crate that does not
+exist yet, so a new crate's first version is published by hand with a short-lived API token
+in `CARGO_REGISTRY_TOKEN` (`ci/publish.sh`), after which its trusted publisher is added and the
+token revoked; the release checklist has the steps.
