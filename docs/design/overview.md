@@ -253,13 +253,14 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 - Lockfile property tests with `proptest`: reconcile is idempotent, never renumbers, and the
   append-only/draft rules hold across random sequences of member additions, removals, renames,
   and type changes. The cases are listed in [`lockfile.md`](lockfile.md#14-testing-requirements).
-- CLI integration tests with `assert_cmd` and `tempfile` for `check`, `lock`, `--against`,
-  `--first`, `--released`, `rust`, `proto`, `glue`, and `--check`.
+- CLI integration tests that run the built binary with `std::process::Command` in directories
+  under `std::env::temp_dir()`, for `check`, `lock`, `--against`, `--first`, `--released`,
+  `rust`, `proto`, `glue`, and `--check`.
 - Subset tests: every refused construct has a fixture (`tests/fixtures/refused/<construct>/`)
   with the exact violations it must produce.
-- CI: MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings denied. Linux only (a
-  self-hosted runner, `ci/README.md`) while the repository is private; Linux, macOS, and Windows
-  on GitHub-hosted runners once it is public.
+- CI: MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings denied; Linux, macOS,
+  and Windows on GitHub-hosted runners. Before 0.1.0, while the repository was private, CI ran
+  on one self-hosted Linux runner (`ci/README.md`).
 
 ## 8. Relationship to alint
 
@@ -305,6 +306,8 @@ witforge, then goes public with 0.1.
 | 2026-10-26 | Glue returns one structured, non-exhaustive `GlueError`; JSON and binary encoding stay on the pbjson/prost side | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Required scalar/string/bool/float/enum/bytes fields, parameters, and response results use proto3 `optional` and reject absence; `option<T>` permits absence | [`emitters.md`](emitters.md) |
 | 2026-10-29 | 0.1 generation baseline and ergonomics measured; deferred options assigned to named tasks with triggers, without accepting or implementing any option here | section 10 |
+| 2026-10-31 | CLI tests run the built binary with `std::process::Command` under `std::env::temp_dir()`, as implemented, instead of `assert_cmd` and `tempfile` (no extra dev-dependencies); supersedes that part of the 2026-10-25 entry | section 7 |
+| 2026-10-31 | CI runs on GitHub-hosted runners from 0.1.0; the aplan plan is checked locally until aplan is published (W5-006) | [`ci/README.md`](../../ci/README.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

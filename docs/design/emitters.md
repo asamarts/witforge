@@ -598,8 +598,9 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   `v<major>.proto`, and the per-major glue module are shared across versions and may change when
   a new minor is added; their released members are protected by the lockfile, `--check`, and
   proto compatibility checks. `--check` is the tool-side verification.
-- witforge's CI runs a pinned `aplan` check/verify/export gate, `ci/check-generated.sh` for all
-  three emitters, and `ci/check-release-freeze.sh` for released directories and manifest entries.
+- witforge's CI runs `ci/check-generated.sh` for all three emitters and
+  `ci/check-release-freeze.sh` for released directories and manifest entries. The aplan plan is
+  checked locally until aplan is published (task W5-006 restores the CI gate).
   `ci/check-buf.sh` is an optional extra `buf breaking` check for consumers that use it; the
   lockfile remains the normative wire gate.
 - Exit codes: `0` success; `1` contract, lockfile, or output drift; `2` usage, IO, parse,
@@ -628,8 +629,8 @@ are generated from that same highest minor and reference its plain module.
   one-sided results, payload-less variants, flags, and reserved members.
 - Determinism tests: two runs produce byte-identical output; LF only; no timestamps.
 - `--check` tests: missing, changed, extra generated, and unrelated files.
-- CLI integration tests with `assert_cmd` and `tempfile` for `rust`, `proto`, `glue`, and
-  `--check`.
+- CLI integration tests that run the built binary with `std::process::Command` in directories
+  under `std::env::temp_dir()`, for `rust`, `proto`, `glue`, and `--check`.
 - Lockfile property tests with `proptest`.
 - Protobuf glue round-trip tests (Rust value -> proto -> Rust; proto -> JSON -> proto -> Rust)
   through the generated glue and helpers.
