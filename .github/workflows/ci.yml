@@ -134,6 +134,19 @@ jobs:
         with:
           toolchain: stable
       - run: cargo build --locked -p witforge-cli
+      - name: Install buf
+        shell: bash
+        env:
+          BUF_VERSION: 1.74.0
+          BUF_SHA256: 92326d957d613712669fb55f9e4340946a8142a92120e09008459118778273d2
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          echo "${BUF_SHA256}  $RUNNER_TEMP/buf" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/buf"
+      # Compares the fixture's generated schema with the one at HEAD^.
       - run: ci/check-buf.sh
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
+          BUF: ${{ runner.temp }}/buf
+          BUF_REQUIRED: "1"
