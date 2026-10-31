@@ -40,9 +40,15 @@ Both scripts need podman and the `gh` CLI logged in to the account that owns the
 
 The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 
-- **generated**: builds the CLI, generates all three emitters into a temporary tree with
-  `ci/check-generated.sh`, runs `--check` on each, and runs `ci/check-release-freeze.sh` against
-  the versions fixture and the push/PR base commit.
+- **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all three
+  emitters' output for the versions fixture into a temporary tree and runs `--check` on each
+  against it, so generation must succeed and reproduce itself byte for byte (the golden tests
+  pin the output's content). Then `ci/check-release-freeze.sh` on the versions fixture: it reads
+  the history of `released`, so an entry once committed can never be removed and a released
+  directory can never change after the commit that released it, whatever the push or pull
+  request. `ci/test-release-freeze.sh` tests that script; the test jobs run it on Linux and,
+  with the stock bash 3.2, on macOS.
+- **package**: `cargo publish --workspace --dry-run`, which packages and verifies both crates.
 - **buf** (workflow dispatch only): optional `buf breaking`, comparing the protobuf output
   generated at the base commit with the output generated now. It is off by default because the
   lockfile is the normative wire check; the manual input is exposed for consumers that also run

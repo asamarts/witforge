@@ -82,8 +82,7 @@ cargo +1.88 test --workspace --locked          # MSRV
 ## Documentation and contracts
 
 - Design decisions live in `docs/design/overview.md` and the linked specs.
-- Generated output must be deterministic, LF-only, and checked with `--check`
-  once the emitters exist.
+- Generated output must be deterministic, LF-only, and checked with `--check`.
 - A contract change is a new version directory, not an in-place edit to a
   released one. See `docs/design/lockfile.md` and `docs/design/overview.md`.
 - Do not add a second task list or status copy to the README or roadmap; link to

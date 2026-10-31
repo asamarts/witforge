@@ -21,15 +21,15 @@ published release.
 - [x] `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`
 - [x] `cargo +1.88 test --workspace --locked`
 - [x] `ci/check-generated.sh`
-- [x] `ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit <merge-base>`
+- [x] `ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit`
       (the seven checks above: CI run 41240165506 on `main` at `dd0e219`, 2026-10-31, on
       GitHub-hosted runners, with the tests on Linux, macOS, and Windows)
 - [x] `aplan check && aplan verify && aplan export-agents-md --check AGENTS.md && aplan check-docs`
       (local until a published aplan release lets CI run it; run at `dd0e219`, 2026-10-31)
 - [ ] README status, `CHANGELOG.md` (with the publish date), and the workspace version say
       0.1.0. (README and version do; the changelog date is set when publishing.)
-- [x] The release branch has no unintended generated-file or fixture drift (the generated-output
-      job in the run above).
+- [x] Generation succeeds and reproduces itself for the versions fixture (the generated-output
+      job in the run above), and the golden tests pass.
 
 ## Make the repository public
 

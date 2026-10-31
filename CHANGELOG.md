@@ -20,8 +20,9 @@ All notable changes to this project are documented here. The format follows
   `--released`, plus the v2 evolution fixture and property/CLI tests.
 - Plain Rust types and interface traits, protobuf schemas with append-only wire numbers, and
   prost/pbjson glue with per-function request/response helpers and `METHOD` constants.
-- `witforge rust`, `witforge proto`, and `witforge glue` commands, with highest-minor selection,
-  deterministic output, ownership headers, stale-file cleanup, and `--check`.
+- `witforge rust`, `witforge proto`, and `witforge glue` commands, with deterministic output,
+  ownership headers, stale-file cleanup, and `--check`; `proto` and `glue` generate each major
+  from its highest minor.
 - The representative alint plugin contract end-to-end proof, including compiled plain/glue output
   and binary/proto3-JSON round-trips.
 - CI gates for generated output, released-directory freezes, append-only release manifests, and

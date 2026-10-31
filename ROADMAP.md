@@ -7,7 +7,7 @@ engineer-weeks for one experienced Rust engineer.
 Task-level planning, dependencies, and closure evidence live in [`aplan/`](aplan/README.md) and
 are validated with `aplan check` and `aplan verify`. This document is the narrative sequence.
 
-## 0.0.x: foundations (in progress)
+## 0.0.x: foundations (done)
 
 - [x] Load a WIT package with every feature enabled (`@unstable` items kept).
 - [x] Restricted-subset checker with a refuse-unknown catch-all.
@@ -17,8 +17,8 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       against an older lockfile.
 - [x] `witforge check` and `witforge lock`.
 - [x] CI: fmt, pedantic Clippy, rustdoc, tests, and the MSRV 1.88 build and tests (the
-      `wit-parser` floor), on a self-hosted Linux runner while the repository is private
-      ([ci/README.md](ci/README.md)).
+      `wit-parser` floor); on a self-hosted Linux runner while the repository was private, on
+      GitHub-hosted runners since it went public ([ci/README.md](ci/README.md)).
 - [x] Rust edition 2024.
 - [x] Specification for the internal model, lockfile v2, and the Rust/protobuf/glue emitter
       conventions ([model.md](docs/design/model.md), [lockfile.md](docs/design/lockfile.md),
@@ -53,9 +53,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       emitted schema as an optional extra check.
 - [x] 0.1 generation/ergonomics baseline and deferred-option triage (`W5-004`), with every
       pre-golive option assigned to its owning task and trigger.
-- [ ] Public repository and the first crates.io release once alint's contract `0.x` consumes it;
-      CI moves back to GitHub-hosted Linux, macOS, and Windows runners, and the self-hosted
-      runner is torn down.
+- [ ] Public repository and the first crates.io release once alint's contract `0.x` consumes it.
+      The repository is public, CI runs on GitHub-hosted Linux, macOS, and Windows runners, and
+      the self-hosted runner is torn down (2026-10-31); publishing remains.
 
 ## Pre-golive (before 1.0)
 

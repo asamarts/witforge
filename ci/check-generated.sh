@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Generate every emitter into a temporary tree and verify it with --check.
+# Generate every emitter into a temporary tree and verify that --check reproduces it: generation
+# must succeed and be deterministic. The golden tests, not this script, pin what it generates.
 #
 # Usage: [WITFORGE=path/to/witforge] ci/check-generated.sh [WIT_ROOT]
 set -euo pipefail

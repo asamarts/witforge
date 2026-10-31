@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-10-29 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-10-31 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
@@ -267,8 +267,8 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 alint consumes witforge to generate its `alint-plugin-api` crate and the `.proto` schema its
 out-of-process plugin protocol uses, and the conversions between the two (section 4.2). alint
 keeps the host glue: wasmtime bindings, the process protocol's framing and session, and the
-version adapters. The repository stays private until alint's contract `0.x` consumes
-witforge, then goes public with 0.1.
+version adapters. alint's contract `0.x` consumes witforge 0.1.0 (alint PR #409), and the
+repository went public for that release.
 
 ## 9. Decision log
 
@@ -362,4 +362,4 @@ these options or change generated output.
 | Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
 | Generated version-to-version conversions | `W6-007` | A host must support multiple released majors side by side |
 | JSON Schema emitter | `W6-008` | A consumer needs a third projection; not a 0.1 requirement |
-| Multi-platform CI and public release | `W5-005` | alint's contract `0.x` consumes witforge and the repository can move off the private self-hosted runner |
+| Multi-platform CI and public release | `W5-005` | Done for CI and the public repository (2026-10-31); the crates.io release remains |

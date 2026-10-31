@@ -22,6 +22,15 @@ tie their output to a runtime.
 > drift and release freezes. witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
+## Install
+
+```sh
+cargo install witforge-cli --locked
+```
+
+This installs the `witforge` command; the `witforge` crate is the library behind it. Both need
+Rust 1.88 or later.
+
 ## Plan
 
 Task-level planning, dependencies, and closure evidence live in [`aplan/`](https://github.com/asamarts/witforge/blob/main/aplan/README.md)
@@ -41,13 +50,19 @@ wit/                      hand-written contracts (the source of truth)
     *.wit
     wire.lock
 
+$ witforge lock  wit/v0.1 --first                         number the first version
+$ cp wit/v0.1/wire.lock wit/v0.2/wire.lock                start a new minor from the last lock
+$ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number its new members
 $ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
-$ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number new members
-$ witforge rust  wit --out generated/rust                plain Rust modules
-$ witforge proto wit --out generated/proto               protobuf schema
-$ witforge glue  wit --out generated/glue \
-    --plain-root crate::generated::rust --proto-root crate::generated::proto
+$ witforge rust  wit --out src/plain                     plain Rust modules
+$ witforge proto wit --out proto                         protobuf schema
+$ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
 ```
+
+`--proto-root` names the Rust module that holds the prost types generated from the emitted
+schema (for example by `prost-build` in a build script), not the directory the schema is
+written to. Every generated file starts with witforge's header, and `--check` on any generator
+fails instead of writing when its output would change.
 
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
   resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length
