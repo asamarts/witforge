@@ -226,7 +226,7 @@ fn alint_contract_generates_compiles_and_roundtrips() {
         .parent()
         .unwrap()
         .to_path_buf();
-    let executable = temp.join("alint-e2e");
+    let executable = temp.join(format!("alint-e2e{}", std::env::consts::EXE_SUFFIX));
     let mut last_error = None;
     for prost in rlibs(&deps, "prost") {
         for pbjson in rlibs(&deps, "pbjson") {

@@ -187,7 +187,7 @@ fn conversions_compile_and_run_against_generated_types() {
     main.push_str(&fs::read_to_string(root.join("main.rs")).unwrap());
     fs::write(out.join("main.rs"), main).unwrap();
 
-    let executable = out.join("glue-run");
+    let executable = out.join(format!("glue-run{}", std::env::consts::EXE_SUFFIX));
     let deps = std::env::current_exe()
         .unwrap()
         .parent()
