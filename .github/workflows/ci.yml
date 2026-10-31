@@ -13,9 +13,11 @@ on:
 
 permissions: {}
 
+# A newer push to a pull request cancels the older run; runs on main always finish, so every
+# commit on main gets a result.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,7 +39,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -61,10 +63,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
       - run: cargo test --workspace --locked
+      # /bin/bash is 3.2 on macOS, which consumers of the freeze script may run it with.
+      - if: runner.os != 'Windows'
+        run: /bin/bash ci/test-release-freeze.sh
 
   msrv:
     name: MSRV (1.88)
@@ -76,11 +81,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.88"
       # 1.88 is the floor set by wit-parser.
       - run: cargo test --workspace --locked
+
+  package:
+    name: package (publish dry run)
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      # Packages and verifies both crates, the CLI against the library through a temporary
+      # registry, so a packaging mistake shows up before a release tag.
+      - run: cargo publish --workspace --dry-run --locked
 
   generated:
     name: generated output and release freeze
@@ -93,35 +115,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
       - run: cargo build --locked -p witforge-cli
-      - name: Determine freeze base
-        id: base
-        shell: bash
-        env:
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          base="${PR_BASE}"
-          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-            base="${PUSH_BEFORE}"
-          fi
-          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-            base="$(git rev-parse HEAD^)"
-          fi
-          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "cannot resolve freeze base ${base}" >&2
-            exit 1
-          fi
-          echo "sha=${base}" >> "$GITHUB_OUTPUT"
       - run: ci/check-generated.sh
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
-      - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit "${FREEZE_BASE}"
-        env:
-          FREEZE_BASE: ${{ steps.base.outputs.sha }}
+      - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit
 
   buf:
     name: optional buf breaking
@@ -135,7 +136,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
       - run: cargo build --locked -p witforge-cli
