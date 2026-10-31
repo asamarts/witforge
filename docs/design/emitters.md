@@ -67,6 +67,11 @@ wit/
 - Versions are processed in ascending semver order.
 - The generator validates the subset and the lockfile for every version before writing
   anything. A stale or invalid version fails the whole generation.
+- Within each major, every minor's lockfile MUST continue the previous minor's: every previous
+  entry is kept with the same number, kind, and canonical type, and a reserved entry stays
+  reserved (the continuity `check --against` verifies; see
+  [`lockfile.md`](lockfile.md#2-version-directories-and-release-status)). A lockfile that does
+  not continue its predecessor fails the whole generation; a new major starts a fresh lockfile.
 - Rust output is one module per version: `v<major>_<minor>`.
 - Proto output is one file per major version: `v<major>.proto`, generated from the highest
   minor of that major. A new minor updates the same file; a new major adds a new file/package.
@@ -576,7 +581,7 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
 - `check` and `lock` take one version directory; the default lockfile is
   `<version-dir>/wire.lock`.
 - `rust`, `proto`, and `glue` take the WIT root and require every version directory to be
-  valid and locked.
+  valid and locked, and every minor's lockfile to continue the previous minor's in its major.
 - `glue` additionally requires `--plain-root` and `--proto-root`; it covers the highest minor of
   each major, so older plain modules get no glue.
 - The released manifest default is `<version-dir>/../released` for `check`/`lock`, and

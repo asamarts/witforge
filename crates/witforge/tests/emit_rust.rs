@@ -320,3 +320,81 @@ fn output_root_guard_resolves_parent_components() {
     }
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn every_generator_requires_each_minor_to_continue_the_previous_lockfile() {
+    use witforge::emit::{glue, proto};
+    use witforge::is_contract_error;
+    use witforge::lock::{LockMode, WireLock};
+
+    let root = std::env::temp_dir().join(format!("witforge-continuity-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    for version in ["v0.1", "v0.2"] {
+        let source = fixture("versions/wit").join(version);
+        fs::create_dir_all(root.join(version)).unwrap();
+        for name in ["contract.wit", "wire.lock"] {
+            fs::copy(source.join(name), root.join(version).join(name)).unwrap();
+        }
+    }
+    let v03 = root.join("v0.3");
+    fs::create_dir_all(&v03).unwrap();
+    let source = fs::read_to_string(root.join("v0.2/contract.wit")).unwrap();
+    fs::write(v03.join("contract.wit"), source.replace("@0.2.0", "@0.3.0")).unwrap();
+    // A lockfile started fresh instead of from a copy of v0.2's: current, but renumbered.
+    let members = model::members(&load(&v03).unwrap()).unwrap();
+    let mut fresh = WireLock::default();
+    fresh.reconcile_with(&members, LockMode::First).unwrap();
+    fs::write(v03.join("wire.lock"), fresh.render()).unwrap();
+
+    let errors = [
+        rust::plan(&root).unwrap_err(),
+        proto::plan(&root).unwrap_err(),
+        glue::plan(&root, "crate::plain", "crate::proto").unwrap_err(),
+    ];
+    for error in errors {
+        let message = format!("{error:#}");
+        assert!(is_contract_error(&error), "{message}");
+        assert!(message.contains("does not continue"), "{message}");
+        assert!(message.contains("renumbered"), "{message}");
+    }
+
+    // Removing, retyping, or un-reserving a previous entry breaks continuity too.
+    let v02_lock = fs::read_to_string(root.join("v0.2/wire.lock")).unwrap();
+    for (from, to, expected) in [
+        (
+            "example:evolve/types/user.removed = 4 field bool reserved\n",
+            "",
+            "was removed",
+        ),
+        (
+            "example:evolve/types/user.removed = 4 field bool reserved",
+            "example:evolve/types/user.removed = 4 field u8 reserved",
+            "changed kind or type",
+        ),
+        (
+            "example:evolve/types/user.old-field = 2 field u32 reserved",
+            "example:evolve/types/user.old-field = 2 field u32",
+            "un-reserved",
+        ),
+    ] {
+        let edited = v02_lock.replace(from, to);
+        assert_ne!(edited, v02_lock);
+        fs::write(v03.join("wire.lock"), edited).unwrap();
+        let error = rust::plan(&root).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(is_contract_error(&error), "{message}");
+        assert!(message.contains(expected), "{message}");
+    }
+
+    // A copy of the previous lockfile continues it; a new major starts fresh.
+    fs::write(v03.join("wire.lock"), &v02_lock).unwrap();
+    rust::plan(&root).unwrap();
+    let v10 = root.join("v1.0");
+    fs::create_dir_all(&v10).unwrap();
+    fs::write(v10.join("contract.wit"), source.replace("@0.2.0", "@1.0.0")).unwrap();
+    fs::write(v10.join("wire.lock"), fresh.render()).unwrap();
+    rust::plan(&root).unwrap();
+    proto::plan(&root).unwrap();
+    glue::plan(&root, "crate::plain", "crate::proto").unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}

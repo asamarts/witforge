@@ -55,6 +55,13 @@ directories are frozen as a whole, which covers those cases.
   they verify or reproduce the frozen contract.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the
   previous minor's `wire.lock` and is then developed with `lock --against`.
+- The generators (`rust`, `proto`, and `glue`) enforce that continuity across a WIT root: within
+  each major, every minor's `wire.lock` must keep every entry of the previous minor's lockfile
+  with the same number, kind, and canonical type, and must keep reserved entries reserved (rule
+  1 of `check --against`, section 8). A lockfile that does not continue its predecessor fails
+  generation with exit `1`, so a new minor cannot silently renumber the shared per-major proto
+  schema. `check` and `lock` take a single version directory, so their continuity baseline is
+  the `--against` lockfile.
 - Docs-only patch versions are out of scope for 0.1. A docs-only patch requires a new version
   directory (later) or a semantic-diff relaxation (pre-golive consideration).
 
@@ -232,8 +239,14 @@ Canonicalization rules:
   uses `--first`, not `--against` from the previous major.
 - The current version's `wire.lock` must exist for `--against`; the workflow starts a new minor
   by copying the previous lockfile. A missing current lockfile is an error, not an implicit
-  copy. The previous lockfile must parse and must belong to the same package namespace and name;
-  keys from another package are an error.
+  copy, and the error says to copy the previous lockfile first. The previous lockfile must parse
+  and must belong to the same package namespace and name; keys from another package are an
+  error.
+- The current version's `wire.lock` must also exist in default mode. A missing lockfile is an
+  error (exit `2`) that names both ways forward: `--first` for a version with no baseline, or a
+  copy of the previous minor's `wire.lock` developed with `--against` for a new minor. Only
+  `--first` treats a missing lockfile as empty. A default-mode lock that started from an empty
+  lockfile would renumber every member of a new minor.
 - A released version directory cannot be locked. The released manifest is the tool's source of
   truth for this.
 - `@unstable` and `@since` are metadata. Every item in the version directory is part of that

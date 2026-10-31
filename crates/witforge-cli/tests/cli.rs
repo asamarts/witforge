@@ -77,13 +77,21 @@ fn help_version_and_subcommand_help() {
 #[test]
 fn lock_then_check_succeeds() {
     let dir = temp_contract("lock-check");
-    let lock = witforge().arg("lock").arg(&dir).output().unwrap();
+    let lock = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
     assert!(
         lock.status.success(),
         "lock failed: {}",
         String::from_utf8_lossy(&lock.stderr)
     );
     assert!(dir.join("wire.lock").is_file());
+    let relock = witforge().arg("lock").arg(&dir).output().unwrap();
+    assert!(relock.status.success(), "{relock:?}");
+    assert!(relock.stdout.is_empty(), "{relock:?}");
 
     let check = witforge().arg("check").arg(&dir).output().unwrap();
     assert!(
@@ -131,7 +139,12 @@ fn check_reports_subset_violations_without_a_model_failure() {
 #[test]
 fn lock_does_not_write_when_a_live_type_changes() {
     let dir = temp_contract("lock-type-change");
-    let first = witforge().arg("lock").arg(&dir).output().unwrap();
+    let first = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
     assert!(first.status.success(), "{first:?}");
     let path = dir.join("wire.lock");
     let original = fs::read_to_string(&path).unwrap();
@@ -151,6 +164,7 @@ fn lock_does_not_write_when_a_live_type_changes() {
 #[test]
 fn check_reports_an_unlocked_member() {
     let dir = temp_contract("unlocked");
+    fs::write(dir.join("wire.lock"), format!("{HEADER}\n")).unwrap();
     let check = witforge().arg("check").arg(&dir).output().unwrap();
     assert_eq!(check.status.code(), Some(1));
     assert!(
@@ -250,6 +264,10 @@ fn against_requires_the_current_lockfile() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("copy"),
+        "{output:?}"
+    );
     assert!(!dir.join("wire.lock").exists());
     fs::remove_file(previous).unwrap();
     fs::remove_dir_all(&dir).unwrap();
@@ -1063,6 +1081,144 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
                     "{command} check={check}: {output:?}"
                 );
             }
+        }
+    }
+    fs::remove_dir_all(&base).unwrap();
+}
+
+/// Add `wit/v0.3` to a versions-fixture copy: the v0.2 contract at version 0.3.0 with one more
+/// field, and no lockfile.
+fn add_v0_3(root: &Path) -> PathBuf {
+    let v03 = root.join("wit/v0.3");
+    fs::create_dir_all(&v03).unwrap();
+    let source = fs::read_to_string(root.join("wit/v0.2/contract.wit")).unwrap();
+    let source = source
+        .replace("@0.2.0", "@0.3.0")
+        .replace("renamed: string,", "renamed: string,\n        added: u64,");
+    fs::write(v03.join("contract.wit"), source).unwrap();
+    v03
+}
+
+#[test]
+fn lock_and_check_refuse_a_missing_lockfile_without_first() {
+    let root = versions("missing-lock");
+    let v03 = add_v0_3(&root);
+    for command in ["lock", "check"] {
+        let output = witforge().arg(command).arg(&v03).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{command}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("does not exist"), "{command}: {stderr}");
+        assert!(stderr.contains("--first"), "{command}: {stderr}");
+        assert!(stderr.contains("--against"), "{command}: {stderr}");
+        assert!(stderr.contains("copy"), "{command}: {stderr}");
+        assert!(!v03.join("wire.lock").exists(), "{command}");
+    }
+    let previous = root.join("wit/v0.2/wire.lock");
+    for command in ["lock", "check"] {
+        let output = witforge()
+            .arg(command)
+            .arg(&v03)
+            .arg("--against")
+            .arg(&previous)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{command}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("does not exist"), "{command}: {stderr}");
+        assert!(
+            stderr.contains(&format!("copy {}", previous.display())),
+            "{command}: {stderr}"
+        );
+        assert!(!v03.join("wire.lock").exists(), "{command}");
+    }
+
+    // The documented workflow for a new minor: copy the previous lockfile, then `--against`.
+    fs::copy(&previous, v03.join("wire.lock")).unwrap();
+    let lock = witforge()
+        .arg("lock")
+        .arg(&v03)
+        .arg("--against")
+        .arg(&previous)
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&lock.stdout).trim(),
+        "added    example:evolve/types/user.added = 7"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() {
+    let base = versions("continuity");
+    let root = base.join("wit");
+    let v03 = add_v0_3(&base);
+    // A fresh lockfile for the new minor renumbers every member.
+    let fresh = witforge()
+        .arg("lock")
+        .arg(&v03)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(fresh.status.success(), "{fresh:?}");
+    let check = witforge().arg("check").arg(&v03).output().unwrap();
+    assert!(check.status.success(), "{check:?}");
+
+    let run = |command: &str, check: bool| {
+        let out = base.join(format!("{command}-out"));
+        fs::create_dir_all(&out).unwrap();
+        let mut witforge = witforge();
+        witforge.arg(command).arg(&root).arg("--out").arg(&out);
+        if command == "glue" {
+            witforge.args([
+                "--plain-root",
+                "crate::plain",
+                "--proto-root",
+                "crate::proto",
+            ]);
+        }
+        if check {
+            witforge.arg("--check");
+        }
+        witforge.output().unwrap()
+    };
+    for command in ["rust", "proto", "glue"] {
+        for check in [false, true] {
+            let output = run(command, check);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{command} {check}: {output:?}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("does not continue"), "{command}: {stderr}");
+            assert!(stderr.contains("v0.2"), "{command}: {stderr}");
+            assert!(stderr.contains("--against"), "{command}: {stderr}");
+        }
+        assert_eq!(
+            fs::read_dir(base.join(format!("{command}-out")))
+                .unwrap()
+                .count(),
+            0,
+            "{command} wrote output"
+        );
+    }
+
+    // Starting the minor from a copy of the previous lockfile restores continuity.
+    fs::copy(root.join("v0.2/wire.lock"), v03.join("wire.lock")).unwrap();
+    let lock = witforge()
+        .arg("lock")
+        .arg(&v03)
+        .arg("--against")
+        .arg(root.join("v0.2/wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    for command in ["rust", "proto", "glue"] {
+        for check in [false, true] {
+            let output = run(command, check);
+            assert!(output.status.success(), "{command} {check}: {output:?}");
         }
     }
     fs::remove_dir_all(&base).unwrap();

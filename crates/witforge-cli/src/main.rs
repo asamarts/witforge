@@ -160,7 +160,7 @@ fn check(options: &Options) -> Result<ExitCode> {
         .lock
         .clone()
         .unwrap_or_else(|| options.dir.join("wire.lock"));
-    let lock = read_lock(&lock_path, options.against.is_some())?;
+    let lock = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
     let mode = lock_mode(options, previous.as_ref());
     let drift = match lock.drift_with(&members, mode) {
@@ -196,7 +196,7 @@ fn lock(options: &Options) -> Result<ExitCode> {
         .lock
         .clone()
         .unwrap_or_else(|| options.dir.join("wire.lock"));
-    let mut lock = read_lock(&lock_path, options.against.is_some())?;
+    let mut lock = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
     let mode = lock_mode(options, previous.as_ref());
     // Every refusal from reconciling is a lockfile violation, as `check` reports it.
@@ -310,14 +310,33 @@ fn read_previous(path: Option<&Path>) -> Result<Option<WireLock>> {
     }
 }
 
-fn read_lock(path: &Path, required: bool) -> Result<WireLock> {
+/// Read the current lockfile. Only `--first` treats a missing one as empty: in default mode a
+/// fresh lockfile would renumber a new minor that should continue the previous one, and
+/// `--against` develops a copy of the previous lockfile.
+fn read_lock(path: &Path, options: &Options) -> Result<WireLock> {
     match fs::read_to_string(path) {
         Ok(text) => WireLock::parse(&text).with_context(|| format!("in {}", path.display())),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !required => {
-            Ok(WireLock::default())
-        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            bail!("lockfile {} does not exist", path.display())
+            if options.first {
+                return Ok(WireLock::default());
+            }
+            if let Some(previous) = &options.against {
+                bail!(
+                    "lockfile {} does not exist; a new minor starts as a copy of the previous \
+                     minor's lockfile: copy {} to {} first, then rerun with `--against`",
+                    path.display(),
+                    previous.display(),
+                    path.display()
+                );
+            }
+            bail!(
+                "lockfile {path} does not exist; for the first version of a package or of a new \
+                 major, create it with `witforge lock {dir} --first`; for a new minor, copy the \
+                 previous minor's wire.lock to {path} and run `witforge lock {dir} --against \
+                 <previous minor's wire.lock>`",
+                path = path.display(),
+                dir = options.dir.display()
+            );
         }
         Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
     }

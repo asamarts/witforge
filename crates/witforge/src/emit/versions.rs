@@ -24,14 +24,17 @@ pub(crate) struct Version {
 /// Discover and validate every version directory under `wit_root`, in ascending semver order.
 ///
 /// Every version is checked against the subset, its directory's version, the package shared by
-/// all versions, and its committed lockfile before anything is generated. The result is never
-/// empty.
+/// all versions, and its committed lockfile before anything is generated. Within a major, each
+/// minor's lockfile must also continue the previous minor's: every previous entry survives with
+/// its number, kind, and type, and stays reserved once reserved, as `lock --against` requires.
+/// The result is never empty.
 ///
 /// # Errors
 ///
 /// Returns an error for a missing or duplicate version directory, an unparsable WIT package, or
 /// an unreadable or invalid lockfile, and a [`ContractError`] for a subset violation, a version or
-/// package mismatch, or a stale lockfile.
+/// package mismatch, a lockfile that does not continue the previous minor's, or a stale
+/// lockfile.
 pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
     let mut versions: Vec<Version> = Vec::new();
     for (major, minor, directory) in discover_versions(wit_root)? {
@@ -73,6 +76,17 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             .with_context(|| format!("failed to read {}", lock_path.display()))?;
         let lock =
             WireLock::parse(&lock_text).with_context(|| format!("in {}", lock_path.display()))?;
+        if let Some(previous) = versions.last().filter(|previous| previous.major == major) {
+            let previous_path = previous.directory.join("wire.lock");
+            lock.check_append_only(&previous.lock).map_err(|err| {
+                ContractError::new(format!(
+                    "{} does not continue {}: {err:#}; a new minor starts as a copy of the \
+                     previous minor's wire.lock and is developed with `witforge lock --against`",
+                    lock_path.display(),
+                    previous_path.display()
+                ))
+            })?;
+        }
         let members = model.members()?;
         let drift = lock.drift(&members).map_err(|err| {
             ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
