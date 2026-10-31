@@ -953,3 +953,29 @@ fn every_command_validates_the_released_manifest() {
     assert!(!out.exists());
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn check_reports_only_the_subset_violation_when_a_lockfile_exists() {
+    let dir = temp_contract("violation-with-lock");
+    let lock = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    let source = fs::read_to_string(dir.join("contract.wit")).unwrap();
+    let changed = source.replace("start: u64,", "start: char,");
+    assert_ne!(changed, source);
+    fs::write(dir.join("contract.wit"), changed).unwrap();
+
+    let check = witforge().arg("check").arg(&dir).output().unwrap();
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(lines[0].starts_with("error: "), "{stderr}");
+    assert!(lines[0].contains("char"), "{stderr}");
+    assert!(!stderr.contains("witforge lock"), "{stderr}");
+    fs::remove_dir_all(&dir).unwrap();
+}

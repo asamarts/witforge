@@ -243,7 +243,9 @@ Canonicalization rules:
 ## 8. `check` semantics
 
 `check` never writes. It loads the package, runs the subset checker, parses the lockfile, and
-reports every discrepancy. Exit code `1` means contract or lockfile violations; exit code `2`
+reports every discrepancy. If the contract has subset violations, `check` reports only those and
+does not compare the lockfile: a contract outside the subset has no model, so every locked member
+would otherwise look removed. Exit code `1` means contract or lockfile violations; exit code `2`
 means usage, IO, parse, or internal errors.
 
 Without a baseline (default mode):

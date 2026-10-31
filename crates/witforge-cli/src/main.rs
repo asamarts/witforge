@@ -144,14 +144,15 @@ fn check(options: &Options) -> Result<ExitCode> {
     load_released_manifest(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
     let violations = subset::check(&contract);
-    for violation in &violations {
-        eprintln!("error: {violation}");
+    if !violations.is_empty() {
+        // The model of a contract outside the subset is not built, so every locked member
+        // would look removed; report only the violations, as `lock` does.
+        for violation in &violations {
+            eprintln!("error: {violation}");
+        }
+        return Ok(ExitCode::from(1));
     }
-    let members = if violations.is_empty() {
-        model::members(&contract)?
-    } else {
-        Vec::new()
-    };
+    let members = model::members(&contract)?;
     let lock_path = options
         .lock
         .clone()
@@ -167,7 +168,7 @@ fn check(options: &Options) -> Result<ExitCode> {
         }
     };
     report_check_changes(&drift);
-    if violations.is_empty() && drift.is_empty() {
+    if drift.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::from(1))
