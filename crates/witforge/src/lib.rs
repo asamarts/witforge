@@ -3,10 +3,22 @@
 //! A WIT package is the single source of truth for a contract. witforge checks that the package
 //! stays inside a restricted, pure subset of WIT that maps cleanly onto every target, keeps a
 //! committed, append-only lockfile of wire numbers so the protobuf projection stays stable across
-//! versions, and (in later milestones) emits plain Rust types and traits and a `.proto` schema.
+//! versions, and emits plain Rust types and traits, a `.proto` schema, and the glue that converts
+//! between the two.
 //!
-//! The implemented slices provide [`load`], the [`subset`] checker, the owned [`model`],
-//! the [`lock`] lockfile, and the [`emit`] emitters.
+//! - [`load`] parses a version directory's WIT package, and [`subset`] checks it against the
+//!   supported subset.
+//! - [`model`] is the owned contract model the lockfile and the emitters consume.
+//! - [`lock`] reads, reconciles, and writes the `wire.lock` lockfile, and
+//!   [`ReleasedManifest`] reads the `released` manifest of frozen versions.
+//! - [`emit`] generates the [Rust](emit::rust), [protobuf](emit::proto), and
+//!   [glue](emit::glue) output for a WIT root and checks committed output for drift.
+//! - [`ContractError`] marks contract, lockfile, and output violations, as distinct from usage,
+//!   I/O, and parse errors.
+//!
+//! The `witforge` command-line interface (the `witforge-cli` crate) wraps these as the `check`,
+//! `lock`, `rust`, `proto`, and `glue` commands. The normative specifications are in
+//! [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
 pub mod emit;
 pub mod lock;

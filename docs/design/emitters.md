@@ -75,8 +75,8 @@ wit/
 - Rust output is one module per version: `v<major>_<minor>`.
 - Proto output is one file per major version: `v<major>.proto`, generated from the highest
   minor of that major. A new minor updates the same file; a new major adds a new file/package.
-- `check` and `lock` still operate on a single version directory; only the `rust`, `proto`, and
-  later `glue` commands take the root.
+- `check` and `lock` operate on a single version directory; only the `rust`, `proto`, and
+  `glue` commands take the root.
 
 ## 3. Rust emitter
 
@@ -947,4 +947,3 @@ does not accept or implement any option; the W6 tasks make the decisions.
 - Docs-only patch versions and a type/interface inventory for memberless definitions.
 - Generated conversions between contract versions.
 - JSON Schema emitter.
-- Multi-platform CI and a public release.
