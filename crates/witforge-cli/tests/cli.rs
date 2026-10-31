@@ -754,3 +754,39 @@ fn proto_generates_highest_minor_and_checks_drift() {
     )
     .unwrap();
 }
+
+#[test]
+fn generators_ignore_a_binary_file_in_the_output_root() {
+    let base = versions("binary-output");
+    let root = base.join("wit");
+    let bytes = [
+        0x00, 0x00, 0x00, 0x01, 0x42, 0x75, 0x64, 0x31, 0xff, 0xfe, 0x80,
+    ];
+    for command in ["rust", "proto", "glue"] {
+        let out = base.join(format!("{command}-out"));
+        fs::create_dir_all(&out).unwrap();
+        fs::write(out.join(".DS_Store"), bytes).unwrap();
+        let run = |check: bool| {
+            let mut witforge = witforge();
+            witforge.arg(command).arg(&root).arg("--out").arg(&out);
+            if command == "glue" {
+                witforge.args([
+                    "--plain-root",
+                    "crate::plain",
+                    "--proto-root",
+                    "crate::proto",
+                ]);
+            }
+            if check {
+                witforge.arg("--check");
+            }
+            witforge.output().unwrap()
+        };
+        let generate = run(false);
+        assert!(generate.status.success(), "{command}: {generate:?}");
+        let check = run(true);
+        assert!(check.status.success(), "{command} --check: {check:?}");
+        assert_eq!(fs::read(out.join(".DS_Store")).unwrap(), bytes);
+    }
+    fs::remove_dir_all(&base).unwrap();
+}

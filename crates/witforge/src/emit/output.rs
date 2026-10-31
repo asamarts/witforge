@@ -1,7 +1,8 @@
 //! Generated-output ownership: expected files, atomic-free writes, and `--check` drift.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -76,9 +77,7 @@ impl GeneratedFiles {
             }
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
-            let contents = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
-            if self.is_generated(&contents) && !expected.contains(name.as_str()) {
+            if !expected.contains(name.as_str()) && self.is_generated(&path)? {
                 fs::remove_file(&path)
                     .with_context(|| format!("failed to remove stale {}", path.display()))?;
             }
@@ -106,8 +105,8 @@ impl GeneratedFiles {
         let mut messages = Vec::new();
         for (name, expected) in &self.files {
             let path = out.join(name);
-            match fs::read_to_string(&path) {
-                Ok(actual) if &actual == expected => {}
+            match fs::read(&path) {
+                Ok(actual) if actual == expected.as_bytes() => {}
                 Ok(_) => messages.push(format!("changed generated file `{}`", path.display())),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     messages.push(format!("missing generated file `{}`", path.display()));
@@ -129,9 +128,7 @@ impl GeneratedFiles {
             if self.files.contains_key(&name) {
                 continue;
             }
-            let contents = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
-            if self.is_generated(&contents) {
+            if self.is_generated(&path)? {
                 messages.push(format!("extra generated file `{}`", path.display()));
             }
         }
@@ -139,8 +136,21 @@ impl GeneratedFiles {
         Ok(messages)
     }
 
-    fn is_generated(&self, contents: &str) -> bool {
-        contents.lines().next() == Some(self.header.as_str())
+    /// Whether the file at `path` starts with the ownership header as its whole first line.
+    ///
+    /// Only the header's length plus a line ending is read, as bytes, so files that are not
+    /// UTF-8 text (a `.DS_Store`, an image) are recognised as unowned rather than failing.
+    fn is_generated(&self, path: &Path) -> Result<bool> {
+        let header = self.header.as_bytes();
+        let limit = u64::try_from(header.len() + 2).unwrap_or(u64::MAX);
+        let mut start = Vec::new();
+        File::open(path)
+            .and_then(|file| file.take(limit).read_to_end(&mut start))
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let Some(rest) = start.strip_prefix(header) else {
+            return Ok(false);
+        };
+        Ok(rest.is_empty() || rest.starts_with(b"\n") || rest.starts_with(b"\r\n"))
     }
 }
 

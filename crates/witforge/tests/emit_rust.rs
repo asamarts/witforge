@@ -227,3 +227,53 @@ fn generated_file_names_reject_dots_and_separators() {
     assert!(files.insert("dir/file.rs", "x").is_err());
     files.insert("ok.rs", "x").unwrap();
 }
+
+#[test]
+fn generated_files_recognise_the_header_without_reading_files_as_text() {
+    use witforge::emit::output::GeneratedFiles;
+    let out = std::env::temp_dir().join(format!("witforge-binary-output-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    fs::create_dir_all(&out).unwrap();
+    // A file without the header that is not UTF-8, such as a `.DS_Store`, is ignored.
+    let binary = out.join(".DS_Store");
+    let bytes = [
+        0x00, 0x00, 0x00, 0x01, 0x42, 0x75, 0x64, 0x31, 0xff, 0xfe, 0x80,
+    ];
+    fs::write(&binary, bytes).unwrap();
+    // A stale generated file is recognised by its header even when its body is not UTF-8.
+    let stale = out.join("stale.rs");
+    let mut stale_bytes = format!("{}\n", rust::HEADER).into_bytes();
+    stale_bytes.extend([0xff, 0xfe]);
+    fs::write(&stale, &stale_bytes).unwrap();
+
+    let mut files = GeneratedFiles::new(rust::HEADER);
+    files
+        .insert("mod.rs", format!("{}\n", rust::HEADER))
+        .unwrap();
+    let messages = files.check(&out).unwrap();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages[0].starts_with("extra generated file"),
+        "{messages:?}"
+    );
+    assert!(messages[0].contains("stale.rs"), "{messages:?}");
+    assert!(
+        messages[1].starts_with("missing generated file"),
+        "{messages:?}"
+    );
+
+    files.write(&out).unwrap();
+    assert!(!stale.exists());
+    assert_eq!(fs::read(&binary).unwrap(), bytes);
+    assert_eq!(files.check(&out).unwrap(), Vec::<String>::new());
+
+    // An expected file with binary content is changed output, not an I/O error.
+    fs::write(out.join("mod.rs"), [0xff, 0xfe]).unwrap();
+    let messages = files.check(&out).unwrap();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("changed generated file"),
+        "{messages:?}"
+    );
+    fs::remove_dir_all(&out).unwrap();
+}

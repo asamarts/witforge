@@ -589,7 +589,8 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   files.
 - `--check` writes nothing. It fails if an expected file is missing or differs, or if a
   generated-header file in the output root is not expected. It ignores files without the
-  header.
+  header. Recognising the header reads only the start of each file, as bytes, so a file that is
+  not UTF-8 text (a `.DS_Store`, an image) is ignored like any other file without the header.
 - Generation removes stale generated files in the output root and never touches files without
   the header. It validates every version before writing the first file; a failed run may leave a
   partial set, and rerunning after fixing the input completes it.
