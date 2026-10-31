@@ -16,7 +16,7 @@ tags:
 - p2
 evidence:
   - kind: commit
-    ref: 1b8c9e77c7beeb4ab950a44fd9380d5a675bbd03
+    ref: b44e40eedc71e5fbb1eb9bcd716ef7fd7ab88cb5
 ---
 
 ## Exit criteria

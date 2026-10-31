@@ -12,7 +12,7 @@ tags:
 - p3
 evidence:
   - kind: commit
-    ref: bd09812d28794cf8eb59a1ad4ab3a3cfc7903064
+    ref: 7139c9beb77e795256316274901dec09d30bc718
 ---
 
 ## Exit criteria
