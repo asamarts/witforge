@@ -17,7 +17,9 @@ use clap::{Args, Parser, Subcommand};
 
 use witforge::emit;
 use witforge::lock::{LockMode, WireLock};
-use witforge::{ensure_not_released, load, model, subset};
+use witforge::{
+    ensure_not_released, load, load_released_manifest, load_root_released_manifest, model, subset,
+};
 
 /// The witforge contract compiler.
 #[derive(Debug, Parser)]
@@ -53,7 +55,7 @@ struct RustOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
-    /// Released-version manifest; defaults to `<WIT_ROOT>/released`.
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
 }
@@ -69,7 +71,7 @@ struct ProtoOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
-    /// Released-version manifest; defaults to `<WIT_ROOT>/released`.
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
 }
@@ -91,7 +93,7 @@ struct GlueOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
-    /// Released-version manifest; defaults to `<WIT_ROOT>/released`.
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
 }
@@ -110,7 +112,8 @@ struct Options {
     /// Treat every existing entry as a draft; for a version with no baseline.
     #[arg(long, conflicts_with = "against")]
     first: bool,
-    /// Released-version manifest; defaults to `<WIT_DIR>/../released`.
+    /// Released-version manifest (`lock` refuses a listed directory); defaults to
+    /// `<WIT_DIR>/../released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
 }
@@ -137,6 +140,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 fn check(options: &Options) -> Result<ExitCode> {
+    // `check` may verify a released directory; the manifest only has to be valid.
+    load_released_manifest(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
     let violations = subset::check(&contract);
     for violation in &violations {
@@ -217,9 +222,9 @@ fn lock(options: &Options) -> Result<ExitCode> {
 }
 
 fn rust(options: &RustOptions) -> Result<ExitCode> {
-    // The emitter validates every version and lockfile before writing. The released manifest
-    // participates in the released-directory check in the later release slice.
-    let _ = &options.released;
+    // Generation reproduces released versions without modifying them, so the manifest only has
+    // to be valid. The emitter validates every version and lockfile before writing.
+    load_root_released_manifest(&options.root, options.released.as_deref())?;
     if options.check {
         let messages = emit::rust::check(&options.root, &options.out)?;
         for message in &messages {
@@ -236,8 +241,7 @@ fn rust(options: &RustOptions) -> Result<ExitCode> {
 }
 
 fn proto(options: &ProtoOptions) -> Result<ExitCode> {
-    // The released manifest participates in the later release slice.
-    let _ = &options.released;
+    load_root_released_manifest(&options.root, options.released.as_deref())?;
     if options.check {
         let messages = emit::proto::check(&options.root, &options.out)?;
         for message in &messages {
@@ -254,9 +258,9 @@ fn proto(options: &ProtoOptions) -> Result<ExitCode> {
 }
 
 fn glue(options: &GlueOptions) -> Result<ExitCode> {
-    // Released plain modules are frozen; glue is current-schema output. The manifest is wired
-    // here for CLI parity with the other generators.
-    let _ = &options.released;
+    // Glue is current-schema output for the highest minor of each major; released plain modules
+    // stay frozen. As for the other generators, the manifest only has to be valid.
+    load_root_released_manifest(&options.root, options.released.as_deref())?;
     if options.check {
         let messages = emit::glue::check(
             &options.root,

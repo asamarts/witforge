@@ -39,7 +39,9 @@ directories are frozen as a whole, which covers those cases.
   directory (the parent of the canonicalised directory, so `.` and a symlinked version directory
   find their real parent's manifest) and `<wit-root>/released` for generation. A missing default
   manifest means no version is treated as released. An explicitly supplied missing manifest is an
-  error.
+  error. Every command (`check`, `lock`, `rust`, `proto`, and `glue`) validates the manifest it
+  uses and fails with exit `2` if it is missing when given explicitly or is malformed; only
+  `lock` acts on its contents.
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
@@ -49,8 +51,8 @@ directories are frozen as a whole, which covers those cases.
   `ci/check-generated.sh`; consumers can use the same scripts.
 - `lock` refuses to modify a released version directory. The refusal compares resolved paths,
   not names: the version directory and every listed directory are canonicalised, so `.`, `..`
-  components, and symlinks cannot bypass it. `check`, `rust`, and `proto` are allowed; they
-  verify or reproduce the frozen contract.
+  components, and symlinks cannot bypass it. `check`, `rust`, `proto`, and `glue` are allowed;
+  they verify or reproduce the frozen contract.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the
   previous minor's `wire.lock` and is then developed with `lock --against`.
 - Docs-only patch versions are out of scope for 0.1. A docs-only patch requires a new version

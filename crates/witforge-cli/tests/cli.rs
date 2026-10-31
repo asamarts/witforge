@@ -882,3 +882,74 @@ fn released_refusal_follows_a_symlink_to_a_released_directory() {
     assert_eq!(fs::read(v01.join("wire.lock")).unwrap(), before);
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn every_command_validates_the_released_manifest() {
+    let root = versions("released-flag");
+    let wit = root.join("wit");
+    let out = root.join("out");
+    let missing = root.join("missing-released");
+    let malformed = root.join("malformed-released");
+    fs::write(&malformed, "v0 1\n").unwrap();
+    let command = |name: &str| {
+        let mut witforge = witforge();
+        witforge.arg(name);
+        match name {
+            "check" | "lock" => {
+                witforge.arg(wit.join("v0.2"));
+            }
+            _ => {
+                witforge.arg(&wit).arg("--out").arg(&out);
+            }
+        }
+        if name == "glue" {
+            witforge.args([
+                "--plain-root",
+                "crate::plain",
+                "--proto-root",
+                "crate::proto",
+            ]);
+        }
+        witforge
+    };
+    for name in ["check", "lock", "rust", "proto", "glue"] {
+        let output = command(name)
+            .arg("--released")
+            .arg(&missing)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{name} missing: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("failed to read released manifest"),
+            "{name} missing: {output:?}"
+        );
+
+        let output = command(name)
+            .arg("--released")
+            .arg(&malformed)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{name} malformed: {output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("released entry `v0 1`"),
+            "{name} malformed: {output:?}"
+        );
+    }
+
+    // The default manifest is validated too: `<WIT_DIR>/../released` and `<WIT_ROOT>/released`.
+    fs::write(wit.join("released"), "v0.1\nv0.1\n").unwrap();
+    for name in ["check", "lock", "rust", "proto", "glue"] {
+        let output = command(name).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{name} default: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("duplicate released entry"),
+            "{name} default: {output:?}"
+        );
+    }
+    assert!(!out.exists());
+    fs::remove_dir_all(&root).unwrap();
+}

@@ -157,7 +157,26 @@ pub fn default_released_manifest(wit_dir: &Path) -> PathBuf {
 ///
 /// Returns an error for an invalid manifest or an explicitly missing manifest.
 pub fn load_released_manifest(wit_dir: &Path, explicit: Option<&Path>) -> Result<ReleasedManifest> {
-    let path = explicit.map_or_else(|| default_released_manifest(wit_dir), Path::to_path_buf);
+    load_manifest_or_default(default_released_manifest(wit_dir), explicit)
+}
+
+/// Load the manifest for a WIT root, as the generators do; the default is `<wit-root>/released`.
+///
+/// A missing default manifest means no versions are released. An explicitly supplied missing
+/// manifest is an error.
+///
+/// # Errors
+///
+/// Returns an error for an invalid manifest or an explicitly missing manifest.
+pub fn load_root_released_manifest(
+    wit_root: &Path,
+    explicit: Option<&Path>,
+) -> Result<ReleasedManifest> {
+    load_manifest_or_default(wit_root.join(RELEASED_MANIFEST), explicit)
+}
+
+fn load_manifest_or_default(default: PathBuf, explicit: Option<&Path>) -> Result<ReleasedManifest> {
+    let path = explicit.map_or(default, Path::to_path_buf);
     if explicit.is_none() && !path.exists() {
         return Ok(ReleasedManifest::default());
     }

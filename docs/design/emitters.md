@@ -580,7 +580,10 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
 - `glue` additionally requires `--plain-root` and `--proto-root`; it covers the highest minor of
   each major, so older plain modules get no glue.
 - The released manifest default is `<version-dir>/../released` for `check`/`lock`, and
-  `<wit-root>/released` for generation.
+  `<wit-root>/released` for generation. Every command validates the manifest: an explicitly
+  given missing manifest or a malformed one is an error (exit `2`). Generation reproduces
+  released versions without modifying them, so for `rust`, `proto`, and `glue` the manifest only
+  has to be valid.
 - `--first` and `--against` are mutually exclusive. They are defined in
   [`lockfile.md`](lockfile.md).
 - Generation creates the output directory when it is missing. The output root MUST NOT be the WIT
