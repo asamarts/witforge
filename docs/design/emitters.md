@@ -644,7 +644,12 @@ are generated from that same highest minor and reference its plain module.
   list/option/result, nested wrappers, direct-vs-singular wrapper forms for named options,
   one-sided results, payload-less variants, flags, and reserved members.
 - Determinism tests: two runs produce byte-identical output; LF only; no timestamps.
-- `--check` tests: missing, changed, extra generated, and unrelated files.
+- `--check` tests: missing, changed, extra generated, and unrelated files, including files that
+  are not UTF-8 text.
+- Output-root tests: the WIT root and anything inside it are refused, also when reached through
+  `..` components or symlinks.
+- Continuity tests: a minor whose lockfile does not continue the previous minor's fails every
+  generator; a new major starts fresh.
 - CLI integration tests that run the built binary with `std::process::Command` in directories
   under `std::env::temp_dir()`, for `rust`, `proto`, `glue`, and `--check`.
 - Lockfile property tests with `proptest`.

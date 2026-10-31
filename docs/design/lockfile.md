@@ -410,12 +410,15 @@ The implementation must cover:
 - reserved and reintroduced members;
 - draft rename/removal/retype, including a draft removed and re-added;
 - released type/kind/renumber/un-reserve errors;
-- `--first`, `--against`, default mode, and released-directory refusal;
-- the `wit/released` manifest: append-only, duplicate/missing entries, and a released directory
-  refusing `lock`;
-- a two-version fixture with a copied lockfile and an added/removed/renamed member;
-- CLI integration tests for `check`, `lock`, `--first`, `--against`, `--released`, exit codes,
-  and no-write-on-error;
+- `--first`, `--against`, default mode, and released-directory refusal, including through `.`,
+  `..` components, and symlinks;
+- a missing lockfile refused in default mode and with `--against`, and accepted with `--first`;
+- the `wit/released` manifest: append-only, duplicate/missing entries, the plain-name entry rule,
+  and a released directory refusing `lock`;
+- a two-version fixture with a copied lockfile and an added/removed/renamed member, and a new
+  minor whose lockfile does not continue the previous one failing every generator;
+- CLI integration tests for `check`, `lock`, `--first`, `--against`, `--released` (missing and
+  malformed manifests for every command), exit codes, and no-write-on-error;
 - property tests for idempotence, append-only behavior, and random add/remove/retype sequences.
 
 ## 15. Deferred and pre-golive
