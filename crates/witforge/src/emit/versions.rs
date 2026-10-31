@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::lock::WireLock;
 use crate::model::{self, Model};
-use crate::{load, subset};
+use crate::{ContractError, load, subset};
 
 /// One validated `v<major>.<minor>` version directory.
 pub(crate) struct Version {
@@ -29,8 +29,9 @@ pub(crate) struct Version {
 ///
 /// # Errors
 ///
-/// Returns an error for a missing or duplicate version directory, an inconsistent package, a
-/// subset violation, an unreadable or invalid lockfile, or a stale lockfile.
+/// Returns an error for a missing or duplicate version directory, an unparsable WIT package, or
+/// an unreadable or invalid lockfile, and a [`ContractError`] for a subset violation, a version or
+/// package mismatch, or a stale lockfile.
 pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
     let mut versions: Vec<Version> = Vec::new();
     for (major, minor, directory) in discover_versions(wit_root)? {
@@ -38,29 +39,33 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
         let violations = subset::check(&contract);
         if !violations.is_empty() {
             let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
-            bail!("{}: {}", directory.display(), messages.join("; "));
+            bail!(ContractError::new(format!(
+                "{}: {}",
+                directory.display(),
+                messages.join("; ")
+            )));
         }
         let model = model::build(&contract)?;
         let version = model.package.version;
         if version.major != major || version.minor != minor || version.patch != 0 {
-            bail!(
+            bail!(ContractError::new(format!(
                 "{} declares version {}, expected {major}.{minor}.0",
                 directory.display(),
                 version
-            );
+            )));
         }
         if let Some(first) = versions.first() {
             let expected = &first.model.package;
             if expected.namespace != model.package.namespace || expected.name != model.package.name
             {
-                bail!(
+                bail!(ContractError::new(format!(
                     "{} declares package {}:{}, expected {}:{}",
                     directory.display(),
                     model.package.namespace,
                     model.package.name,
                     expected.namespace,
                     expected.name
-                );
+                )));
             }
         }
         let lock_path = directory.join("wire.lock");
@@ -69,11 +74,14 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
         let lock =
             WireLock::parse(&lock_text).with_context(|| format!("in {}", lock_path.display()))?;
         let members = model.members()?;
-        if !lock.drift(&members)?.is_empty() {
-            bail!(
+        let drift = lock.drift(&members).map_err(|err| {
+            ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
+        })?;
+        if !drift.is_empty() {
+            bail!(ContractError::new(format!(
                 "{}: lockfile is stale; run `witforge lock`",
                 directory.display()
-            );
+            )));
         }
         versions.push(Version {
             major,

@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions};
 use crate::lock::{MemberKey, WireLock};
@@ -28,8 +29,9 @@ const ONEOF_VALUE: &str = "witforge_value";
 ///
 /// # Errors
 ///
-/// Returns an error for a missing version directory, an inconsistent package, subset violations,
-/// a stale lockfile, or a generated-name collision.
+/// Returns an error for a missing version directory or an unreadable or invalid lockfile, and a
+/// [`ContractError`] for an inconsistent package, subset violations, a stale lockfile, or a
+/// generated-name collision.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     let versions = load_versions(wit_root)?;
     // Versions are in ascending order, so the last one of each major is its highest minor.
@@ -39,7 +41,9 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     }
     let mut files = GeneratedFiles::new(HEADER);
     for (major, version) in highest {
-        let generated = emit_major(&version.model, &version.lock)?;
+        let generated = emit_major(&version.model, &version.lock).map_err(|err| {
+            ContractError::from_error(&err.context(version.directory.display().to_string()))
+        })?;
         files.insert(format!("v{major}.proto"), generated)?;
     }
     Ok(files)

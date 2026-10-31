@@ -14,11 +14,54 @@ pub mod model;
 pub mod subset;
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use wit_parser::{PackageId, Resolve};
+
+/// A contract, lockfile, or generated-output violation, as opposed to a usage, I/O, parse, or
+/// internal error.
+///
+/// Functions that validate a contract report its violations as this type inside the returned
+/// [`anyhow::Error`], so callers can tell the two classes apart with [`is_contract_error`]. The
+/// `witforge` CLI exits with `1` for a violation and `2` for any other error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractError {
+    message: String,
+}
+
+impl ContractError {
+    /// A violation described by `message`.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Classify `error` as a violation, keeping its whole context chain in the message.
+    #[must_use]
+    pub fn from_error(error: &anyhow::Error) -> Self {
+        Self::new(format!("{error:#}"))
+    }
+}
+
+impl fmt::Display for ContractError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ContractError {}
+
+/// Whether `error`, or any error in its context chain, is a [`ContractError`].
+#[must_use]
+pub fn is_contract_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(<dyn std::error::Error>::is::<ContractError>)
+}
 
 /// A parsed WIT package together with the resolve that owns it.
 ///

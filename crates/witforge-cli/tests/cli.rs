@@ -143,7 +143,7 @@ fn lock_does_not_write_when_a_live_type_changes() {
     fs::write(&path, &changed).unwrap();
 
     let second = witforge().arg("lock").arg(&dir).output().unwrap();
-    assert!(!second.status.success(), "{second:?}");
+    assert_eq!(second.status.code(), Some(1), "{second:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), changed);
     fs::remove_dir_all(&dir).unwrap();
 }
@@ -356,7 +356,7 @@ fn reintroduced_overlay_is_refused_without_writing() {
         .arg(v01.join("wire.lock"))
         .output()
         .unwrap();
-    assert_eq!(lock.status.code(), Some(2), "{lock:?}");
+    assert_eq!(lock.status.code(), Some(1), "{lock:?}");
     assert_eq!(fs::read(v02.join("wire.lock")).unwrap(), before);
     fs::remove_dir_all(&root).unwrap();
 }
@@ -978,4 +978,92 @@ fn check_reports_only_the_subset_violation_when_a_lockfile_exists() {
     assert!(lines[0].contains("char"), "{stderr}");
     assert!(!stderr.contains("witforge lock"), "{stderr}");
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn lock_exits_1_for_a_subset_violation_without_writing() {
+    let dir = temp_contract("exit-lock-violation");
+    let first = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(first.status.success(), "{first:?}");
+    let before = fs::read(dir.join("wire.lock")).unwrap();
+    let source = fs::read_to_string(dir.join("contract.wit")).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        source.replace("start: u64,", "start: char,"),
+    )
+    .unwrap();
+    let lock = witforge().arg("lock").arg(&dir).output().unwrap();
+    assert_eq!(lock.status.code(), Some(1), "{lock:?}");
+    assert!(
+        String::from_utf8_lossy(&lock.stderr).contains("subset violation"),
+        "{lock:?}"
+    );
+    assert_eq!(fs::read(dir.join("wire.lock")).unwrap(), before);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
+    let base = versions("exit-generators");
+    let root = base.join("wit");
+    let source = root.join("v0.2/contract.wit");
+    let original = fs::read_to_string(&source).unwrap();
+    let run = |command: &str, check: bool| {
+        let out = base.join(format!("{command}-out"));
+        fs::create_dir_all(&out).unwrap();
+        let mut witforge = witforge();
+        witforge.arg(command).arg(&root).arg("--out").arg(&out);
+        if command == "glue" {
+            witforge.args([
+                "--plain-root",
+                "crate::plain",
+                "--proto-root",
+                "crate::proto",
+            ]);
+        }
+        if check {
+            witforge.arg("--check");
+        }
+        witforge.output().unwrap()
+    };
+    for (contract, code, message) in [
+        (
+            original.replace("renamed: string,", "renamed: string,\n        extra: u8,"),
+            1,
+            "lockfile is stale",
+        ),
+        (
+            original.replace("name: string,", "name: char,"),
+            1,
+            "`char` is not supported",
+        ),
+        (
+            original.replace("record user {", "record user {{"),
+            2,
+            "failed to load the WIT package",
+        ),
+    ] {
+        assert_ne!(contract, original);
+        fs::write(&source, &contract).unwrap();
+        for command in ["rust", "proto", "glue"] {
+            for check in [false, true] {
+                let output = run(command, check);
+                assert_eq!(
+                    output.status.code(),
+                    Some(code),
+                    "{command} check={check} {message}: {output:?}"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains(message),
+                    "{command} check={check}: {output:?}"
+                );
+            }
+        }
+    }
+    fs::remove_dir_all(&base).unwrap();
 }

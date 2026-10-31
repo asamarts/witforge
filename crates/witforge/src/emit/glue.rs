@@ -9,6 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions};
 use crate::lock::WireLock;
@@ -81,8 +82,9 @@ impl ::std::error::Error for GlueError {}
 ///
 /// # Errors
 ///
-/// Returns an error for an invalid module root, a missing version directory, an inconsistent
-/// package, subset violations, a stale lockfile, or generated-name collisions.
+/// Returns an error for an invalid module root, a missing version directory, or an unreadable or
+/// invalid lockfile, and a [`ContractError`] for an inconsistent package, subset violations, a
+/// stale lockfile, or generated-name collisions.
 pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<GeneratedFiles> {
     validate_module_root(plain_root)?;
     validate_module_root(proto_root)?;
@@ -100,7 +102,10 @@ pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<Gener
     let mut files = GeneratedFiles::new(HEADER);
     let mut majors = Vec::new();
     for (major, version) in &highest {
-        let generated = emit_version(&version.model, &version.lock, plain_root, proto_root)?;
+        let generated = emit_version(&version.model, &version.lock, plain_root, proto_root)
+            .map_err(|err| {
+                ContractError::from_error(&err.context(version.directory.display().to_string()))
+            })?;
         files.insert(format!("v{major}.rs"), generated)?;
         majors.push(*major);
     }

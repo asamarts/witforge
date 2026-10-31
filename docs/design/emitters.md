@@ -610,7 +610,12 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   `ci/check-buf.sh` is an optional extra `buf breaking` check for consumers that use it; the
   lockfile remains the normative wire gate.
 - Exit codes: `0` success; `1` contract, lockfile, or output drift; `2` usage, IO, parse,
-  released-directory refusal, or internal error.
+  released-directory refusal, or internal error. Every command follows this scheme. For `rust`,
+  `proto`, and `glue`, a version that fails validation (subset violations, a version or package
+  mismatch, a stale or discontinuous lockfile, a generated-name collision) exits `1`, as does
+  `--check` drift; a WIT package or lockfile that cannot be read or parsed, an invalid module
+  root, and an output root inside the WIT root exit `2`. The library reports the first class as
+  a `witforge::ContractError` in the error chain (`witforge::is_contract_error`).
 - The CLI uses `clap`; every command supports `--help`, and the binary supports `--version`.
 
 ### 5.2 Output files

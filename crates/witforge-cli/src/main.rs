@@ -18,7 +18,8 @@ use clap::{Args, Parser, Subcommand};
 use witforge::emit;
 use witforge::lock::{LockMode, WireLock};
 use witforge::{
-    ensure_not_released, load, load_released_manifest, load_root_released_manifest, model, subset,
+    ContractError, ensure_not_released, is_contract_error, load, load_released_manifest,
+    load_root_released_manifest, model, subset,
 };
 
 /// The witforge contract compiler.
@@ -118,13 +119,15 @@ struct Options {
     released: Option<PathBuf>,
 }
 
+/// Exit codes: `0` success; `1` a contract, lockfile, or generated-output violation; `2` a
+/// usage, I/O, parse, released-directory, or internal error.
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("witforge: {err:#}");
-            ExitCode::from(2)
+            ExitCode::from(if is_contract_error(&err) { 1 } else { 2 })
         }
     }
 }
@@ -183,10 +186,10 @@ fn lock(options: &Options) -> Result<ExitCode> {
         eprintln!("error: {violation}");
     }
     if !violations.is_empty() {
-        bail!(
+        bail!(ContractError::new(format!(
             "{} subset violation(s); the lockfile was not updated",
             violations.len()
-        );
+        )));
     }
     let members = model::members(&contract)?;
     let lock_path = options
@@ -196,15 +199,18 @@ fn lock(options: &Options) -> Result<ExitCode> {
     let mut lock = read_lock(&lock_path, options.against.is_some())?;
     let previous = read_previous(options.against.as_deref())?;
     let mode = lock_mode(options, previous.as_ref());
-    let changes = lock.reconcile_with(&members, mode)?;
+    // Every refusal from reconciling is a lockfile violation, as `check` reports it.
+    let changes = lock
+        .reconcile_with(&members, mode)
+        .map_err(|err| ContractError::from_error(&err))?;
     if !changes.reintroduced.is_empty() {
         for (key, number) in &changes.reintroduced {
             eprintln!("error: {}", reintroduced(key, *number));
         }
-        bail!(
+        bail!(ContractError::new(format!(
             "{} removed member(s) reintroduced; the lockfile was not updated",
             changes.reintroduced.len()
-        );
+        )));
     }
     for (key, number) in &changes.dropped {
         println!("dropped  {key} = {number}");

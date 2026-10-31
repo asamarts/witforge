@@ -315,8 +315,12 @@ The update order is:
 7. Render and write atomically (temporary file in the same directory, then rename).
 
 `lock` prints one line per change (`added`, `reserved`, `updated`, `dropped`) and exits `0`.
-It refuses a released directory with exit `2`. A no-op lock still writes the canonical rendering
-(header, sorted entries, LF) unless the file is already byte-identical.
+It uses the same exit codes as `check`: when it writes nothing because of a contract or lockfile
+violation (subset violations, reintroduced members, a changed, renumbered, missing, or
+un-reserved released entry, a mismatched `--against` baseline, or an exhausted number space) it
+exits `1`; it refuses a released directory, and reports usage, IO, parse, and internal errors,
+with exit `2`. A no-op lock still writes the canonical rendering (header, sorted entries, LF)
+unless the file is already byte-identical.
 
 ## 10. Reserved members and reintroduction
 
