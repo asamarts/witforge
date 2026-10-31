@@ -4,6 +4,10 @@
 # service, and registers only when no registration is stored.
 #
 # Needs podman and the gh CLI logged in to the GitHub account that owns the repository.
+#
+# witforge has been public since 0.1.0 and runs CI on GitHub-hosted runners. A self-hosted runner
+# must never serve a public repository, where a pull request from a fork could run code on it, so
+# this script refuses unless WITFORGE_REPO names a private repository.
 set -euo pipefail
 
 CI_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,6 +17,14 @@ NAME=witforge-runner
 IMAGE=localhost/witforge-runner:latest
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+private="$(GH_TOKEN="$(gh auth token --user "${GH_USER}")" \
+    gh api "repos/${REPO}" --jq .private)"
+if [[ "${private}" != true ]]; then
+    echo "${REPO} is not a private repository; a self-hosted runner must never serve a public" \
+        "one (nothing was changed)" >&2
+    exit 1
+fi
 
 echo "==> Building ${IMAGE}"
 podman build -t "${IMAGE}" -f "${CI_DIR}/Containerfile" "${CI_DIR}"
