@@ -790,3 +790,42 @@ fn generators_ignore_a_binary_file_in_the_output_root() {
     }
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_components() {
+    let base = versions("out-parent");
+    fs::create_dir_all(base.join("existing")).unwrap();
+    for out in [
+        "missing/../wit/gen",
+        "existing/../wit/gen",
+        "existing/../wit/v0.2",
+    ] {
+        for command in ["rust", "proto", "glue"] {
+            let mut witforge = witforge();
+            witforge
+                .current_dir(&base)
+                .args([command, "wit", "--out", out]);
+            if command == "glue" {
+                witforge.args([
+                    "--plain-root",
+                    "crate::plain",
+                    "--proto-root",
+                    "crate::proto",
+                ]);
+            }
+            let output = witforge.output().unwrap();
+            assert_eq!(output.status.code(), Some(2), "{command} {out}: {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("must not be the WIT root"),
+                "{command} {out}: {output:?}"
+            );
+        }
+    }
+    assert!(!base.join("wit/gen").exists());
+    let version_files: Vec<_> = fs::read_dir(base.join("wit/v0.2"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(version_files.len(), 2, "{version_files:?}");
+    fs::remove_dir_all(&base).unwrap();
+}

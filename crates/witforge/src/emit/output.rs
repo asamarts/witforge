@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -156,15 +156,19 @@ impl GeneratedFiles {
 
 /// Refuse an output root that is the WIT root or inside it.
 ///
+/// Both paths are resolved before they are compared: the WIT root is canonicalised, and so is the
+/// longest existing prefix of the output root, with the rest normalised lexically. Neither `..`
+/// components nor symlinks can reach the WIT root.
+///
 /// # Errors
 ///
-/// Returns an error when the output path is equal to or below the WIT root.
+/// Returns an error when the WIT root cannot be resolved or the output path is equal to or below
+/// it.
 pub fn ensure_outside_wit_root(wit_root: &Path, out: &Path) -> Result<()> {
-    let root = std::path::absolute(wit_root)
-        .with_context(|| format!("failed to resolve {}", wit_root.display()))?;
-    let out =
-        std::path::absolute(out).with_context(|| format!("failed to resolve {}", out.display()))?;
-    if out == root || out.starts_with(&root) {
+    let root = fs::canonicalize(wit_root)
+        .with_context(|| format!("failed to resolve WIT root {}", wit_root.display()))?;
+    let resolved = resolve(out)?;
+    if resolved.starts_with(&root) {
         bail!(
             "output root {} must not be the WIT root or inside it ({})",
             out.display(),
@@ -172,6 +176,35 @@ pub fn ensure_outside_wit_root(wit_root: &Path, out: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Resolve `path` to an absolute path with no `.` or `..` components.
+///
+/// The longest prefix that exists is canonicalised, which follows its symlinks and `..`
+/// components as the operating system would. The rest does not exist yet, so it contains no
+/// symlinks and is normalised lexically.
+fn resolve(path: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(path)
+        .with_context(|| format!("failed to resolve {}", path.display()))?;
+    for prefix in absolute.ancestors() {
+        let Ok(mut resolved) = fs::canonicalize(prefix) else {
+            continue;
+        };
+        let rest = absolute
+            .strip_prefix(prefix)
+            .expect("an ancestor is a prefix");
+        for component in rest.components() {
+            match component {
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::Normal(name) => resolved.push(name),
+                Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+            }
+        }
+        return Ok(resolved);
+    }
+    bail!("failed to resolve {}", path.display())
 }
 
 /// A resolved output root used for diagnostics.

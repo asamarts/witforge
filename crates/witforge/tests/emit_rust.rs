@@ -277,3 +277,46 @@ fn generated_files_recognise_the_header_without_reading_files_as_text() {
     );
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+fn output_root_guard_resolves_parent_components() {
+    use witforge::emit::output::ensure_outside_wit_root;
+    let base = std::env::temp_dir().join(format!("witforge-out-guard-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let root = base.join("wit");
+    fs::create_dir_all(root.join("v0.1")).unwrap();
+    fs::create_dir_all(base.join("existing")).unwrap();
+
+    for inside in [
+        root.clone(),
+        root.join("gen"),
+        root.join("v0.1/gen"),
+        base.join("missing/../wit/gen"),
+        base.join("existing/../wit/gen"),
+        base.join("existing/../wit"),
+        root.join("gen/../../wit/v0.1"),
+        base.join("missing/../existing/../wit/./gen"),
+    ] {
+        assert!(
+            ensure_outside_wit_root(&root, &inside).is_err(),
+            "accepted {}",
+            inside.display()
+        );
+    }
+    for outside in [
+        base.join("out"),
+        base.join("existing/out"),
+        base.join("missing/../out"),
+        root.join("../out"),
+        root.join("gen/../../out"),
+    ] {
+        ensure_outside_wit_root(&root, &outside).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&root, base.join("link")).unwrap();
+        assert!(ensure_outside_wit_root(&root, &base.join("link/gen")).is_err());
+        assert!(ensure_outside_wit_root(&base.join("link"), &root.join("gen")).is_err());
+    }
+    fs::remove_dir_all(&base).unwrap();
+}

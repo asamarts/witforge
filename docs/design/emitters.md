@@ -584,9 +584,11 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
 - `--first` and `--against` are mutually exclusive. They are defined in
   [`lockfile.md`](lockfile.md).
 - Generation creates the output directory when it is missing. The output root MUST NOT be the WIT
-  root or inside a version directory; such a path is refused. `--check` requires the output
-  directory to exist and scans only the output root (not subdirectories) for generated-header
-  files.
+  root or inside it (which includes every version directory); such a path is refused. Both paths
+  are resolved before the comparison: the WIT root and the longest existing prefix of the output
+  root are canonicalised, and the rest of the output root is normalised lexically, so `..`
+  components and symlinks cannot reach the WIT root. `--check` requires the output directory to
+  exist and scans only the output root (not subdirectories) for generated-header files.
 - `--check` writes nothing. It fails if an expected file is missing or differs, or if a
   generated-header file in the output root is not expected. It ignores files without the
   header. Recognising the header reads only the start of each file, as bytes, so a file that is
@@ -685,8 +687,7 @@ witforge glue <wit-root> --out <dir> \
 - One glue module per major, matching the one-proto-per-major rule. `mod.rs` declares the major
   modules in ascending order.
 - `--check`, generated-header ownership, stale-file removal, LF-only output, and the rule that
-  the output root must not be the WIT root or inside a version directory are the same as the
-  Rust/proto emitters.
+  the output root must not be the WIT root or inside it are the same as the Rust/proto emitters.
 - A root with no version directories is an error.
 - Glue `v<major>.rs` is shared across the major’s minors and may change when a new minor is
   added. Released per-version plain Rust modules are frozen; glue is current-schema output and
