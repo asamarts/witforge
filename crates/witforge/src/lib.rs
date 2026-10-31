@@ -68,9 +68,12 @@ pub struct ReleasedManifest {
 impl ReleasedManifest {
     /// Parse and validate a released manifest.
     ///
-    /// Entries are simple directory names relative to the manifest's directory. Blank lines
-    /// and `#` comments are ignored. Duplicate, absolute, parent-traversing, missing, and
-    /// lockfile-less directories are errors.
+    /// Entries are plain directory names relative to the manifest's directory: an ASCII letter
+    /// or digit followed by ASCII letters, digits, `.`, `_`, or `-`
+    /// (`^[A-Za-z0-9][A-Za-z0-9._-]*$`). That excludes `.`, `..`, hidden names, whitespace,
+    /// separators, and absolute paths. Leading and trailing ASCII whitespace (space, tab, CR,
+    /// VT, FF) is trimmed; blank lines and `#` comments are ignored. Invalid, duplicate,
+    /// missing, and lockfile-less directories are errors.
     ///
     /// # Errors
     ///
@@ -83,19 +86,15 @@ impl ReleasedManifest {
         let mut seen = BTreeSet::new();
         for (index, raw) in text.lines().enumerate() {
             let line_no = index + 1;
-            let line = raw.trim();
+            let line = raw.trim_matches([' ', '\t', '\r', '\x0b', '\x0c']);
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let entry = Path::new(line);
-            if entry.is_absolute()
-                || line == "."
-                || line == ".."
-                || entry.components().count() != 1
-                || line.contains('/')
-                || line.contains('\\')
-            {
-                bail!("line {line_no}: released entry `{line}` must be a simple directory name");
+            if !plain_directory_name(line) {
+                bail!(
+                    "line {line_no}: released entry `{line}` is not a plain directory name \
+                     (`^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
+                );
             }
             if !seen.insert(line.to_string()) {
                 bail!("line {line_no}: duplicate released entry `{line}`");
@@ -123,6 +122,16 @@ impl ReleasedManifest {
     pub fn contains(&self, directory: &str) -> bool {
         self.directories.iter().any(|entry| entry == directory)
     }
+}
+
+/// Whether `name` matches `^[A-Za-z0-9][A-Za-z0-9._-]*$`, the released-manifest entry rule shared
+/// with `ci/check-release-freeze.sh`.
+fn plain_directory_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 /// The default manifest path for a version directory: `<wit-dir>/../released`.

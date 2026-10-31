@@ -26,11 +26,15 @@ directories are frozen as a whole, which covers those cases.
 - Rust module: `v<major>_<minor>`.
 - Protobuf package/file: `v<major>` and `v<major>.proto`.
 - `wit/released` is the explicit released-version manifest. It is plain text, one directory
-  name per line (`v0.1`); blank lines and `#` comments are ignored. Entries are simple directory
-  names resolved relative to the manifest's directory; absolute paths and `..` components are
-  rejected. The manifest is append-only: CI fails if an entry is removed, duplicated, or names a
-  directory that does not exist or has no `wire.lock`. The tool rejects a malformed manifest,
-  duplicate entries, and missing listed directories.
+  name per line (`v0.1`); leading and trailing ASCII whitespace (space, tab, CR, VT, FF) is
+  trimmed, and blank lines and `#` comments are ignored. Entries are plain directory names
+  resolved relative to the manifest's directory: an ASCII letter or digit followed by ASCII
+  letters, digits, `.`, `_`, or `-` (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), so `.`, `..`, hidden names,
+  whitespace, separators, non-ASCII names, and absolute paths are rejected. The manifest is
+  append-only: CI fails if an entry is removed, duplicated, or names a directory that does not
+  exist or has no `wire.lock`. The tool and `ci/check-release-freeze.sh` apply the same entry
+  rule; the tool rejects a malformed manifest, duplicate entries, and missing or lockfile-less
+  listed directories.
 - Commands accept `--released <path>`; the default is `<wit-dir>/../released` for a version
   directory and `<wit-root>/released` for generation. A missing default manifest means no
   version is treated as released. An explicitly supplied missing manifest is an error.

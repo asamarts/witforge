@@ -622,6 +622,48 @@ fn released_manifest_validates_entries_and_blocks_locking() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn released_manifest_entries_must_be_plain_directory_names() {
+    let root = std::env::temp_dir().join(format!("witforge-released-names-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let manifest_path = root.join("released");
+    let make = |name: &str| {
+        let directory = root.join(name);
+        if fs::create_dir_all(&directory).is_ok() {
+            let _ = fs::write(directory.join("wire.lock"), format!("{HEADER}\n"));
+        }
+    };
+
+    // Each name exists as a directory with a lockfile where the platform allows it, so only the
+    // name rule `^[A-Za-z0-9][A-Za-z0-9._-]*$` can refuse it.
+    let mut refused = vec!["v0 1", "vé", ".hidden", "-v0.1", "_v0.1", "v0.1~", "v0+1"];
+    if cfg!(unix) {
+        refused.extend(["...", "v0\\1", "v0:1"]);
+    }
+    for name in &refused {
+        make(name);
+    }
+    refused.extend([".", "..", "../v0.1", "a/b", "/abs"]);
+    for name in refused {
+        fs::write(&manifest_path, format!("{name}\n")).unwrap();
+        let error = ReleasedManifest::load(&manifest_path).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("plain directory name"),
+            "`{name}`: {message}"
+        );
+    }
+
+    for name in ["v0.1", "V1_2-rc", "0release"] {
+        make(name);
+        fs::write(&manifest_path, format!("  {name}\t\n")).unwrap();
+        let manifest = ReleasedManifest::load(&manifest_path).unwrap();
+        assert_eq!(manifest.directories(), [name]);
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
 fn generated_members(indices: &[(u8, u8)]) -> Vec<Member> {
     let mut seen = BTreeSet::new();
     let mut members = Vec::new();
