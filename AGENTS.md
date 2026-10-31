@@ -6,12 +6,12 @@ generates plain Rust types/traits, a protobuf schema, and protobuf glue.
 
 ## Current state
 
-- The foundations are implemented: package loading, the restricted-subset
-  checker, the append-only lockfile (v1), and `witforge check` / `witforge lock`.
+- 0.1.0 is implemented: package loading, the restricted-subset checker, the
+  append-only lockfile (v2), the Rust, protobuf, and glue emitters, and the
+  `witforge check`, `lock`, `rust`, `proto`, and `glue` commands.
 - The normative specifications are [`docs/design/model.md`](docs/design/model.md),
   [`docs/design/lockfile.md`](docs/design/lockfile.md), and
-  [`docs/design/emitters.md`](docs/design/emitters.md). They describe lockfile v2,
-  the emitters, and glue; implementation is the next slice.
+  [`docs/design/emitters.md`](docs/design/emitters.md).
 - The narrative sequence is [`ROADMAP.md`](ROADMAP.md).
 - The task-level source of truth is [`aplan/`](aplan/README.md).
 
@@ -76,8 +76,8 @@ cargo +1.88 test --workspace --locked          # MSRV
   build pass.
 - Put scratch worktrees, target dirs, and large downloads under `~/.tmp`, not
   `/tmp`.
-- The CI runner is self-hosted while the repository is private. Do not make it
-  serve a public repository; the release task covers the transition.
+- CI runs on GitHub-hosted runners. Never attach a self-hosted runner to this
+  public repository (see `ci/README.md`).
 
 ## Documentation and contracts
 

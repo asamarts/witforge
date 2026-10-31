@@ -16,20 +16,18 @@ while the reverse directions are lossy. witforge exists because no tool performs
 projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
 tie their output to a runtime.
 
-> **Status: 0.1.0 release preparation, private.** The loading, subset-checker, internal-model,
-> v2 append-only lockfile, Rust, protobuf, and glue emitters are implemented, with clap-based
-> `witforge check`, `lock`, `rust`, `proto`, and `glue` commands. CI gates generated-output
-> drift, release freezes, and an optional `buf breaking` check; the aplan plan is checked locally
-> until aplan is published. The repository
-> becomes public and publishes to crates.io after alint's contract `0.x` consumes this release;
-> see [ci/release-checklist.md](ci/release-checklist.md). witforge's first consumer is the
+> **Status: 0.1.0.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
+> protobuf, and glue emitters are implemented, with clap-based `witforge check`, `lock`, `rust`,
+> `proto`, and `glue` commands. CI runs on Linux, macOS, and Windows and gates generated-output
+> drift and release freezes. witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
 ## Plan
 
-Task-level planning, dependencies, and closure evidence live in [`aplan/`](aplan/README.md)
-and are validated with `aplan check` and `aplan verify`. [`ROADMAP.md`](ROADMAP.md) is the
-narrative sequence; the plan is the task-level source of truth.
+Task-level planning, dependencies, and closure evidence live in [`aplan/`](https://github.com/asamarts/witforge/blob/main/aplan/README.md)
+and are validated with `aplan check` and `aplan verify` (aplan is not yet published, so CI does
+not run them). [`ROADMAP.md`](https://github.com/asamarts/witforge/blob/main/ROADMAP.md) is the narrative sequence; the plan is the
+task-level source of truth.
 
 ## How it works
 
@@ -65,9 +63,9 @@ $ witforge glue  wit --out generated/glue \
   record their kind and canonical type, so a type or kind change is caught even when protobuf
   would not see it.
 
-The design is in [docs/design/overview.md](docs/design/overview.md).
+The design is in [docs/design/overview.md](https://github.com/asamarts/witforge/blob/main/docs/design/overview.md).
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT), at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/asamarts/witforge/blob/main/LICENSE-APACHE) or
+[MIT license](https://github.com/asamarts/witforge/blob/main/LICENSE-MIT), at your option.

@@ -1,12 +1,12 @@
 # CI
 
-While the repository is private, CI runs on one self-hosted Linux runner (labels `self-hosted`,
-`linux`, `witforge`) instead of GitHub-hosted runners, whose minutes are billed for private
-repositories. The workflow selects the self-hosted runtime only while
-`github.event.repository.private` is true; once the repository is public it selects Ubuntu for
-lint/docs/plan/generation and the full Linux/macOS/Windows matrix for tests. A self-hosted runner
-must never serve a public repository, where pull requests from forks could run code on it, so the
-release checklist retires this runner explicitly.
+CI runs on GitHub-hosted runners: Ubuntu for lint, docs, and generation, and the full
+Linux/macOS/Windows matrix for tests. Before 0.1.0, while the repository was private, it ran on
+one self-hosted Linux runner (labels `self-hosted`, `linux`, `witforge`), because hosted minutes
+are billed for private repositories. The workflow still selects that runner only when
+`github.event.repository.private` is true. A self-hosted runner must never serve a public
+repository, where pull requests from forks could run code on it, so the release checklist retired
+it when the repository went public; the setup below is kept for reference.
 
 ## The runner
 
@@ -33,8 +33,8 @@ ci/runner/teardown.sh [--purge]          # remove
 ```
 
 Both scripts need podman and the `gh` CLI logged in to the account that owns the repository
-(`asamarts` by default; override with `WITFORGE_GH_USER` and `WITFORGE_REPO`).
-
+(`asamarts` by default; override with `WITFORGE_GH_USER` and `WITFORGE_REPO`). `teardown.sh
+--purge` refuses to change anything unless the runner is registered on `WITFORGE_REPO`.
 
 ## Gates
 
@@ -43,9 +43,10 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 - **generated**: builds the CLI, generates all three emitters into a temporary tree with
   `ci/check-generated.sh`, runs `--check` on each, and runs `ci/check-release-freeze.sh` against
   the versions fixture and the push/PR base commit.
-- **buf** (workflow dispatch only): optional `buf breaking` against the generated proto output.
-  It is disabled by default because the lockfile is the normative wire check; the manual input is
-  exposed for consumers that also run `buf`.
+- **buf** (workflow dispatch only): optional `buf breaking`, comparing the protobuf output
+  generated at the base commit with the output generated now. It is off by default because the
+  lockfile is the normative wire check; the manual input is exposed for consumers that also run
+  `buf`. The job installs a pinned `buf` and fails if it cannot run it.
 
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
 `aplan check-docs`) is checked locally, as the release checklist says, until a published aplan
