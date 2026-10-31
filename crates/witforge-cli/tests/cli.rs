@@ -829,3 +829,56 @@ fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_com
     assert_eq!(version_files.len(), 2, "{version_files:?}");
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn released_refusal_resolves_the_version_directory() {
+    let root = versions("released-resolve");
+    let v01 = root.join("wit/v0.1");
+    let v02 = root.join("wit/v0.2");
+    let v01_lock = fs::read(v01.join("wire.lock")).unwrap();
+    let v02_lock = fs::read(v02.join("wire.lock")).unwrap();
+
+    let unreleased = witforge()
+        .current_dir(&v02)
+        .args(["lock", "."])
+        .output()
+        .unwrap();
+    assert!(unreleased.status.success(), "{unreleased:?}");
+    assert_eq!(fs::read(v02.join("wire.lock")).unwrap(), v02_lock);
+
+    for (cwd, dir) in [(&v01, "."), (&v02, "../v0.1"), (&v02, "../v0.2/../v0.1")] {
+        let released = witforge()
+            .current_dir(cwd)
+            .args(["lock", dir])
+            .output()
+            .unwrap();
+        assert_eq!(released.status.code(), Some(2), "{dir}: {released:?}");
+        assert!(
+            String::from_utf8_lossy(&released.stderr).contains("is released"),
+            "{dir}: {released:?}"
+        );
+    }
+    assert_eq!(fs::read(v01.join("wire.lock")).unwrap(), v01_lock);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn released_refusal_follows_a_symlink_to_a_released_directory() {
+    let root = versions("released-symlink");
+    let v01 = root.join("wit/v0.1");
+    let before = fs::read(v01.join("wire.lock")).unwrap();
+    std::os::unix::fs::symlink("v0.1", root.join("wit/alias")).unwrap();
+    let output = witforge()
+        .arg("lock")
+        .arg(root.join("wit/alias"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is released"),
+        "{output:?}"
+    );
+    assert_eq!(fs::read(v01.join("wire.lock")).unwrap(), before);
+    fs::remove_dir_all(&root).unwrap();
+}

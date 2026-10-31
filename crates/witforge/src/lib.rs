@@ -135,9 +135,13 @@ fn plain_directory_name(name: &str) -> bool {
 }
 
 /// The default manifest path for a version directory: `<wit-dir>/../released`.
+///
+/// The version directory is canonicalised first, so `.` and a symlinked directory name the
+/// directory's real parent. A directory that cannot be resolved is used as given.
 #[must_use]
 pub fn default_released_manifest(wit_dir: &Path) -> PathBuf {
-    wit_dir
+    let resolved = fs::canonicalize(wit_dir).unwrap_or_else(|_| wit_dir.to_path_buf());
+    resolved
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
@@ -162,17 +166,32 @@ pub fn load_released_manifest(wit_dir: &Path, explicit: Option<&Path>) -> Result
 
 /// Refuse to lock a version directory listed in `wit/released`.
 ///
+/// The decision compares resolved paths, not names: `wit_dir` and every listed directory are
+/// canonicalised, so `.`, `..` components, and symlinks cannot hide a released directory.
+///
 /// # Errors
 ///
-/// Returns an error when the directory is released or the manifest is invalid.
+/// Returns an error when the directory cannot be resolved, is released, or the manifest is
+/// invalid.
 pub fn ensure_not_released(wit_dir: &Path, explicit: Option<&Path>) -> Result<()> {
-    let manifest = load_released_manifest(wit_dir, explicit)?;
-    let directory = wit_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .with_context(|| format!("version directory `{}` has no name", wit_dir.display()))?;
-    if manifest.contains(directory) {
-        bail!("version directory `{directory}` is released and cannot be locked");
+    let directory = fs::canonicalize(wit_dir)
+        .with_context(|| format!("failed to resolve version directory {}", wit_dir.display()))?;
+    let path = explicit.map_or_else(|| default_released_manifest(&directory), Path::to_path_buf);
+    let manifest = load_released_manifest(&directory, explicit)?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    for entry in manifest.directories() {
+        let listed = base.join(entry);
+        let listed = fs::canonicalize(&listed).with_context(|| {
+            format!("failed to resolve released directory {}", listed.display())
+        })?;
+        if listed == directory {
+            bail!(
+                "version directory `{}` is released (listed as `{entry}` in {}) and cannot be \
+                 locked",
+                wit_dir.display(),
+                path.display()
+            );
+        }
     }
     Ok(())
 }

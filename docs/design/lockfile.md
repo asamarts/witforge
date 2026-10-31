@@ -36,8 +36,10 @@ directories are frozen as a whole, which covers those cases.
   rule; the tool rejects a malformed manifest, duplicate entries, and missing or lockfile-less
   listed directories.
 - Commands accept `--released <path>`; the default is `<wit-dir>/../released` for a version
-  directory and `<wit-root>/released` for generation. A missing default manifest means no
-  version is treated as released. An explicitly supplied missing manifest is an error.
+  directory (the parent of the canonicalised directory, so `.` and a symlinked version directory
+  find their real parent's manifest) and `<wit-root>/released` for generation. A missing default
+  manifest means no version is treated as released. An explicitly supplied missing manifest is an
+  error.
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
@@ -45,8 +47,10 @@ directories are frozen as a whole, which covers those cases.
   append-only. CI enforces that nothing under the version directory changes against the merge
   base with `ci/check-release-freeze.sh`, validates the manifest, and verifies shared output with
   `ci/check-generated.sh`; consumers can use the same scripts.
-- `lock` refuses to modify a released version directory. `check`, `rust`, and `proto` are
-  allowed; they verify or reproduce the frozen contract.
+- `lock` refuses to modify a released version directory. The refusal compares resolved paths,
+  not names: the version directory and every listed directory are canonicalised, so `.`, `..`
+  components, and symlinks cannot bypass it. `check`, `rust`, and `proto` are allowed; they
+  verify or reproduce the frozen contract.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the
   previous minor's `wire.lock` and is then developed with `lock --against`.
 - Docs-only patch versions are out of scope for 0.1. A docs-only patch requires a new version
