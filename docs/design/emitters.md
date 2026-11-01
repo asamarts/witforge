@@ -582,11 +582,14 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
 ```
 
 - `check` and `lock` take one version directory; the default lockfile is
-  `<version-dir>/wire.lock`.
+  `<version-dir>/wire.lock`. A directory named `v<major>.<minor>` must hold that package version,
+  as for the generators ([`lockfile.md`](lockfile.md) section 2); any other name is an ad-hoc
+  directory.
 - `rust`, `proto`, and `glue` take the WIT root and require every version directory to be
   valid and locked, and every minor's lockfile to continue the previous minor's in its major.
 - `glue` additionally requires `--plain-root` and `--proto-root`; it covers the highest minor of
-  each major, so older plain modules get no glue.
+  each major, so older plain modules get no glue. It refuses every contract `proto` refuses
+  (section 7.1).
 - The released manifest default is `<version-dir>/../released` for `check`/`lock`, and
   `<wit-root>/released` for generation. Every command validates the manifest: an explicitly
   given missing manifest or a malformed one is an error (exit `2`). Generation reproduces
@@ -633,7 +636,8 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   released-directory refusal, or internal error. Every command follows this scheme. For `rust`,
   `proto`, and `glue`, a version that fails validation (subset violations, a version or package
   mismatch, a lockfile entry of another package, a stale or discontinuous lockfile, a
-  generated-name collision) exits `1`, as does `--check` drift; a WIT package or lockfile that
+  generated-name collision, for `glue` also one in the protobuf schema) exits `1`, as does
+  `--check` drift; a WIT package or lockfile that
   cannot be read or parsed, an invalid module root, a symlinked version directory or one whose
   name has a sign or leading zeros, an output root inside the WIT root, an expected output path
   that generation refuses, and an internal error exit `2`. The library reports the first class
@@ -694,8 +698,12 @@ and the later version-conversion layer.
 - Glue covers every interface function in that version.
 - Older minors get no glue module; they are not the proto schema’s source version.
 - The emitter uses the same model, canonical types, collision rules, and naming conversion as
-  the Rust and proto emitters. WIT docs are carried to glue module/function docs where they
-  describe the type or function; synthesized helpers get a short doc comment.
+  the Rust and proto emitters. It converts to and from the prost types generated from the
+  protobuf schema, so it refuses every contract the proto emitter refuses, with the same
+  diagnostic and exit `1`: a record `f-request` beside a function `f`, whose request message is
+  also `IFRequest`, fails `glue` as it fails `proto`, although glue's own names do not collide.
+  WIT docs are carried to glue module/function docs where they describe the type or function;
+  synthesized helpers get a short doc comment.
 - A type or function that the subset checker refuses never reaches glue.
 
 ### 7.2 CLI, output layout, and module paths
@@ -952,6 +960,7 @@ Arity rules:
 - Arity tests for zero, one, and many parameters/results.
 - Alias, `use` alias, named list/option/result, one-sided result, and nested wrapper coverage.
 - `--check`, stale-file, and module-path validation tests.
+- A contract the proto emitter refuses is refused by glue too.
 - A released per-version plain module remains frozen while glue for its major updates with a new
   minor.
 

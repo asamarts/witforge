@@ -121,7 +121,7 @@ fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
     {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some((major, minor)) = parse_version_directory(&name)? else {
+        let Some((major, minor)) = crate::parse_version_directory(&name)? else {
             continue;
         };
         let path = entry.path();
@@ -156,31 +156,4 @@ fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
         );
     }
     Ok(versions)
-}
-
-/// The version a `v<major>.<minor>` directory name spells, or `None` for any other name.
-///
-/// Both numbers must be ASCII digits without a sign or leading zeros. A name the numbers parse
-/// from but that spells them otherwise (`v+0.1`, `v00.02`) is an error rather than a skipped
-/// directory, so no version silently drops out of the generated output.
-fn parse_version_directory(name: &str) -> Result<Option<(u64, u64)>> {
-    let Some((major, minor)) = name.strip_prefix('v').and_then(|rest| rest.split_once('.')) else {
-        return Ok(None);
-    };
-    let (Ok(major_number), Ok(minor_number)) = (major.parse::<u64>(), minor.parse::<u64>()) else {
-        return Ok(None);
-    };
-    if !canonical_number(major) || !canonical_number(minor) {
-        bail!(
-            "version directory `{name}` must be spelled `v{major_number}.{minor_number}`: ASCII \
-             digits without a sign or leading zeros"
-        );
-    }
-    Ok(Some((major_number, minor_number)))
-}
-
-fn canonical_number(digits: &str) -> bool {
-    !digits.is_empty()
-        && digits.bytes().all(|byte| byte.is_ascii_digit())
-        && (digits == "0" || !digits.starts_with('0'))
 }

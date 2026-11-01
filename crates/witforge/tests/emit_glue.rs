@@ -405,3 +405,35 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     fs::remove_dir_all(&empty).unwrap();
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+fn glue_refuses_a_contract_the_protobuf_schema_refuses() {
+    // The record `f-request` and the request message of function `f` are both `IFRequest`: proto
+    // refuses the schema, and glue, which converts to and from its types, must refuse it too.
+    let root =
+        std::env::temp_dir().join(format!("witforge-glue-proto-clash-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let version = root.join("v0.1");
+    fs::create_dir_all(&version).unwrap();
+    fs::write(
+        version.join("contract.wit"),
+        "package example:clash@0.1.0;\n\ninterface i {\n  record f-request { x: u32 }\n  f: func(x: u32);\n}\n",
+    )
+    .unwrap();
+    let (_, lock) = setup_contract(&version);
+    fs::write(version.join("wire.lock"), lock.render()).unwrap();
+    rust::plan(&root).unwrap();
+    let errors = [
+        proto::plan(&root).unwrap_err(),
+        glue::plan(&root, "crate::plain", "crate::proto").unwrap_err(),
+    ];
+    for error in errors {
+        let message = format!("{error:#}");
+        assert!(witforge::is_contract_error(&error), "{message}");
+        assert!(
+            message.contains("proto name `IFRequest` is produced by both"),
+            "{message}"
+        );
+    }
+    fs::remove_dir_all(&root).unwrap();
+}

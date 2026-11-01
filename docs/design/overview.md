@@ -331,6 +331,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-10-31 | Releases publish from a `v*` tag through crates.io trusted publishing; a new crate's first version is published by hand with a scoped token | [`ci/README.md`](../../ci/README.md) |
 | 2026-11-01 | Version directories are never symlinks: every command, the released manifest, and the freeze check refuse one, instead of following it; for `lock`, the manifests beside the version directory and the lockfile always apply and `--released` adds to them | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `check` requires the canonical lockfile rendering; a contract is one package, so a nested package or a dependency is refused | [`lockfile.md`](lockfile.md) |
+| 2026-11-01 | `check` reads CRLF as LF and requires the canonical lockfile only for an unreleased version, which `lock` can rewrite; a released lockfile is kept as released by the freeze check (supersedes that part of the previous entry). A directory named `v<major>.<minor>` holds that version for every command, and `glue` refuses what `proto` refuses | [`lockfile.md`](lockfile.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

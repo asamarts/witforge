@@ -243,6 +243,38 @@ pub fn ensure_version_directory(wit_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a version directory whose name spells another version than its package declares.
+///
+/// A directory named `v<major>.<minor>` must hold the package version `<major>.<minor>.0`, as
+/// the generators require of every version directory; a directory with any other name is an
+/// ad-hoc directory, such as a test fixture, and may hold any version. The name is read from
+/// the resolved directory, so `.` stands for the directory it is.
+///
+/// # Errors
+///
+/// Returns a [`ContractError`] when the package version differs from the version the name
+/// spells, and a plain error when the directory cannot be resolved or its name spells a version
+/// with a sign or leading zeros (`v+0.1`, `v00.02`), which the generators refuse too.
+pub fn ensure_directory_version(wit_dir: &Path, model: &model::Model) -> Result<()> {
+    let resolved = fs::canonicalize(wit_dir)
+        .with_context(|| format!("failed to resolve version directory {}", wit_dir.display()))?;
+    let Some(name) = resolved.file_name().map(|name| name.to_string_lossy()) else {
+        return Ok(());
+    };
+    let Some((major, minor)) = parse_version_directory(&name)? else {
+        return Ok(());
+    };
+    let version = model.package.version;
+    if version.major != major || version.minor != minor || version.patch != 0 {
+        bail!(ContractError::new(format!(
+            "version directory {} declares package version {version}, expected \
+             {major}.{minor}.0; a new version is a new `v<major>.<minor>` directory",
+            wit_dir.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Load the manifest for a version directory.
 ///
 /// A missing default manifest means no versions are released. An explicitly supplied missing
@@ -325,9 +357,11 @@ pub fn is_released(wit_dir: &Path, explicit: Option<&Path>) -> Result<bool> {
 /// refuses to lock one: `lock --lock <path>` must not rewrite a released `wire.lock`.
 ///
 /// The lockfile's directory is canonicalised and compared with every directory released by the
-/// manifests [`ensure_not_released`] reads for `wit_dir` and by the `released` manifest beside
-/// the lockfile's own directory, so neither a lockfile in another WIT root nor an `explicit`
-/// manifest that omits the directory gets past the manifest that lists it.
+/// manifests [`ensure_not_released`] reads for `wit_dir`, by the `released` manifest beside the
+/// lockfile's own directory, and by the one beside each of its ancestors that is named like a
+/// version directory (`v<major>.<minor>`), each ancestor taken both as written and as resolved.
+/// So neither a lockfile in another WIT root, nor one in a subdirectory of a released directory,
+/// nor an `explicit` manifest that omits the directory gets past the manifest that lists it.
 ///
 /// # Errors
 ///
@@ -348,7 +382,10 @@ pub fn ensure_lockfile_not_released(
             lock.display()
         )
     })?;
-    if let Some(released) = released_directories(&[wit_dir, parent], explicit)?
+    let ancestors = version_ancestors(parent, &resolved)?;
+    let mut directories = vec![wit_dir, parent];
+    directories.extend(ancestors.iter().map(PathBuf::as_path));
+    if let Some(released) = released_directories(&directories, explicit)?
         .into_iter()
         .find(|released| resolved.starts_with(&released.directory))
     {
@@ -362,6 +399,30 @@ pub fn ensure_lockfile_not_released(
         );
     }
     Ok(())
+}
+
+/// The ancestors of a directory, `written` (made absolute lexically) and `resolved`, that are
+/// named like a version directory: `v`, ASCII digits, `.`, ASCII digits. Leading zeros are
+/// accepted, so a non-canonical spelling of a listed directory is not passed over.
+fn version_ancestors(written: &Path, resolved: &Path) -> Result<Vec<PathBuf>> {
+    let written = lexical_absolute(written)?;
+    let mut found: Vec<PathBuf> = Vec::new();
+    for ancestor in written.ancestors().chain(resolved.ancestors()) {
+        let versioned = ancestor
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|name| name.strip_prefix('v'))
+            .and_then(|rest| rest.split_once('.'))
+            .is_some_and(|(major, minor)| {
+                [major, minor].iter().all(|digits| {
+                    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            });
+        if versioned && !found.iter().any(|known| known == ancestor) {
+            found.push(ancestor.to_path_buf());
+        }
+    }
+    Ok(found)
 }
 
 /// A directory a released manifest lists, resolved.
@@ -431,4 +492,31 @@ fn lexical_absolute(path: &Path) -> Result<PathBuf> {
         }
     }
     Ok(normalized)
+}
+
+/// The version a `v<major>.<minor>` directory name spells, or `None` for any other name.
+///
+/// Both numbers must be ASCII digits without a sign or leading zeros. A name the numbers parse
+/// from but that spells them otherwise (`v+0.1`, `v00.02`) is an error rather than a skipped
+/// directory, so no version silently drops out of the generated output.
+pub(crate) fn parse_version_directory(name: &str) -> Result<Option<(u64, u64)>> {
+    let Some((major, minor)) = name.strip_prefix('v').and_then(|rest| rest.split_once('.')) else {
+        return Ok(None);
+    };
+    let (Ok(major_number), Ok(minor_number)) = (major.parse::<u64>(), minor.parse::<u64>()) else {
+        return Ok(None);
+    };
+    if !canonical_number(major) || !canonical_number(minor) {
+        bail!(
+            "version directory `{name}` must be spelled `v{major_number}.{minor_number}`: ASCII \
+             digits without a sign or leading zeros"
+        );
+    }
+    Ok(Some((major_number, minor_number)))
+}
+
+fn canonical_number(digits: &str) -> bool {
+    !digits.is_empty()
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+        && (digits == "0" || !digits.starts_with('0'))
 }
