@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-10-29
+## [0.1.0] - 2026-10-31
 
 ### Added
 
@@ -28,10 +28,15 @@ All notable changes to this project are documented here. The format follows
 - CI gates for generated output, released-directory freezes, append-only release manifests, and
   optional `buf breaking`.
 - The 0.1 performance/ergonomics baseline and deferred-option triage.
+- `witforge::ContractError` and `witforge::is_contract_error`, which tell a contract, lockfile,
+  or output violation apart from a usage, I/O, or parse error, and
+  `witforge::load_root_released_manifest` for a WIT root's manifest.
+- A tag-driven release workflow that publishes through crates.io trusted publishing and creates
+  the GitHub release from this changelog.
 
 ### Changed
 
-- Workspace and crate metadata now identify the 0.1.0 release candidate.
+- Workspace and crate metadata identify the 0.1.0 release.
 
 ### Fixed
 
@@ -46,6 +51,22 @@ All notable changes to this project are documented here. The format follows
 - Glue named-option singular wrappers and canonical alias/structural names.
 - Final-newline and generated-file-name ownership edge cases.
 - Release-manifest dot-entry validation.
+- Default-mode `lock` and `check` refuse a missing lockfile instead of starting an empty one, and
+  `rust`, `proto`, and `glue` require each minor's lockfile to continue the previous minor's.
+- `check`, `rust`, `proto`, and `glue` validate `--released` and the default manifest.
+- `check` reports only the subset violations when there are any, instead of also reporting every
+  locked member as removed.
+- Every contract, lockfile, or output violation exits `1`, including those from `lock` and the
+  generators; usage, I/O, and parse errors exit `2`.
+- Files that are not UTF-8 text in an output root are ignored instead of failing generation.
+- An output root is resolved (`..` components and symlinks) before it is refused for being inside
+  the WIT root.
+- `lock` refuses a released directory by its resolved path, so `lock .` and symlinks cannot
+  bypass the refusal.
+- `wit/released` accepts only plain directory names (`^[A-Za-z0-9][A-Za-z0-9._-]*$`).
+- The release-freeze check reads the manifest's history, so a change that landed in a push whose
+  CI run was cancelled is still caught, and a removed entry or deleted manifest fails.
+- The MIT license names the witforge contributors as the copyright holder.
 
 ### Documentation
 

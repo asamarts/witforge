@@ -46,8 +46,10 @@ directories are frozen as a whole, which covers those cases.
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
   released members are protected by the lockfile and `--check`, and the proto schema is
-  append-only. CI enforces that nothing under the version directory changes against the merge
-  base with `ci/check-release-freeze.sh`, validates the manifest, and verifies shared output with
+  append-only. `ci/check-release-freeze.sh` reads the manifest's history: every entry a committed
+  manifest listed must still be listed, and each listed directory must be unchanged since the
+  first commit that listed it, so a change that landed in a push whose CI run was cancelled is
+  still caught. CI runs it, validates the manifest, and verifies shared output with
   `ci/check-generated.sh`; consumers can use the same scripts.
 - `lock` refuses to modify a released version directory. The refusal compares resolved paths,
   not names: the version directory and every listed directory are canonicalised, so `.`, `..`

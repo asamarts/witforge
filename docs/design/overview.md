@@ -183,11 +183,14 @@ The rules in this section describe the implemented format.
   that is not in the previous version's lockfile is a draft, and renaming or removing it drops
   its entry instead of reserving it, so names that never shipped leave no `reserved` gaps.
   `--first` bootstraps a version with no previous lockfile (the first version or a new major)
-  with every entry treated as a draft;
+  with every entry treated as a draft. The generators verify the same continuity between
+  consecutive minors of each major, and default-mode `lock` and `check` refuse a missing
+  lockfile, so a lockfile started fresh instead of copied cannot renumber a major's schema;
 - `wit/released` lists released version directories; their version directories are frozen
   (shared `mod.rs`, proto, and glue output advances append-only as described in section 5.3).
-  `lock` refuses them, and CI fails if anything in a released version directory changes against
-  the merge base. A new minor is developed with the previous version as its `--against` baseline;
+  `lock` refuses them, and CI fails if anything in a released version directory changed after
+  the commit that released it. A new minor is developed with the previous version as its
+  `--against` baseline;
 - CI fails if a member is unlocked, if a released directory changes, or if generated output is
   stale; `buf breaking` on the emitted schema is an optional extra check;
 - the lockfile is designed to be replaced by in-source numbers if the WIT annotations proposal
@@ -308,6 +311,10 @@ repository went public for that release.
 | 2026-10-29 | 0.1 generation baseline and ergonomics measured; deferred options assigned to named tasks with triggers, without accepting or implementing any option here | section 10 |
 | 2026-10-31 | CLI tests run the built binary with `std::process::Command` under `std::env::temp_dir()`, as implemented, instead of `assert_cmd` and `tempfile` (no extra dev-dependencies); supersedes that part of the 2026-10-25 entry | section 7 |
 | 2026-10-31 | CI runs on GitHub-hosted runners from 0.1.0; the aplan plan is checked locally until aplan is published (W5-006) | [`ci/README.md`](../../ci/README.md) |
+| 2026-10-31 | Default-mode `lock` and `check` refuse a missing lockfile, and the generators require each minor's lockfile to continue the previous minor's | [`lockfile.md`](lockfile.md) |
+| 2026-10-31 | Every command exits `1` for a contract, lockfile, or output violation and `2` for a usage, I/O, parse, released-directory, or internal error; the library marks violations with `ContractError` | [`emitters.md`](emitters.md) |
+| 2026-10-31 | Released-manifest entries are plain directory names (`^[A-Za-z0-9][A-Za-z0-9._-]*$`); the released-directory and output-root refusals compare resolved paths; the release freeze reads the manifest's history instead of one merge base | [`lockfile.md`](lockfile.md) |
+| 2026-10-31 | Releases publish from a `v*` tag through crates.io trusted publishing; a new crate's first version is published by hand with a scoped token | [`ci/README.md`](../../ci/README.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

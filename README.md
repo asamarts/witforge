@@ -64,6 +64,11 @@ schema (for example by `prost-build` in a build script), not the directory the s
 written to. Every generated file starts with witforge's header, and `--check` on any generator
 fails instead of writing when its output would change.
 
+The generators also refuse a minor whose `wire.lock` does not keep every entry of the previous
+minor's, so a lockfile started fresh instead of copied cannot renumber the shared per-major
+schema. Every command exits `1` for a contract, lockfile, or output violation and `2` for a
+usage, I/O, or parse error.
+
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
   resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length
   lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors, nothing from

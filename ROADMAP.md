@@ -47,10 +47,12 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] `--check` mode for generated outputs (stale output fails CI); LF-only, deterministic output.
 - [x] Golden tests for every mapping row and round-trip tests through the protobuf glue (Rust
       value to protobuf to Rust value; proto3-JSON and back).
-- [x] CI guard that released directories (WIT, lockfile, and per-version Rust module) never
-      change against the merge base, that shared per-major proto/glue files remain append-only,
-      that `wit/released` is append-only, and documentation for running `buf breaking` on the
-      emitted schema as an optional extra check.
+- [x] CI guard that released version directories (WIT and lockfile) never change after the
+      commit that released them, read from the history of `wit/released`, which must stay
+      append-only; generators that refuse a minor whose lockfile does not continue the previous
+      minor's, so shared per-major proto/glue output only grows; and documentation for running
+      `buf breaking` on the emitted schema as an optional extra check. Per-version Rust modules
+      are reproduced by `--check`, and a consumer's CI freezes its committed copies.
 - [x] 0.1 generation/ergonomics baseline and deferred-option triage (`W5-004`), with every
       pre-golive option assigned to its owning task and trigger.
 - [ ] Public repository and the first crates.io release once alint's contract `0.x` consumes it.
