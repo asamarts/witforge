@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Tests for ci/check-release-freeze.sh, in a scratch repository: an untouched release passes; a
-# released directory changed in a later commit, a removed entry, a deleted manifest, a shallow
-# clone, and invalid or duplicate entries fail; a new entry that is not committed yet passes.
+# released directory changed in a later commit or through a merge, an untracked file in it, a
+# removed entry, a deleted manifest, a shallow clone, a root outside any repository, and invalid
+# or duplicate entries fail; a new entry that is not committed yet passes; every spelling of the
+# WIT root checks the same directory.
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-release-freeze.sh"
@@ -9,12 +11,13 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/witforge-freeze.XXXXXX")"
 trap 'rm -rf "${TMP}"' EXIT
 
 failures=0
-# expect <name> <0|1> [text the output must contain]: runs the check in the current directory.
+# expect <name> <0|1> [text the output must contain] [WIT root, default `wit`]: runs the check
+# in the current directory.
 expect() {
     local output status=0
     # The bash running these tests runs the check, so `/bin/bash ci/test-release-freeze.sh` on
     # macOS tests it with bash 3.2.
-    output="$("${BASH}" "${SCRIPT}" wit 2>&1)" || status=$?
+    output="$("${BASH}" "${SCRIPT}" "${4:-wit}" 2>&1)" || status=$?
     if [[ "$2" == 0 && ${status} -ne 0 ]] || [[ "$2" == 1 && ${status} -eq 0 ]]; then
         echo "FAIL: $1 (exit ${status}): ${output}" >&2
         failures=$((failures + 1))
@@ -96,6 +99,42 @@ printf 'v0.1\nv0.3\n' >wit/released
 expect "a missing released directory is rejected" 1 "does not exist"
 
 fresh
+mkdir -p wit/v0.1/notes
+echo "draft" >wit/v0.1/notes/untracked.txt
+expect "an untracked file in a released directory fails" 1 "untracked files"
+
+fresh
+printf '# released versions\n \tv0.1\t \r\n' >wit/released
+commit "pad the entry"
+expect "entries are trimmed of surrounding whitespace and CR" 0 "passed"
+
+# A side branch forked before the release edits the released directory and lists it too; it
+# then merges main, and main fast-forwards to that merge. Git's default history simplification
+# follows the side branch and hides the release commit.
+fresh
+trunk="$(git rev-parse --abbrev-ref HEAD)"
+git checkout -q -b side HEAD~1
+echo "// edited on a side branch" >>wit/v0.1/a.wit
+printf '# released versions\nv0.1\n' >wit/released
+commit "edit and release on a side branch"
+git merge -q --no-edit "${trunk}"
+git checkout -q "${trunk}"
+git merge -q --ff-only side
+expect "a release commit hidden by a merge is still checked" 1 "changed since its release"
+
+# Every spelling of the root resolves to the same directory, from wherever the check runs.
+fresh
+echo "// edited" >>wit/v0.1/a.wit
+commit "edit a released version"
+for root in "./wit" "wit/" "wit//" "wit/../wit" "./wit/./" "${TMP}/repo/wit"; do
+    expect "the root \`${root}\` sees the edited release" 1 "changed since its release" "${root}"
+done
+mkdir -p sub
+(cd sub && expect "a root relative to a subdirectory sees the edited release" 1 \
+    "changed since its release" "../wit")
+expect "a missing root fails" 1 "is not a directory" "no-such-root"
+
+fresh
 git clone -q --depth 1 "file://${TMP}/repo" "${TMP}/shallow"
 cd "${TMP}/shallow"
 expect "a shallow clone is refused" 1 "shallow"
@@ -105,6 +144,12 @@ git init -q "${TMP}/empty"
 cd "${TMP}/empty"
 mkdir wit
 expect "no manifest and no history passes" 0 "nothing to freeze"
+
+rm -rf "${TMP}/norepo"
+mkdir -p "${TMP}/norepo/wit"
+cd "${TMP}/norepo"
+GIT_CEILING_DIRECTORIES="${TMP}" expect "a root outside any repository fails" 1 \
+    "not inside a git repository"
 
 if [[ ${failures} -ne 0 ]]; then
     echo "${failures} release-freeze test(s) failed" >&2

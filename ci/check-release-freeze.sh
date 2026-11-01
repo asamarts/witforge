@@ -4,38 +4,51 @@
 #
 # Usage: ci/check-release-freeze.sh [WIT_ROOT]
 #
-# WIT_ROOT defaults to the versions fixture exercised by CI. The check reads the history of
-# WIT_ROOT/released rather than comparing with one base commit, so a change that landed in a push
-# whose CI run was cancelled or failed is still caught by the next run:
+# WIT_ROOT is resolved from the current directory; without it the check covers the versions
+# fixture exercised by witforge's CI. The check reads the full history of WIT_ROOT/released
+# (every commit that changed it, merges included) rather than comparing with one base commit,
+# so a change that landed in a push whose CI run was cancelled or failed is still caught by the
+# next run:
 #   - every entry any committed version of the manifest listed must still be listed (deleting
 #     the manifest counts as removing every entry);
-#   - each listed directory must exist, hold a wire.lock, and be unchanged in the working tree
-#     since the first commit whose manifest listed it.
-# It needs the full history (a shallow clone fails) and runs with the bash 3.2 and BSD tools of
-# stock macOS.
+#   - each listed directory must exist, hold a wire.lock, have no untracked files, and be
+#     unchanged in the working tree since every commit whose manifest listed it.
+# A commit that lists a directory therefore fixes its content for good, on whichever branch it
+# was made. The check needs the full history (a shallow clone fails) and runs with the bash 3.2
+# and BSD tools of stock macOS.
 set -euo pipefail
 # ASCII character classes, so `[:space:]` trims what the manifest parser trims.
 export LC_ALL=C
-
-REPO="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
-ROOT="${1:-crates/witforge/tests/fixtures/versions/wit}"
-if [[ "${ROOT}" = /* ]]; then
-    absolute="$(cd "${ROOT}" && pwd -P)"
-    case "${absolute}/" in
-        "${REPO}/"*) ROOT="${absolute#"${REPO}/"}" ;;
-        *) echo "${ROOT} is not inside the repository ${REPO}" >&2; exit 1 ;;
-    esac
-else
-    ROOT="${ROOT#./}"
-fi
-ROOT="${ROOT%/}"
-cd "${REPO}"
-MANIFEST="${ROOT}/released"
 
 fail() {
     echo "release freeze: $*" >&2
     exit 1
 }
+
+if [[ $# -gt 0 ]]; then
+    [[ -d "$1" ]] || fail "WIT root $1 is not a directory"
+    absolute="$(cd "$1" && pwd -P)"
+else
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    absolute="$(cd "${script_dir}/../crates/witforge/tests/fixtures/versions/wit" && pwd -P)"
+fi
+top="$(git -C "${absolute}" rev-parse --show-toplevel 2>/dev/null)" \
+    || fail "${absolute} is not inside a git repository"
+REPO="$(cd "${top}" && pwd -P)"
+# Paths below are relative to the repository, as git names them: PREFIX is empty for a WIT root
+# at the top of the repository and `<root>/` otherwise.
+if [[ "${absolute}" == "${REPO}" ]]; then
+    ROOT="."
+    PREFIX=""
+else
+    case "${absolute}/" in
+        "${REPO}/"*) ROOT="${absolute#"${REPO}/"}" ;;
+        *) fail "${absolute} is not inside the repository ${REPO}" ;;
+    esac
+    PREFIX="${ROOT}/"
+fi
+cd "${REPO}"
+MANIFEST="${PREFIX}released"
 
 # The entries of a manifest on stdin, one per line: comments, blank lines, and surrounding
 # whitespace removed.
@@ -50,20 +63,23 @@ entries() {
     done
 }
 
-if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
+shallow="$(git rev-parse --is-shallow-repository)"
+if [[ "${shallow}" == true ]]; then
     fail "the repository is a shallow clone; the check needs the manifest's full history"
 fi
 
-# The commits that changed the manifest, oldest first.
-history=()
-while IFS= read -r commit; do
-    history+=("${commit}")
-done < <(git log --reverse --format=%H -- "${MANIFEST}")
+# Every commit that changed the manifest, merges and side branches included, oldest first.
+# `--full-history` keeps a commit that the default simplification would drop because another
+# branch made the same change.
+log=""
+if git rev-parse --verify --quiet HEAD >/dev/null; then
+    log="$(git log --full-history --reverse --format=%H -- "${MANIFEST}")"
+fi
 
 current=""
 if [[ -f "${MANIFEST}" ]]; then
     current="$(entries <"${MANIFEST}")"
-elif [[ ${#history[@]} -eq 0 ]]; then
+elif [[ -z "${log}" ]]; then
     echo "no released manifest at ${MANIFEST}; nothing to freeze"
     exit 0
 fi
@@ -82,27 +98,33 @@ if [[ -n "${current}" ]]; then
             fail "duplicate released entry \`${entry}\` in ${MANIFEST}"
         fi
         seen="${seen}${entry}"$'\n'
-        [[ -d "${ROOT}/${entry}" ]] || fail "released directory \`${ROOT}/${entry}\` does not exist"
-        [[ -f "${ROOT}/${entry}/wire.lock" ]] \
-            || fail "released directory \`${ROOT}/${entry}\` has no wire.lock"
+        directory="${PREFIX}${entry}"
+        [[ -d "${directory}" ]] || fail "released directory \`${directory}\` does not exist"
+        [[ -f "${directory}/wire.lock" ]] \
+            || fail "released directory \`${directory}\` has no wire.lock"
+        untracked="$(git ls-files --others --exclude-standard -- "${directory}")"
+        [[ -z "${untracked}" ]] \
+            || fail "released directory \`${directory}\` has untracked files: ${untracked//$'\n'/, }"
     done <<<"${current}"
 fi
 
 # Walk the manifest's history: an entry once listed must still be listed, and its directory must
-# be unchanged since the first commit that listed it.
-released_at=""
-for commit in ${history[@]+"${history[@]}"}; do
+# match every commit that listed it.
+checked=0
+while IFS= read -r commit; do
+    [[ -n "${commit}" ]] || continue
+    # The commit that deleted the manifest has no manifest to read.
     git cat-file -e "${commit}:${MANIFEST}" 2>/dev/null || continue
+    manifest="$(git show "${commit}:${MANIFEST}")"
+    listed_entries="$(entries <<<"${manifest}")"
     while IFS= read -r entry; do
         [[ -n "${entry}" ]] || continue
-        if [[ -n "${released_at}" ]] && cut -d ' ' -f 1 <<<"${released_at}" | grep -qxF -- "${entry}"; then
-            continue
-        fi
-        released_at="${released_at}${entry} ${commit}"$'\n'
-        listed "${entry}" || fail "released entry \`${entry}\` (listed since ${commit:0:12}) was removed from ${MANIFEST}"
-        git diff --quiet "${commit}" -- "${ROOT}/${entry}" \
-            || fail "released directory \`${ROOT}/${entry}\` changed since its release in ${commit:0:12}"
-    done < <(git show "${commit}:${MANIFEST}" | entries)
-done
+        listed "${entry}" \
+            || fail "released entry \`${entry}\` (listed in ${commit:0:12}) was removed from ${MANIFEST}"
+        git diff --quiet "${commit}" -- "${PREFIX}${entry}" \
+            || fail "released directory \`${PREFIX}${entry}\` changed since its release in ${commit:0:12}"
+        checked=$((checked + 1))
+    done <<<"${listed_entries}"
+done <<<"${log}"
 
-echo "release freeze check passed for ${ROOT}"
+echo "release freeze check passed for ${ROOT} (${checked} release check(s))"
