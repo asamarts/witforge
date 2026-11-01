@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag `vX.Y.Z` on main publishes the crates not yet on crates.io and creates the
 # GitHub release from the CHANGELOG.md section. A manual run checks and dry-runs the release
-# from the selected branch and publishes nothing.
+# from the selected branch or tag and publishes nothing: `publish` and `github-release` run only
+# for a tag push (a re-run of a run keeps its event, so re-running a tag push still publishes).
 #
 # Publishing uses crates.io trusted publishing: the `publish` job exchanges its GitHub OIDC
 # token for a crates.io token that lasts minutes, so no crates.io secret is stored. Each crate
@@ -57,7 +58,8 @@ jobs:
   publish:
     name: publish to crates.io
     needs: verify
-    if: github.ref_type == 'tag'
+    # Not `ref_type` alone: a manual run from a tag has a tag ref too.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release
@@ -93,6 +95,7 @@ jobs:
   github-release:
     name: GitHub release
     needs: [verify, publish]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

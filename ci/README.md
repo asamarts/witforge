@@ -91,7 +91,10 @@ release with this plan surface exists; CI then gains a `plan` job that installs 
   minted through trusted publishing for that job. Nothing to publish skips the token request.
 - **github-release**: creates the GitHub release from the changelog section, unless it exists.
 
-A manual run (`gh workflow run release.yml`) runs only **verify**, on the selected branch.
+A manual run (`gh workflow run release.yml`, from a branch or a tag) runs only **verify**:
+**publish** and **github-release** require a tag push (`github.event_name == 'push'`), not just
+a tag ref, which a manual run from a tag has too. A re-run of a tag push keeps its event, so it
+still publishes what is missing.
 
 Each crate trusts this repository, `release.yml`, and the `release` environment on crates.io
 (the crate's Settings, Trusted Publishing). crates.io cannot do that for a crate that does not

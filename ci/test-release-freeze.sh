@@ -2,10 +2,12 @@
 # Tests for ci/check-release-freeze.sh, in a scratch repository: an untouched release passes; a
 # released directory changed in a later commit, through a merge, through a symlink, or in the
 # commit that moved the WIT root, an untracked or ignored file in it, a symlink in it, an
-# untracked wire.lock, a removed entry, a deleted manifest, a shallow clone, a root outside any
-# repository, and invalid or duplicate entries fail; a new entry that is not committed yet
-# passes; a WIT root moved unchanged passes; every spelling of the WIT root checks the same
-# directory.
+# untracked wire.lock or one git tracks only as a directory, a removed entry, a deleted manifest,
+# a shallow clone, a root outside any repository, and invalid or duplicate entries fail; a new
+# entry that is not committed yet passes; a WIT root moved unchanged passes; a second WIT root
+# whose manifest resembles the first's does not inherit the first's history; every spelling of
+# the WIT root checks the same directory, and a root whose path holds pattern or non-ASCII
+# characters is checked as spelled.
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-release-freeze.sh"
@@ -147,6 +149,52 @@ echo "wit/v0.1/wire.lock" >>.git/info/exclude
 commit "two versions, the v0.1 lockfile ignored"
 release_v01
 expect "a released wire.lock that git does not track fails" 1 "tracked by git"
+
+# git tracks a path under the released wire.lock, which was a directory when it was released and
+# is a regular file now: the lockfile itself is not tracked under the entry's spelling.
+unreleased
+rm wit/v0.1/wire.lock
+mkdir wit/v0.1/wire.lock
+echo "a:b/x = 1 field u32" >wit/v0.1/wire.lock/entries
+commit "two versions, the v0.1 lockfile a directory"
+release_v01
+rm -r wit/v0.1/wire.lock
+echo "a:b/x = 1 field u32" >wit/v0.1/wire.lock
+expect "a released wire.lock that git tracks only as a directory fails" 1 "tracked by git"
+
+# A second WIT root whose manifest resembles the first's, identical or sharing only the header:
+# `git log --follow` reports it as a copy of the first manifest, whose history belongs to the
+# first root and must not be checked against the second.
+for listing in "v0.1" "v0.2"; do
+    fresh
+    mkdir -p other/v0.1 other/v0.2
+    for version in v0.1 v0.2; do
+        echo "package c:d@${version#v}.0;" >"other/${version}/c.wit"
+        echo "c:d/y = 1 field u64" >"other/${version}/wire.lock"
+    done
+    printf '# released versions\n%s\n' "${listing}" >other/released
+    commit "a second WIT root releasing ${listing}"
+    expect "a second root whose manifest lists ${listing} like the first's passes" 0 "passed" other
+    echo "// edited" >>"other/${listing}/c.wit"
+    commit "edit the second root's release"
+    expect "an edit to the second root's ${listing} release fails" 1 \
+        "changed since its release in" other
+done
+
+# Pattern characters and non-ASCII characters in the WIT root's path: `w?t` matches `wit` as a
+# git pattern, and git quotes a non-ASCII path in its output.
+for root in "w?t" "wït"; do
+    fresh
+    mkdir -p "${root}"
+    cp -R wit/v0.1 wit/released "${root}/"
+    commit "a second WIT root at ${root}"
+    echo "// edited" >>wit/v0.1/a.wit
+    commit "edit the release of wit"
+    expect "the root \`${root}\` is checked as spelled" 0 "passed" "${root}"
+    echo "// edited" >>"${root}/v0.1/a.wit"
+    commit "edit the release of ${root}"
+    expect "an edit to a release under \`${root}\` fails" 1 "changed since its release" "${root}"
+done
 
 # A WIT root moved unchanged keeps its history; an edit made in the same commit as the move is
 # caught against the release at the old path.

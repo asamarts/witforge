@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+The fixes from the fourth review (W6-013).
+
+### Fixed
+
+- `ci/check-release-freeze.sh` follows only renames of the manifest. `git log --follow` also
+  follows copies, so a second WIT root whose manifest resembled the first's inherited the first
+  root's history and failed, permanently. The check also gives git every path literally and reads
+  paths back unquoted: a WIT root whose path held `*`, `?`, `[`, or non-ASCII characters failed
+  with "no wire.lock tracked by git".
+- The release workflow's `publish` and `github-release` jobs require a tag push. A manual run
+  from a tag has a tag ref too, so it published, although the workflow and `ci/README.md` said a
+  manual run publishes nothing.
+
 ## [0.1.1] - 2026-11-01
 
 The fixes from the post-publish reviews (W6-010, W6-011), and the first release published by

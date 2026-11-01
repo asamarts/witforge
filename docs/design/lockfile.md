@@ -64,8 +64,13 @@ directories are frozen as a whole, which covers those cases.
   (ignored ones included), and must match every commit that listed it, so a change that landed
   in a push whose CI run was cancelled, or came in through a merge, is still caught. When the
   WIT root was moved, the manifest's earlier paths (found by git's rename detection) are checked
-  too, against what each commit held at the earlier path; a move that also rewrites most of the
-  manifest is not detected as one, so a WIT root is moved in a commit that changes nothing else.
+  too, against what each commit held at the earlier path. Only renames count: git reports a new
+  manifest that resembles one that still exists, such as a second WIT root's, as a copy, and the
+  history beyond a copy belongs to the other manifest. A move that also rewrites most of the
+  manifest, or leaves a manifest at the earlier path, is not detected as one, so a WIT root is
+  moved in a commit that changes nothing else. Paths are given to git literally and read back
+  unquoted, so a WIT root whose path holds `*`, `?`, `[`, or non-ASCII characters is checked as
+  it is spelled.
   A commit that lists a directory therefore fixes its content for as long as the commit stays in
   the history the check reads; rewriting history to drop it is outside the check, so the branch
   is protected. witforge's CI runs it on its fixture; a consumer can run it on its own WIT
