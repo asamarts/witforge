@@ -76,7 +76,8 @@ explicit release-owner action.
       then `witforge-cli` once the library is on the index; a repeat skips what is published.
 - [x] On crates.io, add a trusted publisher to each crate (done by the owner on 2026-10-31;
       crates.io shows the configuration only to the crate's owners, so the first release
-      through `release.yml`, 0.1.1, is its first test) (the crate's Settings, Trusted
+      through `release.yml`, 0.1.1, was its first test, and it passed: release run
+      41274576724 published both crates) (the crate's Settings, Trusted
       Publishing: GitHub, repository `asamarts/witforge`, workflow `release.yml`, environment
       `release`), and optionally allow only trusted publishing for the crate. Then revoke the
       token on crates.io and `unset CARGO_REGISTRY_TOKEN`.
@@ -94,7 +95,10 @@ explicit release-owner action.
       uses the library's API as of that version; `ci/check-release.sh` refuses a mismatch), and
       refresh `Cargo.lock` with `cargo update -w`, since CI builds with `--locked`.
 - [ ] Turn `## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - YYYY-MM-DD` (the tag date) and
-      update the README's status line.
+      update the README's status line. Say in the section's intro whether generated output
+      changes for a contract the previous release accepts (`git diff vPREV -- crates/*/tests`
+      shows any changed golden output); consumers such as alint pin a release and regenerate
+      when they move the pin.
 - [ ] Run the gates of [Before publishing](#before-publishing), then `ci/check-release.sh` and
       `ci/publish.sh --dry-run`, and the aplan commands locally.
 - [ ] Merge to `main` and wait for its CI run (`ci ok`) to pass.
@@ -115,6 +119,7 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 ## After publishing
 
 - [x] Record the release commit and CI run in the changelog or release notes (0.1.0: commit
-      `546cec1`, CI run 41255894743, release run 41261961612).
+      `546cec1`, CI run 41255894743, release run 41261961612; 0.1.1: commit `978c985`, CI run
+      41274574941, release run 41274576724).
 - [x] Keep the released fixtures and generated-output checks in CI.
 - [ ] Move the next contract change to a new minor version directory with `--against`.
