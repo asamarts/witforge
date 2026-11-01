@@ -1,0 +1,14 @@
+# witforge wire lockfile v2
+example:convert/types/event.progress = 2 variant-case u32
+example:convert/types/event.started = 1 variant-case
+example:convert/types/options.quiet = 2 flag
+example:convert/types/options.verbose = 1 flag
+example:convert/types/state.idle = 1 enum-case
+example:convert/types/state.running = 2 enum-case
+example:convert/types/user.id = 2 field u32
+example:convert/types/user.maybe-id = 4 field option<u32>
+example:convert/types/user.name = 1 field string
+example:convert/types/user.names = 3 field list<string>
+example:convert/types/user.nickname = 7 field option<string>
+example:convert/types/user.outcome = 5 field result<u32,string>
+example:convert/types/user.tags = 6 field list<string>

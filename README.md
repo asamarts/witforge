@@ -8,6 +8,7 @@ bindings the other sides of the contract need:
   implementations and for hosts;
 - a protobuf schema with **stable field numbers**, for out-of-process implementations in any
   language;
+- generated old-to-new and new-to-old adapters between contract versions;
 - later, JSON Schema.
 
 WIT is the strictest of these type systems (the component model treats a published record,
@@ -54,10 +55,16 @@ $ witforge lock  wit/v0.1 --first                         number the first versi
 $ cp wit/v0.1/wire.lock wit/v0.2/wire.lock                start a new minor from the last lock
 $ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number its new members
 $ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
-$ witforge rust  wit --out src/plain                     plain Rust modules
+$ witforge rust  wit --out src/plain                     plain modules + convert.rs
 $ witforge proto wit --out proto                         protobuf schema
 $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
 ```
+
+`rust` also writes `convert.rs` when the WIT root has more than one version: one module per
+adjacent version pair in each direction. Old-to-new conversions default defaultable additions;
+new-to-old conversions report a removed required member as `ConversionError::MissingMember`;
+added or removed variant and enum cases report `UnknownCase`; retyped or kind-changed types are
+refused rather than converted silently.
 
 `--proto-root` names the Rust module that holds the prost types generated from the emitted
 schema (for example by `prost-build` in a build script), not the directory the schema is

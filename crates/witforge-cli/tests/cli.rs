@@ -418,7 +418,7 @@ fn retyped_draft_is_updated_by_against() {
     );
     let text = fs::read_to_string(v02.join("wire.lock")).unwrap();
     assert!(
-        text.contains("example:evolve/types/user.new-field = 5 field u16"),
+        text.contains("example:evolve/types/user.new-field = 5 field option<u16>"),
         "{text}"
     );
     let check = witforge()
@@ -1090,7 +1090,10 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
     };
     for (contract, code, message) in [
         (
-            original.replace("renamed: string,", "renamed: string,\n        extra: u8,"),
+            original.replace(
+                "new-field: option<string>,",
+                "new-field: option<string>,\n        extra: u8,",
+            ),
             1,
             "lockfile is stale",
         ),
@@ -1131,9 +1134,10 @@ fn add_v0_3(root: &Path) -> PathBuf {
     let v03 = root.join("wit/v0.3");
     fs::create_dir_all(&v03).unwrap();
     let source = fs::read_to_string(root.join("wit/v0.2/contract.wit")).unwrap();
-    let source = source
-        .replace("@0.2.0", "@0.3.0")
-        .replace("renamed: string,", "renamed: string,\n        added: u64,");
+    let source = source.replace("@0.2.0", "@0.3.0").replace(
+        "new-field: option<string>,",
+        "new-field: option<string>,\n        added: option<u64>,",
+    );
     fs::write(v03.join("contract.wit"), source).unwrap();
     v03
 }

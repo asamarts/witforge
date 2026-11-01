@@ -1,0 +1,38 @@
+package example:convert@0.2.0;
+
+interface types {
+    type id = u32;
+    type names = list<string>;
+    type maybe-id = option<u32>;
+    type outcome = result<u32, string>;
+    type optional-string = option<string>;
+
+    record user {
+        name: string,
+        id: id,
+        names: names,
+        maybe-id: maybe-id,
+        outcome: outcome,
+        tags: list<string>,
+        nickname: option<string>,
+        email: optional-string,
+        scores: list<u32>,
+    }
+
+    variant event {
+        started,
+        progress(u32),
+        finished,
+    }
+
+    enum state {
+        idle,
+        running,
+        stopped,
+    }
+
+    flags options {
+        verbose,
+        strict,
+    }
+}

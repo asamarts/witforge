@@ -82,9 +82,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       `release.yml` through crates.io trusted publishing (`W6-012`).
 - [x] 0.1.2: the fourth-review validation and refusal fixes (`W6-013`), released through the
       same trusted-publishing workflow (`W6-014`).
+- [x] Generated conversions between contract versions (`W6-007`): `rust` emits `convert.rs` with
+      old-to-new and new-to-old adapters for every adjacent version pair.
 - [ ] JSON Schema emitter.
-- [ ] Generated conversions between contract versions (for hosts that support several versions
-      side by side).
 - [ ] Replacing the lockfile with in-source numbers if the WIT annotations proposal
       (component-model issue 695) lands with a suitable annotation.
 - [ ] Wider WIT coverage (maps, resources as opaque handles) only on demand.

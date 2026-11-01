@@ -3,16 +3,17 @@
 //! A WIT package is the single source of truth for a contract. witforge checks that the package
 //! stays inside a restricted, pure subset of WIT that maps cleanly onto every target, keeps a
 //! committed, append-only lockfile of wire numbers so the protobuf projection stays stable across
-//! versions, and emits plain Rust types and traits, a `.proto` schema, and the glue that converts
-//! between the two.
+//! versions, and emits plain Rust types and traits, version-to-version adapters, a `.proto`
+//! schema, and the glue that converts between the plain and protobuf types.
 //!
 //! - [`load`] parses a version directory's WIT package, and [`subset`] checks it against the
 //!   supported subset.
 //! - [`model`] is the owned contract model the lockfile and the emitters consume.
 //! - [`lock`] reads, reconciles, and writes the `wire.lock` lockfile, and
 //!   [`ReleasedManifest`] reads the `released` manifest of frozen versions.
-//! - [`emit`] generates the [Rust](emit::rust), [protobuf](emit::proto), and
-//!   [glue](emit::glue) output for a WIT root and checks committed output for drift.
+//! - [`emit`] generates the [Rust](emit::rust) output (including version-to-version
+//!   `convert.rs`), [protobuf](emit::proto), and [glue](emit::glue) output for a WIT root and
+//!   checks committed output for drift.
 //! - [`ContractError`] marks contract, lockfile, and output violations, as distinct from usage,
 //!   I/O, and parse errors.
 //!

@@ -11,6 +11,7 @@ macro_rules! contract_bail {
     };
 }
 
+mod convert;
 pub mod glue;
 pub mod output;
 pub mod proto;

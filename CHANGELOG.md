@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `witforge rust` now also emits `convert.rs` for a WIT root with two or more versions. It has
+  one module per adjacent version pair in each direction, with fallible type conversions:
+  old-to-new defaults `option<T>` and `list<T>` additions, new-to-old reports a removed required
+  member as `ConversionError::MissingMember`, added or removed variant and enum cases report
+  `UnknownCase`, flags default to `false`, aliases and named structural types convert
+  recursively, and retyped or kind-changed types are refused as contract errors. A required,
+  non-defaultable addition is refused so every accepted version pair has a generated adapter
+  (`W6-007`).
+
 ## [0.1.2] - 2026-11-01
 
 The fixes from the fourth review (W6-013). Generated output is unchanged for every contract

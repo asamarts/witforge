@@ -3,7 +3,7 @@ package example:evolve@0.2.0;
 interface types {
     record user {
         name: string,
-        new-field: string,
-        renamed: string,
+        new-field: option<string>,
+        renamed: option<string>,
     }
 }

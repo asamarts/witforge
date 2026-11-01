@@ -51,6 +51,10 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
         files.insert(format!("{module}.rs"), generated)?;
         module_lines.push(format!("pub mod {module};"));
     }
+    if let Some(converted) = super::convert::plan(versions)? {
+        files.insert("convert.rs", converted)?;
+        module_lines.push("pub mod convert;".to_string());
+    }
     let package = &versions
         .first()
         .context("no version directories found under WIT root")?
@@ -437,11 +441,11 @@ fn insert_name(
     Ok(())
 }
 
-fn snake_case(name: &str) -> String {
+pub(crate) fn snake_case(name: &str) -> String {
     name.replace('-', "_")
 }
 
-fn pascal_case(name: &str) -> String {
+pub(crate) fn pascal_case(name: &str) -> String {
     let mut out = String::new();
     for part in name.split('-') {
         let mut chars = part.chars();
@@ -453,7 +457,7 @@ fn pascal_case(name: &str) -> String {
     out
 }
 
-fn rust_ident(name: &str, what: &str) -> Result<String> {
+pub(crate) fn rust_ident(name: &str, what: &str) -> Result<String> {
     if name.is_empty() || name == "_" {
         contract_bail!("{what} has no Rust-compatible name");
     }
