@@ -120,6 +120,7 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 
 - [x] Record the release commit and CI run in the changelog or release notes (0.1.0: commit
       `546cec1`, CI run 41255894743, release run 41261961612; 0.1.1: commit `978c985`, CI run
-      41274574941, release run 41274576724).
+      41274574941, release run 41274576724; 0.1.2: commit `3f89ec4`, CI run 41341872998,
+      release run 41342094380).
 - [x] Keep the released fixtures and generated-output checks in CI.
 - [ ] Move the next contract change to a new minor version directory with `--against`.

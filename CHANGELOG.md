@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format follows
 The fixes from the fourth review (W6-013). Generated output is unchanged for every contract
 0.1.1 accepts; the changes are validation, refusal, and `--check` behavior.
 
+Release commit `3f89ec4`, CI run 41341872998, release run 41342094380; crates.io records both
+crates as published through GitHub trusted publishing.
+
 ### Added
 
 - `witforge::ensure_directory_version`, which refuses a directory named `v<major>.<minor>` whose
