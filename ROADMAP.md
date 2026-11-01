@@ -56,9 +56,10 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       committed copies.
 - [x] 0.1 generation/ergonomics baseline and deferred-option triage (`W5-004`), with every
       pre-golive option assigned to its owning task and trigger.
-- [ ] Public repository and the first crates.io release once alint's contract `0.x` consumes it.
-      The repository is public, CI runs on GitHub-hosted Linux, macOS, and Windows runners, and
-      the self-hosted runner is torn down (2026-10-31); publishing remains.
+- [x] Public repository and the first crates.io release once alint's contract `0.x` consumes it.
+      The repository is public, CI runs on GitHub-hosted Linux, macOS, and Windows runners, the
+      self-hosted runner is torn down, and 0.1.0 is on crates.io and tagged `v0.1.0`
+      (2026-10-31).
 
 ## Pre-golive (before 1.0)
 

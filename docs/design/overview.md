@@ -375,4 +375,4 @@ these options or change generated output.
 | Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
 | Generated version-to-version conversions | `W6-007` | A host must support multiple released majors side by side |
 | JSON Schema emitter | `W6-008` | A consumer needs a third projection; not a 0.1 requirement |
-| Multi-platform CI and public release | `W5-005` | Done for CI and the public repository (2026-10-31); the crates.io release remains |
+| Multi-platform CI and public release | `W5-005` | Done (2026-10-31): hosted CI, the public repository, and 0.1.0 on crates.io, tagged `v0.1.0` |

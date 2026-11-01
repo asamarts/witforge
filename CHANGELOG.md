@@ -52,6 +52,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.1.0] - 2026-10-31
 
+Published to crates.io from commit `546cec1` (tag `v0.1.0`), on which CI run 41255894743 passed.
+
 ### Added
 
 - WIT package loading with every feature enabled.

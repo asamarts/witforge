@@ -66,21 +66,26 @@ explicit release-owner action.
 - [x] `ci/publish.sh --dry-run` from the release checkout verifies both crates. It clears the
       copies of the library cargo unpacked and built for an earlier run, which a local dry run
       would otherwise verify the CLI against (`ci/test-publish.sh`).
-- [ ] Publish 0.1.0 by hand. crates.io cannot trust a repository for a crate that does not
+- [x] Publish 0.1.0 by hand (2026-10-31, from `546cec1`; the published `.crate` files match
+      that commit, and docs.rs built the library). crates.io cannot trust a repository for a crate that does not
       exist yet, so a new crate's first version needs an API token: create one for the
       publishing account with only the `publish-new` scope, the crate pattern `witforge*`, and
       the shortest expiry. From a clean checkout of the release commit on `main`, run
       `read -rs CARGO_REGISTRY_TOKEN && export CARGO_REGISTRY_TOKEN && ci/publish.sh`, which
       leaves `~/.cargo/credentials.toml` and the shell history alone. It publishes `witforge`,
       then `witforge-cli` once the library is on the index; a repeat skips what is published.
-- [ ] On crates.io, add a trusted publisher to each crate (the crate's Settings, Trusted
+- [x] On crates.io, add a trusted publisher to each crate (done by the owner on 2026-10-31;
+      crates.io shows the configuration only to the crate's owners, so the first release
+      through `release.yml`, 0.1.1, is its first test) (the crate's Settings, Trusted
       Publishing: GitHub, repository `asamarts/witforge`, workflow `release.yml`, environment
       `release`), and optionally allow only trusted publishing for the crate. Then revoke the
       token on crates.io and `unset CARGO_REGISTRY_TOKEN`.
-- [ ] Tag the published commit `v0.1.0` and push the tag. `release.yml` verifies the release,
-      finds nothing left to publish, and creates the GitHub release from the changelog entry.
-- [ ] Verify the published crates install:
-      `cargo install witforge-cli --version 0.1.0 --locked`.
+- [x] Tag the published commit `v0.1.0` and push the tag. `release.yml` verifies the release,
+      finds nothing left to publish, and creates the GitHub release from the changelog entry
+      (release run 41261961612; its publish steps were skipped).
+- [x] Verify the published crates install:
+      `cargo install witforge-cli --version 0.1.0 --locked` (`witforge 0.1.0`, and alint's
+      consumer check and its controls pass with that binary).
 
 ## Later releases
 
@@ -96,6 +101,7 @@ the affected crates, and re-running `release.yml` then only creates the GitHub r
 
 ## After publishing
 
-- [ ] Record the release commit and CI run in the changelog or release notes.
-- [ ] Keep the released fixtures and generated-output checks in CI.
+- [x] Record the release commit and CI run in the changelog or release notes (0.1.0: commit
+      `546cec1`, CI run 41255894743, release run 41261961612).
+- [x] Keep the released fixtures and generated-output checks in CI.
 - [ ] Move the next contract change to a new minor version directory with `--against`.
