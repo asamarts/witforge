@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-01
+
+The fixes from the post-publish reviews (W6-010, W6-011), and the first release published by
+`release.yml` through crates.io trusted publishing.
+
 ### Added
 
 - `witforge::ensure_lockfile_not_released`, which `lock` uses to refuse a `--lock` path inside a
