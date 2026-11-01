@@ -50,9 +50,10 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] CI guard that released version directories (WIT and lockfile) never change after the
       commit that released them, read from the history of `wit/released`, which must stay
       append-only; generators that refuse a minor whose lockfile does not continue the previous
-      minor's, so shared per-major proto/glue output only grows; and documentation for running
-      `buf breaking` on the emitted schema as an optional extra check. Per-version Rust modules
-      are reproduced by `--check`, and a consumer's CI freezes its committed copies.
+      minor's, so wire numbers in the shared per-major proto/glue output never change; and
+      documentation for running `buf breaking` on the emitted schema as an optional extra check.
+      Per-version Rust modules are reproduced by `--check`, and a consumer's CI freezes its
+      committed copies.
 - [x] 0.1 generation/ergonomics baseline and deferred-option triage (`W5-004`), with every
       pre-golive option assigned to its owning task and trigger.
 - [ ] Public repository and the first crates.io release once alint's contract `0.x` consumes it.

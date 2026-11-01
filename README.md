@@ -62,12 +62,14 @@ $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate
 `--proto-root` names the Rust module that holds the prost types generated from the emitted
 schema (for example by `prost-build` in a build script), not the directory the schema is
 written to. Every generated file starts with witforge's header, and `--check` on any generator
-fails instead of writing when its output would change.
+fails instead of writing when its output would change. Give each generator its own output
+root: generation replaces and removes only files that carry the header, never writes through a
+symlink, and refuses to overwrite a file without the header.
 
 The generators also refuse a minor whose `wire.lock` does not keep every entry of the previous
 minor's, so a lockfile started fresh instead of copied cannot renumber the shared per-major
-schema. Every command exits `1` for a contract, lockfile, or output violation and `2` for a
-usage, I/O, or parse error.
+schema. Every command exits `1` for a contract, lockfile, or output violation, and `2` for a
+usage, I/O, or parse error, a refused released directory or output path, or an internal error.
 
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
   resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length

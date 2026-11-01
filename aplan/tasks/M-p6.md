@@ -14,6 +14,7 @@ blocked_by:
 - W6-008
 - W6-009
 - W5-006
+- W6-010
 tags:
 - milestone
 - p6

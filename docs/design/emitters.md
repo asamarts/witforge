@@ -29,6 +29,9 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
 - Generated files are owned by witforge. Generation overwrites expected files and deletes stale
   files in the output root that carry the generated header. `--check` reports missing, changed,
   or extra generated files and writes nothing. Files without the header are never touched.
+- All three generators use the same header, so each MUST have its own output root: in a shared
+  root, each generator treats the others' files as its own stale output and removes or replaces
+  them.
 - Formatting is produced by the emitter, not by running `rustfmt` or `protoc`. Rust uses four
   spaces; proto uses two. Output must be valid and compile/parse without a formatting pass.
 - Docs from WIT `///` comments are carried to Rust `///` and proto `//` comments. Empty docs are
@@ -604,12 +607,18 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
 - Generation removes stale generated files in the output root and never touches files without
   the header. It validates every version before writing the first file; a failed run may leave a
   partial set, and rerunning after fixing the input completes it.
+- Generation never writes through a symlink or over a file it does not own. Before anything is
+  written or removed, every expected path that already exists must be a regular file that starts
+  with the header; a symlink, a directory, or a file without the header fails generation with
+  exit `2` and changes nothing. `--check` reports an expected file that is a symlink as drift.
 - A consumer's CI SHOULD freeze the committed per-version Rust module and `wire.lock` for a
   released version together with the `wit/released` entries. `mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module are shared across versions and may change when
   a new minor is added; their released members are protected by the lockfile, `--check`, and
   proto compatibility checks. `--check` is the tool-side verification.
-- witforge's CI runs `ci/check-generated.sh` for all three emitters and
+- witforge's CI runs `ci/check-generated.sh` for all three emitters (it generates the fixtures
+  into a scratch directory and checks that output with `--check`, so it covers witforge itself; a
+  consumer runs each generator's `--check` against its own committed output) and
   `ci/check-release-freeze.sh` for released directories and manifest entries. The aplan plan is
   checked locally until aplan is published (task W5-006 restores the CI gate).
   `ci/check-buf.sh` is an optional extra `buf breaking` check for consumers that use it; the
@@ -619,7 +628,8 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   `proto`, and `glue`, a version that fails validation (subset violations, a version or package
   mismatch, a stale or discontinuous lockfile, a generated-name collision) exits `1`, as does
   `--check` drift; a WIT package or lockfile that cannot be read or parsed, an invalid module
-  root, and an output root inside the WIT root exit `2`. The library reports the first class as
+  root, a version directory name with a sign or leading zeros, an output root inside the WIT
+  root, and an expected output path that is a symlink or an unowned file exit `2`. The library reports the first class as
   a `witforge::ContractError` in the error chain (`witforge::is_contract_error`).
 - The CLI uses `clap`; every command supports `--help`, and the binary supports `--version`.
 
@@ -647,7 +657,10 @@ are generated from that same highest minor and reference its plain module.
 - `--check` tests: missing, changed, extra generated, and unrelated files, including files that
   are not UTF-8 text.
 - Output-root tests: the WIT root and anything inside it are refused, also when reached through
-  `..` components or symlinks.
+  `..` components or symlinks; an expected path that is a symlink, a directory, or a file without
+  the header is refused before anything changes.
+- Version-directory tests: a symlinked version directory is generated, and a name with a sign or
+  leading zeros is refused.
 - Continuity tests: a minor whose lockfile does not continue the previous minor's fails every
   generator; a new major starts fresh.
 - CLI integration tests that run the built binary with `std::process::Command` in directories

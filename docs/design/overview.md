@@ -187,7 +187,7 @@ The rules in this section describe the implemented format.
   consecutive minors of each major, and default-mode `lock` and `check` refuse a missing
   lockfile, so a lockfile started fresh instead of copied cannot renumber a major's schema;
 - `wit/released` lists released version directories; their version directories are frozen
-  (shared `mod.rs`, proto, and glue output advances append-only as described in section 5.3).
+  (shared `mod.rs`, proto, and glue output changes as described in section 5.3).
   `lock` refuses them, and CI fails if anything in a released version directory changed after
   the commit that released it. A new minor is developed with the previous version as its
   `--against` baseline;
@@ -201,17 +201,21 @@ The rules in this section describe the implemented format.
 1. A published contract version is frozen. `wit/released` lists the released version
    directories; their WIT, lockfile, and per-version generated Rust module are immutable. The
    shared `mod.rs`, per-major proto schema, and glue output may change when a new minor is added;
-   their released members are protected by the lockfile and `--check`, and the proto schema is
-   append-only.
+   their released members are protected by the lockfile and `--check`. In the proto schema the
+   wire numbers and reserved names are append-only; a type or function removed as a whole drops
+   its messages and keeps its method number reserved.
 2. Changes ship as a new minor version (`0.x` while unstable), with the previous WIT kept in the
    tree (`wit/v0.1/`, `wit/v0.2/`, and so on), each with its own `wire.lock` (section 5.2). A new
    major version starts a fresh lockfile. Package versions are `<major>.<minor>.0`; patch,
    pre-release, and build-metadata contract versions are out of scope for 0.1 (see
    [`lockfile.md`](lockfile.md)).
-3. New members must be defaulted (`option<T>` or `list<T>`), so the compiler can generate the
-   old-to-new conversions; enum values and variant cases are append-only; reorders, renames, and
-   type changes are forbidden. The 0.1 lockfile does not track declaration order: released
-   directories freeze it, and a pre-golive task evaluates an order fingerprint.
+3. Authoring policy for a new minor, which witforge 0.1 does not enforce: new members should be
+   defaulted (`option<T>` or `list<T>`), so a later version adapter can convert old values to
+   new ones; enum values and variant cases should only be appended; reorders, renames, and type
+   changes should be avoided. The tool enforces wire identity only: numbers never change, removed
+   members stay reserved, and a released entry's kind and type never change (the lockfile,
+   section 5.2). The 0.1 lockfile does not track declaration order: released directories freeze
+   it, and a pre-golive task evaluates an order fingerprint.
 4. The host keeps one adapter per supported contract version and converts each into the latest
    plain types; the supported range is published.
 5. On the process wire, one protobuf package per major version; field numbers are stable across
@@ -267,11 +271,13 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 
 ## 8. Relationship to alint
 
-alint consumes witforge to generate its `alint-plugin-api` crate and the `.proto` schema its
-out-of-process plugin protocol uses, and the conversions between the two (section 4.2). alint
-keeps the host glue: wasmtime bindings, the process protocol's framing and session, and the
-version adapters. alint's contract `0.x` consumes witforge 0.1.0 (alint PR #409), and the
-repository went public for that release.
+alint is witforge's first consumer. Its plugin contract `0.1` (still a draft) is generated with
+witforge 0.1.0 into a test crate, which checks the plain types, the `.proto` schema, and the glue
+against alint's hand-written host types (alint PRs #409, #412, and #414); the repository went
+public for that release. When alint's plugin slice ships, witforge generates the published
+`alint-plugin-api` crate and the `.proto` schema its out-of-process plugin protocol uses, and the
+conversions between the two (section 4.2). alint keeps the host glue: wasmtime bindings, the
+process protocol's framing and session, and the version adapters.
 
 ## 9. Decision log
 

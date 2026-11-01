@@ -40,14 +40,17 @@ Both scripts need podman and the `gh` CLI logged in to the account that owns the
 
 The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 
+- **workflows and scripts**: a pinned, checksum-verified actionlint over both workflows, with
+  shellcheck's masked-return check enabled for every `run:` script (a `$(...)` whose failure
+  would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`.
 - **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all three
   emitters' output for the versions fixture into a temporary tree and runs `--check` on each
   against it, so generation must succeed and reproduce itself byte for byte (the golden tests
   pin the output's content). Then `ci/check-release-freeze.sh` on the versions fixture: it reads
-  the history of `released`, so an entry once committed can never be removed and a released
-  directory can never change after the commit that released it, whatever the push or pull
-  request. `ci/test-release-freeze.sh` tests that script; the test jobs run it on Linux and,
-  with the stock bash 3.2, on macOS.
+  the full history of `released`, merges included, so an entry once committed can never be
+  removed and a released directory can never differ from any commit that listed it, whatever
+  the push or pull request. `ci/test-release-freeze.sh` tests that script; the test jobs run it
+  on Linux and, with the stock bash 3.2, on macOS.
 - **package**: `cargo publish --workspace --dry-run`, which packages and verifies both crates,
   and `ci/test-publish.sh`, which checks that a repeated `ci/publish.sh --dry-run` verifies the
   CLI against the current library rather than a copy cargo cached for an earlier run.

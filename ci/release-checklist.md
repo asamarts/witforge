@@ -22,12 +22,12 @@ published release.
 - [x] `cargo +1.88 test --workspace --locked`
 - [x] `ci/check-generated.sh`
 - [x] `ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit`
-      (the seven checks above: CI run 41240165506 on `main` at `dd0e219`, 2026-10-31, on
-      GitHub-hosted runners, with the tests on Linux, macOS, and Windows)
+      (the seven checks above: CI run 41255894743 on `main` at `546cec1`, the published commit,
+      2026-10-31, on GitHub-hosted runners, with the tests on Linux, macOS, and Windows)
 - [x] `aplan check && aplan verify && aplan export-agents-md --check AGENTS.md && aplan check-docs`
-      (local until a published aplan release lets CI run it; run at `dd0e219`, 2026-10-31)
-- [ ] README status, `CHANGELOG.md` (with the publish date), and the workspace version say
-      0.1.0. (README and version do; the changelog date is set when publishing.)
+      (local until a published aplan release lets CI run it; run at `546cec1`, 2026-10-31)
+- [x] README status, `CHANGELOG.md` (with the publish date), and the workspace version say
+      0.1.0.
 - [x] Generation succeeds and reproduces itself for the versions fixture (the generated-output
       job in the run above), and the golden tests pass.
 
@@ -84,10 +84,15 @@ explicit release-owner action.
 
 ## Later releases
 
-Bump the workspace version, add the dated changelog section, merge to `main`, and push the tag
-`vX.Y.Z`. `release.yml` publishes through trusted publishing and creates the GitHub release; a
-failed run is re-run, and skips what is already published. A new crate in the workspace needs
-its first version published by hand, as above.
+Bump the workspace version and `witforge-cli`'s requirement on `witforge` to it (the CLI uses
+the library's API as of that version; `ci/check-release.sh` refuses a mismatch), add the dated
+changelog section, merge to `main`, and push the tag `vX.Y.Z`. `release.yml` publishes through
+trusted publishing and creates the GitHub release; a failed run is re-run, and skips what is
+already published. A new crate in the workspace needs its first version published by hand, as
+above. If trusted publishing itself fails (for example a changed workflow or environment name
+that no longer matches the crates.io configuration), fix the configuration rather than falling
+back to a long-lived token; a one-off hand publish uses a token scoped to `publish-update` for
+the affected crates, and re-running `release.yml` then only creates the GitHub release.
 
 ## After publishing
 
