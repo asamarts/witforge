@@ -576,6 +576,7 @@ witforge check <version-dir> [--lock <path>] [--against <path> | --first]
 witforge lock  <version-dir> [--lock <path>] [--against <path> | --first]
                             [--released <path>]
 witforge rust  <wit-root> --out <dir> [--check] [--released <path>]
+               # also writes convert.rs for adjacent versions
 witforge proto <wit-root> --out <dir> [--check] [--released <path>]
 witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
                             [--check] [--released <path>]
@@ -587,6 +588,8 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   directory.
 - `rust`, `proto`, and `glue` take the WIT root and require every version directory to be
   valid and locked, and every minor's lockfile to continue the previous minor's in its major.
+  `rust` also emits `convert.rs` (section 9) when the root has two or more versions; the
+  conversion generation refuses an evolution step that a default-only adapter cannot express.
 - `glue` additionally requires `--plain-root` and `--proto-root`; it covers the highest minor of
   each major, so older plain modules get no glue. It refuses every contract `proto` refuses
   (section 7.1).
@@ -621,10 +624,10 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   parents may be symlinks; the output-root rule above resolves them. No version directory is a
   symlink ([`lockfile.md`](lockfile.md) section 2), so no output root can resolve into one.
 - A consumer's CI SHOULD freeze the committed per-version Rust module and `wire.lock` for a
-  released version together with the `wit/released` entries. `mod.rs`, the per-major
-  `v<major>.proto`, and the per-major glue module are shared across versions and may change when
-  a new minor is added; their released members are protected by the lockfile, `--check`, and
-  proto compatibility checks. `--check` is the tool-side verification.
+  released version together with the `wit/released` entries. `mod.rs`, `convert.rs`, the
+  per-major `v<major>.proto`, and the per-major glue module are shared across versions and may
+  change when a new minor is added; their released members are protected by the lockfile,
+  `--check`, and proto compatibility checks. `--check` is the tool-side verification.
 - witforge's CI runs `ci/check-generated.sh` for all three emitters (it generates the fixtures
   into a scratch directory and checks that output with `--check`, so it covers witforge itself; a
   consumer runs each generator's `--check` against its own committed output) and
@@ -636,7 +639,8 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   released-directory refusal, or internal error. Every command follows this scheme. For `rust`,
   `proto`, and `glue`, a version that fails validation (subset violations, a version or package
   mismatch, a lockfile entry of another package, a stale or discontinuous lockfile, a
-  generated-name collision, for `glue` also one in the protobuf schema) exits `1`, as does
+  generated-name collision, an evolution step that `convert.rs` cannot express, for `glue` also
+  one in the protobuf schema) exits `1`, as does
   `--check` drift; a WIT package or lockfile that
   cannot be read or parsed, an invalid module root, a symlinked version directory or one whose
   name has a sign or leading zeros, an output root inside the WIT root, an expected output path
@@ -650,13 +654,15 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
 
 | Command | Expected files |
 |---|---|
-| `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version |
+| `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version, `convert.rs` when there are two or more versions |
 | `proto` | `v<major>.proto` for every major |
 | `glue` | `mod.rs`, `v<major>.rs` for every major |
 
 Rust per-version files contain inline interface modules. `mod.rs` declares every version module
-in ascending order. Proto files are generated from the highest minor in each major. Glue files
-are generated from that same highest minor and reference its plain module.
+in ascending order and, when present, `convert`. `convert.rs` contains one module per adjacent
+version pair in each direction (section 9). Proto files are generated from the highest minor in
+each major. Glue files are generated from that same highest minor and reference its plain
+module.
 
 ## 6. Testing requirements
 
@@ -963,10 +969,12 @@ Arity rules:
 - A contract the proto emitter refuses is refused by glue too.
 - A released per-version plain module remains frozen while glue for its major updates with a new
   minor.
+- Version conversions: old-to-new and new-to-old for every adjacent pair, defaulted additions,
+  removed/retyped members, variants, enums, flags, aliases, named structural types, and the
+  generated `ConversionError`.
 
 ### 7.9 Deferred
 
-- Version-to-version conversions (after 0.1).
 - A leaner glue surface that skips structural aliases (pre-golive Option C).
 - JSON helpers; JSON stays on the pbjson/prost side.
 - A configuration file wrapping the two module-root flags.
@@ -983,5 +991,104 @@ does not accept or implement any option; the W6 tasks make the decisions.
 - Declaration-order fingerprinting (lockfile Option C).
 - A configuration file for multiple roots/emitters.
 - Docs-only patch versions and a type/interface inventory for memberless definitions.
-- Generated conversions between contract versions.
 - JSON Schema emitter.
+
+## 9. Version-to-version conversions
+
+`rust` writes `convert.rs` beside the per-version modules when the WIT root has two or more
+version directories. It is shared output: `mod.rs` declares `convert`, and the file carries the
+same generated header, LF-only rule, ownership checks, stale-file removal, and `--check`
+behavior as the Rust files. Adding a minor updates `convert.rs`; released per-version modules do
+not change.
+
+### 9.1 Module layout and API
+
+For every adjacent pair of version directories in ascending order, including a major-version
+boundary, the emitter writes one module per direction:
+
+```rust
+pub enum ConversionError {
+    MissingMember { path: &'static str },
+    UnknownCase { path: &'static str, case: &'static str },
+}
+
+pub mod v0_1_to_v0_2 {
+    #[allow(unused_imports)]
+    use super::super::{ v0_1 as __witforge_from, v0_2 as __witforge_to };
+
+    pub mod types {
+        pub fn user(
+            value: &super::__witforge_from::types::User,
+        ) -> Result<super::__witforge_to::types::User, super::super::ConversionError>;
+    }
+}
+```
+
+The reverse direction has its own module, `v0_2_to_v0_1`, and the same functions with source and
+target swapped. A function is named with the Rust snake_case conversion of the source type's WIT
+name. A function-name collision in one interface is a contract error. Only interfaces and named
+types present in both versions get functions; a removed interface or type has no adapter, and
+the host must drop it or use a different type.
+
+Every conversion takes a reference and returns
+`Result<Target, ConversionError>`. Conversions are fallible in both directions because a later
+version may remove a case or a required member. `MissingMember` names the canonical WIT member
+path that the source version cannot supply, such as `types/user.old-field`; `UnknownCase` names
+the type and case that the target version does not have. Both carry `'static` canonical WIT
+identities. `ConversionError` implements `Display` and `std::error::Error`; it is
+`#[non_exhaustive]` so a conversion rule can be added without breaking exhaustive matches.
+
+### 9.2 Old-to-new rules
+
+The source is the older version and the target is the newer one.
+
+- A record field present in both versions converts recursively. Its name and type must be
+  unchanged; a changed type is a contract error.
+- A field added by the newer version is defaulted only when its type is `option<T>`, `list<T>`,
+  or a named alias/structural type that resolves to one: `option` defaults to `None`, `list` to
+  an empty vector. A required addition that is not defaultable is a contract error, so an
+  author must add a defaultable member instead of changing an existing shape.
+- A field removed by the newer version is dropped. The old value is not represented in the new
+  type.
+- A record field whose name changes is a removal plus an addition; the addition follows the
+  default rule. The old value is not carried over, because WIT names are identity.
+- A variant or enum case present in both versions converts (and a payload converts recursively).
+  A case removed by the newer version makes that source value `UnknownCase`. A case added by the
+  newer version is simply unreachable from an older value.
+- A flags member present in both versions keeps its boolean. A flag added by the newer version is
+  `false`; a flag removed by the newer version is dropped.
+- A named alias or named structural `list`/`option`/`result` converts through its target type.
+  A named type that changes kind, a case whose payload presence changes, and a type whose
+  structural shape changes are contract errors; evolution requires a new type or member.
+- An interface, type, or case that exists only in the newer version has no old-to-new adapter.
+
+### 9.3 New-to-old rules
+
+The source is the newer version and the target is the older one.
+
+- A field present in both versions converts recursively under the same type-identity rule.
+- A field added by the newer version and absent from the older version is dropped; the older
+  type has nowhere to put it.
+- An older field removed by the newer version is defaulted when its type is defaultable
+  (`option<T>` to `None`, `list<T>` to empty). If it is required, the conversion returns
+  `MissingMember` with that field's canonical path; it never invents a scalar or message value.
+- A variant or enum case added by the newer version makes that source value `UnknownCase`. A case
+  removed by the newer version is unreachable in this direction.
+- A flag added by the newer version is dropped; an older flag removed by the newer version is
+  `false`.
+- Aliases, named structural types, and nested payloads follow the same recursive rules. Kind,
+  payload-shape, and type changes are contract errors of the conversion emitter, not silent
+  lossy adapters.
+
+### 9.4 Testing requirements
+
+- Generate and compile conversions for a root with two versions, including records, variants,
+  enums, flags, aliases, named `list`/`option`/`result`, and direct `list`/`option`/`result`
+  fields.
+- Exercise both directions and assert old-to-new defaults, new-to-old removed-field errors,
+  added/removed cases, and flags defaults.
+- A required non-defaultable addition is refused with a `ContractError`.
+- A changed alias target or changed type is refused.
+- `--check` treats `convert.rs` as shared generated output and reports missing, changed, and
+  extra files.
+- A root with one version emits no `convert.rs`.

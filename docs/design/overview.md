@@ -113,8 +113,9 @@ exhaustive structs and enums, without `#[non_exhaustive]`: plugin authors build 
 struct literals and match exhaustively. Within a version module, types are grouped into one
 submodule per defining interface, and interface traits are re-exported at the version root. A
 released module never changes (its WIT is frozen), so a crate of generated modules stays
-semver-compatible by adding modules; the old-to-new conversions of section 5.3 connect them. The
-concrete layout, naming, derives, and trait conventions are in [`emitters.md`](emitters.md).
+semver-compatible by adding modules. `rust` also writes `convert.rs` with the old-to-new and
+new-to-old adapters of section 5.3. The concrete layout, naming, derives, and trait conventions
+are in [`emitters.md`](emitters.md).
 
 ### 4.2 Protobuf glue
 
@@ -187,7 +188,7 @@ The rules in this section describe the implemented format.
   consecutive minors of each major, and default-mode `lock` and `check` refuse a missing
   lockfile, so a lockfile started fresh instead of copied cannot renumber a major's schema;
 - `wit/released` lists released version directories; their version directories are frozen
-  (shared `mod.rs`, proto, and glue output changes as described in section 5.3).
+  (shared `mod.rs`, `convert.rs`, proto, and glue output changes as described in section 5.3).
   `lock` refuses them, and CI fails if anything in a released version directory changed after
   the commit that released it. A new minor is developed with the previous version as its
   `--against` baseline;
@@ -200,8 +201,8 @@ The rules in this section describe the implemented format.
 
 1. A published contract version is frozen. `wit/released` lists the released version
    directories; their WIT, lockfile, and per-version generated Rust module are immutable. The
-   shared `mod.rs`, per-major proto schema, and glue output may change when a new minor is added;
-   their released members are protected by the lockfile and `--check`. In the proto schema the
+   shared `mod.rs`, `convert.rs`, per-major proto schema, and glue output may change when a new
+   minor is added; their released members are protected by the lockfile and `--check`. In the proto schema the
    wire numbers and reserved names are append-only; a type or function removed as a whole drops
    its messages and keeps its method number reserved.
 2. Changes ship as a new minor version (`0.x` while unstable), with the previous WIT kept in the
@@ -209,15 +210,18 @@ The rules in this section describe the implemented format.
    major version starts a fresh lockfile. Package versions are `<major>.<minor>.0`; patch,
    pre-release, and build-metadata contract versions are out of scope for 0.1 (see
    [`lockfile.md`](lockfile.md)).
-3. Authoring policy for a new minor, which witforge 0.1 does not enforce: new members should be
-   defaulted (`option<T>` or `list<T>`), so a later version adapter can convert old values to
-   new ones; enum values and variant cases should only be appended; reorders, renames, and type
-   changes should be avoided. The tool enforces wire identity only: numbers never change, removed
-   members stay reserved, and a released entry's kind and type never change (the lockfile,
-   section 5.2). The 0.1 lockfile does not track declaration order: released directories freeze
-   it, and a pre-golive task evaluates an order fingerprint.
-4. The host keeps one adapter per supported contract version and converts each into the latest
-   plain types; the supported range is published.
+3. Authoring policy for a new minor: new members should be defaulted (`option<T>` or `list<T>`),
+   so a later version adapter can convert old values to new ones; enum values and variant cases
+   should only be appended; reorders, renames, and type changes should be avoided. `rust` enforces
+   the defaultable-addition rule for generated conversions: a required added record field without
+   a default is refused, while proto and glue can still emit the schema. The tool enforces wire
+   identity: numbers never change, removed members stay reserved, and a released entry's kind and
+   type never change (the lockfile, section 5.2). The lockfile does not track declaration order:
+   released directories freeze it, and a pre-golive task evaluates an order fingerprint.
+4. `rust` generates `convert.rs` for every adjacent version pair, in both directions, and the host
+   keeps one adapter per supported contract version or converts each into the latest plain types;
+   the supported range is published. The conversions default additions, report removed required
+   members, and refuse retypes and kind changes ([`emitters.md`](emitters.md) section 9).
 5. On the process wire, one protobuf package per major version; field numbers are stable across
    minors through the lockfile, so older process plugins keep working, and the handshake still
    states the exact contract version so the host enforces its semantics.
@@ -317,7 +321,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-10-25 | CLI uses `clap`; lockfile properties use `proptest`; CLI tests use `assert_cmd` and `tempfile`; golden expectations are plain committed files | section 7, `Cargo.toml` |
 | 2026-10-25 | Worlds generate no Rust or protobuf code in the MVP; world metadata is a later option | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue uses free functions per named type, grouped by interface and type, with infallible `to_proto` and fallible `from_proto`; every named type in the highest minor is covered | [`emitters.md`](emitters.md) |
-| 2026-10-26 | Glue covers only the highest minor of each major; older plain modules are for native adapters and later version conversions | [`emitters.md`](emitters.md) |
+| 2026-10-26 | Glue covers only the highest minor of each major; older plain modules are for native adapters and the generated version conversions | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue has a separate output root with required `--plain-root` and `--proto-root`, one `v<major>.rs` per major, and the same `--check`/ownership rules | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue generates per-function `to_request`/`from_request`/`to_response`/`from_response` helpers and a `METHOD` constant, with ergonomic zero/one/many arity and functions under a `functions` module | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue returns one structured, non-exhaustive `GlueError`; JSON and binary encoding stay on the pbjson/prost side | [`emitters.md`](emitters.md) |
@@ -332,6 +336,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | Version directories are never symlinks: every command, the released manifest, and the freeze check refuse one, instead of following it; for `lock`, the manifests beside the version directory and the lockfile always apply and `--released` adds to them | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `check` requires the canonical lockfile rendering; a contract is one package, so a nested package or a dependency is refused | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `check` reads CRLF as LF and requires the canonical lockfile only for an unreleased version, which `lock` can rewrite; a released lockfile is kept as released by the freeze check (supersedes that part of the previous entry). A directory named `v<major>.<minor>` holds that version for every command, and `glue` refuses what `proto` refuses | [`lockfile.md`](lockfile.md) |
+| 2026-11-01 | `rust` emits `convert.rs` for every adjacent version pair, in both directions; conversions default `option`/`list` additions, report removed required members and unknown cases, and refuse retypes and kind changes | section 5.3, [`emitters.md`](emitters.md) section 9 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -384,6 +389,6 @@ these options or change generated output.
 | Generated world metadata | `W6-004` | alint confirms that role/import/export metadata is needed in generated code |
 | Configuration file for roots/emitters | `W6-005` | Consumers repeat multi-root flags or run three or more emitters routinely |
 | Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
-| Generated version-to-version conversions | `W6-007` | A host must support multiple released majors side by side |
+| Generated version-to-version conversions | `W6-007` | Done (2026-11-01): `rust` emits `convert.rs` for adjacent versions |
 | JSON Schema emitter | `W6-008` | A consumer needs a third projection; not a 0.1 requirement |
 | Multi-platform CI and public release | `W5-005` | Done (2026-10-31): hosted CI, the public repository, and 0.1.0 on crates.io, tagged `v0.1.0` |
