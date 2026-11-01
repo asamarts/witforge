@@ -6,7 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-The fixes from the fourth review (W6-013).
+## [0.1.2] - 2026-11-01
+
+The fixes from the fourth review (W6-013). Generated output is unchanged for every contract
+0.1.1 accepts; the changes are validation, refusal, and `--check` behavior.
 
 ### Added
 
