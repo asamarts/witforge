@@ -130,7 +130,7 @@ impl ReleasedManifest {
     /// (`^[A-Za-z0-9][A-Za-z0-9._-]*$`). That excludes `.`, `..`, hidden names, whitespace,
     /// separators, and absolute paths. Leading and trailing ASCII whitespace (space, tab, CR,
     /// VT, FF) is trimmed; blank lines and `#` comments are ignored. Invalid, duplicate,
-    /// missing, and lockfile-less directories are errors.
+    /// missing, symlinked, and lockfile-less directories are errors.
     ///
     /// # Errors
     ///
@@ -157,6 +157,14 @@ impl ReleasedManifest {
                 bail!("line {line_no}: duplicate released entry `{line}`");
             }
             let directory = parent.join(line);
+            if fs::symlink_metadata(&directory)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                bail!(
+                    "line {line_no}: released directory `{line}` is a symlink; witforge refuses \
+                     symlinked version directories"
+                );
+            }
             if !directory.is_dir() {
                 bail!("line {line_no}: released directory `{line}` does not exist");
             }
@@ -193,7 +201,7 @@ fn plain_directory_name(name: &str) -> bool {
 
 /// The default manifest path for a version directory: `<wit-dir>/../released`.
 ///
-/// The version directory is canonicalised first, so `.` and a symlinked directory name the
+/// The version directory is canonicalised first, so `.` and a symlinked WIT root name the
 /// directory's real parent. A directory that cannot be resolved is used as given.
 #[must_use]
 pub fn default_released_manifest(wit_dir: &Path) -> PathBuf {
@@ -203,6 +211,36 @@ pub fn default_released_manifest(wit_dir: &Path) -> PathBuf {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
         .join(RELEASED_MANIFEST)
+}
+
+/// Refuse a version directory that is a symlink or not a directory.
+///
+/// witforge never follows a symlinked version directory: a released version reached through a
+/// link could change through the link's target, which neither the released manifest beside the
+/// link nor `ci/check-release-freeze.sh` would see. The WIT root and its parents may be symlinks.
+/// Trailing separators and `.` components are ignored, so `v0.1/` is checked as `v0.1`.
+///
+/// # Errors
+///
+/// Returns an error when the directory is a symlink, is missing, or is not a directory.
+pub fn ensure_version_directory(wit_dir: &Path) -> Result<()> {
+    let path: PathBuf = wit_dir.components().collect();
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("failed to read version directory {}", wit_dir.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "version directory `{}` is a symlink; witforge refuses symlinked version \
+             directories, so a released version cannot change through its link's target",
+            wit_dir.display()
+        );
+    }
+    if !metadata.is_dir() {
+        bail!(
+            "version directory `{}` is not a directory",
+            wit_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Load the manifest for a version directory.
@@ -240,39 +278,56 @@ fn load_manifest_or_default(default: PathBuf, explicit: Option<&Path>) -> Result
     ReleasedManifest::load(&path)
 }
 
-/// Refuse to lock a version directory listed in `wit/released`.
+/// Refuse to lock a version directory listed in `wit/released`, or one that is a symlink.
 ///
 /// The decision compares resolved paths, not names: `wit_dir` and every listed directory are
-/// canonicalised, so `.`, `..` components, and symlinks cannot hide a released directory. With no
-/// explicit manifest, the `released` manifest beside the directory is read both where the
-/// directory is written (its lexical parent) and where it resolves to (its canonical parent), so
-/// a version directory that is a symlink is refused by the manifest of the WIT root that lists it.
+/// canonicalised, so `.` and `..` components and a symlinked WIT root cannot hide a released
+/// directory. The `released` manifest beside the directory always applies, read both where the
+/// directory is written (its lexical parent) and where it resolves to (its canonical parent); an
+/// `explicit` manifest is read as well, never instead.
 ///
 /// # Errors
 ///
-/// Returns an error when the directory cannot be resolved, is released, or a manifest is
-/// invalid.
+/// Returns an error when the directory is a symlink, cannot be resolved, or is released, or a
+/// manifest is invalid.
 pub fn ensure_not_released(wit_dir: &Path, explicit: Option<&Path>) -> Result<()> {
+    ensure_version_directory(wit_dir)?;
     let directory = fs::canonicalize(wit_dir)
         .with_context(|| format!("failed to resolve version directory {}", wit_dir.display()))?;
-    for released in released_directories(wit_dir, explicit)? {
-        if released.directory == directory {
-            bail!(
-                "version directory `{}` is released (listed as `{}` in {}) and cannot be locked",
-                wit_dir.display(),
-                released.entry,
-                released.manifest.display()
-            );
-        }
+    if let Some(released) = released_directories(&[wit_dir], explicit)?
+        .into_iter()
+        .find(|released| released.directory == directory)
+    {
+        bail!(
+            "version directory `{}` is released (listed as `{}` in {}) and cannot be locked",
+            wit_dir.display(),
+            released.entry,
+            released.manifest.display()
+        );
     }
     Ok(())
+}
+
+/// Whether `wit_dir` is listed in the manifests [`ensure_not_released`] reads.
+///
+/// # Errors
+///
+/// Returns an error when the directory cannot be resolved or a manifest is invalid.
+pub fn is_released(wit_dir: &Path, explicit: Option<&Path>) -> Result<bool> {
+    let directory = fs::canonicalize(wit_dir)
+        .with_context(|| format!("failed to resolve version directory {}", wit_dir.display()))?;
+    Ok(released_directories(&[wit_dir], explicit)?
+        .iter()
+        .any(|released| released.directory == directory))
 }
 
 /// Refuse to write a lockfile into a released version directory, as [`ensure_not_released`]
 /// refuses to lock one: `lock --lock <path>` must not rewrite a released `wire.lock`.
 ///
-/// The lockfile's directory is canonicalised and compared with every directory the manifests
-/// that apply to `wit_dir` release (see [`ensure_not_released`]).
+/// The lockfile's directory is canonicalised and compared with every directory released by the
+/// manifests [`ensure_not_released`] reads for `wit_dir` and by the `released` manifest beside
+/// the lockfile's own directory, so neither a lockfile in another WIT root nor an `explicit`
+/// manifest that omits the directory gets past the manifest that lists it.
 ///
 /// # Errors
 ///
@@ -287,23 +342,24 @@ pub fn ensure_lockfile_not_released(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let parent = fs::canonicalize(parent).with_context(|| {
+    let resolved = fs::canonicalize(parent).with_context(|| {
         format!(
             "failed to resolve the directory of lockfile {}",
             lock.display()
         )
     })?;
-    for released in released_directories(wit_dir, explicit)? {
-        if parent.starts_with(&released.directory) {
-            bail!(
-                "lockfile `{}` is in the released directory `{}` (listed as `{}` in {}) and \
-                 cannot be written",
-                lock.display(),
-                released.directory.display(),
-                released.entry,
-                released.manifest.display()
-            );
-        }
+    if let Some(released) = released_directories(&[wit_dir, parent], explicit)?
+        .into_iter()
+        .find(|released| resolved.starts_with(&released.directory))
+    {
+        bail!(
+            "lockfile `{}` is in the released directory `{}` (listed as `{}` in {}) and \
+             cannot be written",
+            lock.display(),
+            released.directory.display(),
+            released.entry,
+            released.manifest.display()
+        );
     }
     Ok(())
 }
@@ -318,23 +374,24 @@ struct ReleasedDirectory {
     manifest: PathBuf,
 }
 
-/// Every directory released by the manifests that apply to `wit_dir`: the explicit manifest
-/// alone, or the default manifest beside the directory's lexical and canonical locations.
-fn released_directories(wit_dir: &Path, explicit: Option<&Path>) -> Result<Vec<ReleasedDirectory>> {
-    let mut manifests = Vec::new();
-    if let Some(path) = explicit {
-        manifests.push(path.to_path_buf());
-    } else {
-        manifests.push(default_released_manifest(wit_dir));
-        let lexical = lexical_absolute(wit_dir)?;
-        if let Some(parent) = lexical.parent() {
-            let candidate = parent.join(RELEASED_MANIFEST);
-            if !manifests.contains(&candidate) {
+/// Every directory released by the `explicit` manifest and by the default manifest beside each
+/// of `directories`, at its lexical and its canonical location. A missing default manifest
+/// releases nothing.
+fn released_directories(
+    directories: &[&Path],
+    explicit: Option<&Path>,
+) -> Result<Vec<ReleasedDirectory>> {
+    let mut manifests: Vec<PathBuf> = explicit.iter().map(|path| path.to_path_buf()).collect();
+    for directory in directories {
+        let mut defaults = vec![default_released_manifest(directory)];
+        if let Some(parent) = lexical_absolute(directory)?.parent() {
+            defaults.push(parent.join(RELEASED_MANIFEST));
+        }
+        for candidate in defaults {
+            if candidate.exists() && !manifests.contains(&candidate) {
                 manifests.push(candidate);
             }
         }
-        // A missing default manifest releases nothing.
-        manifests.retain(|path| path.exists());
     }
     let mut released = Vec::new();
     for path in manifests {

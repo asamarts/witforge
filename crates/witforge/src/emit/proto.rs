@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions};
 use crate::lock::{MemberKey, WireLock};
@@ -29,9 +28,9 @@ const ONEOF_VALUE: &str = "witforge_value";
 ///
 /// # Errors
 ///
-/// Returns an error for a missing version directory or an unreadable or invalid lockfile, and a
-/// [`ContractError`] for an inconsistent package, subset violations, a stale lockfile, or a
-/// generated-name collision.
+/// Returns an error for a missing or symlinked version directory or an unreadable or invalid
+/// lockfile, and a [`ContractError`](crate::ContractError) for an inconsistent package, subset
+/// violations, a stale lockfile, or a generated-name collision.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     let versions = load_versions(wit_root)?;
     // Versions are in ascending order, so the last one of each major is its highest minor.
@@ -41,9 +40,8 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     }
     let mut files = GeneratedFiles::new(HEADER);
     for (major, version) in highest {
-        let generated = emit_major(&version.model, &version.lock).map_err(|err| {
-            ContractError::from_error(&err.context(version.directory.display().to_string()))
-        })?;
+        let generated = emit_major(&version.model, &version.lock)
+            .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.proto"), generated)?;
     }
     Ok(files)
@@ -78,8 +76,9 @@ pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<String>> {
 ///
 /// # Errors
 ///
-/// Returns an error for a missing lockfile entry, an invalid or colliding proto name, an unknown
-/// named type, or a generated wrapper collision.
+/// Returns a [`ContractError`](crate::ContractError) for an invalid or colliding proto name or a
+/// generated wrapper collision, and a plain error for a missing lockfile entry or an unknown
+/// named type, which a validated model and lockfile never produce.
 pub fn emit_major(model: &Model, lock: &WireLock) -> Result<String> {
     Emitter::new(model, lock)?.emit()
 }
@@ -196,20 +195,20 @@ impl<'a> Emitter<'a> {
         for field in fields {
             let field_name = field_name(&field.name)?;
             if reserved_names.contains(&field_name) {
-                bail!(
+                contract_bail!(
                     "record `{interface}/{}`: field `{field_name}` collides with a reserved name",
                     def.name
                 );
             }
             if !field_names.insert(field_name.clone()) {
-                bail!(
+                contract_bail!(
                     "record `{interface}/{}`: duplicate proto field `{field_name}`",
                     def.name
                 );
             }
             let number = self.number(interface, &def.name, &field.name)?;
             if !numbers.insert(number) {
-                bail!(
+                contract_bail!(
                     "record `{interface}/{}`: duplicate field number {number}",
                     def.name
                 );
@@ -243,26 +242,26 @@ impl<'a> Emitter<'a> {
         for case in cases {
             let case_name = field_name(&case.name)?;
             if reserved_names.contains(&case_name) {
-                bail!(
+                contract_bail!(
                     "variant `{interface}/{}`: case `{case_name}` collides with a reserved name",
                     def.name
                 );
             }
             if case_name == ONEOF_VALUE {
-                bail!(
+                contract_bail!(
                     "variant `{interface}/{}`: case `{case_name}` collides with oneof name",
                     def.name
                 );
             }
             if !field_names.insert(case_name.clone()) {
-                bail!(
+                contract_bail!(
                     "variant `{interface}/{}`: duplicate proto field `{case_name}`",
                     def.name
                 );
             }
             let number = self.number(interface, &def.name, &case.name)?;
             if !numbers.insert(number) {
-                bail!(
+                contract_bail!(
                     "variant `{interface}/{}`: duplicate field number {number}",
                     def.name
                 );
@@ -300,13 +299,13 @@ impl<'a> Emitter<'a> {
         for case in cases {
             let case_name = upper_snake(&case.name);
             if reserved_names.contains(&case_name) {
-                bail!(
+                contract_bail!(
                     "enum `{interface}/{}`: case `{case_name}` collides with a reserved name",
                     def.name
                 );
             }
             if case_name == "UNSPECIFIED" {
-                bail!("enum `{interface}/{}`: case maps to UNSPECIFIED", def.name);
+                contract_bail!("enum `{interface}/{}`: case maps to UNSPECIFIED", def.name);
             }
             let value = format!("{prefix}_{case_name}");
             self.register_enum_value(&value)?;
@@ -342,20 +341,20 @@ impl<'a> Emitter<'a> {
         for flag in flags {
             let field_name = field_name(&flag.name)?;
             if reserved_names.contains(&field_name) {
-                bail!(
+                contract_bail!(
                     "flags `{interface}/{}`: field `{field_name}` collides with a reserved name",
                     def.name
                 );
             }
             if !field_names.insert(field_name.clone()) {
-                bail!(
+                contract_bail!(
                     "flags `{interface}/{}`: duplicate proto field `{field_name}`",
                     def.name
                 );
             }
             let number = self.number(interface, &def.name, &flag.name)?;
             if !numbers.insert(number) {
-                bail!(
+                contract_bail!(
                     "flags `{interface}/{}`: duplicate field number {number}",
                     def.name
                 );
@@ -412,14 +411,14 @@ impl<'a> Emitter<'a> {
         for param in &function.params {
             let name = field_name(&param.name)?;
             if reserved_names.contains(&name) || !field_names.insert(name.clone()) {
-                bail!(
+                contract_bail!(
                     "function `{interface}#{}`: proto field `{name}` collides with another or a reserved name",
                     function.name
                 );
             }
             let number = self.parameter_number(interface, &function.name, &param.name)?;
             if !numbers.insert(number) {
-                bail!(
+                contract_bail!(
                     "function `{interface}#{}`: duplicate parameter number {number}",
                     function.name
                 );
@@ -457,14 +456,14 @@ impl<'a> Emitter<'a> {
         for function in &self.model.interface(interface).unwrap().functions {
             let value = upper_snake(&function.name);
             if value == "UNSPECIFIED" || reserved_names.contains(&value) {
-                bail!(
+                contract_bail!(
                     "function `{interface}.{}` maps to a reserved or UNSPECIFIED method value",
                     function.name
                 );
             }
             let number = self.method_number(interface, &function.name)?;
             if !numbers.insert(number) {
-                bail!("interface `{interface}`: duplicate method number {number}");
+                contract_bail!("interface `{interface}`: duplicate method number {number}");
             }
             let value = format!("{prefix}_METHOD_{value}");
             self.register_enum_value(&value)?;
@@ -957,7 +956,7 @@ impl<'a> Emitter<'a> {
             if previous == &source {
                 return Ok(());
             }
-            bail!("proto name `{name}` is produced by both {previous} and {source}");
+            contract_bail!("proto name `{name}` is produced by both {previous} and {source}");
         }
         self.top_names.insert(name.to_string(), source);
         Ok(())
@@ -968,7 +967,7 @@ impl<'a> Emitter<'a> {
             .enum_values
             .insert(value.to_string(), value.to_string())
         {
-            bail!("proto enum value `{value}` is produced more than once ({previous})");
+            contract_bail!("proto enum value `{value}` is produced more than once ({previous})");
         }
         Ok(())
     }
@@ -1016,7 +1015,7 @@ fn field_name(name: &str) -> Result<String> {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
-        bail!("invalid proto field `{name}`");
+        contract_bail!("invalid proto field `{name}`");
     }
     // Field names may be proto keywords (`message`, `optional`, ...); protoc accepts them in
     // field position. The real alint contract uses `message`.
@@ -1032,10 +1031,10 @@ fn proto_ident(name: &str, what: &str) -> Result<String> {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
-        bail!("invalid proto {what} `{name}`");
+        contract_bail!("invalid proto {what} `{name}`");
     }
     if PROTO_KEYWORDS.contains(&name) {
-        bail!("proto {what} `{name}` is a reserved word");
+        contract_bail!("proto {what} `{name}` is a reserved word");
     }
     Ok(name.to_string())
 }

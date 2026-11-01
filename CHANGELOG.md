@@ -9,7 +9,10 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - `witforge::ensure_lockfile_not_released`, which `lock` uses to refuse a `--lock` path inside a
-  released directory.
+  released directory; `witforge::ensure_version_directory`, which refuses a symlinked version
+  directory; and `witforge::is_released`.
+- `WireLock::check_package`, which refuses entries of another package even for a contract with
+  no members, and `WireLock::is_canonical`.
 - A CI job that runs pinned actionlint and shellcheck over the workflows, with shellcheck's
   masked-return check enabled for every `run:` script, and shellcheck over `ci/`.
 - `ci/check-release.sh` requires `witforge-cli`'s dependency on `witforge` to be the release
@@ -17,19 +20,36 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Generation never writes through a symlink or over a file without witforge's header: such an
-  expected path fails generation with exit `2` before anything is written or removed, and
-  `--check` reports an expected file that is a symlink.
-- `lock` refuses a `--lock` path inside a released directory, and a released version directory
-  that is a symlink into a tree without a manifest: the manifest beside the directory as written
-  applies as well as the one beside its resolved location.
-- The generators include a version directory that is a symlink instead of skipping it, and refuse
-  a version directory name with a sign or leading zeros (`v+0.1`, `v00.02`) instead of reading it
-  as a version.
-- Lockfile keys from another package are refused in every mode, not only with `--against`, and a
-  parameter key's interface must be a WIT identifier.
+- Generation never replaces a symlink, a directory, or a file without witforge's header at an
+  expected path: such a path fails generation with exit `2` before anything is written or
+  removed. `--check` reports every such path as drift (exit `1`) instead of exiting `2` for a
+  directory, blocking on a FIFO, or calling a hand-written file changed output, and it reads
+  only regular files.
+- No command follows a version directory that is a symlink: `check`, `lock`, the generators, the
+  released manifest, and `ci/check-release-freeze.sh` refuse one, so a released version cannot
+  change through a link's target. The generators used to skip one silently, and `lock` accepted
+  the link's target directory, which no manifest listed.
+- `lock` refuses a `--lock` path inside a released directory whatever `--released` names: the
+  manifest beside the version directory and the one beside the lockfile's directory, each at its
+  written and its resolved location, always apply, so neither a lockfile in another WIT root nor
+  an explicit manifest that omits the directory gets past the manifest that lists it.
+- The generators refuse a version directory name with a sign or leading zeros (`v+0.1`,
+  `v00.02`) instead of reading it as a version.
+- Lockfile keys from another package are refused in every mode, not only with `--against`, also
+  for a contract with no members (by `check`, `lock`, and the generators), and a parameter key's
+  interface must be a WIT identifier.
+- `check` requires the lockfile exactly as `lock` writes it: comments, blank lines, tabs, CR line
+  endings, a missing final newline, or another order exit `1` with "run `witforge lock`".
+- The subset refuses another package in a version directory, from a nested `package` block or
+  `deps/`. A nested package used to pass every check while nothing in it was locked or
+  generated.
+- The emitters mark a contract violation (a name collision, a WIT name with no Rust or proto
+  spelling) where they find it, so an internal error exits `2` instead of being reported as a
+  contract violation with exit `1`.
 - `lock` leaves a byte-identical lockfile untouched instead of rewriting it.
-- `check` names the exact `witforge lock` command, with its mode and paths, in its hints.
+- `check` names the exact `witforge lock` command, with its mode and paths quoted for a POSIX
+  shell, in its hints; for a released version it says to restore the released WIT and lockfile
+  instead of naming a command that `lock` refuses.
 - The release workflow fails when the release check or the crates.io lookup fails. Both ran
   inside `echo "...$(...)"`, which hid the failure, so a tag that did not match the version, or
   a crates.io error, did not stop the run.
@@ -37,8 +57,12 @@ All notable changes to this project are documented here. The format follows
   released directory against every commit that listed it, so a merge can no longer hide the
   commit that released it. It resolves the WIT root from the current directory (spellings such
   as `./wit`, `wit/../wit`, or a path from a subdirectory were silently left unchecked), fails
-  outside a git repository or for a missing root, and refuses untracked files in a released
-  directory.
+  outside a git repository or for a missing root, and refuses untracked files (ignored ones
+  included) in a released directory. It refuses a released directory that is or holds a symlink,
+  whose content git would compare only by the link's target, requires its `wire.lock` to be
+  tracked under exactly the entry's spelling (on a case-insensitive file system `V0.1` matched
+  `v0.1` and checked nothing), and follows the manifest across a move of the WIT root, so the
+  move commit cannot change a release.
 - `ci/test-publish.sh` reads the workspace version and tests with a version above any release,
   so the CLI is verified against the scratch copy of the library, not the published release.
 

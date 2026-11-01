@@ -17,10 +17,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use witforge::emit;
-use witforge::lock::{LockMode, WireLock};
+use witforge::lock::{LockMode, PackageName, WireLock};
 use witforge::{
-    ContractError, ensure_lockfile_not_released, ensure_not_released, is_contract_error, load,
-    load_released_manifest, load_root_released_manifest, model, subset,
+    ContractError, ensure_lockfile_not_released, ensure_not_released, ensure_version_directory,
+    is_contract_error, is_released, load, load_released_manifest, load_root_released_manifest,
+    model, subset,
 };
 
 /// The witforge contract compiler.
@@ -144,6 +145,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 fn check(options: &Options) -> Result<ExitCode> {
+    ensure_version_directory(&options.dir)?;
     // `check` may verify a released directory; the manifest only has to be valid.
     load_released_manifest(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
@@ -156,13 +158,26 @@ fn check(options: &Options) -> Result<ExitCode> {
         }
         return Ok(ExitCode::from(1));
     }
-    let members = model::members(&contract)?;
+    let model = model::build(&contract)?;
+    let members = model.members()?;
     let lock_path = options
         .lock
         .clone()
         .unwrap_or_else(|| options.dir.join("wire.lock"));
-    let lock = read_lock(&lock_path, options)?;
+    let (lock, text) = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
+    let remedy = if is_released(&options.dir, options.released.as_deref())? {
+        Remedy::Released(options.dir.display().to_string())
+    } else {
+        Remedy::Lock(lock_command(options))
+    };
+    let package = package_name(&model);
+    for lockfile in std::iter::once(&lock).chain(previous.as_ref()) {
+        if let Err(err) = lockfile.check_package(&package) {
+            eprintln!("error: {err:#}");
+            return Ok(ExitCode::from(1));
+        }
+    }
     let mode = lock_mode(options, previous.as_ref());
     let drift = match lock.drift_with(&members, mode) {
         Ok(changes) => changes,
@@ -171,8 +186,18 @@ fn check(options: &Options) -> Result<ExitCode> {
             return Ok(ExitCode::from(1));
         }
     };
-    report_check_changes(&drift, &lock_command(options));
-    if drift.is_empty() {
+    // A lockfile written by hand, or edited by a tool that reorders or reformats it, is drift
+    // too: `lock` would rewrite it, and only its canonical form is reviewed and frozen.
+    let canonical = text.as_deref().is_none_or(|text| lock.is_canonical(text));
+    if !canonical {
+        eprintln!(
+            "error: lockfile {} is not in the form `witforge lock` writes; {}",
+            lock_path.display(),
+            remedy.advice(" to rewrite it")
+        );
+    }
+    report_check_changes(&drift, &remedy);
+    if drift.is_empty() && canonical {
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::from(1))
@@ -192,14 +217,21 @@ fn lock(options: &Options) -> Result<ExitCode> {
             violations.len()
         )));
     }
-    let members = model::members(&contract)?;
+    let model = model::build(&contract)?;
+    let members = model.members()?;
     let lock_path = options
         .lock
         .clone()
         .unwrap_or_else(|| options.dir.join("wire.lock"));
     ensure_lockfile_not_released(&lock_path, &options.dir, options.released.as_deref())?;
-    let mut lock = read_lock(&lock_path, options)?;
+    let (mut lock, _) = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
+    let package = package_name(&model);
+    for lockfile in std::iter::once(&lock).chain(previous.as_ref()) {
+        lockfile
+            .check_package(&package)
+            .map_err(|err| ContractError::from_error(&err))?;
+    }
     let mode = lock_mode(options, previous.as_ref());
     // Every refusal from reconciling is a lockfile violation, as `check` reports it.
     let changes = lock
@@ -312,15 +344,25 @@ fn read_previous(path: Option<&Path>) -> Result<Option<WireLock>> {
     }
 }
 
-/// Read the current lockfile. Only `--first` treats a missing one as empty: in default mode a
-/// fresh lockfile would renumber a new minor that should continue the previous one, and
-/// `--against` develops a copy of the previous lockfile.
-fn read_lock(path: &Path, options: &Options) -> Result<WireLock> {
+fn package_name(model: &model::Model) -> PackageName {
+    PackageName {
+        namespace: model.package.namespace.clone(),
+        name: model.package.name.clone(),
+    }
+}
+
+/// Read the current lockfile and its text. Only `--first` treats a missing one as empty: in
+/// default mode a fresh lockfile would renumber a new minor that should continue the previous
+/// one, and `--against` develops a copy of the previous lockfile.
+fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>)> {
     match fs::read_to_string(path) {
-        Ok(text) => WireLock::parse(&text).with_context(|| format!("in {}", path.display())),
+        Ok(text) => {
+            let lock = WireLock::parse(&text).with_context(|| format!("in {}", path.display()))?;
+            Ok((lock, Some(text)))
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             if options.first {
-                return Ok(WireLock::default());
+                return Ok((WireLock::default(), None));
             }
             if let Some(previous) = &options.against {
                 bail!(
@@ -350,42 +392,86 @@ fn read_required_lock(path: &Path) -> Result<WireLock> {
     WireLock::parse(&text).with_context(|| format!("in {}", path.display()))
 }
 
-fn report_check_changes(changes: &witforge::lock::Changes, lock: &str) {
+/// How to fix what `check` reports: run `lock`, or, for a released version, which `lock`
+/// refuses, restore what was released.
+enum Remedy {
+    /// The `witforge lock` command, with the same mode and paths.
+    Lock(String),
+    /// The released version directory.
+    Released(String),
+}
+
+impl Remedy {
+    fn advice(&self, purpose: &str) -> String {
+        match self {
+            Self::Lock(command) => format!("run `{command}`{purpose}"),
+            Self::Released(dir) => format!(
+                "`{dir}` is released, so `witforge lock` refuses it; restore its released WIT \
+                 and wire.lock"
+            ),
+        }
+    }
+}
+
+fn report_check_changes(changes: &witforge::lock::Changes, remedy: &Remedy) {
     for (key, _) in &changes.added {
-        eprintln!("error: {key} has no wire number; run `{lock}`");
+        eprintln!("error: {key} has no wire number; {}", remedy.advice(""));
     }
     for (key, number) in &changes.reserved {
         eprintln!(
-            "error: {key} = {number} is no longer in the contract; run `{lock}` to reserve it"
+            "error: {key} = {number} is no longer in the contract; {}",
+            remedy.advice(" to reserve it")
         );
     }
     for (key, number) in &changes.reintroduced {
         eprintln!("error: {}", reintroduced(key, *number));
     }
     for (key, number) in &changes.dropped {
-        eprintln!("error: stale draft {key} = {number}; run `{lock}` to drop it");
+        eprintln!(
+            "error: stale draft {key} = {number}; {}",
+            remedy.advice(" to drop it")
+        );
     }
     for (key, _kind, _ty) in &changes.updated {
-        eprintln!("error: draft {key} changed kind or type; run `{lock}` to update it");
+        eprintln!(
+            "error: draft {key} changed kind or type; {}",
+            remedy.advice(" to update it")
+        );
     }
 }
 
-/// The `witforge lock` command that fixes what `check` reports, with the same mode and paths.
+/// The `witforge lock` command that fixes what `check` reports, with the same mode and paths,
+/// each quoted for a POSIX shell.
 fn lock_command(options: &Options) -> String {
-    let mut command = format!("witforge lock {}", options.dir.display());
+    let mut command = format!("witforge lock {}", shell_quote(&options.dir));
     if let Some(lock) = &options.lock {
-        let _ = write!(command, " --lock {}", lock.display());
+        let _ = write!(command, " --lock {}", shell_quote(lock));
     }
     if options.first {
         command.push_str(" --first");
     }
     if let Some(previous) = &options.against {
-        let _ = write!(command, " --against {}", previous.display());
+        let _ = write!(command, " --against {}", shell_quote(previous));
     }
     if let Some(released) = &options.released {
-        let _ = write!(command, " --released {}", released.display());
+        let _ = write!(command, " --released {}", shell_quote(released));
     }
     command
+}
+
+/// `path` as one POSIX shell word: unchanged when it holds only characters no shell treats
+/// specially, and single-quoted otherwise.
+fn shell_quote(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let plain = !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"%+,-./:=@_".contains(&byte));
+    if plain {
+        text.into_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
 }
 
 fn reintroduced(key: &str, number: u32) -> String {

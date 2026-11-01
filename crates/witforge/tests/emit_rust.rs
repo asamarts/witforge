@@ -144,6 +144,9 @@ fn collisions_name_both_interfaces() {
     let message = format!("{error:#}");
     assert!(message.contains("Analyzer"), "{message}");
     assert!(message.contains("analyzer"), "{message}");
+    // The emitter marks the collision as a contract violation where it finds it, so the CLI
+    // exits with 1 for it and with 2 for an internal error.
+    assert!(witforge::is_contract_error(&error), "{message}");
     fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -268,13 +271,64 @@ fn generated_files_recognise_the_header_without_reading_files_as_text() {
     assert_eq!(files.check(&out).unwrap(), Vec::<String>::new());
 
     // An expected file with binary content is changed output, not an I/O error.
-    fs::write(out.join("mod.rs"), [0xff, 0xfe]).unwrap();
+    let mut changed = format!("{}\n", rust::HEADER).into_bytes();
+    changed.extend([0xff, 0xfe]);
+    fs::write(out.join("mod.rs"), &changed).unwrap();
     let messages = files.check(&out).unwrap();
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(
         messages[0].starts_with("changed generated file"),
         "{messages:?}"
     );
+    // Without the header it is a file generation refuses to overwrite, so --check reports that
+    // rather than output that generation would fix.
+    fs::write(out.join("mod.rs"), [0xff, 0xfe]).unwrap();
+    let messages = files.check(&out).unwrap();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("refuses to overwrite"), "{messages:?}");
+    fs::remove_dir_all(&out).unwrap();
+}
+
+#[test]
+fn check_reports_what_generation_refuses_without_reading_special_files() {
+    use witforge::emit::output::GeneratedFiles;
+    let out = std::env::temp_dir().join(format!("witforge-check-preflight-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    fs::create_dir_all(&out).unwrap();
+    let mut files = GeneratedFiles::new(rust::HEADER);
+    files
+        .insert("mod.rs", format!("{}\n", rust::HEADER))
+        .unwrap();
+
+    // A directory where an expected file goes is drift that generation refuses to fix, not an
+    // I/O error.
+    fs::create_dir(out.join("mod.rs")).unwrap();
+    let messages = files.check(&out).unwrap();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("not a regular file"), "{messages:?}");
+    assert!(files.write(&out).is_err());
+    fs::remove_dir(out.join("mod.rs")).unwrap();
+
+    // A FIFO is reported without being opened, which would block until a writer appeared.
+    #[cfg(unix)]
+    {
+        let fifo = out.join("mod.rs");
+        let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(status.success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let checked = files.clone();
+        let root = out.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(checked.check(&root).map_err(|err| format!("{err:#}")));
+        });
+        let messages = receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("--check blocked on a FIFO")
+            .unwrap();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("not a regular file"), "{messages:?}");
+        fs::remove_file(&fifo).unwrap();
+    }
     fs::remove_dir_all(&out).unwrap();
 }
 
@@ -456,7 +510,7 @@ fn generation_never_overwrites_unowned_files_or_writes_through_symlinks() {
 }
 
 #[test]
-fn version_directories_follow_symlinks_and_refuse_non_canonical_names() {
+fn version_directories_refuse_symlinks_and_non_canonical_names() {
     let base = std::env::temp_dir().join(format!("witforge-version-names-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     let root = base.join("wit");
@@ -470,13 +524,23 @@ fn version_directories_follow_symlinks_and_refuse_non_canonical_names() {
     }
     #[cfg(unix)]
     {
+        // A symlinked version directory is refused, not followed: a released version must not
+        // change through its link's target. Nothing is written, even when the output root is
+        // that link (whose target is outside the WIT root).
         std::os::unix::fs::symlink(store.join("v0.2"), root.join("v0.2")).unwrap();
-        let planned = rust::plan(&root).unwrap();
-        assert!(
-            planned.files().contains_key("v0_2.rs"),
-            "{:?}",
-            planned.files().keys()
+        let message = format!("{:#}", rust::plan(&root).unwrap_err());
+        assert!(message.contains("is a symlink"), "{message}");
+        let message = format!(
+            "{:#}",
+            rust::generate(&root, &root.join("v0.2")).unwrap_err()
         );
+        assert!(message.contains("is a symlink"), "{message}");
+        let mut names: Vec<_> = fs::read_dir(store.join("v0.2"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["contract.wit", "wire.lock"]);
         fs::remove_file(root.join("v0.2")).unwrap();
     }
     // Names that are not versions are ignored; numbers spelled with a sign or leading zeros are

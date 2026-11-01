@@ -60,6 +60,24 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
         );
     }
 
+    // A contract is one package. Any other package in the resolve comes from a nested
+    // `package ns:name { ... }` block or a dependency, and nothing in it is locked or generated,
+    // so it is refused rather than silently left out of the output.
+    for (id, other) in &resolve.packages {
+        if id != contract.package {
+            refuse(
+                &mut out,
+                &pkg,
+                format!(
+                    "the version directory also loads package `{}`, from a nested `package` \
+                     block or `deps/`; a contract is one self-contained package, and another \
+                     package is neither locked nor generated",
+                    other.name
+                ),
+            );
+        }
+    }
+
     for (iface_name, &iface_id) in &package.interfaces {
         let iface = &resolve.interfaces[iface_id];
         // `use` aliases are owned by the interface that names them, so they are checked here

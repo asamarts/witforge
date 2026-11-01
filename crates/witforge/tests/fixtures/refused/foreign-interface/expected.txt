@@ -1,1 +1,2 @@
+example:bad: the version directory also loads package `example:other@1.0.0`, from a nested `package` block or `deps/`; a contract is one self-contained package, and another package is neither locked nor generated
 example:bad/plugin: imports `example:other/host@1.0.0` from another package; a contract must be self-contained

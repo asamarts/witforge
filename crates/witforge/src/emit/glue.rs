@@ -9,7 +9,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions};
 use crate::lock::WireLock;
@@ -82,9 +81,9 @@ impl ::std::error::Error for GlueError {}
 ///
 /// # Errors
 ///
-/// Returns an error for an invalid module root, a missing version directory, or an unreadable or
-/// invalid lockfile, and a [`ContractError`] for an inconsistent package, subset violations, a
-/// stale lockfile, or generated-name collisions.
+/// Returns an error for an invalid module root, a missing or symlinked version directory, or an
+/// unreadable or invalid lockfile, and a [`ContractError`](crate::ContractError) for an
+/// inconsistent package, subset violations, a stale lockfile, or generated-name collisions.
 pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<GeneratedFiles> {
     validate_module_root(plain_root)?;
     validate_module_root(proto_root)?;
@@ -103,9 +102,7 @@ pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<Gener
     let mut majors = Vec::new();
     for (major, version) in &highest {
         let generated = emit_version(&version.model, &version.lock, plain_root, proto_root)
-            .map_err(|err| {
-                ContractError::from_error(&err.context(version.directory.display().to_string()))
-            })?;
+            .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.rs"), generated)?;
         majors.push(*major);
     }
@@ -231,8 +228,9 @@ fn root_source(namespace: &str, name: &str, majors: &[u64]) -> Result<String> {
 ///
 /// # Errors
 ///
-/// Returns an error for an invalid module root, a missing lockfile entry, or a generated module
-/// name collision.
+/// Returns a [`ContractError`](crate::ContractError) for a generated module name collision or a
+/// WIT name with no Rust spelling, and a plain error for an invalid module root or a missing
+/// lockfile entry.
 pub fn emit_version(
     model: &Model,
     lock: &WireLock,
@@ -332,7 +330,7 @@ impl<'a> Emitter<'a> {
         for interface in &self.model.interfaces {
             let module = rust_ident(&snake_case(&interface.name), "interface module")?;
             if let Some(previous) = interfaces.insert(module.clone(), interface.name.clone()) {
-                bail!(
+                contract_bail!(
                     "glue interface modules `{previous}` and `{}` both map to `{module}`",
                     interface.name
                 );
@@ -341,14 +339,14 @@ impl<'a> Emitter<'a> {
             for def in &interface.types {
                 let module = rust_ident(&snake_case(&def.name), "type module")?;
                 if module == "functions" {
-                    bail!(
+                    contract_bail!(
                         "type `{}/{}` maps to reserved glue module `functions`",
                         interface.name,
                         def.name
                     );
                 }
                 if let Some(previous) = types.insert(module.clone(), def.name.clone()) {
-                    bail!(
+                    contract_bail!(
                         "type modules `{previous}` and `{}` in interface `{}` both map to `{module}`",
                         def.name,
                         interface.name
@@ -359,7 +357,7 @@ impl<'a> Emitter<'a> {
             for function in &interface.functions {
                 let module = rust_ident(&snake_case(&function.name), "function module")?;
                 if let Some(previous) = functions.insert(module.clone(), function.name.clone()) {
-                    bail!(
+                    contract_bail!(
                         "function modules `{previous}` and `{}` in interface `{}` both map to `{module}`",
                         function.name,
                         interface.name
@@ -739,10 +737,10 @@ fn pascal_to_snake(name: &str) -> String {
 
 fn rust_ident(name: &str, what: &str) -> Result<String> {
     if name.is_empty() || name == "_" {
-        bail!("{what} has no Rust-compatible name");
+        contract_bail!("{what} has no Rust-compatible name");
     }
     if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-        bail!("{what} `{name}` starts with a digit");
+        contract_bail!("{what} `{name}` starts with a digit");
     }
     let suffix = ["crate", "self", "super", "Self"];
     let raw = [
@@ -1326,7 +1324,7 @@ impl Emitter<'_> {
         for function in &interface.functions {
             let module = rust_ident(&snake_case(&function.name), "function module")?;
             if let Some(previous) = names.insert(module.clone(), function.name.clone()) {
-                bail!(
+                contract_bail!(
                     "function modules `{previous}` and `{}` in interface `{}` both map to `{module}`",
                     function.name,
                     interface.name
@@ -1374,7 +1372,7 @@ impl Emitter<'_> {
         for param in &function.params {
             let name = rust_ident(&snake_case(&param.name), "parameter")?;
             if let Some(previous) = request_fields.insert(name.clone(), param.name.clone()) {
-                bail!(
+                contract_bail!(
                     "parameters `{previous}` and `{}` of `{interface_name}#{}` both map to `{name}`",
                     param.name,
                     function.name

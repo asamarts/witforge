@@ -81,7 +81,8 @@ done
 # as a fresh CI runner does.
 cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
 for crate in "${CRATES[@]}"; do
-    rm -rf "${cargo_home}/registry/src/"-*/"${crate}-$(version_of "${crate}")"
+    crate_version="$(version_of "${crate}")"
+    rm -rf "${cargo_home}/registry/src/"-*/"${crate}-${crate_version}"
 done
 target="${ROOT}/target/publish"
 rm -rf "${target}"

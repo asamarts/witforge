@@ -120,12 +120,16 @@ impl GeneratedFiles {
 
     /// Compare the expected files with `out`.
     ///
-    /// Returns one message per missing, changed, or extra generated file. Files without the
-    /// ownership header are ignored.
+    /// Returns one message per missing, changed, or extra generated file, and per expected path
+    /// that [`GeneratedFiles::write`] would refuse: a symlink, something other than a regular
+    /// file, or a file without the ownership header. Only regular files are read, so a FIFO or
+    /// a device at an expected path cannot block the check. Files without the ownership header
+    /// at other paths are ignored.
     ///
     /// # Errors
     ///
-    /// Returns an error when the output root is missing or cannot be read.
+    /// Returns an error when the output root is missing or cannot be read, or a file cannot be
+    /// inspected or read.
     pub fn check(&self, out: &Path) -> Result<Vec<String>> {
         if !out.is_dir() {
             bail!("output root {} does not exist", out.display());
@@ -133,21 +137,38 @@ impl GeneratedFiles {
         let mut messages = Vec::new();
         for (name, expected) in &self.files {
             let path = out.join(name);
-            if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    messages.push(format!("missing generated file `{}`", path.display()));
+                    continue;
+                }
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to inspect {}", path.display()));
+                }
+            };
+            if metadata.file_type().is_symlink() {
                 messages.push(format!(
                     "generated file `{}` is a symlink; generation refuses to write through it",
                     path.display()
                 ));
-                continue;
-            }
-            match fs::read(&path) {
-                Ok(actual) if actual == expected.as_bytes() => {}
-                Ok(_) => messages.push(format!("changed generated file `{}`", path.display())),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    messages.push(format!("missing generated file `{}`", path.display()));
-                }
-                Err(err) => {
-                    return Err(err).with_context(|| format!("failed to read {}", path.display()));
+            } else if !metadata.is_file() {
+                messages.push(format!(
+                    "generated file `{}` is not a regular file; generation refuses to replace it",
+                    path.display()
+                ));
+            } else if !self.is_generated(&path)? {
+                messages.push(format!(
+                    "`{}` does not start with witforge's header, so generation refuses to \
+                     overwrite it",
+                    path.display()
+                ));
+            } else {
+                let actual = fs::read(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                if actual != expected.as_bytes() {
+                    messages.push(format!("changed generated file `{}`", path.display()));
                 }
             }
         }

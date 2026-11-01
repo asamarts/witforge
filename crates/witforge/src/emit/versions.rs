@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::lock::WireLock;
+use crate::lock::{PackageName, WireLock};
 use crate::model::{self, Model};
 use crate::{ContractError, load, subset};
 
@@ -31,10 +31,10 @@ pub(crate) struct Version {
 ///
 /// # Errors
 ///
-/// Returns an error for a missing or duplicate version directory, an unparsable WIT package, or
-/// an unreadable or invalid lockfile, and a [`ContractError`] for a subset violation, a version or
-/// package mismatch, a lockfile that does not continue the previous minor's, or a stale
-/// lockfile.
+/// Returns an error for a missing, duplicate, or symlinked version directory, an unparsable WIT
+/// package, or an unreadable or invalid lockfile, and a [`ContractError`] for a subset
+/// violation, a version or package mismatch, a lockfile entry of another package, a lockfile
+/// that does not continue the previous minor's, or a stale lockfile.
 pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
     let mut versions: Vec<Version> = Vec::new();
     for (major, minor, directory) in discover_versions(wit_root)? {
@@ -76,6 +76,13 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             .with_context(|| format!("failed to read {}", lock_path.display()))?;
         let lock =
             WireLock::parse(&lock_text).with_context(|| format!("in {}", lock_path.display()))?;
+        let package = PackageName {
+            namespace: model.package.namespace.clone(),
+            name: model.package.name.clone(),
+        };
+        lock.check_package(&package).map_err(|err| {
+            ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
+        })?;
         if let Some(previous) = versions.last().filter(|previous| previous.major == major) {
             let previous_path = previous.directory.join("wire.lock");
             lock.check_append_only(&previous.lock).map_err(|err| {
@@ -118,12 +125,16 @@ fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
             continue;
         };
         let path = entry.path();
-        // Follow a symlinked version directory, as the released manifest does, rather than
-        // silently leaving that version out of the generated output.
-        let is_dir = fs::metadata(&path)
-            .with_context(|| format!("failed to read version directory {}", path.display()))?
-            .is_dir();
-        if !is_dir {
+        // A symlinked version directory is refused rather than followed or skipped: following
+        // it would let a released version change through the link's target, and skipping it
+        // would silently leave that version out of the generated output.
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to read version directory {}", path.display()))?;
+        if file_type.is_symlink() {
+            crate::ensure_version_directory(&path)?;
+        }
+        if !file_type.is_dir() {
             continue;
         }
         versions.push((major, minor, path));

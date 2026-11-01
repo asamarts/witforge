@@ -1,9 +1,9 @@
-# 0.1.0 release checklist
+# Release checklist
 
-Status: prepared 2026-10-29, updated 2026-10-31: the repository is public, hosted CI is green,
-and the self-hosted runner is retired; publishing to crates.io (the release owner's token) is
-next. This checklist is the path from the private 0.1.0 candidate to a public repository and a
-published release.
+How witforge releases are cut. Every release after the first follows
+[Later releases](#later-releases). The sections before it are the record of 0.1.0 (published
+2026-10-31 from `546cec1`), which also made the repository public and published both crates by
+hand, because crates.io cannot trust a repository for a crate that does not exist yet.
 
 ## Before publishing
 
@@ -89,15 +89,28 @@ explicit release-owner action.
 
 ## Later releases
 
-Bump the workspace version and `witforge-cli`'s requirement on `witforge` to it (the CLI uses
-the library's API as of that version; `ci/check-release.sh` refuses a mismatch), add the dated
-changelog section, merge to `main`, and push the tag `vX.Y.Z`. `release.yml` publishes through
-trusted publishing and creates the GitHub release; a failed run is re-run, and skips what is
-already published. A new crate in the workspace needs its first version published by hand, as
-above. If trusted publishing itself fails (for example a changed workflow or environment name
-that no longer matches the crates.io configuration), fix the configuration rather than falling
-back to a long-lived token; a one-off hand publish uses a token scoped to `publish-update` for
-the affected crates, and re-running `release.yml` then only creates the GitHub release.
+- [ ] Bump `version` under `[workspace.package]` in `Cargo.toml` and `witforge-cli`'s
+      requirement on `witforge` in `crates/witforge-cli/Cargo.toml` to the new version (the CLI
+      uses the library's API as of that version; `ci/check-release.sh` refuses a mismatch), and
+      refresh `Cargo.lock` with `cargo update -w`, since CI builds with `--locked`.
+- [ ] Turn `## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - YYYY-MM-DD` (the tag date) and
+      update the README's status line.
+- [ ] Run the gates of [Before publishing](#before-publishing), then `ci/check-release.sh` and
+      `ci/publish.sh --dry-run`, and the aplan commands locally.
+- [ ] Merge to `main` and wait for its CI run (`ci ok`) to pass.
+- [ ] Tag that commit `vX.Y.Z` (annotated) and push the tag. `release.yml` verifies the release,
+      publishes each crate whose version is not on crates.io yet, library first, through trusted
+      publishing, and creates the GitHub release from the changelog section. A failed run is
+      re-run and skips what is already published.
+- [ ] Verify `cargo install witforge-cli --version X.Y.Z --locked` reports `witforge X.Y.Z`,
+      the GitHub release exists, and docs.rs built the library.
+- [ ] Record the release commit, its CI run, and the release run under the changelog section.
+
+A new crate in the workspace needs its first version published by hand, as for 0.1.0 above. If
+trusted publishing itself fails (for example a changed workflow or environment name that no
+longer matches the crates.io configuration), fix the configuration rather than falling back to a
+long-lived token; a one-off hand publish uses a token scoped to `publish-update` for the
+affected crates, and re-running `release.yml` then only creates the GitHub release.
 
 ## After publishing
 
