@@ -168,7 +168,7 @@ fn generates_layout_check_drift_and_ownership() {
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
     assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
 
-    fs::write(out.join("v0_1.rs"), "changed\n").unwrap();
+    fs::write(out.join("v0_1.rs"), format!("{}\nchanged\n", rust::HEADER)).unwrap();
     let messages = rust::check(&root, &out).unwrap();
     assert!(
         messages
@@ -397,4 +397,101 @@ fn every_generator_requires_each_minor_to_continue_the_previous_lockfile() {
     proto::plan(&root).unwrap();
     glue::plan(&root, "crate::plain", "crate::proto").unwrap();
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn generation_never_overwrites_unowned_files_or_writes_through_symlinks() {
+    let root = fixture("versions/wit");
+    let base = std::env::temp_dir().join(format!("witforge-ownership-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let out = base.join("out");
+    rust::generate(&root, &out).unwrap();
+    // A stale generated file shows whether a refused run changed anything.
+    let stale = out.join("stale.rs");
+    fs::write(&stale, format!("{}\n", rust::HEADER)).unwrap();
+
+    // A hand-written file where an expected file goes is refused, and nothing is changed.
+    fs::write(out.join("mod.rs"), "// hand-written\n").unwrap();
+    let message = format!("{:#}", rust::generate(&root, &out).unwrap_err());
+    assert!(message.contains("refusing to overwrite"), "{message}");
+    assert!(message.contains("mod.rs"), "{message}");
+    assert_eq!(
+        fs::read_to_string(out.join("mod.rs")).unwrap(),
+        "// hand-written\n"
+    );
+    assert!(stale.exists());
+    fs::remove_file(out.join("mod.rs")).unwrap();
+
+    // So is a directory.
+    fs::create_dir(out.join("mod.rs")).unwrap();
+    let message = format!("{:#}", rust::generate(&root, &out).unwrap_err());
+    assert!(message.contains("not a regular file"), "{message}");
+    fs::remove_dir(out.join("mod.rs")).unwrap();
+
+    #[cfg(unix)]
+    {
+        // A symlink is refused even when it points at a generated file, so no write can land
+        // outside the output root (here, in a WIT version directory).
+        let victim = base.join("contract.wit");
+        fs::write(&victim, "package a:b@0.1.0;\n").unwrap();
+        fs::remove_file(out.join("v0_2.rs")).unwrap();
+        std::os::unix::fs::symlink(&victim, out.join("v0_2.rs")).unwrap();
+        let message = format!("{:#}", rust::generate(&root, &out).unwrap_err());
+        assert!(message.contains("symlink"), "{message}");
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "package a:b@0.1.0;\n");
+        let messages = rust::check(&root, &out).unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("is a symlink")),
+            "{messages:?}"
+        );
+        fs::remove_file(out.join("v0_2.rs")).unwrap();
+    }
+
+    rust::generate(&root, &out).unwrap();
+    assert!(!stale.exists());
+    assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn version_directories_follow_symlinks_and_refuse_non_canonical_names() {
+    let base = std::env::temp_dir().join(format!("witforge-version-names-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let root = base.join("wit");
+    let store = base.join("store");
+    for (version, destination) in [("v0.1", root.join("v0.1")), ("v0.2", store.join("v0.2"))] {
+        let source = fixture("versions/wit").join(version);
+        fs::create_dir_all(&destination).unwrap();
+        for name in ["contract.wit", "wire.lock"] {
+            fs::copy(source.join(name), destination.join(name)).unwrap();
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(store.join("v0.2"), root.join("v0.2")).unwrap();
+        let planned = rust::plan(&root).unwrap();
+        assert!(
+            planned.files().contains_key("v0_2.rs"),
+            "{:?}",
+            planned.files().keys()
+        );
+        fs::remove_file(root.join("v0.2")).unwrap();
+    }
+    // Names that are not versions are ignored; numbers spelled with a sign or leading zeros are
+    // refused instead of silently changing which versions are generated.
+    fs::create_dir_all(root.join("v0.1-old")).unwrap();
+    fs::create_dir_all(root.join("vendor")).unwrap();
+    rust::plan(&root).unwrap();
+    for name in ["v00.2", "v0.02", "v+0.2"] {
+        fs::rename(store.join("v0.2"), root.join(name)).unwrap();
+        let message = format!("{:#}", rust::plan(&root).unwrap_err());
+        assert!(
+            message.contains("must be spelled `v0.2`"),
+            "{name}: {message}"
+        );
+        fs::rename(root.join(name), store.join("v0.2")).unwrap();
+    }
+    fs::remove_dir_all(&base).unwrap();
 }

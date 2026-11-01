@@ -108,6 +108,10 @@ fn v2_rejects_v1_and_malformed_entries() {
         format!("{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.x = 2 field u64\n"),
         format!("{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 1 field u64\n"),
         format!("{HEADER}\nnonsense\n"),
+        // A parameter key's interface is a WIT identifier like any other key's.
+        format!("{HEADER}\na:b/x/y.z#f.p = 1 param u32\n"),
+        format!("{HEADER}\na:b/Not An Ident!#f.p = 1 param u32\n"),
+        format!("{HEADER}\na:b/#f.p = 1 param u32\n"),
     ] {
         assert!(WireLock::parse(&bad).is_err(), "{bad:?} should fail");
     }
@@ -728,4 +732,55 @@ proptest! {
             );
         }
     }
+}
+
+#[test]
+fn every_mode_rejects_an_entry_from_another_package() {
+    let root = fixture("versions/wit");
+    let members = model::members(&load(&root.join("v0.2")).unwrap()).unwrap();
+    let text = fs::read_to_string(root.join("v0.2/wire.lock")).unwrap();
+    let foreign = format!("{text}other:pkg/types/user.x = 1 field u8\n");
+    let previous =
+        WireLock::parse(&fs::read_to_string(root.join("v0.1/wire.lock")).unwrap()).unwrap();
+    for mode in [
+        LockMode::Default,
+        LockMode::First,
+        LockMode::Against(&previous),
+    ] {
+        let mut lock = WireLock::parse(&foreign).unwrap();
+        let error = lock.reconcile_with(&members, mode).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("other:pkg"), "{message}");
+        assert!(lock.drift_with(&members, mode).is_err());
+    }
+}
+
+#[test]
+fn an_unchanged_lockfile_is_not_rewritten() {
+    let dir = std::env::temp_dir().join(format!("witforge-lock-unchanged-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("wire.lock");
+    let lock = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    lock.write_atomic(&path).unwrap();
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    // Make a rewrite observable on file systems with coarse timestamps.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt as _;
+        fs::metadata(&path).unwrap().ino()
+    };
+    lock.write_atomic(&path).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+    }
+    // A different rendering is written.
+    let changed = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u32\n")).unwrap();
+    changed.write_atomic(&path).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), changed.render());
+    fs::remove_dir_all(&dir).unwrap();
 }

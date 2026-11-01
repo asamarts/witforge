@@ -1223,3 +1223,79 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
     }
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn lock_refuses_a_lockfile_path_inside_a_released_directory() {
+    let root = versions("released-lock-path");
+    let released = root.join("wit/v0.1/wire.lock");
+    let before = fs::read(&released).unwrap();
+    let output = witforge()
+        .arg("lock")
+        .arg(root.join("wit/v0.2"))
+        .arg("--lock")
+        .arg(&released)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is in the released directory"),
+        "{output:?}"
+    );
+    assert_eq!(fs::read(&released).unwrap(), before);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn released_refusal_covers_a_version_directory_that_is_a_symlink() {
+    // `wit/v0.1` is a symlink into a store that has no manifest; `wit/released` lists it.
+    let root = versions("released-symlinked-version");
+    let store = root.join("store");
+    fs::create_dir_all(&store).unwrap();
+    fs::rename(root.join("wit/v0.1"), store.join("v0.1")).unwrap();
+    std::os::unix::fs::symlink(store.join("v0.1"), root.join("wit/v0.1")).unwrap();
+    let lock = store.join("v0.1/wire.lock");
+    let before = fs::read(&lock).unwrap();
+    let output = witforge()
+        .arg("lock")
+        .arg(root.join("wit/v0.1"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is released"),
+        "{output:?}"
+    );
+    assert_eq!(fs::read(&lock).unwrap(), before);
+
+    // The generators include the symlinked version instead of leaving it out.
+    let out = root.join("out");
+    let output = witforge()
+        .arg("rust")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(out.join("v0_1.rs").is_file());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn check_names_the_lock_command_for_its_mode() {
+    let dir = temp_contract("check-hint");
+    let output = witforge()
+        .arg("check")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("run `witforge lock {} --first`", dir.display())),
+        "{stderr}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

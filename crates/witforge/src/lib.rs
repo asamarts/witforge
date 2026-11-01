@@ -28,7 +28,7 @@ pub mod subset;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use wit_parser::{PackageId, Resolve};
@@ -36,9 +36,11 @@ use wit_parser::{PackageId, Resolve};
 /// A contract, lockfile, or generated-output violation, as opposed to a usage, I/O, parse, or
 /// internal error.
 ///
-/// Functions that validate a contract report its violations as this type inside the returned
-/// [`anyhow::Error`], so callers can tell the two classes apart with [`is_contract_error`]. The
-/// `witforge` CLI exits with `1` for a violation and `2` for any other error.
+/// The generators ([`emit::rust`], [`emit::proto`], and [`emit::glue`]) report a contract or
+/// lockfile violation as this type inside the returned [`anyhow::Error`], so callers can tell
+/// the two classes apart with [`is_contract_error`]; the `witforge` CLI does the same for `check`
+/// and `lock`, and exits with `1` for a violation and `2` for any other error. The lower-level
+/// [`lock::WireLock`] methods return plain errors, which their callers classify.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractError {
     message: String,
@@ -241,31 +243,135 @@ fn load_manifest_or_default(default: PathBuf, explicit: Option<&Path>) -> Result
 /// Refuse to lock a version directory listed in `wit/released`.
 ///
 /// The decision compares resolved paths, not names: `wit_dir` and every listed directory are
-/// canonicalised, so `.`, `..` components, and symlinks cannot hide a released directory.
+/// canonicalised, so `.`, `..` components, and symlinks cannot hide a released directory. With no
+/// explicit manifest, the `released` manifest beside the directory is read both where the
+/// directory is written (its lexical parent) and where it resolves to (its canonical parent), so
+/// a version directory that is a symlink is refused by the manifest of the WIT root that lists it.
 ///
 /// # Errors
 ///
-/// Returns an error when the directory cannot be resolved, is released, or the manifest is
+/// Returns an error when the directory cannot be resolved, is released, or a manifest is
 /// invalid.
 pub fn ensure_not_released(wit_dir: &Path, explicit: Option<&Path>) -> Result<()> {
     let directory = fs::canonicalize(wit_dir)
         .with_context(|| format!("failed to resolve version directory {}", wit_dir.display()))?;
-    let path = explicit.map_or_else(|| default_released_manifest(&directory), Path::to_path_buf);
-    let manifest = load_released_manifest(&directory, explicit)?;
-    let base = path.parent().unwrap_or_else(|| Path::new("."));
-    for entry in manifest.directories() {
-        let listed = base.join(entry);
-        let listed = fs::canonicalize(&listed).with_context(|| {
-            format!("failed to resolve released directory {}", listed.display())
-        })?;
-        if listed == directory {
+    for released in released_directories(wit_dir, explicit)? {
+        if released.directory == directory {
             bail!(
-                "version directory `{}` is released (listed as `{entry}` in {}) and cannot be \
-                 locked",
+                "version directory `{}` is released (listed as `{}` in {}) and cannot be locked",
                 wit_dir.display(),
-                path.display()
+                released.entry,
+                released.manifest.display()
             );
         }
     }
     Ok(())
+}
+
+/// Refuse to write a lockfile into a released version directory, as [`ensure_not_released`]
+/// refuses to lock one: `lock --lock <path>` must not rewrite a released `wire.lock`.
+///
+/// The lockfile's directory is canonicalised and compared with every directory the manifests
+/// that apply to `wit_dir` release (see [`ensure_not_released`]).
+///
+/// # Errors
+///
+/// Returns an error when the lockfile's directory cannot be resolved, is or is inside a
+/// released directory, or a manifest is invalid.
+pub fn ensure_lockfile_not_released(
+    lock: &Path,
+    wit_dir: &Path,
+    explicit: Option<&Path>,
+) -> Result<()> {
+    let parent = lock
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = fs::canonicalize(parent).with_context(|| {
+        format!(
+            "failed to resolve the directory of lockfile {}",
+            lock.display()
+        )
+    })?;
+    for released in released_directories(wit_dir, explicit)? {
+        if parent.starts_with(&released.directory) {
+            bail!(
+                "lockfile `{}` is in the released directory `{}` (listed as `{}` in {}) and \
+                 cannot be written",
+                lock.display(),
+                released.directory.display(),
+                released.entry,
+                released.manifest.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A directory a released manifest lists, resolved.
+struct ReleasedDirectory {
+    /// The canonical directory.
+    directory: PathBuf,
+    /// The manifest entry that names it.
+    entry: String,
+    /// The manifest that lists it.
+    manifest: PathBuf,
+}
+
+/// Every directory released by the manifests that apply to `wit_dir`: the explicit manifest
+/// alone, or the default manifest beside the directory's lexical and canonical locations.
+fn released_directories(wit_dir: &Path, explicit: Option<&Path>) -> Result<Vec<ReleasedDirectory>> {
+    let mut manifests = Vec::new();
+    if let Some(path) = explicit {
+        manifests.push(path.to_path_buf());
+    } else {
+        manifests.push(default_released_manifest(wit_dir));
+        let lexical = lexical_absolute(wit_dir)?;
+        if let Some(parent) = lexical.parent() {
+            let candidate = parent.join(RELEASED_MANIFEST);
+            if !manifests.contains(&candidate) {
+                manifests.push(candidate);
+            }
+        }
+        // A missing default manifest releases nothing.
+        manifests.retain(|path| path.exists());
+    }
+    let mut released = Vec::new();
+    for path in manifests {
+        let manifest = ReleasedManifest::load(&path)?;
+        let base = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        for entry in manifest.directories() {
+            let listed = base.join(entry);
+            let directory = fs::canonicalize(&listed).with_context(|| {
+                format!("failed to resolve released directory {}", listed.display())
+            })?;
+            released.push(ReleasedDirectory {
+                directory,
+                entry: entry.clone(),
+                manifest: path.clone(),
+            });
+        }
+    }
+    Ok(released)
+}
+
+/// `path` made absolute with its `.` and `..` components removed lexically, as written rather
+/// than as the file system resolves it.
+fn lexical_absolute(path: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(path)
+        .with_context(|| format!("failed to resolve {}", path.display()))?;
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other),
+        }
+    }
+    Ok(normalized)
 }

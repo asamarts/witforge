@@ -8,6 +8,7 @@
 //! witforge glue  <wit-root> --out DIR --plain-root PATH --proto-root PATH [--check] [--released PATH]
 //! ```
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,8 +19,8 @@ use clap::{Args, Parser, Subcommand};
 use witforge::emit;
 use witforge::lock::{LockMode, WireLock};
 use witforge::{
-    ContractError, ensure_not_released, is_contract_error, load, load_released_manifest,
-    load_root_released_manifest, model, subset,
+    ContractError, ensure_lockfile_not_released, ensure_not_released, is_contract_error, load,
+    load_released_manifest, load_root_released_manifest, model, subset,
 };
 
 /// The witforge contract compiler.
@@ -170,7 +171,7 @@ fn check(options: &Options) -> Result<ExitCode> {
             return Ok(ExitCode::from(1));
         }
     };
-    report_check_changes(&drift);
+    report_check_changes(&drift, &lock_command(options));
     if drift.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {
@@ -196,6 +197,7 @@ fn lock(options: &Options) -> Result<ExitCode> {
         .lock
         .clone()
         .unwrap_or_else(|| options.dir.join("wire.lock"));
+    ensure_lockfile_not_released(&lock_path, &options.dir, options.released.as_deref())?;
     let mut lock = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
     let mode = lock_mode(options, previous.as_ref());
@@ -348,24 +350,42 @@ fn read_required_lock(path: &Path) -> Result<WireLock> {
     WireLock::parse(&text).with_context(|| format!("in {}", path.display()))
 }
 
-fn report_check_changes(changes: &witforge::lock::Changes) {
+fn report_check_changes(changes: &witforge::lock::Changes, lock: &str) {
     for (key, _) in &changes.added {
-        eprintln!("error: {key} has no wire number; run `witforge lock`");
+        eprintln!("error: {key} has no wire number; run `{lock}`");
     }
     for (key, number) in &changes.reserved {
         eprintln!(
-            "error: {key} = {number} is no longer in the contract; run `witforge lock` to reserve it"
+            "error: {key} = {number} is no longer in the contract; run `{lock}` to reserve it"
         );
     }
     for (key, number) in &changes.reintroduced {
         eprintln!("error: {}", reintroduced(key, *number));
     }
     for (key, number) in &changes.dropped {
-        eprintln!("error: stale draft {key} = {number}; run `witforge lock` to drop it");
+        eprintln!("error: stale draft {key} = {number}; run `{lock}` to drop it");
     }
     for (key, _kind, _ty) in &changes.updated {
-        eprintln!("error: draft {key} changed kind or type; run `witforge lock` to update it");
+        eprintln!("error: draft {key} changed kind or type; run `{lock}` to update it");
     }
+}
+
+/// The `witforge lock` command that fixes what `check` reports, with the same mode and paths.
+fn lock_command(options: &Options) -> String {
+    let mut command = format!("witforge lock {}", options.dir.display());
+    if let Some(lock) = &options.lock {
+        let _ = write!(command, " --lock {}", lock.display());
+    }
+    if options.first {
+        command.push_str(" --first");
+    }
+    if let Some(previous) = &options.against {
+        let _ = write!(command, " --against {}", previous.display());
+    }
+    if let Some(released) = &options.released {
+        let _ = write!(command, " --released {}", released.display());
+    }
+    command
 }
 
 fn reintroduced(key: &str, number: u32) -> String {

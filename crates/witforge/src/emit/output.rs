@@ -58,14 +58,42 @@ impl GeneratedFiles {
 
     /// Write all expected files and remove stale generated files in `out`.
     ///
-    /// Files without the ownership header are never touched.
+    /// Files without the ownership header are never touched. Before anything is written or
+    /// removed, every expected path that already exists must be a regular file (not a symlink)
+    /// that starts with the header; otherwise nothing is changed and an error names the path.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error from creating, reading, removing, or writing files.
+    /// Returns an error when an expected path is a symlink, is not a regular file, or is a file
+    /// without the header, and an I/O error from creating, reading, removing, or writing files.
     pub fn write(&self, out: &Path) -> Result<()> {
         fs::create_dir_all(out)
             .with_context(|| format!("failed to create output root {}", out.display()))?;
+        for name in self.files.keys() {
+            let path = out.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => bail!(
+                    "refusing to write `{}`: it is a symlink, and generation never writes through \
+                     one",
+                    path.display()
+                ),
+                Ok(metadata) if !metadata.is_file() => bail!(
+                    "refusing to write `{}`: it exists and is not a regular file",
+                    path.display()
+                ),
+                Ok(_) if !self.is_generated(&path)? => bail!(
+                    "refusing to overwrite `{}`: it does not start with witforge's header, so it \
+                     is not generated output; move it or choose another output root",
+                    path.display()
+                ),
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to inspect {}", path.display()));
+                }
+            }
+        }
         let expected: std::collections::BTreeSet<&str> =
             self.files.keys().map(String::as_str).collect();
         for entry in fs::read_dir(out)
@@ -105,6 +133,13 @@ impl GeneratedFiles {
         let mut messages = Vec::new();
         for (name, expected) in &self.files {
             let path = out.join(name);
+            if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+                messages.push(format!(
+                    "generated file `{}` is a symlink; generation refuses to write through it",
+                    path.display()
+                ));
+                continue;
+            }
             match fs::read(&path) {
                 Ok(actual) if actual == expected.as_bytes() => {}
                 Ok(_) => messages.push(format!("changed generated file `{}`", path.display())),

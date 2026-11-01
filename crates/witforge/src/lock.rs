@@ -94,7 +94,7 @@ impl MemberKey {
         let package = parse_package(package)?;
 
         if let Some((interface, tail)) = rest.split_once('#') {
-            ensure_no_separator("interface", interface, '#')?;
+            ensure_ident("interface", interface)?;
             let (function, parameter) = tail
                 .split_once('.')
                 .with_context(|| format!("malformed parameter key `{value}`: missing `.`"))?;
@@ -419,6 +419,17 @@ impl WireLock {
             LockMode::Against(previous) => previous.entries.clone(),
         };
 
+        // Every key belongs to the contract's package in every mode; `--against` also checks
+        // the previous lockfile's keys.
+        if let Some(expected) = live.keys().next().map(MemberKey::package)
+            && let Some(key) = self.entries.keys().find(|key| key.package() != expected)
+        {
+            bail!(
+                "lockfile entry `{key}` belongs to package `{}`, not the contract's package \
+                 `{expected}`",
+                key.package()
+            );
+        }
         if let LockMode::Against(previous) = mode {
             self.validate_against(previous, &live)?;
         }
@@ -530,10 +541,17 @@ impl WireLock {
 
     /// Write the rendered lockfile atomically in its destination directory.
     ///
+    /// A file that already holds exactly the rendered text is left alone, so an unchanged
+    /// lockfile keeps its inode, timestamps, and permissions.
+    ///
     /// # Errors
     ///
     /// Returns an I/O error from creating, writing, syncing, or renaming the temporary file.
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
+        let rendered = self.render();
+        if fs::read(path).is_ok_and(|existing| existing == rendered.as_bytes()) {
+            return Ok(());
+        }
         let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -554,7 +572,7 @@ impl WireLock {
                 .create_new(true)
                 .open(&temporary)
                 .with_context(|| format!("failed to create {}", temporary.display()))?;
-            file.write_all(self.render().as_bytes())
+            file.write_all(rendered.as_bytes())
                 .with_context(|| format!("failed to write {}", temporary.display()))?;
             file.sync_all()
                 .with_context(|| format!("failed to sync {}", temporary.display()))?;
@@ -692,13 +710,6 @@ fn parse_package(value: &str) -> Result<PackageName> {
 fn ensure_ident(what: &str, value: &str) -> Result<()> {
     if !valid_ident(value) {
         bail!("malformed {what} `{value}`: expected a WIT identifier");
-    }
-    Ok(())
-}
-
-fn ensure_no_separator(what: &str, value: &str, separator: char) -> Result<()> {
-    if value.contains(separator) {
-        bail!("malformed {what} `{value}`: contains `{separator}`");
     }
     Ok(())
 }
