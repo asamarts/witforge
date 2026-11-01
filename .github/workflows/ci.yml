@@ -90,7 +90,7 @@ jobs:
   package:
     name: package (publish dry run)
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -103,6 +103,9 @@ jobs:
       # Packages and verifies both crates, the CLI against the library through a temporary
       # registry, so a packaging mistake shows up before a release tag.
       - run: cargo publish --workspace --dry-run --locked
+      # A second dry run after a library change verifies the CLI against the change, not against
+      # the library cargo unpacked and built for the first run.
+      - run: ci/test-publish.sh
 
   generated:
     name: generated output and release freeze

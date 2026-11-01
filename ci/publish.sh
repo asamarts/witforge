@@ -72,8 +72,22 @@ packages=()
 for crate in "${missing[@]}"; do
     packages+=(-p "${crate}")
 done
+
+# cargo verifies the CLI against the library through a temporary registry, and treats a
+# registry crate as immutable: once it has unpacked the library into
+# $CARGO_HOME/registry/src/-<hash>/ and built it, a later run of the same version reuses both,
+# even after the source changed, and verifies against the old library. Remove those copies and
+# verify in a target directory of our own, so a local run checks the source being published,
+# as a fresh CI runner does.
+cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+for crate in "${CRATES[@]}"; do
+    rm -rf "${cargo_home}/registry/src/"-*/"${crate}-$(version_of "${crate}")"
+done
+target="${ROOT}/target/publish"
+rm -rf "${target}"
+
 if [[ "${mode}" == dry-run ]]; then
-    cargo publish --locked --dry-run "${packages[@]}"
+    cargo publish --locked --target-dir "${target}" --dry-run "${packages[@]}"
 else
-    cargo publish --locked "${packages[@]}"
+    cargo publish --locked --target-dir "${target}" "${packages[@]}"
 fi

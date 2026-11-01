@@ -61,7 +61,11 @@ explicit release-owner action.
       `cargo publish --dry-run -p witforge --allow-dirty`.
 - [x] `cargo publish --workspace --dry-run`: packages and verifies both crates, the CLI against
       the library through a temporary registry (at `dd0e219`, 2026-10-31).
-- [ ] Set the `CHANGELOG.md` date to the publish date; `ci/check-release.sh` passes.
+- [x] Set the `CHANGELOG.md` date to the publish date (2026-10-31; change it if the publish
+      slips); `ci/check-release.sh` passes.
+- [x] `ci/publish.sh --dry-run` from the release checkout verifies both crates. It clears the
+      copies of the library cargo unpacked and built for an earlier run, which a local dry run
+      would otherwise verify the CLI against (`ci/test-publish.sh`).
 - [ ] Publish 0.1.0 by hand. crates.io cannot trust a repository for a crate that does not
       exist yet, so a new crate's first version needs an API token: create one for the
       publishing account with only the `publish-new` scope, the crate pattern `witforge*`, and

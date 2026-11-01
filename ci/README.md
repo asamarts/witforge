@@ -48,7 +48,9 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   directory can never change after the commit that released it, whatever the push or pull
   request. `ci/test-release-freeze.sh` tests that script; the test jobs run it on Linux and,
   with the stock bash 3.2, on macOS.
-- **package**: `cargo publish --workspace --dry-run`, which packages and verifies both crates.
+- **package**: `cargo publish --workspace --dry-run`, which packages and verifies both crates,
+  and `ci/test-publish.sh`, which checks that a repeated `ci/publish.sh --dry-run` verifies the
+  CLI against the current library rather than a copy cargo cached for an earlier run.
 - **buf** (workflow dispatch only): optional `buf breaking`, comparing the protobuf output
   generated at the base commit with the output generated now. It is off by default because the
   lockfile is the normative wire check; the manual input is exposed for consumers that also run
