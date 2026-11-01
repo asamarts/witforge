@@ -8,7 +8,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="0.1.0-publishtest"
+metadata="$(cargo metadata --manifest-path "${ROOT}/Cargo.toml" --no-deps --format-version 1 --locked)"
+BASE="$(jq -r '.packages[] | select(.name == "witforge") | .version' <<<"${metadata}")"
+[[ -n "${BASE}" ]] || { echo "FAIL: no witforge version in cargo metadata" >&2; exit 1; }
+# A version far above any release: crates.io reports it missing, and the CLI's requirement on
+# the library matches only the temporary registry's copy. (A pre-release of the workspace
+# version would also match the published release, which sorts above it.)
+VERSION="9999.0.0-publishtest"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/witforge-publish.XXXXXX")"
 cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
 cleanup() {
@@ -27,12 +33,15 @@ trap cleanup EXIT
 git -C "${ROOT}" archive HEAD | tar -x -C "${TMP}"
 cp "${ROOT}/ci/publish.sh" "${TMP}/ci/publish.sh"
 cd "${TMP}"
-sed -i.bak -e "s/^version = \"0\.1\.0\"$/version = \"${VERSION}\"/" Cargo.toml
-sed -i.bak -e "s/^witforge = { path = \"..\/witforge\", version = \"0\.1\.0\" }$/witforge = { path = \"..\/witforge\", version = \"${VERSION}\" }/" \
+escaped="${BASE//./\\.}"
+sed -i.bak -e "s/^version = \"${escaped}\"$/version = \"${VERSION}\"/" Cargo.toml
+sed -i.bak -e "s/^witforge = { path = \"..\/witforge\", version = \"${escaped}\" }$/witforge = { path = \"..\/witforge\", version = \"${VERSION}\" }/" \
     crates/witforge-cli/Cargo.toml
 rm -f Cargo.toml.bak crates/witforge-cli/Cargo.toml.bak
-grep -q "version = \"${VERSION}\"" Cargo.toml crates/witforge-cli/Cargo.toml \
-    || { echo "FAIL: could not set the test version" >&2; exit 1; }
+for manifest in Cargo.toml crates/witforge-cli/Cargo.toml; do
+    grep -q "version = \"${VERSION}\"" "${manifest}" \
+        || { echo "FAIL: could not set the test version in ${manifest}" >&2; exit 1; }
+done
 cargo update --workspace --quiet
 git init -q
 git config user.name test
@@ -47,6 +56,13 @@ dry_run() {
     if [[ ${status} -ne 0 ]] || ! grep -qF "Uploading witforge-cli v${VERSION}" <<<"${output}"; then
         echo "FAIL: $1 (exit ${status}):" >&2
         tail -n 20 <<<"${output}" >&2
+        exit 1
+    fi
+    # The CLI is verified against the library just packaged, not a release from crates.io.
+    local foreign
+    foreign="$(grep -E '^ *Compiling witforge v' <<<"${output}" | grep -vF "witforge v${VERSION}" || true)"
+    if [[ -n "${foreign}" ]]; then
+        echo "FAIL: $1: verified against another witforge: ${foreign}" >&2
         exit 1
     fi
     echo "ok: $1"

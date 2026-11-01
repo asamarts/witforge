@@ -2,7 +2,8 @@
 # Check that the workspace is ready to release, and print its version.
 #
 # Usage: ci/check-release.sh [TAG]
-#   Both crates must have the same version, and CHANGELOG.md must have a dated section for it
+#   Both crates must have the same version, witforge-cli must require that version of witforge,
+#   and CHANGELOG.md must have a dated section for it
 #   (`## [X.Y.Z] - YYYY-MM-DD`) with at least one entry. With TAG, the tag must be `vX.Y.Z`
 #   and point at HEAD, and HEAD must be on origin/main.
 #   The release notes (that section, without its heading) are written to RELEASE_NOTES when it
@@ -24,6 +25,11 @@ versions="$(jq -r '.packages[] | select(.name == "witforge" or .name == "witforg
 [[ "$(wc -l <<<"${versions}")" -eq 1 && -n "${versions}" ]] \
     || fail "witforge and witforge-cli must have one version, found: ${versions//$'\n'/, }"
 version="${versions}"
+# witforge-cli uses the library's API as of this version, so it must require at least it.
+requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependencies[]
+    | select(.name == "witforge") | .req' <<<"${metadata}")"
+[[ "${requirement}" == "^${version}" || "${requirement}" == "=${version}" ]] \
+    || fail "witforge-cli requires witforge ${requirement}; require the released version ${version}"
 
 escaped="${version//./\\.}"
 heading="$(grep -E "^## \[${escaped}\]" CHANGELOG.md || true)"
