@@ -60,6 +60,20 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   lockfile is the normative wire check; the manual input is exposed for consumers that also run
   `buf`. The job installs a pinned `buf` and fails if it cannot run it.
 
+- **ci ok**: passes only when every job above passed (the optional buf job may be skipped).
+  It is the one check the repository's `main` ruleset requires before a pull request merges,
+  so adding or renaming a job never leaves the rule waiting on a check that no longer runs.
+
+## Repository settings
+
+- **Rulesets.** `main` cannot be deleted or force-pushed, and a pull request into it needs
+  `ci ok`. Release tags (`v*.*.*`) cannot be moved or deleted. Repository admins can bypass
+  both, so a broken check never blocks a fix, but pull requests are the normal path.
+- **Dependabot** (`.github/dependabot.yml`) opens one grouped pull request per week for cargo
+  and one for GitHub Actions; CI, including the MSRV job, decides whether it can merge.
+  Dependabot alerts are on.
+- **Secret scanning** and push protection are on.
+
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
 `aplan check-docs`) is checked locally, as the release checklist says, until a published aplan
 release with this plan surface exists; CI then gains a `plan` job that installs that release.

@@ -199,3 +199,29 @@ jobs:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
           BUF: ${{ runner.temp }}/buf
           BUF_REQUIRED: "1"
+
+  # The one check branch protection requires: every job above passed, or, for the optional buf
+  # job only, was skipped. Requiring this instead of each job keeps the rule valid when a job is
+  # added or renamed (the MSRV job's name carries its version).
+  ok:
+    name: ci ok
+    if: always()
+    needs: [lint, workflows, test, msrv, package, generated, buf]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every job to pass
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed="$(jq -r 'to_entries[]
+            | select(.value.result != "success")
+            | select(.key != "buf" or .value.result != "skipped")
+            | "\(.key): \(.value.result)"' <<<"${NEEDS}")"
+          if [[ -n "${failed}" ]]; then
+            echo "::error title=ci::jobs that did not pass: ${failed//$'\n'/, }"
+            exit 1
+          fi
+          echo "every job passed"

@@ -1,0 +1,28 @@
+version: 2
+
+# Weekly version updates, grouped so a week's bumps arrive as at most one pull request per
+# ecosystem. CI (including the MSRV job) decides whether a bump can land.
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-patch-and-minor:
+        update-types: [patch, minor]
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
