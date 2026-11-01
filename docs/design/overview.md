@@ -276,7 +276,7 @@ witforge into a test crate, which checks the plain types, the `.proto` schema, a
 against alint's hand-written host types (alint PRs #409, #412, #414, and #415); the repository went
 public for 0.1.0.
 
-alint consumes only published releases. Its CI installs the release it pins (0.1.1 since
+alint consumes only published releases. Its CI installs the release it pins (0.1.2 since
 2026-11-01) from crates.io, checks the contract, and regenerates the committed output with
 `--check`, so witforge's `main` can change without breaking alint, and alint sees a change only
 when it moves the pin. A change to generated output or to what `check` accepts therefore reaches

@@ -80,6 +80,8 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 
 - [x] 0.1.1: the post-publish review fixes (`W6-010`, `W6-011`), the first release published by
       `release.yml` through crates.io trusted publishing (`W6-012`).
+- [x] 0.1.2: the fourth-review validation and refusal fixes (`W6-013`), released through the
+      same trusted-publishing workflow (`W6-014`).
 - [ ] JSON Schema emitter.
 - [ ] Generated conversions between contract versions (for hosts that support several versions
       side by side).
