@@ -38,6 +38,21 @@ fn copy_tree(source: &Path, destination: &Path) {
     }
 }
 
+/// `path` as `check`'s hints spell it: unchanged when only characters no POSIX shell treats
+/// specially occur in it, and single-quoted otherwise (a Windows temporary path has `\` and `~`).
+fn shell_word(path: &Path) -> String {
+    let text = path.display().to_string();
+    if !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"%+,-./:=@_".contains(&byte))
+    {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
 fn versions(name: &str) -> PathBuf {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../witforge/tests/fixtures/versions");
     let destination =
@@ -1479,7 +1494,7 @@ fn check_names_the_lock_command_for_its_mode() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(&format!("run `witforge lock {} --first`", dir.display())),
+        stderr.contains(&format!("run `witforge lock {} --first`", shell_word(&dir))),
         "{stderr}"
     );
     fs::remove_dir_all(&dir).unwrap();
@@ -1497,7 +1512,8 @@ fn check_names_the_lock_command_for_its_mode() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let quoted = format!("'{}'", spaced.display().to_string().replace('\'', "'\\''"));
+    let quoted = shell_word(&spaced);
+    assert!(quoted.starts_with('\''), "{quoted}");
     assert!(
         stderr.contains(&format!("run `witforge lock {quoted} --first`")),
         "{stderr}"
