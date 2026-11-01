@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format follows
 The fixes from the post-publish reviews (W6-010, W6-011), and the first release published by
 `release.yml` through crates.io trusted publishing.
 
+Generated output is unchanged for every contract 0.1.0 accepts; the changes are refusals and
+`--check` reports. Release commit `978c985`, CI run 41274574941, release run 41274576724;
+crates.io records both crates as published through GitHub trusted publishing.
+
 ### Added
 
 - `witforge::ensure_lockfile_not_released`, which `lock` uses to refuse a `--lock` path inside a
