@@ -1,0 +1,1 @@
+example:bad: the version directory also loads package `example:hidden@0.1.0`, from a nested `package` block or `deps/`; a contract is one self-contained package, and another package is neither locked nor generated

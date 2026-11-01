@@ -321,6 +321,8 @@ process protocol's framing and session, and the version adapters.
 | 2026-10-31 | Every command exits `1` for a contract, lockfile, or output violation and `2` for a usage, I/O, parse, released-directory, or internal error; the library marks violations with `ContractError` | [`emitters.md`](emitters.md) |
 | 2026-10-31 | Released-manifest entries are plain directory names (`^[A-Za-z0-9][A-Za-z0-9._-]*$`); the released-directory and output-root refusals compare resolved paths; the release freeze reads the manifest's history instead of one merge base | [`lockfile.md`](lockfile.md) |
 | 2026-10-31 | Releases publish from a `v*` tag through crates.io trusted publishing; a new crate's first version is published by hand with a scoped token | [`ci/README.md`](../../ci/README.md) |
+| 2026-11-01 | Version directories are never symlinks: every command, the released manifest, and the freeze check refuse one, instead of following it; for `lock`, the manifests beside the version directory and the lockfile always apply and `--released` adds to them | [`lockfile.md`](lockfile.md) |
+| 2026-11-01 | `check` requires the canonical lockfile rendering; a contract is one package, so a nested package or a dependency is refused | [`lockfile.md`](lockfile.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

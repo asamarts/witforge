@@ -11,11 +11,19 @@
 # next run:
 #   - every entry any committed version of the manifest listed must still be listed (deleting
 #     the manifest counts as removing every entry);
-#   - each listed directory must exist, hold a wire.lock, have no untracked files, and be
-#     unchanged in the working tree since every commit whose manifest listed it.
-# A commit that lists a directory therefore fixes its content for good, on whichever branch it
-# was made. The check needs the full history (a shallow clone fails) and runs with the bash 3.2
-# and BSD tools of stock macOS.
+#   - each listed directory must exist, not be a symlink or hold one, hold a wire.lock that git
+#     tracks under exactly the entry's spelling (so a case-insensitive file system cannot match
+#     `V0.1` to `v0.1`), have no untracked files (ignored ones included), and be unchanged in
+#     the working tree since every commit whose manifest listed it.
+# When the WIT root was moved (`git mv`), the manifest's history at its earlier paths is read
+# too, as git's rename detection (`git log --follow`) finds them: each directory an earlier
+# manifest listed must still be listed and match what that commit held at the earlier path. A
+# move that also rewrites most of the manifest is not detected as one, so move a WIT root in a
+# commit that changes nothing else.
+# A commit that lists a directory therefore fixes its content for as long as the commit stays
+# in the history the check reads, on whichever branch it was made; rewriting history to drop it
+# is outside the check, so protect the branch. The check needs the full history (a shallow
+# clone fails) and runs with the bash 3.2 and BSD tools of stock macOS.
 set -euo pipefail
 # ASCII character classes, so `[:space:]` trims what the manifest parser trims.
 export LC_ALL=C
@@ -99,10 +107,22 @@ if [[ -n "${current}" ]]; then
         fi
         seen="${seen}${entry}"$'\n'
         directory="${PREFIX}${entry}"
+        # git compares a symlink by its target string, so content behind a link could change
+        # without the diff below seeing it.
+        [[ ! -L "${directory}" ]] \
+            || fail "released directory \`${directory}\` is a symlink; release the directory itself"
         [[ -d "${directory}" ]] || fail "released directory \`${directory}\` does not exist"
         [[ -f "${directory}/wire.lock" ]] \
             || fail "released directory \`${directory}\` has no wire.lock"
-        untracked="$(git ls-files --others --exclude-standard -- "${directory}")"
+        # Pathspecs are case-sensitive, so on a case-insensitive file system an entry spelled
+        # differently from the directory would match no tracked file and check nothing.
+        tracked="$(git ls-files -- "${directory}/wire.lock")"
+        [[ "${tracked}" == "${directory}/wire.lock" ]] \
+            || fail "released directory \`${directory}\` has no wire.lock tracked by git under that exact spelling"
+        links="$(git ls-files -s -- "${directory}/" | awk '$1 == "120000" { sub(/^[^\t]*\t/, ""); print }')"
+        [[ -z "${links}" ]] \
+            || fail "released directory \`${directory}\` holds symlinks: ${links//$'\n'/, }"
+        untracked="$(git ls-files --others -- "${directory}/")"
         [[ -z "${untracked}" ]] \
             || fail "released directory \`${directory}\` has untracked files: ${untracked//$'\n'/, }"
     done <<<"${current}"
@@ -126,5 +146,42 @@ while IFS= read -r commit; do
         checked=$((checked + 1))
     done <<<"${listed_entries}"
 done <<<"${log}"
+
+# Earlier paths of the manifest, from before the WIT root was moved. An entry an earlier manifest
+# listed must still be listed, and its directory must hold what that commit held at the earlier
+# path: the tree ids are compared, together with the working tree against HEAD.
+earlier=""
+if [[ -n "${log}" ]]; then
+    earlier="$(git log --follow --name-only --format= -- "${MANIFEST}" \
+        | grep -vxF -e "${MANIFEST}" -e '' | sort -u)" || true
+fi
+while IFS= read -r path; do
+    [[ -n "${path}" ]] || continue
+    case "${path}" in
+        */released) old_prefix="${path%released}" ;;
+        released) old_prefix="" ;;
+        *) continue ;;
+    esac
+    old_log="$(git log --full-history --reverse --format=%H -- "${path}")"
+    while IFS= read -r commit; do
+        [[ -n "${commit}" ]] || continue
+        git cat-file -e "${commit}:${path}" 2>/dev/null || continue
+        listed_entries="$(git show "${commit}:${path}" | entries)"
+        while IFS= read -r entry; do
+            [[ -n "${entry}" ]] || continue
+            listed "${entry}" \
+                || fail "released entry \`${entry}\` (listed in ${commit:0:12} at ${path}) was removed from ${MANIFEST}"
+            released_tree="$(git rev-parse --verify --quiet "${commit}:${old_prefix}${entry}")" \
+                || fail "released directory \`${old_prefix}${entry}\` is missing from ${commit:0:12}"
+            head_tree="$(git rev-parse --verify --quiet "HEAD:${PREFIX}${entry}")" \
+                || fail "released directory \`${PREFIX}${entry}\` is not committed"
+            if [[ "${released_tree}" != "${head_tree}" ]] \
+                || ! git diff --quiet HEAD -- "${PREFIX}${entry}"; then
+                fail "released directory \`${PREFIX}${entry}\` changed since its release as \`${old_prefix}${entry}\` in ${commit:0:12}"
+            fi
+            checked=$((checked + 1))
+        done <<<"${listed_entries}"
+    done <<<"${old_log}"
+done <<<"${earlier}"
 
 echo "release freeze check passed for ${ROOT} (${checked} release check(s))"

@@ -600,17 +600,23 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   root are canonicalised, and the rest of the output root is normalised lexically, so `..`
   components and symlinks cannot reach the WIT root. `--check` requires the output directory to
   exist and scans only the output root (not subdirectories) for generated-header files.
-- `--check` writes nothing. It fails if an expected file is missing or differs, or if a
-  generated-header file in the output root is not expected. It ignores files without the
-  header. Recognising the header reads only the start of each file, as bytes, so a file that is
-  not UTF-8 text (a `.DS_Store`, an image) is ignored like any other file without the header.
+- `--check` writes nothing. It fails if an expected file is missing or differs, if a
+  generated-header file in the output root is not expected, or if an expected path is one that
+  generation refuses to write (see below), so `--check` and generation agree on what needs
+  fixing. It ignores files without the header at other paths. It reads only regular files, so a
+  FIFO or a device at an expected path is reported without being opened. Recognising the header
+  reads only the start of each file, as bytes, so a file that is not UTF-8 text (a `.DS_Store`,
+  an image) is ignored like any other file without the header.
 - Generation removes stale generated files in the output root and never touches files without
   the header. It validates every version before writing the first file; a failed run may leave a
   partial set, and rerunning after fixing the input completes it.
-- Generation never writes through a symlink or over a file it does not own. Before anything is
-  written or removed, every expected path that already exists must be a regular file that starts
-  with the header; a symlink, a directory, or a file without the header fails generation with
-  exit `2` and changes nothing. `--check` reports an expected file that is a symlink as drift.
+- Generation never replaces a symlink, writes through one at an expected file's path, or
+  overwrites a file it does not own. Before anything is written or removed, every expected path
+  that already exists must be a regular file that starts with the header; a symlink, a directory
+  or other non-regular file, or a file without the header fails generation with exit `2` and
+  changes nothing. `--check` reports each of them as drift. The output root itself and its
+  parents may be symlinks; the output-root rule above resolves them. No version directory is a
+  symlink ([`lockfile.md`](lockfile.md) section 2), so no output root can resolve into one.
 - A consumer's CI SHOULD freeze the committed per-version Rust module and `wire.lock` for a
   released version together with the `wit/released` entries. `mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module are shared across versions and may change when
@@ -626,11 +632,14 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
 - Exit codes: `0` success; `1` contract, lockfile, or output drift; `2` usage, IO, parse,
   released-directory refusal, or internal error. Every command follows this scheme. For `rust`,
   `proto`, and `glue`, a version that fails validation (subset violations, a version or package
-  mismatch, a stale or discontinuous lockfile, a generated-name collision) exits `1`, as does
-  `--check` drift; a WIT package or lockfile that cannot be read or parsed, an invalid module
-  root, a version directory name with a sign or leading zeros, an output root inside the WIT
-  root, and an expected output path that is a symlink or an unowned file exit `2`. The library reports the first class as
-  a `witforge::ContractError` in the error chain (`witforge::is_contract_error`).
+  mismatch, a lockfile entry of another package, a stale or discontinuous lockfile, a
+  generated-name collision) exits `1`, as does `--check` drift; a WIT package or lockfile that
+  cannot be read or parsed, an invalid module root, a symlinked version directory or one whose
+  name has a sign or leading zeros, an output root inside the WIT root, an expected output path
+  that generation refuses, and an internal error exit `2`. The library reports the first class
+  as a `witforge::ContractError` in the error chain (`witforge::is_contract_error`); the emitters
+  mark each contract violation where they find it, so an internal error is never reported as
+  one.
 - The CLI uses `clap`; every command supports `--help`, and the binary supports `--version`.
 
 ### 5.2 Output files
@@ -655,12 +664,14 @@ are generated from that same highest minor and reference its plain module.
   one-sided results, payload-less variants, flags, and reserved members.
 - Determinism tests: two runs produce byte-identical output; LF only; no timestamps.
 - `--check` tests: missing, changed, extra generated, and unrelated files, including files that
-  are not UTF-8 text.
+  are not UTF-8 text, and an expected path that is a symlink, a directory, a FIFO, or a file
+  without the header.
 - Output-root tests: the WIT root and anything inside it are refused, also when reached through
   `..` components or symlinks; an expected path that is a symlink, a directory, or a file without
   the header is refused before anything changes.
-- Version-directory tests: a symlinked version directory is generated, and a name with a sign or
-  leading zeros is refused.
+- Version-directory tests: a symlinked version directory is refused by every command, with
+  nothing written even when the output root is that link, and a name with a sign or leading zeros
+  is refused.
 - Continuity tests: a minor whose lockfile does not continue the previous minor's fails every
   generator; a new major starts fresh.
 - CLI integration tests that run the built binary with `std::process::Command` in directories

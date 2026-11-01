@@ -353,12 +353,22 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     );
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
 
-    fs::write(out.join("v0.rs"), "changed\n").unwrap();
+    fs::write(out.join("v0.rs"), format!("{}\nchanged\n", glue::HEADER)).unwrap();
     let messages = glue::check(&root, &out, "crate::plain", "crate::proto").unwrap();
     assert!(
         messages
             .iter()
             .any(|message| message.contains("changed generated")),
+        "{messages:?}"
+    );
+    // A file without the header is one generation refuses to overwrite, and --check says so
+    // instead of calling it changed output.
+    fs::write(out.join("v0.rs"), "changed\n").unwrap();
+    let messages = glue::check(&root, &out, "crate::plain", "crate::proto").unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("refuses to overwrite")),
         "{messages:?}"
     );
 

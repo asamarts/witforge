@@ -1,2 +1,3 @@
+example:bad: the version directory also loads package `example:other@1.0.0`, from a nested `package` block or `deps/`; a contract is one self-contained package, and another package is neither locked nor generated
 example:bad/types/blob: uses `blob` from another package (`example:other@1.0.0`); a contract must be self-contained
 example:bad/types/label: uses `label` from another package (`example:other@1.0.0`); a contract must be self-contained

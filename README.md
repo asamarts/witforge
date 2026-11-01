@@ -63,13 +63,20 @@ $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate
 schema (for example by `prost-build` in a build script), not the directory the schema is
 written to. Every generated file starts with witforge's header, and `--check` on any generator
 fails instead of writing when its output would change. Give each generator its own output
-root: generation replaces and removes only files that carry the header, never writes through a
-symlink, and refuses to overwrite a file without the header.
+root: generation replaces and removes only files that carry the header, and refuses to replace a
+symlink, a directory, or a file without the header at an expected path.
 
 The generators also refuse a minor whose `wire.lock` does not keep every entry of the previous
 minor's, so a lockfile started fresh instead of copied cannot renumber the shared per-major
-schema. Every command exits `1` for a contract, lockfile, or output violation, and `2` for a
-usage, I/O, or parse error, a refused released directory or output path, or an internal error.
+schema. `check` accepts only the lockfile exactly as `lock` writes it. No command follows a
+version directory that is a symlink, so a released version cannot change through a link's
+target.
+
+Every command exits `1` for a contract, lockfile, or output violation: a subset violation, a
+stale, discontinuous, or non-canonical lockfile, a generated-name collision, or `--check` drift,
+which includes an expected path that generation would refuse. It exits `2` for a usage, I/O, or
+parse error, a released or symlinked version directory, an output root inside the WIT root, a
+generation run refused by an expected path, or an internal error.
 
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
   resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length

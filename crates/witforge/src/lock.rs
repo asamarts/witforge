@@ -519,6 +519,33 @@ impl WireLock {
         copy.reconcile_with(members, mode)
     }
 
+    /// Check that every entry belongs to `package`, the contract's package.
+    ///
+    /// Reconciling checks entries against the package of the contract's members, so a contract
+    /// with no members needs this check to refuse a lockfile written for another package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first entry of another package.
+    pub fn check_package(&self, package: &PackageName) -> Result<()> {
+        if let Some(key) = self.entries.keys().find(|key| key.package() != package) {
+            bail!(
+                "lockfile entry `{key}` belongs to package `{}`, not the contract's package \
+                 `{package}`",
+                key.package()
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether `text` is exactly this lockfile's [rendering](WireLock::render): the form
+    /// `witforge lock` writes, with no comments, blank lines, extra whitespace, CR, or other
+    /// order.
+    #[must_use]
+    pub fn is_canonical(&self, text: &str) -> bool {
+        self.render() == text
+    }
+
     /// Render the lockfile text (sorted, stable, LF line endings).
     #[must_use]
     pub fn render(&self) -> String {

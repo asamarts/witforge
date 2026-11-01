@@ -1,0 +1,17 @@
+package example:bad@0.1.0;
+
+interface types {
+    record span {
+        start: u32,
+    }
+}
+
+package example:hidden@0.1.0 {
+    interface extra {
+        f: func(x: u32) -> string;
+    }
+
+    world hidden {
+        export extra;
+    }
+}

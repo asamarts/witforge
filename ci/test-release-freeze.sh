@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Tests for ci/check-release-freeze.sh, in a scratch repository: an untouched release passes; a
-# released directory changed in a later commit or through a merge, an untracked file in it, a
-# removed entry, a deleted manifest, a shallow clone, a root outside any repository, and invalid
-# or duplicate entries fail; a new entry that is not committed yet passes; every spelling of the
-# WIT root checks the same directory.
+# released directory changed in a later commit, through a merge, through a symlink, or in the
+# commit that moved the WIT root, an untracked or ignored file in it, a symlink in it, an
+# untracked wire.lock, a removed entry, a deleted manifest, a shallow clone, a root outside any
+# repository, and invalid or duplicate entries fail; a new entry that is not committed yet
+# passes; a WIT root moved unchanged passes; every spelling of the WIT root checks the same
+# directory.
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-release-freeze.sh"
@@ -34,8 +36,8 @@ commit() {
     git commit -qm "$1"
 }
 
-# A repository with v0.1 released and v0.2 in development.
-fresh() {
+# A repository with v0.1 and v0.2 in the working tree, nothing committed.
+unreleased() {
     rm -rf "${TMP}/repo"
     git init -q "${TMP}/repo"
     cd "${TMP}/repo"
@@ -46,9 +48,18 @@ fresh() {
         echo "package a:b@${version#v}.0;" >"wit/${version}/a.wit"
         echo "a:b/x = 1 field u32" >"wit/${version}/wire.lock"
     done
-    commit "two versions"
+}
+
+release_v01() {
     printf '# released versions\nv0.1\n' >wit/released
     commit "release v0.1"
+}
+
+# A repository with v0.1 released and v0.2 in development.
+fresh() {
+    unreleased
+    commit "two versions"
+    release_v01
 }
 
 fresh
@@ -102,6 +113,61 @@ fresh
 mkdir -p wit/v0.1/notes
 echo "draft" >wit/v0.1/notes/untracked.txt
 expect "an untracked file in a released directory fails" 1 "untracked files"
+
+# Each case below sets up the gap at release time, so the released directory never changes in
+# git's eyes and only the check for that gap can catch it.
+fresh
+echo "notes/" >>.git/info/exclude
+mkdir -p wit/v0.1/notes
+echo "draft" >wit/v0.1/notes/ignored.txt
+expect "an ignored file in a released directory fails" 1 "ignored.txt"
+
+# A released directory that is a symlink: git sees only the link's target string, so edits
+# behind it would pass the diff.
+unreleased
+mkdir -p store
+mv wit/v0.1 store/v0.1
+ln -s ../store/v0.1 wit/v0.1
+commit "keep v0.1 behind a symlink"
+release_v01
+echo "// edited behind the link" >>store/v0.1/a.wit
+commit "edit behind the link"
+expect "a released directory that is a symlink fails" 1 "is a symlink"
+
+unreleased
+ln -s ../v0.2/a.wit wit/v0.1/b.wit
+commit "link a file into v0.1"
+release_v01
+echo "// edited through the link" >>wit/v0.2/a.wit
+commit "edit the link's target"
+expect "a symlink inside a released directory fails" 1 "holds symlinks"
+
+unreleased
+echo "wit/v0.1/wire.lock" >>.git/info/exclude
+commit "two versions, the v0.1 lockfile ignored"
+release_v01
+expect "a released wire.lock that git does not track fails" 1 "tracked by git"
+
+# A WIT root moved unchanged keeps its history; an edit made in the same commit as the move is
+# caught against the release at the old path.
+fresh
+git mv wit contracts
+commit "move the WIT root"
+expect "a WIT root moved unchanged passes" 0 "passed" contracts
+fresh
+git mv wit contracts
+echo "// edited during the move" >>contracts/v0.1/a.wit
+commit "move the WIT root and edit a release"
+expect "a release edited in the commit that moved the WIT root fails" 1 \
+    "changed since its release as \`wit/v0.1\`" contracts
+fresh
+printf '# released versions\nv0.1\nv0.2\n' >wit/released
+commit "release v0.2"
+git mv wit contracts
+printf '# released versions\nv0.1\n' >contracts/released
+commit "move the WIT root and drop an entry"
+expect "an entry dropped in the commit that moved the WIT root fails" 1 \
+    "released entry \`v0.2\` (listed in" contracts
 
 fresh
 printf '# released versions\n \tv0.1\t \r\n' >wit/released

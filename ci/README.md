@@ -82,9 +82,10 @@ release with this plan surface exists; CI then gains a `plan` job that installs 
 
 `.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed:
 
-- **verify**: `ci/check-release.sh` requires one version for both crates, a dated
-  `CHANGELOG.md` section with entries for it, and a tag that matches the version, points at the
-  checked-out commit, and is on `main`. Then the tests and `ci/publish.sh --dry-run`.
+- **verify**: `ci/check-release.sh` requires one version for both crates, `witforge-cli`'s
+  dependency on `witforge` to require that version (the CLI uses the library's API as of it), a
+  dated `CHANGELOG.md` section with entries for it, and a tag that matches the version, points
+  at the checked-out commit, and is on `main`. Then the tests and `ci/publish.sh --dry-run`.
 - **publish** (environment `release`, which only `v*` tags may use): publishes, library first,
   each crate whose version is not on crates.io yet (`ci/publish.sh`), with a crates.io token
   minted through trusted publishing for that job. Nothing to publish skips the token request.

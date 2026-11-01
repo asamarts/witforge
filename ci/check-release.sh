@@ -22,7 +22,8 @@ fail() {
 metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
 versions="$(jq -r '.packages[] | select(.name == "witforge" or .name == "witforge-cli") | .version' \
     <<<"${metadata}" | sort -u)"
-[[ "$(wc -l <<<"${versions}")" -eq 1 && -n "${versions}" ]] \
+count="$(wc -l <<<"${versions}")"
+[[ "${count}" -eq 1 && -n "${versions}" ]] \
     || fail "witforge and witforge-cli must have one version, found: ${versions//$'\n'/, }"
 version="${versions}"
 # witforge-cli uses the library's API as of this version, so it must require at least it.
@@ -34,11 +35,13 @@ requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependenc
 escaped="${version//./\\.}"
 heading="$(grep -E "^## \[${escaped}\]" CHANGELOG.md || true)"
 [[ -n "${heading}" ]] || fail "CHANGELOG.md has no section for ${version}"
-[[ "$(wc -l <<<"${heading}")" -eq 1 ]] || fail "CHANGELOG.md has more than one section for ${version}"
+count="$(wc -l <<<"${heading}")"
+[[ "${count}" -eq 1 ]] || fail "CHANGELOG.md has more than one section for ${version}"
 dated="^## \[${escaped}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$"
 [[ "${heading}" =~ ${dated} ]] || fail "the CHANGELOG.md heading for ${version} has no date: ${heading}"
 date="${heading##* - }"
-[[ "$(date -u -d "${date}" +%F 2>/dev/null)" == "${date}" ]] \
+parsed="$(date -u -d "${date}" +%F 2>/dev/null || true)"
+[[ "${parsed}" == "${date}" ]] \
     || fail "the CHANGELOG.md date for ${version} is not a valid date: ${date}"
 
 notes="$(awk -v heading="${heading}" '
@@ -53,7 +56,9 @@ fi
 
 if [[ -n "${TAG}" ]]; then
     [[ "${TAG}" == "v${version}" ]] || fail "tag ${TAG} does not match the version ${version}"
-    [[ "$(git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}")" == "$(git rev-parse HEAD)" ]] \
+    tagged="$(git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}" || true)"
+    head="$(git rev-parse HEAD)"
+    [[ -n "${tagged}" && "${tagged}" == "${head}" ]] \
         || fail "tag ${TAG} does not exist or does not point at HEAD"
     git merge-base --is-ancestor HEAD origin/main \
         || fail "${TAG} is not on origin/main; release from main"
