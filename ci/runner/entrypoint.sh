@@ -44,7 +44,7 @@ done
 
 # Stop the agent on a signal, without deregistering: SIGTERM arrives on every ordinary restart,
 # and only `ci/runner/teardown.sh --purge` means the runner is going away.
-# shellcheck disable=SC2329  # invoked through the trap
+# shellcheck disable=SC2317,SC2329  # invoked through the trap (SC2317 before shellcheck 0.10)
 cleanup() {
     if [[ -n "${AGENT_PID:-}" ]]; then
         kill -TERM "${AGENT_PID}" 2>/dev/null || true

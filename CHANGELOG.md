@@ -10,8 +10,8 @@ All notable changes to this project are documented here. The format follows
 
 - `witforge::ensure_lockfile_not_released`, which `lock` uses to refuse a `--lock` path inside a
   released directory.
-- A CI job that runs a pinned actionlint over the workflows, with shellcheck's masked-return
-  check enabled for every `run:` script, and shellcheck over `ci/`.
+- A CI job that runs pinned actionlint and shellcheck over the workflows, with shellcheck's
+  masked-return check enabled for every `run:` script, and shellcheck over `ci/`.
 - `ci/check-release.sh` requires `witforge-cli`'s dependency on `witforge` to be the release
   version, since the CLI uses the library's API as of that version.
 

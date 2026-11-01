@@ -40,7 +40,8 @@ Both scripts need podman and the `gh` CLI logged in to the account that owns the
 
 The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 
-- **workflows and scripts**: a pinned, checksum-verified actionlint over both workflows, with
+- **workflows and scripts**: pinned, checksum-verified actionlint and shellcheck (the runner
+  image's shellcheck changes version, and with it findings and codes) over both workflows, with
   shellcheck's masked-return check enabled for every `run:` script (a `$(...)` whose failure
   would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`.
 - **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all three
