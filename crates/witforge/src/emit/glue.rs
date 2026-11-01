@@ -83,14 +83,30 @@ impl ::std::error::Error for GlueError {}
 ///
 /// Returns an error for an invalid module root, a missing or symlinked version directory, or an
 /// unreadable or invalid lockfile, and a [`ContractError`](crate::ContractError) for an
-/// inconsistent package, subset violations, a stale lockfile, or generated-name collisions.
+/// inconsistent package, subset violations, a stale lockfile, generated-name collisions, or a
+/// contract the [protobuf emitter](crate::emit::proto) refuses.
 pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<GeneratedFiles> {
     validate_module_root(plain_root)?;
     validate_module_root(proto_root)?;
-    let versions = load_versions(wit_root)?;
+    plan_versions(&load_versions(wit_root)?, plain_root, proto_root)
+}
+
+/// Plan the glue output for validated `versions`, which [`load_versions`] returns, and validated
+/// module roots.
+///
+/// Glue converts to and from the types generated from the protobuf schema, so it refuses every
+/// contract [`proto::emit_major`](crate::emit::proto::emit_major) refuses, such as two WIT names
+/// that map to one proto message. An emitter error is passed on as the emitter classified it: a
+/// contract violation stays a [`ContractError`](crate::ContractError) and an internal error
+/// stays a plain error.
+pub(crate) fn plan_versions(
+    versions: &[Version],
+    plain_root: &str,
+    proto_root: &str,
+) -> Result<GeneratedFiles> {
     // Versions are in ascending order, so the last one of each major is its highest minor.
     let mut highest: BTreeMap<u64, &Version> = BTreeMap::new();
-    for version in &versions {
+    for version in versions {
         highest.insert(version.major, version);
     }
     let package = &versions
@@ -102,6 +118,8 @@ pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<Gener
     let mut majors = Vec::new();
     for (major, version) in &highest {
         let generated = emit_version(&version.model, &version.lock, plain_root, proto_root)
+            .with_context(|| version.directory.display().to_string())?;
+        crate::emit::proto::emit_major(&version.model, &version.lock)
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.rs"), generated)?;
         majors.push(*major);

@@ -19,9 +19,9 @@ use clap::{Args, Parser, Subcommand};
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
 use witforge::{
-    ContractError, ensure_lockfile_not_released, ensure_not_released, ensure_version_directory,
-    is_contract_error, is_released, load, load_released_manifest, load_root_released_manifest,
-    model, subset,
+    ContractError, ensure_directory_version, ensure_lockfile_not_released, ensure_not_released,
+    ensure_version_directory, is_contract_error, is_released, load, load_released_manifest,
+    load_root_released_manifest, model, subset,
 };
 
 /// The witforge contract compiler.
@@ -159,6 +159,7 @@ fn check(options: &Options) -> Result<ExitCode> {
         return Ok(ExitCode::from(1));
     }
     let model = model::build(&contract)?;
+    ensure_directory_version(&options.dir, &model)?;
     let members = model.members()?;
     let lock_path = options
         .lock
@@ -166,7 +167,8 @@ fn check(options: &Options) -> Result<ExitCode> {
         .unwrap_or_else(|| options.dir.join("wire.lock"));
     let (lock, text) = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
-    let remedy = if is_released(&options.dir, options.released.as_deref())? {
+    let released = is_released(&options.dir, options.released.as_deref())?;
+    let remedy = if released {
         Remedy::Released(options.dir.display().to_string())
     } else {
         Remedy::Lock(lock_command(options))
@@ -187,8 +189,13 @@ fn check(options: &Options) -> Result<ExitCode> {
         }
     };
     // A lockfile written by hand, or edited by a tool that reorders or reformats it, is drift
-    // too: `lock` would rewrite it, and only its canonical form is reviewed and frozen.
-    let canonical = text.as_deref().is_none_or(|text| lock.is_canonical(text));
+    // too: `lock` would rewrite it, and only its canonical form is reviewed. CRLF line endings
+    // are read as LF, since a checkout with `core.autocrlf` writes them. A released lockfile is
+    // exempt: `lock` refuses to rewrite it, and the freeze check guards it as it was released.
+    let canonical = released
+        || text
+            .as_deref()
+            .is_none_or(|text| lock.is_canonical(&text.replace("\r\n", "\n")));
     if !canonical {
         eprintln!(
             "error: lockfile {} is not in the form `witforge lock` writes; {}",
@@ -218,6 +225,7 @@ fn lock(options: &Options) -> Result<ExitCode> {
         )));
     }
     let model = model::build(&contract)?;
+    ensure_directory_version(&options.dir, &model)?;
     let members = model.members()?;
     let lock_path = options
         .lock
@@ -375,11 +383,12 @@ fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>
             }
             bail!(
                 "lockfile {path} does not exist; for the first version of a package or of a new \
-                 major, create it with `witforge lock {dir} --first`; for a new minor, copy the \
-                 previous minor's wire.lock to {path} and run `witforge lock {dir} --against \
-                 <previous minor's wire.lock>`",
+                 major, create it with `{first}`; for a new minor, copy the previous minor's \
+                 wire.lock to {path} and run `{against}`",
                 path = path.display(),
-                dir = options.dir.display()
+                first = lock_command_with(options, Some("--first")),
+                against =
+                    lock_command_with(options, Some("--against <previous minor's wire.lock>")),
             );
         }
         Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
@@ -443,15 +452,26 @@ fn report_check_changes(changes: &witforge::lock::Changes, remedy: &Remedy) {
 /// The `witforge lock` command that fixes what `check` reports, with the same mode and paths,
 /// each quoted for a POSIX shell.
 fn lock_command(options: &Options) -> String {
+    let mode = if options.first {
+        Some("--first".to_string())
+    } else {
+        options
+            .against
+            .as_ref()
+            .map(|previous| format!("--against {}", shell_quote(previous)))
+    };
+    lock_command_with(options, mode.as_deref())
+}
+
+/// The `witforge lock` command for `options`' version directory, lockfile, and manifest, with
+/// `mode` (such as `--first`) in place of the options' own, each path quoted for a POSIX shell.
+fn lock_command_with(options: &Options, mode: Option<&str>) -> String {
     let mut command = format!("witforge lock {}", shell_quote(&options.dir));
     if let Some(lock) = &options.lock {
         let _ = write!(command, " --lock {}", shell_quote(lock));
     }
-    if options.first {
-        command.push_str(" --first");
-    }
-    if let Some(previous) = &options.against {
-        let _ = write!(command, " --against {}", shell_quote(previous));
+    if let Some(mode) = mode {
+        let _ = write!(command, " {mode}");
     }
     if let Some(released) = &options.released {
         let _ = write!(command, " --released {}", shell_quote(released));
@@ -459,16 +479,20 @@ fn lock_command(options: &Options) -> String {
     command
 }
 
-/// `path` as one POSIX shell word: unchanged when it holds only characters no shell treats
-/// specially, and single-quoted otherwise.
+/// `path` as one POSIX shell word that witforge reads as a path: unchanged when it holds only
+/// characters no shell treats specially, and single-quoted otherwise. A path that starts with
+/// `-` is relative, and gets a leading `./`, so the command line does not read it as an option.
 fn shell_quote(path: &Path) -> String {
-    let text = path.to_string_lossy();
+    let mut text = path.to_string_lossy().into_owned();
+    if text.starts_with('-') {
+        text.insert_str(0, "./");
+    }
     let plain = !text.is_empty()
         && text
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"%+,-./:=@_".contains(&byte));
     if plain {
-        text.into_owned()
+        text
     } else {
         format!("'{}'", text.replace('\'', "'\\''"))
     }

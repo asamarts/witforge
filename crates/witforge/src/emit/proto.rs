@@ -32,10 +32,17 @@ const ONEOF_VALUE: &str = "witforge_value";
 /// lockfile, and a [`ContractError`](crate::ContractError) for an inconsistent package, subset
 /// violations, a stale lockfile, or a generated-name collision.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
-    let versions = load_versions(wit_root)?;
+    plan_versions(&load_versions(wit_root)?)
+}
+
+/// Plan the protobuf output for validated `versions`, which [`load_versions`] returns.
+///
+/// An emitter error is passed on as the emitter classified it: a contract violation stays a
+/// [`ContractError`](crate::ContractError) and an internal error stays a plain error.
+pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
     // Versions are in ascending order, so the last one of each major is its highest minor.
     let mut highest: BTreeMap<u64, &Version> = BTreeMap::new();
-    for version in &versions {
+    for version in versions {
         highest.insert(version.major, version);
     }
     let mut files = GeneratedFiles::new(HEADER);

@@ -21,13 +21,21 @@ directories are frozen as a whole, which covers those cases.
 
 - A contract version lives in `wit/v<major>.<minor>/` and contains a WIT package whose version
   is exactly `@<major>.<minor>.0`. Patch versions, pre-releases, and build metadata are refused
-  by the subset checker. Both numbers in the directory name are ASCII digits without a sign or
-  leading zeros; the generators refuse a name such as `v+0.1` or `v00.02` instead of skipping it.
+  by the subset checker. Every command refuses a directory so named whose package declares
+  another version (`wit/v0.1` holding `@0.2.0`) with exit `1`: `check` and `lock` read the name
+  of the directory they are given, resolved (so `.` counts), and the generators that of every
+  version directory. Both numbers in the directory name are ASCII digits without a sign or
+  leading zeros; every command refuses a name such as `v+0.1` or `v00.02` (exit `2`) instead of
+  reading it as a version or skipping it.
 - A version directory MUST NOT be a symlink. Every command (`check`, `lock`, and the generators),
   the released manifest, and `ci/check-release-freeze.sh` refuse one with exit `2`: a released
   version reached through a link could change through the link's target, which neither the
   manifest beside the link nor git (which records only the link's target string) would see. The
-  WIT root and its parents may be symlinks.
+  WIT root and its parents may be symlinks. A command sees only the path it is given: run inside
+  a symlinked version directory (`cd wit/v0.3 && witforge lock .`), it sees the working directory
+  the operating system resolved, the link's target, and cannot tell that it was reached through
+  a link, so it reads (and `lock` writes) the target as an unlinked directory. The freeze check
+  still refuses a released directory that is a symlink.
 - Each version directory has its own `wire.lock`.
 - Rust module: `v<major>_<minor>`.
 - Protobuf package/file: `v<major>` and `v<major>.proto`.
@@ -64,8 +72,13 @@ directories are frozen as a whole, which covers those cases.
   (ignored ones included), and must match every commit that listed it, so a change that landed
   in a push whose CI run was cancelled, or came in through a merge, is still caught. When the
   WIT root was moved, the manifest's earlier paths (found by git's rename detection) are checked
-  too, against what each commit held at the earlier path; a move that also rewrites most of the
-  manifest is not detected as one, so a WIT root is moved in a commit that changes nothing else.
+  too, against what each commit held at the earlier path. Only renames count: git reports a new
+  manifest that resembles one that still exists, such as a second WIT root's, as a copy, and the
+  history beyond a copy belongs to the other manifest. A move that also rewrites most of the
+  manifest, or leaves a manifest at the earlier path, is not detected as one, so a WIT root is
+  moved in a commit that changes nothing else. Paths are given to git literally and read back
+  unquoted, so a WIT root whose path holds `*`, `?`, `[`, or non-ASCII characters is checked as
+  it is spelled.
   A commit that lists a directory therefore fixes its content for as long as the commit stays in
   the history the check reads; rewriting history to drop it is outside the check, so the branch
   is protected. witforge's CI runs it on its fixture; a consumer can run it on its own WIT
@@ -73,13 +86,15 @@ directories are frozen as a whole, which covers those cases.
 - `lock` refuses to modify a released version directory, and refuses a `--lock` path inside one.
   The refusal compares resolved paths, not names: the version directory, the lockfile's
   directory, and every listed directory are canonicalised, so `.` and `..` components and a
-  symlinked WIT root cannot bypass it. The manifest beside the version directory and the one
-  beside the lockfile's directory, each at its written and its resolved location, always apply,
-  whatever `--released` names, so neither a lockfile in another WIT root nor an explicit manifest
-  that omits the directory gets past the manifest that lists it. `check`, `rust`, `proto`, and
-  `glue` are allowed; they verify or reproduce the frozen contract. For a released version,
-  `check` advises restoring the released WIT and lockfile rather than naming a `lock` command
-  that `lock` refuses.
+  symlinked WIT root cannot bypass it. The manifest beside the version directory, the one beside
+  the lockfile's directory, and the one beside each of that directory's ancestors named like a
+  version directory (`v<major>.<minor>`), each at its written and its resolved location, always
+  apply, whatever `--released` names, so neither a lockfile in another WIT root, nor one in a
+  subdirectory of a released directory (`--lock other/v0.1/sub/wire.lock`), nor an explicit
+  manifest that omits the directory gets past the manifest that lists it. `check`, `rust`,
+  `proto`, and `glue` are allowed; they verify or reproduce the frozen contract. For a released
+  version, `check` advises restoring the released WIT and lockfile rather than naming a `lock`
+  command that `lock` refuses.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the
   previous minor's `wire.lock` and is then developed with `lock --against`.
 - The generators (`rust`, `proto`, and `glue`) enforce that continuity across a WIT root: within
@@ -92,10 +107,11 @@ directories are frozen as a whole, which covers those cases.
 - Docs-only patch versions are out of scope for 0.1. A docs-only patch requires a new version
   directory (later) or a semantic-diff relaxation (pre-golive consideration).
 
-For ad-hoc directories such as test fixtures, the path need not be a version directory; output
-names and the proto version are derived from the package version. The `v<major>.<minor>`
-directory convention is enforced for a versioned `wit/` tree by the released manifest and CI,
-not by every `check` invocation.
+For ad-hoc directories such as test fixtures, the path need not be a version directory: a
+directory whose name is not spelled `v<major>.<minor>` may hold any version, and output names
+and the proto version are derived from the package version. A directory with such a name holds
+that version for every command; the layout of a versioned `wit/` tree as a whole is enforced by
+the generators, the released manifest, and CI.
 
 ## 3. Keys
 
@@ -157,11 +173,20 @@ key = number kind [type] [reserved]
 - Blank lines and lines whose first non-whitespace character is `#` are ignored.
 - Render writes the header, then entries sorted lexicographically by key, with LF line endings
   and a final newline. Comments are not preserved by render.
-- The reader accepts the looser forms above, but `check` requires the canonical rendering byte
-  for byte: a lockfile with comments, blank lines, tabs or extra spaces, CR line endings, no final
-  newline, or another order fails `check` with exit `1` and "run `witforge lock`", which rewrites
-  it. Only the canonical form is reviewed and frozen, so a tool that reformats the file cannot
-  slip a change past review.
+- The reader, and so `lock` and the generators, accepts the looser forms above. `check`
+  requires an unreleased version's lockfile in canonical form: the rendering byte for byte, once
+  CRLF line endings are read as LF. A lockfile with comments, blank lines, tabs or extra spaces,
+  a CR that does not end a line, no final newline, or another order fails `check` with exit `1`
+  and "run `witforge lock`", which rewrites it in canonical form and so drops its comments. Only
+  the canonical form is reviewed, so a tool that reformats the file cannot slip a change past
+  review.
+- A released version's lockfile need not be canonical: `lock` refuses to rewrite it, and
+  `ci/check-release-freeze.sh` keeps it as it was released, so `check` accepts any form the
+  reader accepts (a CRLF checkout, or a comment in a lockfile released with 0.1.0) and compares
+  its entries with the contract as for any version.
+- Git rewrites line endings at checkout under `core.autocrlf=true`, the Git for Windows default.
+  A consumer pins its contracts to LF in `.gitattributes` (`wire.lock text eol=lf` and
+  `*.wit text eol=lf`), so every checkout holds what `lock` wrote and what was reviewed.
 - A missing header, an unknown header version, malformed lines, unknown kind tokens, invalid
   numbers, duplicate keys, or two entries of one parent sharing a number are parse errors.
 
@@ -292,8 +317,9 @@ reports every discrepancy. If the contract has subset violations, `check` report
 does not compare the lockfile: a contract outside the subset has no model, so every locked member
 would otherwise look removed. Every entry, and every entry of an `--against` baseline, must
 belong to the contract's package, also when the contract has no members. Exit code `1` means
-contract or lockfile violations, a lockfile that is not in canonical form included; exit code
-`2` means usage, IO, parse, or internal errors.
+contract or lockfile violations, an unreleased version's lockfile that is not in canonical form
+(section 4) and a version directory holding another version (section 2) included; exit code `2`
+means usage, IO, parse, or internal errors.
 
 Without a baseline (default mode):
 
@@ -446,11 +472,15 @@ The implementation must cover:
 - draft rename/removal/retype, including a draft removed and re-added;
 - released type/kind/renumber/un-reserve errors;
 - `--first`, `--against`, default mode, and released-directory refusal, including through `.`,
-  `..` components, a `--lock` path inside a released directory from another WIT root or with an
-  explicit manifest that omits it, and a symlinked version directory refused by every command;
+  `..` components, a `--lock` path inside a released directory, or a subdirectory of one, from
+  the same or another WIT root or with an explicit manifest that omits it, and a symlinked
+  version directory refused by every command, also when no manifest lists it;
+- a version directory holding another version, or with a misspelled version name, refused by
+  `check` and `lock`;
 - keys from another package refused in every mode, also for a contract with no members, and
   parameter keys whose interface is not an identifier refused when parsed;
-- `check` refusing a lockfile that is not in canonical form (section 4);
+- `check` refusing an unreleased version's lockfile that is not in canonical form, reading CRLF
+  as LF, and accepting a released lockfile in any form the reader accepts (section 4);
 - an unchanged lockfile left untouched;
 - a missing lockfile refused in default mode and with `--against`, and accepted with `--first`;
 - the `wit/released` manifest: append-only, duplicate/missing entries, the plain-name entry rule,

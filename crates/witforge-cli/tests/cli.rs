@@ -39,9 +39,13 @@ fn copy_tree(source: &Path, destination: &Path) {
 }
 
 /// `path` as `check`'s hints spell it: unchanged when only characters no POSIX shell treats
-/// specially occur in it, and single-quoted otherwise (a Windows temporary path has `\` and `~`).
+/// specially occur in it, and single-quoted otherwise (a Windows temporary path has `\` and `~`);
+/// a path that starts with `-` gets a leading `./`, so it is not read as an option.
 fn shell_word(path: &Path) -> String {
-    let text = path.display().to_string();
+    let mut text = path.display().to_string();
+    if text.starts_with('-') {
+        text.insert_str(0, "./");
+    }
     if !text.is_empty()
         && text
             .bytes()
@@ -1392,6 +1396,39 @@ fn lock_refuses_a_released_lockfile_whatever_the_manifest_options_say() {
 }
 
 #[test]
+fn lock_refuses_a_lockfile_in_a_subdirectory_of_a_released_directory() {
+    let root = versions("released-lock-subdirectory");
+    // Another WIT root whose manifest releases its own v0.1.
+    let other = root.join("other");
+    copy_tree(&root.join("wit/v0.1"), &other.join("v0.1"));
+    fs::write(other.join("released"), "v0.1\n").unwrap();
+    for (released, nested) in [
+        (root.join("wit/v0.1"), "sub"),
+        (other.join("v0.1"), "sub"),
+        (other.join("v0.1"), "a/b"),
+    ] {
+        let directory = released.join(nested);
+        fs::create_dir_all(&directory).unwrap();
+        let lock = directory.join("wire.lock");
+        let output = witforge()
+            .arg("lock")
+            .arg(root.join("wit/v0.2"))
+            .arg("--first")
+            .arg("--lock")
+            .arg(&lock)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{lock:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("is in the released directory"),
+            "{lock:?}: {output:?}"
+        );
+        assert!(!lock.exists(), "{lock:?}");
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn check_and_lock_refuse_a_lockfile_of_another_package_even_without_members() {
     let dir = std::env::temp_dir().join(format!("witforge-cli-foreign-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -1433,7 +1470,6 @@ fn check_requires_the_canonical_lockfile_that_lock_writes() {
     let mut reversed = body.clone();
     reversed.reverse();
     let edits = [
-        ("CRLF", canonical.replace('\n', "\r\n")),
         ("no final newline", canonical.trim_end().to_string()),
         ("a comment", format!("{canonical}# note\n")),
         ("a blank line", format!("{canonical}\n")),
@@ -1453,7 +1489,10 @@ fn check_requires_the_canonical_lockfile_that_lock_writes() {
             stderr.contains("is not in the form `witforge lock` writes"),
             "{what}: {stderr}"
         );
-        assert!(stderr.contains("witforge lock"), "{what}: {stderr}");
+        assert!(
+            stderr.contains(&format!("run `witforge lock {}`", shell_word(&dir))),
+            "{what}: {stderr}"
+        );
         let fixed = witforge().arg("lock").arg(&dir).output().unwrap();
         assert!(fixed.status.success(), "{what}: {fixed:?}");
         assert_eq!(
@@ -1462,6 +1501,76 @@ fn check_requires_the_canonical_lockfile_that_lock_writes() {
         );
     }
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn check_reads_crlf_line_endings_as_lf() {
+    // A checkout with `core.autocrlf=true` (the Git for Windows default) writes CRLF.
+    let dir = temp_contract("crlf");
+    let lock = witforge()
+        .arg("lock")
+        .arg(&dir)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+    let canonical = fs::read_to_string(dir.join("wire.lock")).unwrap();
+    let crlf = canonical.replace('\n', "\r\n");
+    let mixed = canonical.replacen('\n', "\r\n", 1);
+    for (what, text) in [("CRLF", &crlf), ("CRLF on one line", &mixed)] {
+        assert_ne!(text, &canonical, "{what}");
+        fs::write(dir.join("wire.lock"), text).unwrap();
+        let output = witforge().arg("check").arg(&dir).output().unwrap();
+        assert!(output.status.success(), "{what}: {output:?}");
+        assert_eq!(fs::read_to_string(dir.join("wire.lock")).unwrap(), *text);
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn check_accepts_a_released_lockfile_that_lock_would_rewrite() {
+    // `lock` refuses a released directory, so `check` cannot require the form only `lock`
+    // writes; the freeze check guards the released file as it was committed.
+    let root = versions("released-form");
+    let v01 = root.join("wit/v0.1");
+    let canonical = fs::read_to_string(v01.join("wire.lock")).unwrap();
+    let edits = [
+        ("CRLF", canonical.replace('\n', "\r\n")),
+        ("a comment", format!("{canonical}# released 2026-10-28\n")),
+        ("a blank line", format!("{canonical}\n")),
+    ];
+    for (what, text) in edits {
+        assert_ne!(text, canonical, "{what}");
+        fs::write(v01.join("wire.lock"), &text).unwrap();
+        let output = witforge().arg("check").arg(&v01).output().unwrap();
+        assert!(output.status.success(), "{what}: {output:?}");
+        // Generation reads the same file.
+        let out = root.join("out");
+        let rust = witforge()
+            .arg("rust")
+            .arg(root.join("wit"))
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(rust.status.success(), "{what}: {rust:?}");
+    }
+    // An unreleased version must still be in canonical form, and `lock` fixes it.
+    let v02 = root.join("wit/v0.2");
+    let unreleased = fs::read_to_string(v02.join("wire.lock")).unwrap();
+    fs::write(v02.join("wire.lock"), format!("{unreleased}# a note\n")).unwrap();
+    let output = witforge().arg("check").arg(&v02).output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is not in the form `witforge lock` writes"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("run `witforge lock {}`", shell_word(&v02))),
+        "{stderr}"
+    );
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1519,4 +1628,283 @@ fn check_names_the_lock_command_for_its_mode() {
         "{stderr}"
     );
     fs::remove_dir_all(&spaced).unwrap();
+}
+
+/// Run a hint's `witforge ...` command through `sh`, with the binary under test, in `cwd`.
+#[cfg(unix)]
+fn run_hint(command: &str, cwd: &Path) -> std::process::Output {
+    let binary = Path::new(env!("CARGO_BIN_EXE_witforge"));
+    let rest = command.strip_prefix("witforge ").unwrap();
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("{} {rest}", shell_word(binary)))
+        .current_dir(cwd)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn missing_lockfile_hint_is_quoted_and_keeps_the_options() {
+    let base = std::env::temp_dir().join(format!("witforge cli it's here {}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let dir = base.join("contract");
+    fs::create_dir_all(&dir).unwrap();
+    fs::copy(fixture(), dir.join("contract.wit")).unwrap();
+    let lock = base.join("custom wire.lock");
+    let released = base.join("released");
+    fs::write(&released, "# nothing released\n").unwrap();
+    for command in ["check", "lock"] {
+        let output = witforge()
+            .arg(command)
+            .arg(&dir)
+            .arg("--lock")
+            .arg(&lock)
+            .arg("--released")
+            .arg(&released)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{command}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let options = |mode: &str| {
+            format!(
+                "witforge lock {} --lock {} {mode} --released {}",
+                shell_word(&dir),
+                shell_word(&lock),
+                shell_word(&released)
+            )
+        };
+        assert!(
+            stderr.contains(&format!("create it with `{}`", options("--first"))),
+            "{command}: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "run `{}`",
+                options("--against <previous minor's wire.lock>")
+            )),
+            "{command}: {stderr}"
+        );
+        assert!(!lock.exists(), "{command}");
+    }
+    // The hint runs as printed.
+    #[cfg(unix)]
+    {
+        let command = format!(
+            "witforge lock {} --lock {} --first --released {}",
+            shell_word(&dir),
+            shell_word(&lock),
+            shell_word(&released)
+        );
+        let output = run_hint(&command, &base);
+        assert!(output.status.success(), "{command}: {output:?}");
+        assert!(lock.is_file());
+    }
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn hints_spell_a_path_that_starts_with_a_dash_as_a_path() {
+    let base = std::env::temp_dir().join(format!("witforge-cli-dash-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let dir = Path::new("-w").join("contract");
+    let lock = Path::new("-w").join("custom.lock");
+    fs::create_dir_all(base.join(&dir)).unwrap();
+    fs::copy(fixture(), base.join(&dir).join("contract.wit")).unwrap();
+    assert!(
+        shell_word(&dir)
+            .trim_start_matches('\'')
+            .starts_with("./-w")
+    );
+    let lock_option = format!("--lock={}", lock.display());
+
+    // The missing-lockfile hint, and `check`'s hint for an unlocked member.
+    let output = witforge()
+        .current_dir(&base)
+        .args(["check", &lock_option, "--"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let command = format!(
+        "witforge lock {} --lock {} --first",
+        shell_word(&dir),
+        shell_word(&lock)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("create it with `{command}`")),
+        "{stderr}"
+    );
+    let output = witforge()
+        .current_dir(&base)
+        .args(["check", "--first", &lock_option, "--"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(&format!("run `{command}`")), "{stderr}");
+
+    // The hint runs as printed: clap would refuse `-w/contract` as an unknown option.
+    #[cfg(unix)]
+    {
+        let output = run_hint(&command, &base);
+        assert!(output.status.success(), "{command}: {output:?}");
+        let output = witforge()
+            .current_dir(&base)
+            .args(["check", &lock_option, "--"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn check_and_lock_refuse_a_version_directory_holding_another_version() {
+    let root = versions("directory-version");
+    // `v0.3` holds a copy of v0.2's package, `@0.2.0`, as the generators already refuse.
+    let v03 = root.join("wit/v0.3");
+    copy_tree(&root.join("wit/v0.2"), &v03);
+    let lock = fs::read(v03.join("wire.lock")).unwrap();
+    for args in [
+        &["check"][..],
+        &["lock"],
+        &["check", "--first"],
+        &["lock", "--first"],
+    ] {
+        let output = witforge().args(args).arg(&v03).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("declares package version 0.2.0, expected 0.3.0"),
+            "{args:?}: {output:?}"
+        );
+        assert_eq!(fs::read(v03.join("wire.lock")).unwrap(), lock, "{args:?}");
+    }
+    // The name of the directory `.` stands for counts.
+    let output = witforge()
+        .current_dir(&v03)
+        .args(["check", "."])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    // A version spelled with a leading zero is refused, as the generators refuse it.
+    let misspelled = root.join("wit/v0.03");
+    fs::rename(&v03, &misspelled).unwrap();
+    let output = witforge().arg("check").arg(&misspelled).output().unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("must be spelled `v0.3`"),
+        "{output:?}"
+    );
+    // A directory with any other name may hold any version.
+    let adhoc = root.join("adhoc");
+    fs::rename(&misspelled, &adhoc).unwrap();
+    let output = witforge().arg("check").arg(&adhoc).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn generators_refuse_a_lockfile_of_another_package_even_without_members() {
+    // A contract with no lockable members has no drift for another package's reserved entry to
+    // show up in; only the package check refuses the lockfile.
+    let root =
+        std::env::temp_dir().join(format!("witforge-cli-foreign-gen-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let wit = root.join("wit");
+    fs::create_dir_all(wit.join("v0.1")).unwrap();
+    fs::write(
+        wit.join("v0.1/contract.wit"),
+        "package example:empty@0.1.0;\n\ninterface api {}\n",
+    )
+    .unwrap();
+    fs::write(
+        wit.join("v0.1/wire.lock"),
+        format!("{HEADER}\nother:pkg/types/thing.field = 1 field u32 reserved\n"),
+    )
+    .unwrap();
+    let out = root.join("out");
+    for (command, extra) in [
+        ("rust", &[][..]),
+        ("proto", &[][..]),
+        (
+            "glue",
+            &[
+                "--plain-root",
+                "crate::plain",
+                "--proto-root",
+                "crate::proto",
+            ][..],
+        ),
+    ] {
+        let output = witforge()
+            .arg(command)
+            .arg(&wit)
+            .arg("--out")
+            .arg(&out)
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{command}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("not the contract's package"),
+            "{command}: {output:?}"
+        );
+    }
+    assert!(!out.exists());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn generators_refuse_a_symlinked_version_directory_no_manifest_lists() {
+    // `wit/v0.2` is a symlink and `wit/released` lists only v0.1, so the released manifest does
+    // not refuse the link first: only the generators' own refusal does.
+    let root = versions("unlisted-symlinked-version");
+    let store = root.join("store");
+    fs::create_dir_all(&store).unwrap();
+    fs::rename(root.join("wit/v0.2"), store.join("v0.2")).unwrap();
+    std::os::unix::fs::symlink(store.join("v0.2"), root.join("wit/v0.2")).unwrap();
+    let out = root.join("out");
+    for (command, extra) in [
+        ("rust", &[][..]),
+        ("proto", &[][..]),
+        (
+            "glue",
+            &[
+                "--plain-root",
+                "crate::plain",
+                "--proto-root",
+                "crate::proto",
+            ][..],
+        ),
+    ] {
+        for check in [false, true] {
+            let mut run = witforge();
+            run.arg(command)
+                .arg(root.join("wit"))
+                .arg("--out")
+                .arg(&out);
+            run.args(extra);
+            if check {
+                fs::create_dir_all(&out).unwrap();
+                run.arg("--check");
+            }
+            let output = run.output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{command} {check}: {output:?}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("is a symlink"),
+                "{command} {check}: {output:?}"
+            );
+        }
+    }
+    assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+    fs::remove_dir_all(&root).unwrap();
 }

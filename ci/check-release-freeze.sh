@@ -17,9 +17,13 @@
 #     the working tree since every commit whose manifest listed it.
 # When the WIT root was moved (`git mv`), the manifest's history at its earlier paths is read
 # too, as git's rename detection (`git log --follow`) finds them: each directory an earlier
-# manifest listed must still be listed and match what that commit held at the earlier path. A
-# move that also rewrites most of the manifest is not detected as one, so move a WIT root in a
-# commit that changes nothing else.
+# manifest listed must still be listed and match what that commit held at the earlier path. Only
+# renames are followed: `--follow` also reports a copy, a new manifest that resembles one that
+# still exists (another WIT root's, say), and the history beyond a copy belongs to that other
+# manifest. A move that also rewrites most of the manifest, or leaves a manifest at the earlier
+# path, is not detected as one, so move a WIT root in a commit that changes nothing else.
+# Paths are given to git literally, never as patterns, and read back unquoted, so a WIT root
+# whose path holds `*`, `?`, `[`, or non-ASCII characters is checked as spelled.
 # A commit that lists a directory therefore fixes its content for as long as the commit stays
 # in the history the check reads, on whichever branch it was made; rewriting history to drop it
 # is outside the check, so protect the branch. The check needs the full history (a shallow
@@ -27,6 +31,9 @@
 set -euo pipefail
 # ASCII character classes, so `[:space:]` trims what the manifest parser trims.
 export LC_ALL=C
+# Every pathspec below is a path: a `*`, `?`, or `[` in the WIT root's path must not match other
+# paths.
+export GIT_LITERAL_PATHSPECS=1
 
 fail() {
     echo "release freeze: $*" >&2
@@ -116,7 +123,8 @@ if [[ -n "${current}" ]]; then
             || fail "released directory \`${directory}\` has no wire.lock"
         # Pathspecs are case-sensitive, so on a case-insensitive file system an entry spelled
         # differently from the directory would match no tracked file and check nothing.
-        tracked="$(git ls-files -- "${directory}/wire.lock")"
+        # `-z` prints the path as it is, where git would quote one with unusual characters.
+        tracked="$(git ls-files -z -- "${directory}/wire.lock" | tr '\0' '\n')"
         [[ "${tracked}" == "${directory}/wire.lock" ]] \
             || fail "released directory \`${directory}\` has no wire.lock tracked by git under that exact spelling"
         links="$(git ls-files -s -- "${directory}/" | awk '$1 == "120000" { sub(/^[^\t]*\t/, ""); print }')"
@@ -150,10 +158,25 @@ done <<<"${log}"
 # Earlier paths of the manifest, from before the WIT root was moved. An entry an earlier manifest
 # listed must still be listed, and its directory must hold what that commit held at the earlier
 # path: the tree ids are compared, together with the working tree against HEAD.
+# `--follow` reports a rename (`R<score>`, the earlier path no longer exists) and a copy
+# (`C<score>`, it still does) alike; it lists the status, then the earlier and the later path for
+# either, and one path for any other status. Only renames are followed: a copy's earlier path is
+# another manifest with its own history, such as a second WIT root's that resembles this one.
 earlier=""
 if [[ -n "${log}" ]]; then
-    earlier="$(git log --follow --name-only --format= -- "${MANIFEST}" \
-        | grep -vxF -e "${MANIFEST}" -e '' | sort -u)" || true
+    follow="$(git log --follow --name-status -z --format= -- "${MANIFEST}" | tr '\0' '\n')"
+    while IFS= read -r status; do
+        case "${status}" in
+            R*)
+                IFS= read -r path
+                IFS= read -r _
+                earlier="${earlier}${path}"$'\n'
+                ;;
+            C*) break ;;
+            ?*) IFS= read -r _ ;;
+        esac
+    done <<<"${follow}"
+    earlier="$(printf '%s' "${earlier}" | sort -u)"
 fi
 while IFS= read -r path; do
     [[ -n "${path}" ]] || continue

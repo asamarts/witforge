@@ -68,15 +68,18 @@ symlink, a directory, or a file without the header at an expected path.
 
 The generators also refuse a minor whose `wire.lock` does not keep every entry of the previous
 minor's, so a lockfile started fresh instead of copied cannot renumber the shared per-major
-schema. `check` accepts only the lockfile exactly as `lock` writes it. No command follows a
-version directory that is a symlink, so a released version cannot change through a link's
-target.
+schema. For a version not yet released, `check` accepts the lockfile only as `lock` writes it
+(CRLF line endings read as LF); pin `wire.lock` and `*.wit` to LF in `.gitattributes`
+(`wire.lock text eol=lf`, `*.wit text eol=lf`). No command follows a version directory that is
+a symlink, so a released version cannot change through a link's target.
 
 Every command exits `1` for a contract, lockfile, or output violation: a subset violation, a
-stale, discontinuous, or non-canonical lockfile, a generated-name collision, or `--check` drift,
-which includes an expected path that generation would refuse. It exits `2` for a usage, I/O, or
-parse error, a released or symlinked version directory, an output root inside the WIT root, a
-generation run refused by an expected path, or an internal error.
+version directory holding another package version, a stale or discontinuous lockfile, a
+generated-name collision, or `--check` drift, which includes an expected path that generation
+would refuse; `check` also exits `1` for an unreleased version's lockfile that is not in the
+form `lock` writes. It exits `2` for a usage, I/O, or parse error, a released or symlinked
+version directory, an output root inside the WIT root, a generation run refused by an expected
+path, or an internal error.
 
 - **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
   resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length

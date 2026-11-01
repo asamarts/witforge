@@ -6,9 +6,11 @@ generates plain Rust types/traits, a protobuf schema, and protobuf glue.
 
 ## Current state
 
-- 0.1.0 is implemented: package loading, the restricted-subset checker, the
-  append-only lockfile (v2), the Rust, protobuf, and glue emitters, and the
-  `witforge check`, `lock`, `rust`, `proto`, and `glue` commands.
+- The 0.1 line is implemented and published (the latest release is the top
+  dated section of [`CHANGELOG.md`](CHANGELOG.md)): package loading, the
+  restricted-subset checker, the append-only lockfile (v2), the Rust, protobuf,
+  and glue emitters, and the `witforge check`, `lock`, `rust`, `proto`, and
+  `glue` commands.
 - The normative specifications are [`docs/design/model.md`](docs/design/model.md),
   [`docs/design/lockfile.md`](docs/design/lockfile.md), and
   [`docs/design/emitters.md`](docs/design/emitters.md).

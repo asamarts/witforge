@@ -6,6 +6,58 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+The fixes from the fourth review (W6-013).
+
+### Added
+
+- `witforge::ensure_directory_version`, which refuses a directory named `v<major>.<minor>` whose
+  package declares another version; `check` and `lock` use it.
+
+### Changed
+
+- `check` requires the canonical lockfile only for a version that is not released, and reads
+  CRLF line endings as LF for every version. A released lockfile, which `lock` refuses to
+  rewrite, could never pass `check` again once a `core.autocrlf=true` checkout (the Git for
+  Windows default) gave it CRLF, or when it carried a comment, as 0.1.0 accepted; the freeze
+  check guards it instead. An unreleased lockfile in another form still exits `1` with the
+  `witforge lock` command that rewrites it.
+
+### Fixed
+
+- `lock --lock` refuses a lockfile in a subdirectory of a released directory of another WIT root
+  (`--lock other/v0.1/sub/wire.lock` with `other/released` listing `v0.1`): the manifest beside
+  each ancestor of the lockfile's directory that is named like a version directory applies, at
+  its written and its resolved location. The manifest was looked up only beside `sub/`.
+- `check` and `lock` refuse a version directory whose package declares another version
+  (`wit/v0.1` holding `@0.2.0`, exit `1`) or whose name spells a version with a sign or leading
+  zeros (exit `2`), as the generators did.
+- `glue` refuses every contract `proto` refuses, such as a record `f-request` beside a function
+  `f`, whose request message is also `IFRequest`; it generated glue for a schema `proto` could
+  not produce.
+- The missing-lockfile hint is quoted for a POSIX shell and keeps `--lock` and `--released`, and
+  every hint spells a path that starts with `-` with a leading `./` (`./-w/v0.2`), which clap
+  would otherwise read as an option.
+- `ci/check-release-freeze.sh` follows only renames of the manifest. `git log --follow` also
+  follows copies, so a second WIT root whose manifest resembled the first's inherited the first
+  root's history and failed, permanently. The check also gives git every path literally and reads
+  paths back unquoted: a WIT root whose path held `*`, `?`, `[`, or non-ASCII characters failed
+  with "no wire.lock tracked by git".
+- The release workflow's `publish` and `github-release` jobs require a tag push. A manual run
+  from a tag has a tag ref too, so it published, although the workflow and `ci/README.md` said a
+  manual run publishes nothing.
+
+### Documentation
+
+- `docs/design/lockfile.md` says what `check` requires of a lockfile, that `lock` drops comments
+  when it rewrites one, and that a consumer pins `wire.lock` and `*.wit` to LF in
+  `.gitattributes`; and that a command run inside a symlinked version directory
+  (`cd wit/v0.3 && witforge lock .`) sees only the link's target. The README no longer says every
+  command exits `1` for a non-canonical lockfile; only `check` does.
+- Tests now guard earlier fixes that no test failed without: internal emitter errors reported
+  through each generator's plan as internal (exit `2`), the generators' package check for a
+  contract with no members, their refusal of a symlinked version directory that no manifest
+  lists, and the freeze check's exact-spelling test for `wire.lock`.
+
 ## [0.1.1] - 2026-11-01
 
 The fixes from the post-publish reviews (W6-010, W6-011), and the first release published by
