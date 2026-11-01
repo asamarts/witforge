@@ -42,7 +42,8 @@ git commit -qm "the library as first verified"
 
 dry_run() {
     local output status=0
-    output="$(ci/publish.sh --dry-run 2>&1)" || status=$?
+    # Plain output, so the match below works when CI sets CARGO_TERM_COLOR=always.
+    output="$(CARGO_TERM_COLOR=never ci/publish.sh --dry-run 2>&1)" || status=$?
     if [[ ${status} -ne 0 ]] || ! grep -qF "Uploading witforge-cli v${VERSION}" <<<"${output}"; then
         echo "FAIL: $1 (exit ${status}):" >&2
         tail -n 20 <<<"${output}" >&2
