@@ -273,7 +273,7 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 
 alint is witforge's first consumer. Its plugin contract `0.1` (still a draft) is generated with
 witforge 0.1.0 into a test crate, which checks the plain types, the `.proto` schema, and the glue
-against alint's hand-written host types (alint PRs #409, #412, and #414); the repository went
+against alint's hand-written host types (alint PRs #409, #412, #414, and #415); the repository went
 public for that release. When alint's plugin slice ships, witforge generates the published
 `alint-plugin-api` crate and the `.proto` schema its out-of-process plugin protocol uses, and the
 conversions between the two (section 4.2). alint keeps the host glue: wasmtime bindings, the
