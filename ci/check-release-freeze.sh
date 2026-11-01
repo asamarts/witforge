@@ -14,6 +14,8 @@
 # It needs the full history (a shallow clone fails) and runs with the bash 3.2 and BSD tools of
 # stock macOS.
 set -euo pipefail
+# ASCII character classes, so `[:space:]` trims what the manifest parser trims.
+export LC_ALL=C
 
 REPO="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
 ROOT="${1:-crates/witforge/tests/fixtures/versions/wit}"
