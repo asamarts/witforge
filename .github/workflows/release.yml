@@ -47,7 +47,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: echo "version=$(ci/check-release.sh "${TAG}")" >> "$GITHUB_OUTPUT"
+        # A separate assignment, so a failed check fails the step (`echo "...$(...)"` would not).
+        run: |
+          version="$(ci/check-release.sh "${TAG}")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - run: cargo test --workspace --locked
       - run: ci/publish.sh --dry-run
 
@@ -71,7 +74,10 @@ jobs:
       - name: Find the crates not yet on crates.io
         id: missing
         shell: bash
-        run: echo "crates=$(ci/publish.sh --check | paste -sd ' ' -)" >> "$GITHUB_OUTPUT"
+        # A crates.io error must fail the job, not read as "nothing to publish".
+        run: |
+          missing="$(ci/publish.sh --check)"
+          echo "crates=${missing//$'\n'/ }" >> "$GITHUB_OUTPUT"
       # Only when something is left to publish, so a re-run, or a release whose crates were
       # published by hand, needs no trusted-publisher configuration.
       - name: Mint a short-lived crates.io token
