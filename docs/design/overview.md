@@ -343,6 +343,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | JSON Schema is a Draft 7 value projection: one file per version, all named types under `definitions`, all record fields required, closed enums, one-of result/variant cases, no runtime dependency | [`emitters.md`](emitters.md) section 10 |
 | 2026-11-01 | `witforge.toml` selects projects explicitly; config paths resolve from the file, CLI flags override every path, unknown keys are errors, and CLI-only invocation remains valid | [`emitters.md`](emitters.md) section 11 |
 | 2026-11-01 | Owned Rust parameters remain for 0.x and 1.0; measurements show clone cost but borrowing would require a second lifetime-bearing generated surface and does not remove native-to-WIT mapping. Revisit with a measured consumer path and a new contract version | section 10.1, [`emitters.md`](emitters.md) section 3.5 |
+| 2026-11-01 | Conditional `Eq`/`Hash`/`Default` are declined for 0.x/1.0; derives cannot be added retroactively to frozen version APIs, floats block Eq/Hash transitively, and WIT has no natural Default for enums/variants/results. Revisit with a consumer request and a new contract version | section 10.2, [`emitters.md`](emitters.md) section 3.3 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -412,6 +413,27 @@ consumer path where measured clone/mapping cost dominates the call, or a consume
 needs borrowed inputs; the alint bridge should be re-measured then. This decision changes no
 generated output and no wire format.
 
+### 10.2 Conditional `Eq`/`Hash` and `Default` evaluation (W6-003)
+
+The generated Rust surface currently derives `Debug`, `Clone`, and `PartialEq`. A conditional
+`Eq`/`Hash` rule is mechanically feasible: `f32` and `f64` are the only primitive blockers, and
+a transitive check through aliases, named structural types, records, variants, flags, lists,
+options, and results can decide whether every reachable field supports both. A narrow `Default`
+rule is also mechanically feasible for primitives, strings, lists, options, flags, and records
+whose fields are themselves defaultable. It is not natural for enums, variants, or results:
+WIT has no default annotation, and choosing the first case would silently change semantics.
+
+Neither rule is adopted for 0.x or 1.0. Adding a derive changes the generated public API for an
+already-generated contract version, while released per-version modules are frozen; applying it
+retroactively would also make two contracts with the same WIT emit different APIs. There is no
+consumer request for these bounds today; consumers can wrap generated values and derive what
+their own container needs. If a consumer needs map/Hash support or fixture defaults, the change
+belongs to a new contract version with an explicit, documented derive policy; `Eq`/`Hash` must
+still exclude every type with a transitive float, and `Default` must stay limited to naturally
+defaultable shapes. No implementation task is created now. The trigger is a consumer request
+plus that version decision; a separate implementation task with golden and compile tests is
+created then.
+
 Deferred options are assigned as follows. Their owners are all `asamarts`; the trigger is the
 condition under which the owning task should be scheduled. This record does not accept any of
 these options or change generated output.
@@ -420,7 +442,7 @@ these options or change generated output.
 |---|---|---|
 | Declaration-order fingerprinting | `W6-001` | Done (2026-11-01): additive per-parent order fingerprints in the lockfile |
 | Borrowed Rust parameters | `W6-002` | Done (2026-11-01): owned retained for 0.x/1.0; revisit only with a new contract version when a measured consumer path is dominated by clone/mapping cost |
-| Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | A consumer needs these bounds for maps or fixtures, and the float rule is explicitly decided |
+| Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | Done (2026-11-01): declined for 0.x/1.0; requires a consumer request, a new contract version, and an explicit float/default policy |
 | Generated world metadata | `W6-004` | alint confirms that role/import/export metadata is needed in generated code |
 | Configuration file for roots/emitters | `W6-005` | Done (2026-11-01): explicit `witforge.toml` projects, CLI flags override |
 | Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |

@@ -186,7 +186,9 @@ Every generated struct or enum gets:
 ```
 
 There is no `Eq`, `Hash`, `Default`, `Copy`, `serde`, or `prost` derive, and no
-`#[non_exhaustive]`. Fields and variants are `pub`. Type aliases have no derives.
+`#[non_exhaustive]`. Fields and variants are `pub`. Type aliases have no derives. Conditional
+`Eq`/`Hash`/`Default` are declined for 0.x/1.0; the float, Default, and frozen-version reasoning
+is in [`overview.md`](overview.md#102-conditional-eqhash-and-default-evaluation-w6-003).
 
 ### 3.4 Type mapping
 
@@ -1002,7 +1004,6 @@ The 0.1 evaluation baseline and the owner/trigger for each option below are reco
 [`overview.md`](overview.md#10-01-evaluation-baseline-and-deferred-option-triage). That record
 does not accept or implement any option; the W6 tasks make the decisions.
 
-- Conditional `Eq`/`Hash` and a narrow `Default` policy.
 - Generated world metadata (the world Option D) if alint needs it.
 - Docs-only patch versions and a type/interface inventory for memberless definitions.
 

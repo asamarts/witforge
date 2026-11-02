@@ -71,7 +71,8 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       contract version.
 - [ ] Evaluate a leaner glue surface that skips trivial structural aliases (the glue Option C)
       while keeping message-backed and `use` aliases.
-- [ ] Evaluate conditional `Eq`/`Hash` and a narrow `Default` policy for generated Rust types.
+- [x] Conditional `Eq`/`Hash` and a narrow `Default` policy: declined for 0.x/1.0; requires a
+      consumer request and a new contract version with an explicit float/default policy.
 - [ ] Explore generated world metadata (the world Option D) if alint needs role information in
       generated code.
 - [x] `witforge.toml` configuration for multiple roots and emitters (`W6-005`): explicit projects,

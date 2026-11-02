@@ -34,6 +34,10 @@ All notable changes to this project are documented here. The format follows
   a lifetime-bearing generated surface and does not remove native-to-WIT mapping. Owned parameters
   remain the 0.x/1.0 policy; borrowed inputs require a measured consumer path and a new contract
   version (`W6-002`).
+- Evaluated conditional `Eq`/`Hash`/`Default` derives. They are declined for 0.x/1.0 because
+  derives would change frozen generated APIs, floats block Eq/Hash transitively, and WIT has no
+  natural Default for enums, variants, or results; a consumer request plus a new contract version
+  would trigger an implementation task (`W6-003`).
 
 ## [0.1.2] - 2026-11-01
 
