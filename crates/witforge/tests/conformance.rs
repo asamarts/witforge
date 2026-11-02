@@ -180,7 +180,7 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
         glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap(),
     ];
     for source in generated {
-        assert!(!source.is_empty());
+        assert_ne!(source, "");
         assert!(!source.contains('\r'));
     }
 }
