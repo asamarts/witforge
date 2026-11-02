@@ -6,9 +6,11 @@
 //!
 //! The v2 text format is one entry per line, sorted by key:
 //! `key = number kind [type] [reserved]`. Lines after the first header line starting with `#`
-//! are comments, and blank lines are ignored.
+//! are comments, and blank lines are ignored. An optional additive order section follows the
+//! entries; it records per-parent declaration-order fingerprints without changing the entry
+//! format (see `docs/design/lockfile.md` section 16).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -21,6 +23,9 @@ use crate::model::{Member, MemberKind};
 
 /// The exact first line of every v2 lockfile.
 pub const HEADER: &str = "# witforge wire lockfile v2";
+
+/// The marker that starts the additive declaration-order section.
+pub const ORDER_HEADER: &str = "# witforge order v1";
 
 /// Protobuf reserves field numbers 19000 to 19999 for its own implementation.
 const PROTOBUF_RESERVED: std::ops::RangeInclusive<u32> = 19_000..=19_999;
@@ -225,10 +230,35 @@ pub struct Entry {
     pub reserved: bool,
 }
 
+/// One parent's declaration-order fingerprint and the names it fingerprints.
+///
+/// The fingerprint is a stable FNV-1a 64 hash over each member name in source order, with one
+/// NUL byte after each name. The names are kept beside it so a later version can compare the
+/// relative order of members common to both versions without treating an addition or removal
+/// as a reorder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Order {
+    /// The FNV-1a 64 fingerprint of `members`.
+    fingerprint: u64,
+    /// Live member names in declaration order.
+    members: Vec<String>,
+}
+
+impl Order {
+    fn new(members: Vec<String>) -> Self {
+        let fingerprint = fingerprint(&members);
+        Self {
+            fingerprint,
+            members,
+        }
+    }
+}
+
 /// A parsed lockfile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WireLock {
     entries: BTreeMap<MemberKey, Entry>,
+    orders: BTreeMap<String, Order>,
 }
 
 /// The classification baseline for a lock operation.
@@ -278,7 +308,8 @@ impl WireLock {
     ///
     /// Returns an error for a missing or unknown header, a malformed key or entry, an invalid
     /// number, a bad canonical type, a duplicate key, or two members of one parent sharing a
-    /// number. A v1 lockfile is refused rather than migrated.
+    /// number. A v1 lockfile is refused rather than migrated. The additive order section is
+    /// optional; malformed or mismatched order fingerprints are refused.
     pub fn parse(text: &str) -> Result<Self> {
         let mut lines = text.lines();
         let Some(first) = lines.next() else {
@@ -289,10 +320,33 @@ impl WireLock {
         }
 
         let mut entries = BTreeMap::new();
+        let mut orders = BTreeMap::new();
+        let mut saw_order_header = false;
         for (index, raw) in lines.enumerate() {
             let line_no = index + 2;
             let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
+            if line.is_empty() {
+                continue;
+            }
+            if line == ORDER_HEADER {
+                if saw_order_header {
+                    bail!("line {line_no}: duplicate `{ORDER_HEADER}`");
+                }
+                saw_order_header = true;
+                continue;
+            }
+            // An order line before its marker is ignored like any other comment, so a
+            // hand-written comment cannot make an otherwise readable lockfile fail to parse.
+            if let Some(rest) = line.strip_prefix("# order ")
+                && saw_order_header
+            {
+                let (parent, order) = parse_order(rest, line_no)?;
+                if orders.insert(parent.clone(), order).is_some() {
+                    bail!("line {line_no}: duplicate order fingerprint for `{parent}`");
+                }
+                continue;
+            }
+            if line.starts_with('#') {
                 continue;
             }
             let (key_text, rest) = line
@@ -319,7 +373,7 @@ impl WireLock {
                 bail!("line {line_no}: duplicate key `{key}`");
             }
         }
-        let lock = Self { entries };
+        let lock = Self { entries, orders };
         lock.validate()?;
         Ok(lock)
     }
@@ -341,8 +395,9 @@ impl WireLock {
     ///
     /// # Errors
     ///
-    /// Returns an error when a member key is malformed, a released kind/type changed, or a
-    /// parent has used every usable protobuf field number.
+    /// Returns an error when a member key is malformed, a released kind/type changed, a common
+    /// member was reordered, or a parent has used every usable protobuf field number. The
+    /// additive order section is refreshed from `members`.
     pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
         self.reconcile_with(members, LockMode::Default)
     }
@@ -354,8 +409,9 @@ impl WireLock {
     ///
     /// # Errors
     ///
-    /// Returns an error when the baseline is inconsistent, a released entry would change,
-    /// a member key is malformed, or a parent has used every usable protobuf field number.
+    /// Returns an error when the baseline is inconsistent, a released entry would change, a
+    /// common member was reordered, a member key is malformed, or a parent has used every usable
+    /// protobuf field number.
     pub fn reconcile_with(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
         let mut staged = self.clone();
         let changes = staged.reconcile_in_place(members, mode)?;
@@ -418,6 +474,15 @@ impl WireLock {
             LockMode::First => BTreeMap::new(),
             LockMode::Against(previous) => previous.entries.clone(),
         };
+
+        let current_orders = orders_from_members(members);
+        let empty_orders = BTreeMap::new();
+        let baseline_orders = match mode {
+            LockMode::Default => &self.orders,
+            LockMode::First => &empty_orders,
+            LockMode::Against(previous) => &previous.orders,
+        };
+        compare_common_orders(&current_orders, baseline_orders)?;
 
         // Every key belongs to the contract's package in every mode; `--against` also checks
         // the previous lockfile's keys.
@@ -495,6 +560,11 @@ impl WireLock {
             );
             changes.added.push((key.key(), number));
         }
+        // A reintroduced member is a contract violation; leave the lockfile (including its
+        // order section) untouched so the caller cannot mistake it for a usable update.
+        if changes.reintroduced.is_empty() {
+            self.orders = current_orders;
+        }
         Ok(changes)
     }
 
@@ -519,20 +589,32 @@ impl WireLock {
         copy.reconcile_with(members, mode)
     }
 
-    /// Check that every entry belongs to `package`, the contract's package.
+    /// Check that every entry and order fingerprint belongs to `package`, the contract's
+    /// package.
     ///
     /// Reconciling checks entries against the package of the contract's members, so a contract
     /// with no members needs this check to refuse a lockfile written for another package.
     ///
     /// # Errors
     ///
-    /// Returns an error naming the first entry of another package.
+    /// Returns an error naming the first entry or order parent of another package.
     pub fn check_package(&self, package: &PackageName) -> Result<()> {
         if let Some(key) = self.entries.keys().find(|key| key.package() != package) {
             bail!(
                 "lockfile entry `{key}` belongs to package `{}`, not the contract's package \
                  `{package}`",
                 key.package()
+            );
+        }
+        let prefix = format!("{package}/");
+        if let Some(parent) = self
+            .orders
+            .keys()
+            .find(|parent| !parent.starts_with(&prefix))
+        {
+            bail!(
+                "order fingerprint `{parent}` belongs to another package, not the contract's \
+                 package `{package}`"
             );
         }
         Ok(())
@@ -547,6 +629,9 @@ impl WireLock {
     }
 
     /// Render the lockfile text (sorted, stable, LF line endings).
+    ///
+    /// Entries are sorted by key. When order fingerprints are present, the additive order
+    /// section follows them, sorted by parent key.
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = format!("{HEADER}\n");
@@ -562,6 +647,18 @@ impl WireLock {
                 out.push_str(" reserved");
             }
             out.push('\n');
+        }
+        if !self.orders.is_empty() {
+            out.push_str(ORDER_HEADER);
+            out.push('\n');
+            for (parent, order) in &self.orders {
+                let _ = writeln!(
+                    out,
+                    "# order {parent} {:016x} = {}",
+                    order.fingerprint,
+                    order.members.join(" ")
+                );
+            }
         }
         out
     }
@@ -614,12 +711,13 @@ impl WireLock {
     }
 
     /// Check that an older lockfile's entries all survive unchanged in this one, so CI can
-    /// refuse a lockfile edit that deletes, renumbers, changes, or un-reserves anything.
+    /// refuse a lockfile edit that deletes, renumbers, changes, or un-reserves anything. When
+    /// both files have order fingerprints, it also refuses a reorder of common members.
     ///
     /// # Errors
     ///
     /// Returns an error naming the first entry that was removed, renumbered, changed, or
-    /// un-reserved.
+    /// un-reserved, or the first parent whose common members were reordered.
     pub fn check_append_only(&self, older: &WireLock) -> Result<()> {
         for (key, old) in &older.entries {
             match self.entries.get(key) {
@@ -638,7 +736,7 @@ impl WireLock {
                 Some(_) => {}
             }
         }
-        Ok(())
+        compare_common_orders(&self.orders, &older.orders)
     }
 
     fn next_number(&self, parent: &str) -> Result<u32> {
@@ -670,6 +768,114 @@ impl WireLock {
         }
         Ok(())
     }
+}
+
+/// Group live members by parent, preserving their source order.
+fn orders_from_members(members: &[Member]) -> BTreeMap<String, Order> {
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for member in members {
+        grouped
+            .entry(member.parent.clone())
+            .or_default()
+            .push(member.name.clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(parent, members)| (parent, Order::new(members)))
+        .collect()
+}
+
+/// Refuse a reorder of members common to a current and a baseline order.
+///
+/// Members that exist on only one side are ignored, so adding or removing a member does not
+/// report a false reorder. If either side has no fingerprint for a parent, there is nothing to
+/// compare; that is the migration path for v2 lockfiles written before this section existed.
+fn compare_common_orders(
+    current: &BTreeMap<String, Order>,
+    baseline: &BTreeMap<String, Order>,
+) -> Result<()> {
+    for (parent, current_order) in current {
+        let Some(baseline_order) = baseline.get(parent) else {
+            continue;
+        };
+        let common: BTreeSet<&str> = current_order
+            .members
+            .iter()
+            .map(String::as_str)
+            .filter(|name| baseline_order.members.iter().any(|old| old == name))
+            .collect();
+        let old_common: Vec<&str> = baseline_order
+            .members
+            .iter()
+            .map(String::as_str)
+            .filter(|name| common.contains(name))
+            .collect();
+        let new_common: Vec<&str> = current_order
+            .members
+            .iter()
+            .map(String::as_str)
+            .filter(|name| common.contains(name))
+            .collect();
+        if old_common != new_common {
+            bail!(
+                "declaration order of `{parent}` changed for members present in both versions; \
+                 append new members instead of reordering"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Parse one `# order <parent> <fingerprint> = <member> ...` line.
+fn parse_order(rest: &str, line_no: usize) -> Result<(String, Order)> {
+    let (left, names) = rest.split_once(" = ").with_context(|| {
+        format!("line {line_no}: expected `<parent> <fingerprint> = <members>`")
+    })?;
+    let mut left = left.split_whitespace();
+    let parent = left
+        .next()
+        .with_context(|| format!("line {line_no}: missing order parent"))?;
+    let token = left
+        .next()
+        .with_context(|| format!("line {line_no}: missing order fingerprint"))?;
+    if left.next().is_some() {
+        bail!("line {line_no}: unexpected text after the order fingerprint");
+    }
+    if !parent.contains('/') {
+        bail!("line {line_no}: invalid order parent `{parent}`");
+    }
+    let fingerprint = u64::from_str_radix(token, 16)
+        .with_context(|| format!("line {line_no}: invalid order fingerprint `{token}`"))?;
+    let members: Vec<String> = names.split_whitespace().map(ToString::to_string).collect();
+    if members.is_empty() {
+        bail!("line {line_no}: an order fingerprint must name at least one member");
+    }
+    let mut seen = BTreeSet::new();
+    for member in &members {
+        ensure_ident("order member", member)?;
+        if !seen.insert(member.as_str()) {
+            bail!("line {line_no}: duplicate member `{member}` in order fingerprint");
+        }
+    }
+    let order = Order::new(members);
+    if order.fingerprint != fingerprint {
+        bail!("line {line_no}: order fingerprint does not match its member list");
+    }
+    Ok((parent.to_string(), order))
+}
+
+/// Stable FNV-1a 64 over each name followed by a NUL byte.
+fn fingerprint(members: &[String]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for member in members {
+        for byte in member.bytes().chain(std::iter::once(0)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    hash
 }
 
 fn parse_entry(rest: &str, line_no: usize) -> Result<(u32, MemberKind, Option<String>, bool)> {

@@ -100,7 +100,9 @@ path, or an internal error.
   marked `reserved`, and their names cannot come back; nothing is renumbered or deleted, and the
   package version is not part of the key, so version bumps never renumber anything. Entries also
   record their kind and canonical type, so a type or kind change is caught even when protobuf
-  would not see it.
+  would not see it. An additive order section fingerprints each type's and function's live
+  declaration order; `--against` catches reorders of common members without treating additions
+  or removals as reorders.
 
 The design is in [docs/design/overview.md](https://github.com/asamarts/witforge/blob/main/docs/design/overview.md).
 

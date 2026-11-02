@@ -216,8 +216,11 @@ The rules in this section describe the implemented format.
    the defaultable-addition rule for generated conversions: a required added record field without
    a default is refused, while proto and glue can still emit the schema. The tool enforces wire
    identity: numbers never change, removed members stay reserved, and a released entry's kind and
-   type never change (the lockfile, section 5.2). The lockfile does not track declaration order:
-   released directories freeze it, and a pre-golive task evaluates an order fingerprint.
+   type never change (the lockfile, section 5.2). The lockfile also records per-parent
+   declaration-order fingerprints in an additive section; `--against` refuses a reorder of
+   type members, functions, or parameters common to two versions while ignoring additions and
+   removals
+   ([`lockfile.md`](lockfile.md) section 16).
 4. `rust` generates `convert.rs` for every adjacent version pair, in both directions, and the host
    keeps one adapter per supported contract version or converts each into the latest plain types;
    the supported range is published. The conversions default additions, report removed required
@@ -307,7 +310,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-10-25 | The internal model is owned and independent of `wit-parser`, preserves source order/docs/stability/aliases, and exposes canonical types and lockfile members | [`model.md`](model.md) |
 | 2026-10-25 | Canonical types fully qualify named types as `interface/type`, expand aliases and named list/option/result structurally, and spell both result slots with `_` | [`lockfile.md`](lockfile.md) |
 | 2026-10-25 | `--against` is development-only; `--first` bootstraps a version with no previous lockfile (the first version or a new major); `wit/released` lists frozen version directories and per-version Rust modules, while shared output evolves append-only | [`lockfile.md`](lockfile.md) |
-| 2026-10-25 | Declaration order is not tracked in the MVP; a pre-golive task evaluates the order-fingerprint option | section 5.2, `ROADMAP.md` |
+| 2026-10-25 | Declaration order is not tracked in the MVP; a pre-golive task evaluates the order-fingerprint option (superseded 2026-11-01) | section 5.2, `ROADMAP.md` |
 | 2026-10-25 | `@unstable` and `@since` are metadata; every item in a version directory is part of that version | [`lockfile.md`](lockfile.md) |
 | 2026-10-25 | Functions get per-function request/response messages; the response always has `result = 1`; result oneofs use `Empty` for missing payloads | [`emitters.md`](emitters.md) |
 | 2026-10-25 | Generated Rust groups types into per-interface submodules, re-exports interface traits at the version root, and uses `&self` with owned parameters/returns and no extra bounds | [`emitters.md`](emitters.md) |
@@ -337,6 +340,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | `check` requires the canonical lockfile rendering; a contract is one package, so a nested package or a dependency is refused | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `check` reads CRLF as LF and requires the canonical lockfile only for an unreleased version, which `lock` can rewrite; a released lockfile is kept as released by the freeze check (supersedes that part of the previous entry). A directory named `v<major>.<minor>` holds that version for every command, and `glue` refuses what `proto` refuses | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `rust` emits `convert.rs` for every adjacent version pair, in both directions; conversions default `option`/`list` additions, report removed required members and unknown cases, and refuse retypes and kind changes | section 5.3, [`emitters.md`](emitters.md) section 9 |
+| 2026-11-01 | The lockfile gains an additive per-parent declaration-order fingerprint section; `--against` refuses reorders of common type members and parameters, ignoring additions and removals, and old v2 lockfiles migrate on the next `lock` | [`lockfile.md`](lockfile.md) section 16 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -383,7 +387,7 @@ these options or change generated output.
 
 | Deferred option | Owning task | Trigger |
 |---|---|---|
-| Declaration-order fingerprinting | `W6-001` | A post-0.1 contract reorder is proposed, or a consumer needs reorder detection before 1.0 |
+| Declaration-order fingerprinting | `W6-001` | Done (2026-11-01): additive per-parent order fingerprints in the lockfile |
 | Borrowed Rust parameters | `W6-002` | Representative call-path measurements show clone cost, or a consumer requests borrowed inputs; any change needs a new contract version |
 | Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | A consumer needs these bounds for maps or fixtures, and the float rule is explicitly decided |
 | Generated world metadata | `W6-004` | alint confirms that role/import/export metadata is needed in generated code |

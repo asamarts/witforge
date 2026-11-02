@@ -16,6 +16,10 @@ All notable changes to this project are documented here. The format follows
   recursively, and retyped or kind-changed types are refused as contract errors. A required,
   non-defaultable addition is refused so every accepted version pair has a generated adapter
   (`W6-007`).
+- The lockfile gains an additive declaration-order section with per-parent FNV-1a 64
+  fingerprints. `check --against` and `lock --against` refuse a reorder of members common to
+  two versions, while additions and removals are ignored; a v2 lockfile without the section is
+  accepted and migrates on the next successful `lock` (`W6-001`).
 
 ## [0.1.2] - 2026-11-01
 

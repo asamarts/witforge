@@ -988,7 +988,6 @@ does not accept or implement any option; the W6 tasks make the decisions.
 - Borrowed Rust parameters (`&str`, `&[T]`) after measuring the cost of owned parameters.
 - Conditional `Eq`/`Hash` and a narrow `Default` policy.
 - Generated world metadata (the world Option D) if alint needs it.
-- Declaration-order fingerprinting (lockfile Option C).
 - A configuration file for multiple roots/emitters.
 - Docs-only patch versions and a type/interface inventory for memberless definitions.
 - JSON Schema emitter.

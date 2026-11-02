@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use proptest::prelude::*;
-use witforge::lock::{HEADER, LockMode, MemberKey, WireLock};
+use witforge::lock::{HEADER, LockMode, MemberKey, ORDER_HEADER, PackageName, WireLock};
 use witforge::model::{self, Member, MemberKind};
 use witforge::{ReleasedManifest, ensure_not_released, load, load_released_manifest};
 
@@ -46,6 +46,190 @@ a:b/i/v.n = 2 variant-case\n"
     assert_eq!(reserved.kind, MemberKind::Field);
     assert_eq!(reserved.ty.as_deref(), Some("u64"));
     assert_eq!(WireLock::parse(&lock.render()).unwrap(), lock);
+}
+
+fn order_fingerprint(names: &[&str]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for name in names {
+        for byte in name.bytes().chain(std::iter::once(0)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    hash
+}
+
+#[test]
+fn order_fingerprints_render_and_round_trip_per_parent() {
+    let members = fixture_members();
+    let mut lock = WireLock::default();
+    lock.reconcile(&members).unwrap();
+    let text = lock.render();
+    assert!(text.contains(ORDER_HEADER), "{text}");
+    assert!(text.contains("# order example:plugin/types/span"), "{text}");
+    assert!(text.contains("# order example:plugin/analyzer "), "{text}");
+    assert!(
+        text.contains("# order example:plugin/analyzer#analyze"),
+        "{text}"
+    );
+    assert_eq!(WireLock::parse(&text).unwrap(), lock);
+    assert!(lock.is_canonical(&text));
+}
+
+#[test]
+fn against_catches_reorders_but_ignores_additions_and_removals() {
+    let members = fixture_members();
+    let mut baseline = WireLock::default();
+    baseline.reconcile(&members).unwrap();
+
+    // Reorder two fields of one type.
+    let mut reordered = members.clone();
+    let parent = reordered[0].parent.clone();
+    let first = reordered
+        .iter()
+        .position(|member| member.parent == parent)
+        .unwrap();
+    let second = reordered
+        .iter()
+        .enumerate()
+        .skip(first + 1)
+        .find(|(_, member)| member.parent == parent)
+        .map(|(index, _)| index)
+        .unwrap();
+    reordered.swap(first, second);
+    let error = baseline
+        .drift_with(&reordered, LockMode::Against(&baseline))
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("declaration order"), "{message}");
+    assert!(message.contains(&parent), "{message}");
+    let error = baseline.drift(&reordered).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("declaration order"),
+        "{error:#}"
+    );
+
+    // Adding a member to the same parent is not a reorder of common members.
+    let mut added = members.clone();
+    added.push(Member {
+        parent: parent.clone(),
+        name: "extra".to_string(),
+        kind: MemberKind::Field,
+        ty: Some("u8".to_string()),
+    });
+    baseline
+        .drift_with(&added, LockMode::Against(&baseline))
+        .unwrap();
+
+    // Removing a common member is also not a reorder.
+    let removed: Vec<Member> = members
+        .iter()
+        .filter(|member| member.key() != members[first].key())
+        .cloned()
+        .collect();
+    baseline
+        .drift_with(&removed, LockMode::Against(&baseline))
+        .unwrap();
+}
+
+#[test]
+fn append_only_check_refuses_a_reordered_order_section() {
+    let members = fixture_members();
+    let mut baseline = WireLock::default();
+    baseline.reconcile(&members).unwrap();
+    let text = baseline.render();
+
+    for (parent, old, new) in [
+        (
+            "example:plugin/types/span",
+            ["start", "end"],
+            ["end", "start"],
+        ),
+        (
+            "example:plugin/analyzer#analyze",
+            ["path", "bytes"],
+            ["bytes", "path"],
+        ),
+    ] {
+        let old_line = format!(
+            "# order {parent} {:016x} = {}",
+            order_fingerprint(&old),
+            old.join(" ")
+        );
+        let new_line = format!(
+            "# order {parent} {:016x} = {}",
+            order_fingerprint(&new),
+            new.join(" ")
+        );
+        assert!(text.contains(&old_line), "{parent}: {text}");
+        let reordered = WireLock::parse(&text.replace(&old_line, &new_line)).unwrap();
+        let error = reordered.check_append_only(&baseline).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("declaration order"), "{message}");
+        assert!(message.contains(parent), "{message}");
+    }
+}
+
+#[test]
+fn order_section_rejects_malformed_and_duplicate_fingerprints() {
+    let members = fixture_members();
+    let mut lock = WireLock::default();
+    lock.reconcile(&members).unwrap();
+    let text = lock.render();
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("# order example:plugin/types/span"))
+        .unwrap();
+    let bad = "# order example:plugin/types/span 0000000000000000 = start end";
+    let error = WireLock::parse(&text.replace(line, bad)).unwrap_err();
+    assert!(format!("{error:#}").contains("does not match"), "{error:#}");
+
+    let doubled = format!("{text}{line}\n");
+    let error = WireLock::parse(&doubled).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("duplicate order fingerprint"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn order_sections_are_checked_against_the_contract_package() {
+    let text = format!(
+        "{HEADER}\n{ORDER_HEADER}\n# order other:pkg/types/t {:016x} = x\n",
+        order_fingerprint(&["x"])
+    );
+    let lock = WireLock::parse(&text).unwrap();
+    let package = PackageName {
+        namespace: "a".to_string(),
+        name: "b".to_string(),
+    };
+    let error = lock.check_package(&package).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("order fingerprint"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_v2_lockfile_without_fingerprints_migrates_on_the_next_lock() {
+    let members = fixture_members();
+    let mut current = WireLock::default();
+    current.reconcile(&members).unwrap();
+    let with_orders = current.render();
+    let without_orders = with_orders
+        .split_once(ORDER_HEADER)
+        .map_or(with_orders.as_str(), |(before, _)| before);
+    let old = WireLock::parse(without_orders).unwrap();
+    assert!(!old.render().contains(ORDER_HEADER));
+    assert!(old.is_canonical(without_orders));
+    assert!(old.drift(&members).unwrap().is_empty());
+
+    let mut migrated = old;
+    migrated.reconcile(&members).unwrap();
+    assert!(migrated.render().contains(ORDER_HEADER));
+    assert_eq!(migrated, current);
 }
 
 #[test]
@@ -202,6 +386,11 @@ fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name)
+}
+
+fn fixture_members() -> Vec<Member> {
+    let model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
+    model.members().unwrap()
 }
 
 #[test]

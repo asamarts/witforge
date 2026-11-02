@@ -350,6 +350,47 @@ fn evolution_fixture_check_and_lock_against_are_clean() {
 }
 
 #[test]
+fn check_and_lock_refuse_a_reorder_of_common_members() {
+    let root = versions("order-reorder");
+    let v02 = root.join("wit/v0.2");
+    let v03 = root.join("wit/v0.3");
+    let source = fs::read_to_string(v02.join("contract.wit")).unwrap();
+    let reordered = source.replace(
+        "        name: string,\n        new-field: option<string>,",
+        "        new-field: option<string>,\n        name: string,",
+    );
+    assert_ne!(source, reordered);
+    fs::create_dir_all(&v03).unwrap();
+    fs::write(
+        v03.join("contract.wit"),
+        reordered.replace("@0.2.0", "@0.3.0"),
+    )
+    .unwrap();
+    fs::copy(v02.join("wire.lock"), v03.join("wire.lock")).unwrap();
+    let before = fs::read(v03.join("wire.lock")).unwrap();
+
+    for command in ["check", "lock"] {
+        let output = witforge()
+            .arg(command)
+            .arg(&v03)
+            .arg("--against")
+            .arg(v02.join("wire.lock"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{command}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("declaration order"), "{command}: {stderr}");
+        assert!(stderr.contains("types/user"), "{command}: {stderr}");
+        assert_eq!(
+            fs::read(v03.join("wire.lock")).unwrap(),
+            before,
+            "{command}"
+        );
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn released_v0_1_refuses_locking() {
     let root = versions("released");
     let v01 = root.join("wit/v0.1");

@@ -5,3 +5,5 @@ example:evolve/types/user.old-field = 2 field u32 reserved
 example:evolve/types/user.removed = 4 field bool reserved
 example:evolve/types/user.rename-me = 3 field string reserved
 example:evolve/types/user.renamed = 6 field option<string>
+# witforge order v1
+# order example:evolve/types/user a821359fb2475da1 = name new-field renamed

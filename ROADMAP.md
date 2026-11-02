@@ -63,8 +63,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 
 ## Pre-golive (before 1.0)
 
-- [ ] Evaluate declaration-order fingerprinting (lockfile order Option C), so a reorder in an
-      unreleased version is caught by `check --against` rather than review alone.
+- [x] Declaration-order fingerprinting (lockfile order Option C): an additive per-parent order
+      section makes `check --against` catch reorders of common members while ignoring additions
+      and removals.
 - [ ] Measure the cost of owned Rust parameters and consider borrowed parameters (`&str`,
       `&[T]`) in a new contract version.
 - [ ] Evaluate a leaner glue surface that skips trivial structural aliases (the glue Option C)

@@ -14,8 +14,10 @@ the committed, append-only map from each numbered member to a number that is uni
 parent and never changes.
 
 The lockfile guarantees wire identity, not full source identity. It does not record docs,
-declaration order, worlds, or type definitions that have no numbered members. Released version
-directories are frozen as a whole, which covers those cases.
+worlds, or type definitions that have no numbered members. An additive section records
+declaration-order fingerprints for numbered type members, functions, and function parameters
+(section 16), without adding an order field to each entry. Released version directories are
+frozen as a whole, which covers the remaining source-level cases.
 
 ## 2. Version directories and release status
 
@@ -428,8 +430,8 @@ left alone.
   not locked; a change to the result type is caught by the method entry's canonical type.
 - Method-id enum values and request field numbers are locked; the zero `UNSPECIFIED` enum value
   is not.
-- Function and parameter declaration order is not tracked in the MVP (see the pre-golive task
-  in [`ROADMAP.md`](../../ROADMAP.md)).
+- Function declaration order within an interface and function parameter declaration order are
+  recorded by the additive order section (section 16).
 
 ## 12. Type-member locking
 
@@ -445,12 +447,14 @@ left alone.
 - A type removed from the source reserves all of its member entries. A type with no members
   (for example a named list/option/result) has no entries of its own; released-directory
   freezing and the canonical expansion at use sites cover it.
-- Declaration order is not tracked in the MVP.
+- Type-member declaration order is recorded by the additive order section (section 16).
 
 ## 13. Determinism and file handling
 
 - `wire.lock` is UTF-8, LF-only, and ends with a newline.
 - The header is the first line. Entries are rendered sorted by key.
+- When present, the order section follows the entries: the marker line, then one order line per
+  live parent, sorted by parent key.
 - Numbers have no leading zeros; types have no whitespace.
 - Render is deterministic across platforms and runs; it contains no timestamps, tool versions,
   or absolute paths.
@@ -481,6 +485,10 @@ The implementation must cover:
   parameter keys whose interface is not an identifier refused when parsed;
 - `check` refusing an unreleased version's lockfile that is not in canonical form, reading CRLF
   as LF, and accepting a released lockfile in any form the reader accepts (section 4);
+- order fingerprints: parse/render/round-trip, malformed and mismatched fingerprints, reorders
+  of common type and parameter members caught by `--against`, additions/removals not reported as
+  reorders, a v2 lockfile without fingerprints migrating on the next `lock`, and `check_append_only`
+  refusing a reordered section;
 - an unchanged lockfile left untouched;
 - a missing lockfile refused in default mode and with `--against`, and accepted with `--first`;
 - the `wit/released` manifest: append-only, duplicate/missing entries, the plain-name entry rule,
@@ -493,10 +501,50 @@ The implementation must cover:
 
 ## 15. Deferred and pre-golive
 
-- Declaration-order fingerprinting (the order-tracking Option C) is a pre-golive task.
 - A type/interface/world inventory for memberless definitions is covered by released-directory
   freezing for now; reconsider before 1.0.
 - Docs-only patch versions.
 - A configuration file for multiple emitters/version roots.
 - Replacing the lockfile with in-source WIT annotations if component-model issue 695 lands with a
   suitable annotation.
+
+## 16. Declaration-order fingerprints
+
+WIT is positional, but the numbered entries are stored by key, so they cannot show that a
+record field or function parameter moved. The order section records that source-level fact
+without adding a field to every entry:
+
+```text
+# witforge order v1
+# order <parent> <fingerprint> = <member> [<member> ...]
+```
+
+- `<parent>` is a lockfile parent: a type (`namespace:package/interface/type`), an interface's
+  functions (`namespace:package/interface`), or a function's parameters
+  (`namespace:package/interface#function`), exactly as in section 5. The interface parent
+  fingerprints function declaration order; the function parent fingerprints parameter order.
+- Members are the live member names of that parent in declaration order, separated by spaces.
+  Reserved members are absent.
+- `<fingerprint>` is the lowercase, zero-padded 16-digit hexadecimal FNV-1a 64 hash over each
+  member name's UTF-8 bytes followed by one NUL byte, in the listed order. A parser MUST verify
+  the fingerprint against the member list.
+- The marker must appear before its order lines. A line beginning `# order ` before the marker is
+  an ordinary comment. Duplicate markers, duplicate parents, duplicate member names, malformed
+  fingerprints, and a fingerprint mismatch are parse errors.
+- The section is additive: an old v2 parser ignores it as comments, and a v2 lockfile without the
+  section remains readable and canonical. A missing section means no stored order; `lock` adds
+  the current section on its next successful write. A released lockfile without a section is
+  accepted as released and is not rewritten by `lock`.
+- `lock` computes the section from the current live members after every successful reconcile.
+  `--first` and `--against` replace the section with the current version's order; they do not
+  preserve a draft parent that no longer has live members.
+- `--against` compares the order of members common to the current contract and the previous
+  lockfile. A reorder of common members fails with exit `1` and writes nothing. Members present
+  on only one side are ignored, so adding or removing a member does not report a reorder; a
+  reorder that also adds or removes members is still caught for the common members.
+- In default mode, `check` and `lock` compare against the current lockfile's section when it is
+  present. `check_append_only` (used by the generators between consecutive versions) applies the
+  same common-member rule when both sides have the section.
+- The order section is not part of wire identity and does not affect generated code or proto
+  numbers. `check` includes it in canonical-form checking; an edited section must be regenerated
+  by `lock`.
