@@ -20,8 +20,7 @@ use crate::model::{
 /// The shared error type generated in `convert.rs`.
 const ERROR: &str = "super::super::ConversionError";
 
-/// Plan the `convert.rs` file for `versions`, or `None` when no two consecutive minors share a
-/// major.
+/// Plan the `convert.rs` file for `versions`, or `None` when there are fewer than two versions.
 pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
     let pairs: Vec<(&Version, &Version)> = versions
         .windows(2)
