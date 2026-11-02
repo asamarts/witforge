@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-10-31 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-11-01 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
@@ -15,7 +15,7 @@ specifications are normative for their areas.
 
 witforge compiles one hand-written WIT package into the bindings other implementations of the
 contract need: plain Rust types and traits, a protobuf schema with stable field numbers, and
-later JSON Schema. It does not generate WASM guest or host bindings (`wit-bindgen` and
+Draft 7 JSON Schema. It does not generate WASM guest or host bindings (`wit-bindgen` and
 `wasmtime::component::bindgen!` already do that) and it does not implement any transport.
 
 Out of scope for 0.1: services and RPC frameworks, every target language, WIT resources,
@@ -29,8 +29,7 @@ WIT directory
   -> subset checker                                 subset::check
   -> internal model (types, docs, stability)        model
   -> wire lockfile reconcile / drift check          lock
-  -> emitters: Rust, protobuf, prost glue,          emit (0.1)
-     later JSON Schema
+  -> emitters: Rust, protobuf, JSON Schema, glue   emit
 ```
 
 `wit-parser` is pinned to an exact version: it makes breaking 0.x releases roughly monthly and its
@@ -260,8 +259,8 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 ## 7. Testing strategy
 
 - Golden tests: one fixture contract per mapping row, with committed expected Rust, protobuf,
-  and glue output; at least one generated Rust/glue fixture is compiled and one proto schema is
-  parsed.
+  JSON Schema, and glue output; at least one generated Rust/glue fixture is compiled, one proto
+  schema is parsed, and Draft 7 schemas validate representative valid and invalid instances.
 - Round-trip tests: generated Rust values encoded to protobuf and proto3-JSON and decoded back;
   glue conversions and per-function request/response helpers are exercised through the same path.
 - Lockfile property tests with `proptest`: reconcile is idempotent, never renumbers, and the
@@ -341,6 +340,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | `check` reads CRLF as LF and requires the canonical lockfile only for an unreleased version, which `lock` can rewrite; a released lockfile is kept as released by the freeze check (supersedes that part of the previous entry). A directory named `v<major>.<minor>` holds that version for every command, and `glue` refuses what `proto` refuses | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `rust` emits `convert.rs` for every adjacent version pair, in both directions; conversions default `option`/`list` additions, report removed required members and unknown cases, and refuse retypes and kind changes | section 5.3, [`emitters.md`](emitters.md) section 9 |
 | 2026-11-01 | The lockfile gains an additive per-parent declaration-order fingerprint section; `--against` refuses reorders of common type members and parameters, ignoring additions and removals, and old v2 lockfiles migrate on the next `lock` | [`lockfile.md`](lockfile.md) section 16 |
+| 2026-11-01 | JSON Schema is a Draft 7 value projection: one file per version, all named types under `definitions`, all record fields required, closed enums, one-of result/variant cases, no runtime dependency | [`emitters.md`](emitters.md) section 10 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -364,16 +364,16 @@ roughly 15–40 seconds on the same host. That is test-toolchain cost, not gener
 
 Ergonomics observations:
 
-- Generation is three explicit commands (`rust`, `proto`, `glue`), because outputs have separate
-  roots and lifecycle. `glue` requires both module roots; consumers cannot accidentally get a
+- Generation is four explicit commands (`rust`, `proto`, `schema`, `glue`), because outputs have
+  separate roots and lifecycle. `glue` requires both module roots; consumers cannot accidentally get a
   guessed dependency.
 - Generated plain Rust and glue have no runtime dependency of their own. Protobuf and JSON
   encoding stay on the consumer's `prost`/`pbjson` side.
 - Function helpers have zero/one/many arity and a `METHOD` constant; the alint adapter and
   analyzer APIs compile and round-trip without adapter-specific glue.
-- The three `--check` commands are cheap and deterministic; stale/extra generated files are
+- The four `--check` commands are cheap and deterministic; stale/extra generated files are
   reported by the shared output owner.
-- The same consumer path still needs three invocations or a wrapper script; that repetition is
+- The same consumer path still needs four invocations or a wrapper script; that repetition is
   deliberately assigned to `W6-005`, not solved in 0.1.
 
 W5-003 triage: no adversarial finding required a new task or a contract exception. The recorded
@@ -394,5 +394,5 @@ these options or change generated output.
 | Configuration file for roots/emitters | `W6-005` | Consumers repeat multi-root flags or run three or more emitters routinely |
 | Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
 | Generated version-to-version conversions | `W6-007` | Done (2026-11-01): `rust` emits `convert.rs` for adjacent versions |
-| JSON Schema emitter | `W6-008` | A consumer needs a third projection; not a 0.1 requirement |
+| JSON Schema emitter | `W6-008` | Done (2026-11-01): Draft 7 schema per version |
 | Multi-platform CI and public release | `W5-005` | Done (2026-10-31): hosted CI, the public repository, and 0.1.0 on crates.io, tagged `v0.1.0` |

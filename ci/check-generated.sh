@@ -18,11 +18,13 @@ fi
 
 "${RUN[@]}" rust "${WIT_ROOT}" --out "${TMP}/plain"
 "${RUN[@]}" proto "${WIT_ROOT}" --out "${TMP}/proto"
+"${RUN[@]}" schema "${WIT_ROOT}" --out "${TMP}/schema"
 "${RUN[@]}" glue "${WIT_ROOT}" --out "${TMP}/glue" \
     --plain-root crate::plain --proto-root crate::proto
 
 "${RUN[@]}" rust "${WIT_ROOT}" --out "${TMP}/plain" --check
 "${RUN[@]}" proto "${WIT_ROOT}" --out "${TMP}/proto" --check
+"${RUN[@]}" schema "${WIT_ROOT}" --out "${TMP}/schema" --check
 "${RUN[@]}" glue "${WIT_ROOT}" --out "${TMP}/glue" \
     --plain-root crate::plain --proto-root crate::proto --check
 

@@ -13,6 +13,7 @@ macro_rules! contract_bail {
 
 mod convert;
 pub mod glue;
+pub mod json_schema;
 pub mod output;
 pub mod proto;
 pub mod rust;

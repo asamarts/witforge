@@ -4,7 +4,7 @@
 //! stays inside a restricted, pure subset of WIT that maps cleanly onto every target, keeps a
 //! committed, append-only lockfile of wire numbers so the protobuf projection stays stable across
 //! versions, and emits plain Rust types and traits, version-to-version adapters, a `.proto`
-//! schema, and the glue that converts between the plain and protobuf types.
+//! schema, Draft 7 JSON Schema, and the glue that converts between the plain and protobuf types.
 //!
 //! - [`load`] parses a version directory's WIT package, and [`subset`] checks it against the
 //!   supported subset.
@@ -12,13 +12,13 @@
 //! - [`lock`] reads, reconciles, and writes the `wire.lock` lockfile, and
 //!   [`ReleasedManifest`] reads the `released` manifest of frozen versions.
 //! - [`emit`] generates the [Rust](emit::rust) output (including version-to-version
-//!   `convert.rs`), [protobuf](emit::proto), and [glue](emit::glue) output for a WIT root and
-//!   checks committed output for drift.
+//!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema), and
+//!   [glue](emit::glue) output for a WIT root and checks committed output for drift.
 //! - [`ContractError`] marks contract, lockfile, and output violations, as distinct from usage,
 //!   I/O, and parse errors.
 //!
 //! The `witforge` command-line interface (the `witforge-cli` crate) wraps these as the `check`,
-//! `lock`, `rust`, `proto`, and `glue` commands. The normative specifications are in
+//! `lock`, `rust`, `proto`, `schema`, and `glue` commands. The normative specifications are in
 //! [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
 pub mod emit;

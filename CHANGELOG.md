@@ -20,6 +20,10 @@ All notable changes to this project are documented here. The format follows
   fingerprints. `check --against` and `lock --against` refuse a reorder of members common to
   two versions, while additions and removals are ignored; a v2 lockfile without the section is
   accepted and migrates on the next successful `lock` (`W6-001`).
+- `witforge schema` emits one Draft 7 JSON Schema document per contract version. Every named
+  type is under `definitions`; records, flags, variants, results, enums, aliases, and nested
+  `list`/`option`/`result` shapes are mapped, with all record fields required and closed enums
+  (`W6-008`). The emitter writes JSON directly and adds no runtime dependency.
 
 ## [0.1.2] - 2026-11-01
 

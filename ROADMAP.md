@@ -85,7 +85,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       same trusted-publishing workflow (`W6-014`).
 - [x] Generated conversions between contract versions (`W6-007`): `rust` emits `convert.rs` with
       old-to-new and new-to-old adapters for every adjacent version pair.
-- [ ] JSON Schema emitter.
+- [x] JSON Schema emitter (`W6-008`): Draft 7 schemas, one file per version, with all named definitions.
 - [ ] Replacing the lockfile with in-source numbers if the WIT annotations proposal
       (component-model issue 695) lands with a suitable annotation.
 - [ ] Wider WIT coverage (maps, resources as opaque handles) only on demand.

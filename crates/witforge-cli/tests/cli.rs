@@ -559,6 +559,51 @@ fn rust_generates_mod_and_version_files_and_checks_drift() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn schema_generates_one_file_per_version_and_checks_drift() {
+    let root = versions("schema");
+    let out = root.join("schema");
+    let generate = witforge()
+        .arg("schema")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(generate.status.success(), "{generate:?}");
+    for version in ["v0_1.schema.json", "v0_2.schema.json"] {
+        assert!(out.join(version).is_file(), "{version}");
+    }
+    let check = witforge()
+        .arg("schema")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{check:?}");
+
+    let path = out.join("v0_1.schema.json");
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push(' ');
+    fs::write(&path, text).unwrap();
+    let check = witforge()
+        .arg("schema")
+        .arg(root.join("wit"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    assert!(
+        String::from_utf8_lossy(&check.stderr).contains("v0_1.schema.json"),
+        "{check:?}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
 #[allow(clippy::too_many_lines)]
 #[test]
 fn glue_generates_highest_minor_and_checks_drift() {

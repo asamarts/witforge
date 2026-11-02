@@ -5,6 +5,7 @@
 //! witforge lock  <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
 //! witforge rust  <wit-root> --out DIR [--check] [--released PATH]
 //! witforge proto <wit-root> --out DIR [--check] [--released PATH]
+//! witforge schema <wit-root> --out DIR [--check] [--released PATH]
 //! witforge glue  <wit-root> --out DIR --plain-root PATH --proto-root PATH [--check] [--released PATH]
 //! ```
 
@@ -43,6 +44,8 @@ enum Command {
     Rust(RustOptions),
     /// Generate protobuf schemas.
     Proto(ProtoOptions),
+    /// Generate Draft 7 JSON Schema definitions.
+    Schema(SchemaOptions),
     /// Generate protobuf glue conversions and function helpers.
     Glue(GlueOptions),
 }
@@ -69,6 +72,22 @@ struct ProtoOptions {
     #[arg(value_name = "WIT_ROOT")]
     root: PathBuf,
     /// Output root for generated proto files.
+    #[arg(long, value_name = "DIR")]
+    out: PathBuf,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct SchemaOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: PathBuf,
+    /// Output root for generated JSON Schema files.
     #[arg(long, value_name = "DIR")]
     out: PathBuf,
     /// Check generated output without writing.
@@ -140,6 +159,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Lock(options) => lock(&options),
         Command::Rust(options) => rust(&options),
         Command::Proto(options) => proto(&options),
+        Command::Schema(options) => schema(&options),
         Command::Glue(options) => glue(&options),
     }
 }
@@ -303,6 +323,23 @@ fn proto(options: &ProtoOptions) -> Result<ExitCode> {
         };
     }
     emit::proto::generate(&options.root, &options.out)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn schema(options: &SchemaOptions) -> Result<ExitCode> {
+    load_root_released_manifest(&options.root, options.released.as_deref())?;
+    if options.check {
+        let messages = emit::json_schema::check(&options.root, &options.out)?;
+        for message in &messages {
+            eprintln!("error: {message}");
+        }
+        return if messages.is_empty() {
+            Ok(ExitCode::SUCCESS)
+        } else {
+            Ok(ExitCode::from(1))
+        };
+    }
+    emit::json_schema::generate(&options.root, &options.out)?;
     Ok(ExitCode::SUCCESS)
 }
 

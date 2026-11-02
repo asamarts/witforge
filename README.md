@@ -8,8 +8,8 @@ bindings the other sides of the contract need:
   implementations and for hosts;
 - a protobuf schema with **stable field numbers**, for out-of-process implementations in any
   language;
-- generated old-to-new and new-to-old adapters between contract versions;
-- later, JSON Schema.
+- Draft 7 JSON Schema definitions for value validation;
+- generated old-to-new and new-to-old adapters between contract versions.
 
 WIT is the strictest of these type systems (the component model treats a published record,
 variant, enum, or flags type as frozen), so projecting it onto Rust and protobuf loses nothing,
@@ -57,6 +57,7 @@ $ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number its new members
 $ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
 $ witforge rust  wit --out src/plain                     plain modules + convert.rs
 $ witforge proto wit --out proto                         protobuf schema
+$ witforge schema wit --out schema                      Draft 7 JSON Schema
 $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
 ```
 
