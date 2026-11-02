@@ -23,6 +23,8 @@ doc = false
 witforge = { path = "../witforge", version = "0.1.2" }
 anyhow.workspace = true
 clap.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [lints]
 workspace = true

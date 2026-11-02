@@ -24,6 +24,11 @@ All notable changes to this project are documented here. The format follows
   type is under `definitions`; records, flags, variants, results, enums, aliases, and nested
   `list`/`option`/`result` shapes are mapped, with all record fields required and closed enums
   (`W6-008`). The emitter writes JSON directly and adds no runtime dependency.
+- `witforge.toml` projects can supply a WIT root and output paths for `rust`, `proto`, `schema`,
+  and `glue`. `--config` selects the file and `--project` selects a project when there is more
+  than one; CLI flags override every configured path, paths are relative to the configuration
+  file, and unknown keys are errors. The existing command-line-only form remains valid
+  (`W6-005`).
 
 ## [0.1.2] - 2026-11-01
 

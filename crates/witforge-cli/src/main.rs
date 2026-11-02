@@ -3,12 +3,17 @@
 //! ```text
 //! witforge check <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
 //! witforge lock  <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
-//! witforge rust  <wit-root> --out DIR [--check] [--released PATH]
-//! witforge proto <wit-root> --out DIR [--check] [--released PATH]
-//! witforge schema <wit-root> --out DIR [--check] [--released PATH]
-//! witforge glue  <wit-root> --out DIR --plain-root PATH --proto-root PATH [--check] [--released PATH]
+//! witforge rust  [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
+//!                [--check] [--released PATH]
+//! witforge proto [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
+//!                [--check] [--released PATH]
+//! witforge schema [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
+//!                [--check] [--released PATH]
+//! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
+//!                [--config PATH] [--project NAME] [--check] [--released PATH]
 //! ```
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +21,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use serde::Deserialize;
 
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
@@ -54,70 +60,82 @@ enum Command {
 struct RustOptions {
     /// WIT root containing version directories.
     #[arg(value_name = "WIT_ROOT")]
-    root: PathBuf,
+    root: Option<PathBuf>,
     /// Output root for generated Rust files.
     #[arg(long, value_name = "DIR")]
-    out: PathBuf,
+    out: Option<PathBuf>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
 }
 
 #[derive(Debug, Args)]
 struct ProtoOptions {
     /// WIT root containing version directories.
     #[arg(value_name = "WIT_ROOT")]
-    root: PathBuf,
+    root: Option<PathBuf>,
     /// Output root for generated proto files.
     #[arg(long, value_name = "DIR")]
-    out: PathBuf,
+    out: Option<PathBuf>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
 }
 
 #[derive(Debug, Args)]
 struct SchemaOptions {
     /// WIT root containing version directories.
     #[arg(value_name = "WIT_ROOT")]
-    root: PathBuf,
+    root: Option<PathBuf>,
     /// Output root for generated JSON Schema files.
     #[arg(long, value_name = "DIR")]
-    out: PathBuf,
+    out: Option<PathBuf>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
 }
 
 #[derive(Debug, Args)]
 struct GlueOptions {
     /// WIT root containing version directories.
     #[arg(value_name = "WIT_ROOT")]
-    root: PathBuf,
+    root: Option<PathBuf>,
     /// Output root for generated glue files.
     #[arg(long, value_name = "DIR")]
-    out: PathBuf,
+    out: Option<PathBuf>,
     /// Rust module containing the generated plain version modules.
     #[arg(long, value_name = "PATH")]
-    plain_root: String,
+    plain_root: Option<String>,
     /// Rust module containing the generated proto version modules.
     #[arg(long, value_name = "PATH")]
-    proto_root: String,
+    proto_root: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
 }
 
 #[derive(Debug, Args)]
@@ -138,6 +156,175 @@ struct Options {
     /// `<WIT_DIR>/../released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
+}
+
+/// Configuration-file selection shared by the generator commands.
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    /// TOML configuration file; paths inside it are relative to the file.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    /// Project name in the configuration file; required when it has more than one.
+    #[arg(long, value_name = "NAME")]
+    project: Option<String>,
+}
+
+/// The supported `witforge.toml` format.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigFile {
+    /// Format version; currently `1`.
+    version: u32,
+    /// Named projects.
+    project: BTreeMap<String, ProjectConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectConfig {
+    /// WIT root, relative to the configuration file.
+    root: PathBuf,
+    /// Released-version manifest, relative to the configuration file.
+    released: Option<PathBuf>,
+    rust: Option<OutConfig>,
+    proto: Option<OutConfig>,
+    schema: Option<OutConfig>,
+    glue: Option<GlueConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutConfig {
+    out: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GlueConfig {
+    out: PathBuf,
+    #[serde(rename = "plain-root")]
+    plain_root: Option<String>,
+    #[serde(rename = "proto-root")]
+    proto_root: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Emitter {
+    Rust,
+    Proto,
+    Schema,
+    Glue,
+}
+
+struct ResolvedPaths {
+    root: PathBuf,
+    out: PathBuf,
+    released: Option<PathBuf>,
+    plain_root: Option<String>,
+    proto_root: Option<String>,
+}
+
+fn resolve_paths(
+    emitter: Emitter,
+    config_args: &ConfigArgs,
+    root: Option<PathBuf>,
+    out: Option<PathBuf>,
+    released: Option<PathBuf>,
+    plain_root: Option<String>,
+    proto_root: Option<String>,
+) -> Result<ResolvedPaths> {
+    let Some(config_path) = &config_args.config else {
+        if config_args.project.is_some() {
+            bail!("`--project` requires `--config`");
+        }
+        let root = root.context("missing WIT_ROOT (or use --config)")?;
+        let out = out.context("missing --out (or use --config)")?;
+        if matches!(emitter, Emitter::Glue) && (plain_root.is_none() || proto_root.is_none()) {
+            bail!("glue requires --plain-root and --proto-root (or use --config)");
+        }
+        return Ok(ResolvedPaths {
+            root,
+            out,
+            released,
+            plain_root,
+            proto_root,
+        });
+    };
+
+    let text = fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read configuration {}", config_path.display()))?;
+    let config: ConfigFile = toml::from_str(&text)
+        .with_context(|| format!("invalid configuration {}", config_path.display()))?;
+    if config.version != 1 {
+        bail!(
+            "configuration {} has unsupported version {}; expected 1",
+            config_path.display(),
+            config.version
+        );
+    }
+    if config.project.is_empty() {
+        bail!("configuration {} has no projects", config_path.display());
+    }
+    let name = match &config_args.project {
+        Some(name) => name.clone(),
+        None if config.project.len() == 1 => config
+            .project
+            .keys()
+            .next()
+            .expect("checked one project")
+            .clone(),
+        None => bail!(
+            "configuration {} has multiple projects; pass --project",
+            config_path.display()
+        ),
+    };
+    let project = config
+        .project
+        .get(&name)
+        .with_context(|| format!("configuration has no project `{name}`"))?
+        .clone();
+    let base = config_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let from_config = |path: &Path| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base.join(path)
+        }
+    };
+    let root = root.unwrap_or_else(|| from_config(&project.root));
+    let out = out.or_else(|| match emitter {
+        Emitter::Rust => project.rust.map(|config| from_config(&config.out)),
+        Emitter::Proto => project.proto.map(|config| from_config(&config.out)),
+        Emitter::Schema => project.schema.map(|config| from_config(&config.out)),
+        Emitter::Glue => project.glue.as_ref().map(|config| from_config(&config.out)),
+    });
+    let out = out.context("missing --out (and no matching output section in the configuration)")?;
+    let released = released.or_else(|| project.released.as_deref().map(from_config));
+    let plain_root = plain_root.or_else(|| {
+        project
+            .glue
+            .as_ref()
+            .and_then(|config| config.plain_root.clone())
+    });
+    let proto_root = proto_root.or_else(|| {
+        project
+            .glue
+            .as_ref()
+            .and_then(|config| config.proto_root.clone())
+    });
+    if matches!(emitter, Emitter::Glue) && (plain_root.is_none() || proto_root.is_none()) {
+        bail!("glue requires --plain-root and --proto-root (or a configuration section)");
+    }
+    Ok(ResolvedPaths {
+        root,
+        out,
+        released,
+        plain_root,
+        proto_root,
+    })
 }
 
 /// Exit codes: `0` success; `1` a contract, lockfile, or generated-output violation; `2` a
@@ -291,85 +478,109 @@ fn lock(options: &Options) -> Result<ExitCode> {
 }
 
 fn rust(options: &RustOptions) -> Result<ExitCode> {
+    let paths = resolve_paths(
+        Emitter::Rust,
+        &options.config,
+        options.root.clone(),
+        options.out.clone(),
+        options.released.clone(),
+        None,
+        None,
+    )?;
     // Generation reproduces released versions without modifying them, so the manifest only has
     // to be valid. The emitter validates every version and lockfile before writing.
-    load_root_released_manifest(&options.root, options.released.as_deref())?;
+    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        let messages = emit::rust::check(&options.root, &options.out)?;
-        for message in &messages {
-            eprintln!("error: {message}");
-        }
-        return if messages.is_empty() {
-            Ok(ExitCode::SUCCESS)
-        } else {
-            Ok(ExitCode::from(1))
-        };
+        return Ok(check_messages(&emit::rust::check(&paths.root, &paths.out)?));
     }
-    emit::rust::generate(&options.root, &options.out)?;
+    emit::rust::generate(&paths.root, &paths.out)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn proto(options: &ProtoOptions) -> Result<ExitCode> {
-    load_root_released_manifest(&options.root, options.released.as_deref())?;
+    let paths = resolve_paths(
+        Emitter::Proto,
+        &options.config,
+        options.root.clone(),
+        options.out.clone(),
+        options.released.clone(),
+        None,
+        None,
+    )?;
+    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        let messages = emit::proto::check(&options.root, &options.out)?;
-        for message in &messages {
-            eprintln!("error: {message}");
-        }
-        return if messages.is_empty() {
-            Ok(ExitCode::SUCCESS)
-        } else {
-            Ok(ExitCode::from(1))
-        };
+        return Ok(check_messages(&emit::proto::check(
+            &paths.root,
+            &paths.out,
+        )?));
     }
-    emit::proto::generate(&options.root, &options.out)?;
+    emit::proto::generate(&paths.root, &paths.out)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn schema(options: &SchemaOptions) -> Result<ExitCode> {
-    load_root_released_manifest(&options.root, options.released.as_deref())?;
+    let paths = resolve_paths(
+        Emitter::Schema,
+        &options.config,
+        options.root.clone(),
+        options.out.clone(),
+        options.released.clone(),
+        None,
+        None,
+    )?;
+    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        let messages = emit::json_schema::check(&options.root, &options.out)?;
-        for message in &messages {
-            eprintln!("error: {message}");
-        }
-        return if messages.is_empty() {
-            Ok(ExitCode::SUCCESS)
-        } else {
-            Ok(ExitCode::from(1))
-        };
+        return Ok(check_messages(&emit::json_schema::check(
+            &paths.root,
+            &paths.out,
+        )?));
     }
-    emit::json_schema::generate(&options.root, &options.out)?;
+    emit::json_schema::generate(&paths.root, &paths.out)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn glue(options: &GlueOptions) -> Result<ExitCode> {
+    let paths = resolve_paths(
+        Emitter::Glue,
+        &options.config,
+        options.root.clone(),
+        options.out.clone(),
+        options.released.clone(),
+        options.plain_root.clone(),
+        options.proto_root.clone(),
+    )?;
+    let plain_root = paths
+        .plain_root
+        .as_deref()
+        .context("glue requires --plain-root or a config glue section")?;
+    let proto_root = paths
+        .proto_root
+        .as_deref()
+        .context("glue requires --proto-root or a config glue section")?;
     // Glue is current-schema output for the highest minor of each major; released plain modules
     // stay frozen. As for the other generators, the manifest only has to be valid.
-    load_root_released_manifest(&options.root, options.released.as_deref())?;
+    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        let messages = emit::glue::check(
-            &options.root,
-            &options.out,
-            &options.plain_root,
-            &options.proto_root,
-        )?;
-        for message in &messages {
-            eprintln!("error: {message}");
-        }
-        return if messages.is_empty() {
-            Ok(ExitCode::SUCCESS)
-        } else {
-            Ok(ExitCode::from(1))
-        };
+        return Ok(check_messages(&emit::glue::check(
+            &paths.root,
+            &paths.out,
+            plain_root,
+            proto_root,
+        )?));
     }
-    emit::glue::generate(
-        &options.root,
-        &options.out,
-        &options.plain_root,
-        &options.proto_root,
-    )?;
+    emit::glue::generate(&paths.root, &paths.out, plain_root, proto_root)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn check_messages(messages: &[String]) -> ExitCode {
+    for message in messages {
+        eprintln!("error: {message}");
+    }
+    if messages.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
 }
 
 fn lock_mode<'a>(options: &Options, previous: Option<&'a WireLock>) -> LockMode<'a> {

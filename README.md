@@ -61,6 +61,22 @@ $ witforge schema wit --out schema                      Draft 7 JSON Schema
 $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
 ```
 
+A `witforge.toml` project can replace the repeated roots and output paths:
+
+```toml
+version = 1
+[project.alint]
+root = "wit"
+[project.alint.rust]
+out = "src/plain"
+[project.alint.proto]
+out = "proto"
+```
+
+Use `witforge rust --config witforge.toml`; `--project NAME` selects a project when the file has
+more than one. CLI paths override the configuration, and the command-line-only form above remains
+valid.
+
 `rust` also writes `convert.rs` when the WIT root has more than one version: one module per
 adjacent version pair in each direction. Old-to-new conversions default defaultable additions;
 new-to-old conversions report a removed required member as `ConversionError::MissingMember`;

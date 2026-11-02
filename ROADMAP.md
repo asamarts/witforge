@@ -73,7 +73,8 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [ ] Evaluate conditional `Eq`/`Hash` and a narrow `Default` policy for generated Rust types.
 - [ ] Explore generated world metadata (the world Option D) if alint needs role information in
       generated code.
-- [ ] Consider a `witforge.toml` configuration file for multiple roots and emitters.
+- [x] `witforge.toml` configuration for multiple roots and emitters (`W6-005`): explicit projects,
+      relative paths, and CLI flags override config values.
 - [ ] Revisit docs-only patch versions and a type/interface/world inventory for memberless
       definitions.
 

@@ -341,6 +341,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | `rust` emits `convert.rs` for every adjacent version pair, in both directions; conversions default `option`/`list` additions, report removed required members and unknown cases, and refuse retypes and kind changes | section 5.3, [`emitters.md`](emitters.md) section 9 |
 | 2026-11-01 | The lockfile gains an additive per-parent declaration-order fingerprint section; `--against` refuses reorders of common type members and parameters, ignoring additions and removals, and old v2 lockfiles migrate on the next `lock` | [`lockfile.md`](lockfile.md) section 16 |
 | 2026-11-01 | JSON Schema is a Draft 7 value projection: one file per version, all named types under `definitions`, all record fields required, closed enums, one-of result/variant cases, no runtime dependency | [`emitters.md`](emitters.md) section 10 |
+| 2026-11-01 | `witforge.toml` selects projects explicitly; config paths resolve from the file, CLI flags override every path, unknown keys are errors, and CLI-only invocation remains valid | [`emitters.md`](emitters.md) section 11 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -365,7 +366,7 @@ roughly 15–40 seconds on the same host. That is test-toolchain cost, not gener
 Ergonomics observations:
 
 - Generation is four explicit commands (`rust`, `proto`, `schema`, `glue`), because outputs have
-  separate roots and lifecycle. `glue` requires both module roots; consumers cannot accidentally get a
+  separate roots and lifecycle; `witforge.toml` removes repeated roots and output paths. `glue` requires both module roots; consumers cannot accidentally get a
   guessed dependency.
 - Generated plain Rust and glue have no runtime dependency of their own. Protobuf and JSON
   encoding stay on the consumer's `prost`/`pbjson` side.
@@ -373,8 +374,8 @@ Ergonomics observations:
   analyzer APIs compile and round-trip without adapter-specific glue.
 - The four `--check` commands are cheap and deterministic; stale/extra generated files are
   reported by the shared output owner.
-- The same consumer path still needs four invocations or a wrapper script; that repetition is
-  deliberately assigned to `W6-005`, not solved in 0.1.
+- The same consumer path can use a `witforge.toml` project (section 11 of
+  [`emitters.md`](emitters.md)) or the four explicit invocations.
 
 W5-003 triage: no adversarial finding required a new task or a contract exception. The recorded
 cases cover absent required fields, option absence, empty repeated fields, unknown oneofs, and
@@ -391,7 +392,7 @@ these options or change generated output.
 | Borrowed Rust parameters | `W6-002` | Representative call-path measurements show clone cost, or a consumer requests borrowed inputs; any change needs a new contract version |
 | Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | A consumer needs these bounds for maps or fixtures, and the float rule is explicitly decided |
 | Generated world metadata | `W6-004` | alint confirms that role/import/export metadata is needed in generated code |
-| Configuration file for roots/emitters | `W6-005` | Consumers repeat multi-root flags or run three or more emitters routinely |
+| Configuration file for roots/emitters | `W6-005` | Done (2026-11-01): explicit `witforge.toml` projects, CLI flags override |
 | Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
 | Generated version-to-version conversions | `W6-007` | Done (2026-11-01): `rust` emits `convert.rs` for adjacent versions |
 | JSON Schema emitter | `W6-008` | Done (2026-11-01): Draft 7 schema per version |

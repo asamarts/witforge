@@ -504,7 +504,6 @@ The implementation must cover:
 - A type/interface/world inventory for memberless definitions is covered by released-directory
   freezing for now; reconsider before 1.0.
 - Docs-only patch versions.
-- A configuration file for multiple emitters/version roots.
 - Replacing the lockfile with in-source WIT annotations if component-model issue 695 lands with a
   suitable annotation.
 

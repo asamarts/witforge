@@ -579,12 +579,16 @@ witforge check <version-dir> [--lock <path>] [--against <path> | --first]
                             [--released <path>]
 witforge lock  <version-dir> [--lock <path>] [--against <path> | --first]
                             [--released <path>]
-witforge rust  <wit-root> --out <dir> [--check] [--released <path>]
+witforge rust  [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
+               [--check] [--released <path>]
                # also writes convert.rs for adjacent versions
-witforge proto <wit-root> --out <dir> [--check] [--released <path>]
-witforge schema <wit-root> --out <dir> [--check] [--released <path>]
-witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
+witforge proto [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
                             [--check] [--released <path>]
+witforge schema [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
+                            [--check] [--released <path>]
+witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <path>]
+                            [--config <file>] [--project <name>] [--check]
+                            [--released <path>]
 ```
 
 - `check` and `lock` take one version directory; the default lockfile is
@@ -593,6 +597,8 @@ witforge glue  <wit-root> --out <dir> --plain-root <path> --proto-root <path>
   directory.
 - `rust`, `proto`, `schema`, and `glue` take the WIT root and require every version directory to
   be valid and locked, and every minor's lockfile to continue the previous minor's in its major.
+  The positional root and output flags may instead be resolved from a `--config` project
+  (section 11); CLI flags override the configuration.
   `rust` also emits `convert.rs` (section 9) when the root has two or more versions; the
   conversion generation refuses an evolution step that a default-only adapter cannot express.
 - `glue` additionally requires `--plain-root` and `--proto-root`; it covers the highest minor of
@@ -987,7 +993,6 @@ Arity rules:
 
 - A leaner glue surface that skips structural aliases (pre-golive Option C).
 - JSON helpers; JSON stays on the pbjson/prost side.
-- A configuration file wrapping the two module-root flags.
 
 ## 8. Deferred and pre-golive
 
@@ -998,7 +1003,6 @@ does not accept or implement any option; the W6 tasks make the decisions.
 - Borrowed Rust parameters (`&str`, `&[T]`) after measuring the cost of owned parameters.
 - Conditional `Eq`/`Hash` and a narrow `Default` policy.
 - Generated world metadata (the world Option D) if alint needs it.
-- A configuration file for multiple roots/emitters.
 - Docs-only patch versions and a type/interface inventory for memberless definitions.
 
 ## 9. Version-to-version conversions
@@ -1176,3 +1180,77 @@ dev-only `jsonschema` validator to compile the Draft 7 document and validate rep
 instances, including required fields, primitive bounds, nested lists/options, result cases,
 variant cases, closed enums, aliases, and named structural types. Golden output covers every
 mapping row.
+
+## 11. Configuration file
+
+The generator commands accept an explicit TOML configuration file:
+
+```text
+witforge rust   --config witforge.toml [--project NAME]
+witforge proto  --config witforge.toml [--project NAME]
+witforge schema --config witforge.toml [--project NAME]
+witforge glue   --config witforge.toml [--project NAME]
+```
+
+`check` and `lock` do not read configuration files: they operate on one version directory, and
+the existing command line remains the fallback for every command.
+
+### 11.1 Format
+
+```toml
+version = 1
+
+[project.alint]
+root = "wit"
+released = "wit/released"
+
+[project.alint.rust]
+out = "src/plain"
+
+[project.alint.proto]
+out = "proto"
+
+[project.alint.schema]
+out = "schema"
+
+[project.alint.glue]
+out = "src/glue"
+plain-root = "crate::plain"
+proto-root = "crate::proto"
+```
+
+- `version` is required and must be `1`.
+- `project.<name>` is a project table; at least one is required. Project names are TOML keys.
+- `root` is required for each project.
+- `released` is optional; when absent the generator's normal default applies.
+- `rust`, `proto`, `schema`, and `glue` sections are optional. Each output section has an `out`
+  path; `glue` also has optional `plain-root` and `proto-root` strings.
+- Unknown keys or sections are errors, as are a missing/unsupported version, an empty project
+  table, a missing project selected with `--project`, and a missing output section or CLI path
+  needed by the selected command.
+- Paths in the configuration file are resolved relative to the file that contains them; absolute
+  paths are used as written. They are not expanded through `~`.
+- The configuration is not discovered implicitly. It is read only when `--config <file>` is
+  passed.
+
+### 11.2 Precedence and selection
+
+- `--project <name>` selects a project. If the file has exactly one project, it is selected by
+  default; if it has more than one, `--project` is required.
+- `--project` without `--config` is an error.
+- For every path, an explicit CLI value wins over the selected project: positional `WIT_ROOT`
+  overrides `root`; `--out` overrides the matching output section's `out`; `--released`
+  overrides project `released`; `--plain-root` and `--proto-root` override the `glue` section.
+- Config-only invocation (`witforge rust --config ...`) and CLI-only invocation
+  (`witforge rust <root> --out ...`) are both valid. The configuration is validated even when
+  CLI flags override all of its values.
+- `--check` has no configuration key: it is an action, not a project setting.
+
+### 11.3 Testing requirements
+
+- A single-project configuration resolves root and all four emitters.
+- CLI flags override configuration paths.
+- Multiple projects require `--project`, and selecting a project uses its root and outputs.
+- Unknown keys, missing projects, missing `--config` for `--project`, and missing output values
+  are errors.
+- The existing CLI-only form continues to work.
