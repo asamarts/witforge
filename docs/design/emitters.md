@@ -249,6 +249,8 @@ pub type Tags = ::std::vec::Vec<::std::string::String>;
 - No supertraits, generics, lifetimes, or `async`.
 - A function with no result returns `()`.
 - The trait is object-safe: no generic methods, no `Self` returns, no borrowed parameters.
+  Owned parameters remain the 0.x and 1.0 policy; the measured alternative and its trigger are in
+  [`overview.md`](overview.md#101-borrowed-rust-parameter-measurement-w6-002).
 - Generated traits do not promise `Send` or `Sync`; consumers may add bounds in their own
   wrapper APIs.
 
@@ -1000,7 +1002,6 @@ The 0.1 evaluation baseline and the owner/trigger for each option below are reco
 [`overview.md`](overview.md#10-01-evaluation-baseline-and-deferred-option-triage). That record
 does not accept or implement any option; the W6 tasks make the decisions.
 
-- Borrowed Rust parameters (`&str`, `&[T]`) after measuring the cost of owned parameters.
 - Conditional `Eq`/`Hash` and a narrow `Default` policy.
 - Generated world metadata (the world Option D) if alint needs it.
 - Docs-only patch versions and a type/interface inventory for memberless definitions.

@@ -29,6 +29,11 @@ All notable changes to this project are documented here. The format follows
   than one; CLI flags override every configured path, paths are relative to the configuration
   file, and unknown keys are errors. The existing command-line-only form remains valid
   (`W6-005`).
+- Measured owned versus borrowed Rust parameters on generated alint types. Concrete clones cost
+  0.58–0.69 ms for 1,000 analyzer rows and 7.1–9.0 ms for 10,000 rows, but borrowing would require
+  a lifetime-bearing generated surface and does not remove native-to-WIT mapping. Owned parameters
+  remain the 0.x/1.0 policy; borrowed inputs require a measured consumer path and a new contract
+  version (`W6-002`).
 
 ## [0.1.2] - 2026-11-01
 

@@ -342,6 +342,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | The lockfile gains an additive per-parent declaration-order fingerprint section; `--against` refuses reorders of common type members and parameters, ignoring additions and removals, and old v2 lockfiles migrate on the next `lock` | [`lockfile.md`](lockfile.md) section 16 |
 | 2026-11-01 | JSON Schema is a Draft 7 value projection: one file per version, all named types under `definitions`, all record fields required, closed enums, one-of result/variant cases, no runtime dependency | [`emitters.md`](emitters.md) section 10 |
 | 2026-11-01 | `witforge.toml` selects projects explicitly; config paths resolve from the file, CLI flags override every path, unknown keys are errors, and CLI-only invocation remains valid | [`emitters.md`](emitters.md) section 11 |
+| 2026-11-01 | Owned Rust parameters remain for 0.x and 1.0; measurements show clone cost but borrowing would require a second lifetime-bearing generated surface and does not remove native-to-WIT mapping. Revisit with a measured consumer path and a new contract version | section 10.1, [`emitters.md`](emitters.md) section 3.5 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -382,6 +383,35 @@ cases cover absent required fields, option absence, empty repeated fields, unkno
 unknown/zero enum values; the only enum-bearing fixture is the dedicated glue contract because
 the representative alint contract intentionally contains no enum.
 
+### 10.1 Borrowed Rust parameter measurement (W6-002)
+
+Measured 2026-11-01 on the shared Linux x86_64 development host with `rustc -O` and the
+generated alint plain types. The fixture built 1,000 and 10,000 `AnalyzerInput` rows with nested
+`FlatValue` nodes, and 64 KiB and 1 MiB adapter byte buffers. Each figure is the range of three
+runs; the shared host makes these order-of-magnitude measurements, not a benchmark.
+
+| Operation | Payload | Time per operation |
+|---|---:|---:|
+| Clone `AnalyzerInput` | 1,000 rows | 0.58–0.69 ms |
+| Clone `AnalyzerInput` | 10,000 rows | 7.1–9.0 ms |
+| Clone `AdapterInput` | 64 KiB | 1.2–2.0 µs |
+| Clone `AdapterInput` | 1 MiB | 24–26 µs |
+| Borrowed read of `AnalyzerInput` | 10,000 rows | below 1 ns (no clone) |
+
+The clone cost is real and scales with row count. It is also a lower bound for the alint bridge,
+which maps native rows into the generated WIT-owned rows rather than merely cloning them. A
+borrowed generated signature would avoid a clone only for a caller that already holds generated
+values; it would not remove the native-to-WIT conversion, and a fully borrowed type family would
+add lifetimes and a second generated surface for every nested record/variant/list. Partial
+borrowing at the function boundary would be inconsistent and would not help the dominant nested
+row path.
+
+Decision: keep owned generated parameters for 0.x and 1.0. Borrowed parameters are not adopted
+without a new contract version and a separate implementation task with tests. The trigger is a
+consumer path where measured clone/mapping cost dominates the call, or a consumer explicitly
+needs borrowed inputs; the alint bridge should be re-measured then. This decision changes no
+generated output and no wire format.
+
 Deferred options are assigned as follows. Their owners are all `asamarts`; the trigger is the
 condition under which the owning task should be scheduled. This record does not accept any of
 these options or change generated output.
@@ -389,7 +419,7 @@ these options or change generated output.
 | Deferred option | Owning task | Trigger |
 |---|---|---|
 | Declaration-order fingerprinting | `W6-001` | Done (2026-11-01): additive per-parent order fingerprints in the lockfile |
-| Borrowed Rust parameters | `W6-002` | Representative call-path measurements show clone cost, or a consumer requests borrowed inputs; any change needs a new contract version |
+| Borrowed Rust parameters | `W6-002` | Done (2026-11-01): owned retained for 0.x/1.0; revisit only with a new contract version when a measured consumer path is dominated by clone/mapping cost |
 | Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | A consumer needs these bounds for maps or fixtures, and the float rule is explicitly decided |
 | Generated world metadata | `W6-004` | alint confirms that role/import/export metadata is needed in generated code |
 | Configuration file for roots/emitters | `W6-005` | Done (2026-11-01): explicit `witforge.toml` projects, CLI flags override |

@@ -66,8 +66,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Declaration-order fingerprinting (lockfile order Option C): an additive per-parent order
       section makes `check --against` catch reorders of common members while ignoring additions
       and removals.
-- [ ] Measure the cost of owned Rust parameters and consider borrowed parameters (`&str`,
-      `&[T]`) in a new contract version.
+- [x] Measure owned Rust parameters and consider borrowed parameters (`&str`, `&[T]`):
+      owned remains the 0.x/1.0 policy; borrowed needs a measured consumer path and a new
+      contract version.
 - [ ] Evaluate a leaner glue surface that skips trivial structural aliases (the glue Option C)
       while keeping message-backed and `use` aliases.
 - [ ] Evaluate conditional `Eq`/`Hash` and a narrow `Default` policy for generated Rust types.
