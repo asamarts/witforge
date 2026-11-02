@@ -15,6 +15,9 @@ generates plain Rust types/traits, a protobuf schema, and protobuf glue.
   [`docs/design/lockfile.md`](docs/design/lockfile.md), and
   [`docs/design/emitters.md`](docs/design/emitters.md).
 - The narrative sequence is [`ROADMAP.md`](ROADMAP.md).
+- The 1.0 public API policy is [`docs/design/public-api.md`](docs/design/public-api.md), the
+  conformance matrix is [`docs/design/conformance.md`](docs/design/conformance.md), and the 1.0
+  release criteria and deprecation runways are [`docs/design/release-1.0.md`](docs/design/release-1.0.md).
 - The task-level source of truth is [`aplan/`](aplan/README.md).
 
 ## Planning and status: aplan

@@ -346,6 +346,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | Conditional `Eq`/`Hash`/`Default` are declined for 0.x/1.0; derives cannot be added retroactively to frozen version APIs, floats block Eq/Hash transitively, and WIT has no natural Default for enums/variants/results. Revisit with a consumer request and a new contract version | section 10.2, [`emitters.md`](emitters.md) section 3.3 |
 | 2026-11-01 | Worlds get additive shared `worlds.rs` metadata with per-version `WORLDS` constants, explicit imports/exports and no traits; per-version modules remain frozen | [`emitters.md`](emitters.md) section 3.6 |
 | 2026-11-01 | Docs-only patch versions and a memberless lockfile inventory are declined for 0.x/1.0; draft docs changes are accepted, memberless additions have no wire entry, and released docs are freeze-guarded | section 10.3, [`lockfile.md`](lockfile.md) section 15 |
+| 2026-11-01 | 1.0 keeps `anyhow::Error` at the boundary with the `ContractError` classification; the public API, conformance matrix, release criteria, and deprecation runways are published | [`public-api.md`](public-api.md), [`conformance.md`](conformance.md), [`release-1.0.md`](release-1.0.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

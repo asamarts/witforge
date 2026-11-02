@@ -93,5 +93,5 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [ ] Replacing the lockfile with in-source numbers if the WIT annotations proposal
       (component-model issue 695) lands with a suitable annotation.
 - [ ] Wider WIT coverage (maps, resources as opaque handles) only on demand.
-- [ ] 1.0 (about 26 to 45 weeks in total): stable library API, multiple emitters, conformance
-      suite.
+- [x] 1.0 criteria published: stable library API, conformance matrix, release gates, and
+      deprecation runways; 1.0.0 has not yet been released.

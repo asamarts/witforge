@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+
 //! witforge: a WIT-first contract compiler.
 //!
 //! A WIT package is the single source of truth for a contract. witforge checks that the package

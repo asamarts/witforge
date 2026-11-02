@@ -122,7 +122,7 @@ path, or an internal error.
   declaration order; `--against` catches reorders of common members without treating additions
   or removals as reorders.
 
-The design is in [docs/design/overview.md](https://github.com/asamarts/witforge/blob/main/docs/design/overview.md).
+The design is in [docs/design/overview.md](https://github.com/asamarts/witforge/blob/main/docs/design/overview.md); the 1.0 API policy is in [docs/design/public-api.md](docs/design/public-api.md) and the release criteria and deprecation runways are in [docs/design/release-1.0.md](docs/design/release-1.0.md).
 
 ## License
 
