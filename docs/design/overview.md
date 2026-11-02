@@ -113,7 +113,7 @@ struct literals and match exhaustively. Within a version module, types are group
 submodule per defining interface, and interface traits are re-exported at the version root. A
 released module never changes (its WIT is frozen), so a crate of generated modules stays
 semver-compatible by adding modules. `rust` also writes `convert.rs` with the old-to-new and
-new-to-old adapters of section 5.3. The concrete layout, naming, derives, and trait conventions
+new-to-old adapters of section 5.3, and `worlds.rs` with additive world metadata. The concrete layout, naming, derives, and trait conventions
 are in [`emitters.md`](emitters.md).
 
 ### 4.2 Protobuf glue
@@ -187,7 +187,7 @@ The rules in this section describe the implemented format.
   consecutive minors of each major, and default-mode `lock` and `check` refuse a missing
   lockfile, so a lockfile started fresh instead of copied cannot renumber a major's schema;
 - `wit/released` lists released version directories; their version directories are frozen
-  (shared `mod.rs`, `convert.rs`, proto, and glue output changes as described in section 5.3).
+  (shared `mod.rs`, `convert.rs`, `worlds.rs`, proto, and glue output changes as described in section 5.3).
   `lock` refuses them, and CI fails if anything in a released version directory changed after
   the commit that released it. A new minor is developed with the previous version as its
   `--against` baseline;
@@ -200,7 +200,7 @@ The rules in this section describe the implemented format.
 
 1. A published contract version is frozen. `wit/released` lists the released version
    directories; their WIT, lockfile, and per-version generated Rust module are immutable. The
-   shared `mod.rs`, `convert.rs`, per-major proto schema, and glue output may change when a new
+   shared `mod.rs`, `convert.rs`, `worlds.rs`, per-major proto schema, and glue output may change when a new
    minor is added; their released members are protected by the lockfile and `--check`. In the proto schema the
    wire numbers and reserved names are append-only; a type or function removed as a whole drops
    its messages and keeps its method number reserved.
@@ -321,7 +321,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-10-25 | Generation takes the WIT root; `rust` and `proto` are separate subcommands with fixed output layout and header-owned `--check` semantics | [`emitters.md`](emitters.md) |
 | 2026-10-25 | Version directories are `v<major>.<minor>`, package versions are `<major>.<minor>.0`, Rust modules are `v<major>_<minor>`, proto packages are `v<major>` | [`lockfile.md`](lockfile.md) |
 | 2026-10-25 | CLI uses `clap`; lockfile properties use `proptest`; CLI tests use `assert_cmd` and `tempfile`; golden expectations are plain committed files | section 7, `Cargo.toml` |
-| 2026-10-25 | Worlds generate no Rust or protobuf code in the MVP; world metadata is a later option | [`emitters.md`](emitters.md) |
+| 2026-10-25 | Worlds generate no Rust or protobuf code in the MVP; world metadata is a later option (superseded 2026-11-01) | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue uses free functions per named type, grouped by interface and type, with infallible `to_proto` and fallible `from_proto`; every named type in the highest minor is covered | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue covers only the highest minor of each major; older plain modules are for native adapters and the generated version conversions | [`emitters.md`](emitters.md) |
 | 2026-10-26 | Glue has a separate output root with required `--plain-root` and `--proto-root`, one `v<major>.rs` per major, and the same `--check`/ownership rules | [`emitters.md`](emitters.md) |
@@ -344,6 +344,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | `witforge.toml` selects projects explicitly; config paths resolve from the file, CLI flags override every path, unknown keys are errors, and CLI-only invocation remains valid | [`emitters.md`](emitters.md) section 11 |
 | 2026-11-01 | Owned Rust parameters remain for 0.x and 1.0; measurements show clone cost but borrowing would require a second lifetime-bearing generated surface and does not remove native-to-WIT mapping. Revisit with a measured consumer path and a new contract version | section 10.1, [`emitters.md`](emitters.md) section 3.5 |
 | 2026-11-01 | Conditional `Eq`/`Hash`/`Default` are declined for 0.x/1.0; derives cannot be added retroactively to frozen version APIs, floats block Eq/Hash transitively, and WIT has no natural Default for enums/variants/results. Revisit with a consumer request and a new contract version | section 10.2, [`emitters.md`](emitters.md) section 3.3 |
+| 2026-11-01 | Worlds get additive shared `worlds.rs` metadata with per-version `WORLDS` constants, explicit imports/exports and no traits; per-version modules remain frozen | [`emitters.md`](emitters.md) section 3.6 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -443,7 +444,7 @@ these options or change generated output.
 | Declaration-order fingerprinting | `W6-001` | Done (2026-11-01): additive per-parent order fingerprints in the lockfile |
 | Borrowed Rust parameters | `W6-002` | Done (2026-11-01): owned retained for 0.x/1.0; revisit only with a new contract version when a measured consumer path is dominated by clone/mapping cost |
 | Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | Done (2026-11-01): declined for 0.x/1.0; requires a consumer request, a new contract version, and an explicit float/default policy |
-| Generated world metadata | `W6-004` | alint confirms that role/import/export metadata is needed in generated code |
+| Generated world metadata | `W6-004` | Done (2026-11-01): additive `worlds.rs` metadata with per-version imports/exports |
 | Configuration file for roots/emitters | `W6-005` | Done (2026-11-01): explicit `witforge.toml` projects, CLI flags override |
 | Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
 | Generated version-to-version conversions | `W6-007` | Done (2026-11-01): `rust` emits `convert.rs` for adjacent versions |

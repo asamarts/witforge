@@ -55,6 +55,13 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
         files.insert("convert.rs", converted)?;
         module_lines.push("pub mod convert;".to_string());
     }
+    if versions
+        .iter()
+        .any(|version| !version.model.worlds.is_empty())
+    {
+        files.insert("worlds.rs", emit_worlds(versions)?)?;
+        module_lines.push("pub mod worlds;".to_string());
+    }
     let package = &versions
         .first()
         .context("no version directories found under WIT root")?
@@ -414,6 +421,71 @@ fn map_type(model: &Model, current_interface: &str, ty: &TypeExpr) -> Result<Str
             Ok(format!("::std::result::Result<{ok}, {err}>"))
         }
     }
+}
+
+/// Emit the additive shared world metadata for every version.
+///
+/// Worlds are not traits: the metadata records each world's name and its imported and exported
+/// interface names in source order. Each version gets its own `WORLDS` constant, so adding a
+/// version changes only this shared file; per-version Rust modules stay frozen.
+fn emit_worlds(versions: &[Version]) -> Result<String> {
+    let Some(first) = versions.first() else {
+        bail!("no version directories found under WIT root");
+    };
+    let mut out = String::new();
+    writeln!(out, "{HEADER}")?;
+    writeln!(
+        out,
+        "// source: {}:{}",
+        first.model.package.namespace, first.model.package.name
+    )?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// One contract world and the interfaces it imports and exports."
+    )?;
+    writeln!(out, "pub struct World {{")?;
+    writeln!(out, "    /// The WIT world name.")?;
+    writeln!(out, "    pub name: &'static str,")?;
+    writeln!(out, "    /// Imported interface names, in source order.")?;
+    writeln!(out, "    pub imports: &'static [&'static str],")?;
+    writeln!(out, "    /// Exported interface names, in source order.")?;
+    writeln!(out, "    pub exports: &'static [&'static str],")?;
+    writeln!(out, "}}")?;
+    for version in versions {
+        let module = version_module_name(&version.model);
+        writeln!(out)?;
+        writeln!(out, "/// World metadata for `{module}`.")?;
+        writeln!(out, "pub mod {module} {{")?;
+        writeln!(
+            out,
+            "    /// The worlds of {}.",
+            version.model.package.version
+        )?;
+        writeln!(out, "    pub const WORLDS: &[super::World] = &[")?;
+        for world in &version.model.worlds {
+            let imports = world
+                .imports
+                .iter()
+                .map(|interface| format!("{:?}", interface.interface))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let exports = world
+                .exports
+                .iter()
+                .map(|interface| format!("{:?}", interface.interface))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(
+                out,
+                "        super::World {{ name: {:?}, imports: &[{imports}], exports: &[{exports}] }},",
+                world.name
+            )?;
+        }
+        writeln!(out, "    ];")?;
+        writeln!(out, "}}")?;
+    }
+    Ok(out)
 }
 
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {

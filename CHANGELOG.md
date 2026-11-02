@@ -38,6 +38,9 @@ All notable changes to this project are documented here. The format follows
   derives would change frozen generated APIs, floats block Eq/Hash transitively, and WIT has no
   natural Default for enums, variants, or results; a consumer request plus a new contract version
   would trigger an implementation task (`W6-003`).
+- `rust` emits an additive shared `worlds.rs` when a contract has worlds. Each world exposes its
+  name plus explicit imported and exported interface lists, with one `WORLDS` constant per
+  version; per-version Rust modules remain frozen (`W6-004`).
 
 ## [0.1.2] - 2026-11-01
 

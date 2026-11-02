@@ -454,6 +454,36 @@ fn every_generator_requires_each_minor_to_continue_the_previous_lockfile() {
 }
 
 #[test]
+fn emits_additive_world_metadata_for_every_version() {
+    let root = fixture("versions/wit");
+    let files = rust::plan(&root).unwrap();
+    let worlds = files.files().get("worlds.rs").unwrap();
+    assert!(worlds.contains("pub struct World {"), "{worlds}");
+    assert!(worlds.contains("pub mod v0_1 {"), "{worlds}");
+    assert!(worlds.contains("pub mod v0_2 {"), "{worlds}");
+    assert!(
+        worlds.contains("super::World { name: \"plugin\", imports: &[], exports: &[\"types\"] }"),
+        "{worlds}"
+    );
+    assert!(
+        worlds.contains("super::World { name: \"host\", imports: &[\"types\"], exports: &[] }"),
+        "{worlds}"
+    );
+    let root_module = files.files().get("mod.rs").unwrap();
+    assert!(root_module.contains("pub mod worlds;"), "{root_module}");
+
+    let no_worlds = rust::plan(&fixture("versions/convert")).unwrap();
+    assert!(!no_worlds.files().contains_key("worlds.rs"));
+    assert!(
+        !no_worlds
+            .files()
+            .get("mod.rs")
+            .unwrap()
+            .contains("pub mod worlds;")
+    );
+}
+
+#[test]
 fn generation_never_overwrites_unowned_files_or_writes_through_symlinks() {
     let root = fixture("versions/wit");
     let base = std::env::temp_dir().join(format!("witforge-ownership-{}", std::process::id()));

@@ -7,3 +7,11 @@ interface types {
         renamed: option<string>,
     }
 }
+
+world plugin {
+    export types;
+}
+
+world host {
+    import types;
+}

@@ -55,7 +55,7 @@ $ witforge lock  wit/v0.1 --first                         number the first versi
 $ cp wit/v0.1/wire.lock wit/v0.2/wire.lock                start a new minor from the last lock
 $ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number its new members
 $ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
-$ witforge rust  wit --out src/plain                     plain modules + convert.rs
+$ witforge rust  wit --out src/plain                     plain modules + metadata
 $ witforge proto wit --out proto                         protobuf schema
 $ witforge schema wit --out schema                      Draft 7 JSON Schema
 $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
@@ -77,8 +77,9 @@ Use `witforge rust --config witforge.toml`; `--project NAME` selects a project w
 more than one. CLI paths override the configuration, and the command-line-only form above remains
 valid.
 
-`rust` also writes `convert.rs` when the WIT root has more than one version: one module per
-adjacent version pair in each direction. Old-to-new conversions default defaultable additions;
+`rust` also writes `worlds.rs` when a contract has worlds, exposing each world's imported and
+exported interface names, and `convert.rs` when the WIT root has more than one version: one
+module per adjacent version pair in each direction. Old-to-new conversions default defaultable additions;
 new-to-old conversions report a removed required member as `ConversionError::MissingMember`;
 added or removed variant and enum cases report `UnknownCase`; retyped or kind-changed types are
 refused rather than converted silently.

@@ -256,6 +256,33 @@ pub type Tags = ::std::vec::Vec<::std::string::String>;
 - Generated traits do not promise `Send` or `Sync`; consumers may add bounds in their own
   wrapper APIs.
 
+### 3.6 World metadata
+
+When any version has a world, `rust` also emits a shared `worlds.rs` at the Rust output root and
+declares `pub mod worlds;` in `mod.rs`:
+
+```rust
+pub struct World {
+    pub name: &'static str,
+    pub imports: &'static [&'static str],
+    pub exports: &'static [&'static str],
+}
+
+pub mod v0_1 {
+    pub const WORLDS: &[super::World] = &[ ... ];
+}
+```
+
+- Every version gets a `WORLDS` constant, including an empty array when that version has no
+  worlds.
+- Worlds are emitted in source order; imported and exported interface names are in source order
+  and are separate fields, so direction is explicit.
+- The metadata has no runtime dependency and does not reference generated traits or types.
+- `worlds.rs` is shared output: adding a version adds its module and can change the file, while
+  released per-version Rust modules remain unchanged.
+- A root with no worlds emits no `worlds.rs` and no `worlds` declaration.
+
+
 ## 4. Protobuf emitter
 
 ### 4.1 File, package, and names
@@ -603,8 +630,9 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
   be valid and locked, and every minor's lockfile to continue the previous minor's in its major.
   The positional root and output flags may instead be resolved from a `--config` project
   (section 11); CLI flags override the configuration.
-  `rust` also emits `convert.rs` (section 9) when the root has two or more versions; the
-  conversion generation refuses an evolution step that a default-only adapter cannot express.
+  `rust` also emits `convert.rs` (section 9) when the root has two or more versions, and
+  `worlds.rs` (section 3.6) when any version has a world; conversion generation refuses an
+  evolution step that a default-only adapter cannot express.
 - `glue` additionally requires `--plain-root` and `--proto-root`; it covers the highest minor of
   each major, so older plain modules get no glue. It refuses every contract `proto` refuses
   (section 7.1).
@@ -639,8 +667,8 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
   parents may be symlinks; the output-root rule above resolves them. No version directory is a
   symlink ([`lockfile.md`](lockfile.md) section 2), so no output root can resolve into one.
 - A consumer's CI SHOULD freeze the committed per-version Rust module and `wire.lock` for a
-  released version together with the `wit/released` entries. `mod.rs`, `convert.rs`, the
-  per-major `v<major>.proto`, and the per-major glue module are shared across versions and may
+  released version together with the `wit/released` entries. `mod.rs`, `convert.rs`, `worlds.rs`,
+  the per-major `v<major>.proto`, and the per-major glue module are shared across versions and may
   change when a new minor is added; their released members are protected by the lockfile,
   `--check`, and proto compatibility checks. `--check` is the tool-side verification.
 - witforge's CI runs `ci/check-generated.sh` for every emitter (it generates the fixtures
@@ -669,14 +697,15 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
 
 | Command | Expected files |
 |---|---|
-| `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version, `convert.rs` when there are two or more versions |
+| `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version, `convert.rs` when there are two or more versions, `worlds.rs` when any version has a world |
 | `proto` | `v<major>.proto` for every major |
 | `schema` | `v<major>_<minor>.schema.json` for every version |
 | `glue` | `mod.rs`, `v<major>.rs` for every major |
 
 Rust per-version files contain inline interface modules. `mod.rs` declares every version module
-in ascending order and, when present, `convert`. `convert.rs` contains one module per adjacent
-version pair in each direction (section 9). Proto files are generated from the highest minor in
+in ascending order and, when present, `convert` and `worlds`. `convert.rs` contains one module
+per adjacent version pair in each direction (section 9); `worlds.rs` contains per-version world
+metadata (section 3.6). Proto files are generated from the highest minor in
 each major. JSON Schema files are generated for every version and contain all named definitions
 (section 10). Glue files are generated from the highest minor in each major and reference its
 plain module.
@@ -1004,7 +1033,6 @@ The 0.1 evaluation baseline and the owner/trigger for each option below are reco
 [`overview.md`](overview.md#10-01-evaluation-baseline-and-deferred-option-triage). That record
 does not accept or implement any option; the W6 tasks make the decisions.
 
-- Generated world metadata (the world Option D) if alint needs it.
 - Docs-only patch versions and a type/interface inventory for memberless definitions.
 
 ## 9. Version-to-version conversions
