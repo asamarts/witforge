@@ -78,6 +78,11 @@ commit "a later push"
 expect "a released directory changed in an earlier commit fails" 1 "changed since its release"
 
 fresh
+echo "/// docs-only edit" >>wit/v0.1/a.wit
+commit "docs-only edit to a released version"
+expect "a docs-only change to a released version fails" 1 "changed since its release"
+
+fresh
 echo "// uncommitted" >>wit/v0.1/wire.lock
 expect "an uncommitted change to a released directory fails" 1 "changed since its release"
 

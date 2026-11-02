@@ -41,6 +41,9 @@ All notable changes to this project are documented here. The format follows
 - `rust` emits an additive shared `worlds.rs` when a contract has worlds. Each world exposes its
   name plus explicit imported and exported interface lists, with one `WORLDS` constant per
   version; per-version Rust modules remain frozen (`W6-004`).
+- Evaluated docs-only patch versions and a memberless-definition inventory. Both are declined for
+  0.x/1.0: draft docs changes are accepted without wire changes, memberless additions have no
+  wire entry, and released docs are caught by the release freeze (`W6-006`).
 
 ## [0.1.2] - 2026-11-01
 

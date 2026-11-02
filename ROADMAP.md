@@ -77,8 +77,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       imports and exports.
 - [x] `witforge.toml` configuration for multiple roots and emitters (`W6-005`): explicit projects,
       relative paths, and CLI flags override config values.
-- [ ] Revisit docs-only patch versions and a type/interface/world inventory for memberless
-      definitions.
+- [x] Docs-only patch versions and a type/interface/world inventory for memberless definitions:
+      declined for 0.x/1.0; drafts accept docs-only changes, memberless additions have no wire
+      entry, and released docs are freeze-guarded.
 
 ## After 0.1
 

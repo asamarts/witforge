@@ -345,6 +345,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | Owned Rust parameters remain for 0.x and 1.0; measurements show clone cost but borrowing would require a second lifetime-bearing generated surface and does not remove native-to-WIT mapping. Revisit with a measured consumer path and a new contract version | section 10.1, [`emitters.md`](emitters.md) section 3.5 |
 | 2026-11-01 | Conditional `Eq`/`Hash`/`Default` are declined for 0.x/1.0; derives cannot be added retroactively to frozen version APIs, floats block Eq/Hash transitively, and WIT has no natural Default for enums/variants/results. Revisit with a consumer request and a new contract version | section 10.2, [`emitters.md`](emitters.md) section 3.3 |
 | 2026-11-01 | Worlds get additive shared `worlds.rs` metadata with per-version `WORLDS` constants, explicit imports/exports and no traits; per-version modules remain frozen | [`emitters.md`](emitters.md) section 3.6 |
+| 2026-11-01 | Docs-only patch versions and a memberless lockfile inventory are declined for 0.x/1.0; draft docs changes are accepted, memberless additions have no wire entry, and released docs are freeze-guarded | section 10.3, [`lockfile.md`](lockfile.md) section 15 |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -435,6 +436,28 @@ defaultable shapes. No implementation task is created now. The trigger is a cons
 plus that version decision; a separate implementation task with golden and compile tests is
 created then.
 
+### 10.3 Docs-only patches and memberless inventory (W6-006)
+
+No consumer needs docs-only patch versions or a separate memberless inventory. The supported
+version shape remains `v<major>.<minor>` with a package version `<major>.<minor>.0`; a directory
+named `v0.1.1` is not a version directory and is ignored by root discovery, so it cannot be used
+as a docs-only patch. A docs-only change in a draft version is already accepted: it changes
+generated documentation, not wire numbers or the generated type/trait shape. A docs-only change
+to a released version is forbidden and is caught by the release-freeze check.
+
+Memberless definitions (aliases, named `list`/`option`/`result`, interfaces, and worlds) have no
+lockfile entry and therefore no wire identity. A memberless addition in a new minor is accepted
+without touching the lockfile and does appear in generated output; adding an inventory entry
+would create source-identity bookkeeping unrelated to the wire and would make semantic changes
+look like wire changes. Released-directory freezing plus generated-output `--check` remain the
+guards for already-released contracts.
+
+Decision: do not add docs-only patch versions or a memberless inventory for 0.x or 1.0. A
+consumer request for docs-only patches needs an explicit new version-directory shape and a
+semantic-diff rule; a memberless inventory is reconsidered only if a consumer needs to diff
+those definitions independently. Neither relaxation may change wire numbers or generated API
+shape in a released version.
+
 Deferred options are assigned as follows. Their owners are all `asamarts`; the trigger is the
 condition under which the owning task should be scheduled. This record does not accept any of
 these options or change generated output.
@@ -446,7 +469,7 @@ these options or change generated output.
 | Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | Done (2026-11-01): declined for 0.x/1.0; requires a consumer request, a new contract version, and an explicit float/default policy |
 | Generated world metadata | `W6-004` | Done (2026-11-01): additive `worlds.rs` metadata with per-version imports/exports |
 | Configuration file for roots/emitters | `W6-005` | Done (2026-11-01): explicit `witforge.toml` projects, CLI flags override |
-| Docs-only patch versions and memberless inventory | `W6-006` | A consumer requests a docs-only patch or needs memberless type/interface/world inventory |
+| Docs-only patch versions and memberless inventory | `W6-006` | Done (2026-11-01): declined for 0.x/1.0; drafts accept docs-only changes, memberless additions have no wire entry, released docs are freeze-guarded |
 | Generated version-to-version conversions | `W6-007` | Done (2026-11-01): `rust` emits `convert.rs` for adjacent versions |
 | JSON Schema emitter | `W6-008` | Done (2026-11-01): Draft 7 schema per version |
 | Multi-platform CI and public release | `W5-005` | Done (2026-10-31): hosted CI, the public repository, and 0.1.0 on crates.io, tagged `v0.1.0` |

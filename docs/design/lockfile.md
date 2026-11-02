@@ -106,8 +106,10 @@ frozen as a whole, which covers the remaining source-level cases.
   generation with exit `1`, so a new minor cannot silently renumber the shared per-major proto
   schema. `check` and `lock` take a single version directory, so their continuity baseline is
   the `--against` lockfile.
-- Docs-only patch versions are out of scope for 0.1. A docs-only patch requires a new version
-  directory (later) or a semantic-diff relaxation (pre-golive consideration).
+- Docs-only patch versions are out of scope for 0.1 and declined for 0.x/1.0. A directory named
+  `v0.1.1` is not a version directory and is ignored by root discovery. A docs-only change uses a
+  new minor, or is caught by the release freeze if it edits a released directory; an explicit
+  patch shape would need a documented semantic-diff rule.
 
 For ad-hoc directories such as test fixtures, the path need not be a version directory: a
 directory whose name is not spelled `v<major>.<minor>` may hold any version, and output names
@@ -501,9 +503,10 @@ The implementation must cover:
 
 ## 15. Deferred and pre-golive
 
-- A type/interface/world inventory for memberless definitions is covered by released-directory
-  freezing for now; reconsider before 1.0.
-- Docs-only patch versions.
+- The type/interface/world inventory for memberless definitions was evaluated and declined for
+  0.x/1.0: memberless definitions have no wire identity, and released-directory freezing plus
+  generated-output checks guard them.
+- Docs-only patch versions were evaluated and declined for 0.x/1.0; see section 2.
 - Replacing the lockfile with in-source WIT annotations if component-model issue 695 lands with a
   suitable annotation.
 
