@@ -1,0 +1,19 @@
+version = 1
+
+[project.tasks]
+root = "wit"
+released = "wit/released"
+
+[project.tasks.rust]
+out = "generated/rust"
+
+[project.tasks.proto]
+out = "generated/proto"
+
+[project.tasks.schema]
+out = "generated/schema"
+
+[project.tasks.glue]
+out = "generated/glue"
+plain-root = "crate::generated::rust"
+proto-root = "crate::generated::proto"

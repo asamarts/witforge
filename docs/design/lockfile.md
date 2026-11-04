@@ -106,7 +106,7 @@ frozen as a whole, which covers the remaining source-level cases.
   generation with exit `1`, so a new minor cannot silently renumber the shared per-major proto
   schema. `check` and `lock` take a single version directory, so their continuity baseline is
   the `--against` lockfile.
-- Docs-only patch versions are out of scope for 0.1 and declined for 0.x/1.0. A directory named
+- Docs-only patch versions are out of scope for 0.x and declined for 1.0. A directory named
   `v0.1.1` is not a version directory and is ignored by root discovery. A docs-only change uses a
   new minor, or is caught by the release freeze if it edits a released directory; an explicit
   patch shape would need a documented semantic-diff rule.

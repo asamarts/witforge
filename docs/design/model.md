@@ -187,7 +187,7 @@ model::build(&Contract) -> Result<Model>
   are refused before construction.
 - The package version MUST be `major.minor.0`; the model uses the version for module/proto names
   and freeze checks, but never for lockfile keys.
-- The model MUST NOT contain source spans in 0.1. If diagnostics need them later, add them as an
+- The model MUST NOT contain source spans in the current 0.x line. If diagnostics need them later, add them as an
   additive field.
 
 ## 4. Canonical types
@@ -243,7 +243,7 @@ impl Model {
 component types are public, owned, and `Debug + Clone + PartialEq`. A `TypeExpr` exposes its
 canonical display through `Display` or an equivalent method.
 
-Typed error reporting is a later API-stability question. For 0.1, `anyhow` is acceptable at the
+Typed error reporting is a later API-stability question. For the current 0.x line, `anyhow` is acceptable at the
 boundary, but internal conversion errors SHOULD name the item and the unsupported construct.
 
 ## 7. Testing requirements
@@ -266,6 +266,6 @@ boundary, but internal conversion errors SHOULD name the item and the unsupporte
 
 - Source spans and structured diagnostics.
 - Deprecation attributes and doc examples.
-- Stability-aware generation/gating; 0.1 treats stability as metadata.
+- Stability-aware generation/gating; the current 0.x line treats stability as metadata.
 - World role metadata in generated code (see the pre-golive world task).
 - A stable public model API and typed errors before 1.0.

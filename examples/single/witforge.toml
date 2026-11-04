@@ -1,0 +1,18 @@
+version = 1
+
+[project.single]
+root = "wit"
+
+[project.single.rust]
+out = "generated/rust"
+
+[project.single.proto]
+out = "generated/proto"
+
+[project.single.schema]
+out = "generated/schema"
+
+[project.single.glue]
+out = "generated/glue"
+plain-root = "crate::generated::rust"
+proto-root = "crate::generated::proto"

@@ -1,0 +1,49 @@
+package example:ingest@0.1.0;
+
+/// Shared ingestion values.
+interface types {
+    /// One item submitted to the ingester.
+    record item {
+        /// Stable item id.
+        id: u64,
+        /// Human-readable name.
+        name: string,
+        /// Free-form tags.
+        tags: list<string>,
+        /// Optional note.
+        note: option<string>,
+    }
+
+    /// The result state of an item.
+    enum status {
+        accepted,
+        rejected,
+    }
+
+    /// Optional ingester behavior.
+    flags options {
+        strict,
+        trace,
+    }
+
+    /// An event emitted by the ingester.
+    variant event {
+        started,
+        item(item),
+        finished(status),
+    }
+}
+
+/// The ingestion interface.
+interface ingest {
+    use types.{item, event};
+
+    /// Submit one item and receive the resulting event.
+    submit: func(item: item) -> event;
+}
+
+/// A world that imports shared values and exports the ingester.
+world ingestion {
+    import types;
+    export ingest;
+}

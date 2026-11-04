@@ -41,6 +41,8 @@ task-level source of truth.
 
 ## How it works
 
+See [`docs/quickstart.md`](docs/quickstart.md) for an install-to-generated-code walkthrough and [`examples/`](examples/) for runnable single-version and evolved contracts.
+
 ```text
 wit/                      hand-written contracts (the source of truth)
   released                released version directories

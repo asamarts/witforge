@@ -1,0 +1,10 @@
+# witforge wire lockfile v2
+example:tasks/service#create.title = 1 param string
+example:tasks/service.create = 1 method types/task
+example:tasks/types/task.done = 3 field bool
+example:tasks/types/task.id = 1 field u64
+example:tasks/types/task.title = 2 field string
+# witforge order v1
+# order example:tasks/service e1a0f918568a16e7 = create
+# order example:tasks/service#create dce98b98928465ab = title
+# order example:tasks/types/task 341d96cb2521307e = id title done

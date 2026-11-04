@@ -18,7 +18,7 @@ contract need: plain Rust types and traits, a protobuf schema with stable field 
 Draft 7 JSON Schema. It does not generate WASM guest or host bindings (`wit-bindgen` and
 `wasmtime::component::bindgen!` already do that) and it does not implement any transport.
 
-Out of scope for 0.1: services and RPC frameworks, every target language, WIT resources,
+Out of scope for the current 0.x line: services and RPC frameworks, direct language SDKs, WIT resources,
 streams, and futures.
 
 ## 2. Pipeline
@@ -56,7 +56,7 @@ Refused, each with the supported alternative:
 | functions defined in a world, inline interfaces | traits, method ids, and lockfile keys are per named interface | a named interface the world imports or exports |
 | types or interfaces from another package | the lockfile and the emitters cover one package, so a foreign type would have no numbers and no bindings | define the type in the contract's package |
 | an unversioned package | `@since` gates and evolution checks need a version | `package ns:name@x.y.0;` |
-| a version other than `<major>.<minor>.0` (patch, pre-release, build metadata) | one version directory maps to one Rust module and one proto major; patch and pre-release variants are out of scope for 0.1 | `package ns:name@x.y.0;` |
+| a version other than `<major>.<minor>.0` (patch, pre-release, build metadata) | one version directory maps to one Rust module and one proto major; patch and pre-release variants are out of scope for the current 0.x line | `package ns:name@x.y.0;` |
 | anything unrecognised | a new `wit-parser` construct must not slip into generated code | extend the checker deliberately |
 
 A `use` in a world is allowed: it names a type defined in an interface and defines nothing.
@@ -140,7 +140,7 @@ adding a record field, a variant case, an enum value, or a flag is a breaking ch
 patch versions of a `0.x` package may differ, and then only in docs. Protobuf tolerates new
 fields by stable number, renames are wire-compatible but break proto3-JSON, and renumbering or
 retyping is breaking. Rust tolerates new fields with `#[non_exhaustive]`. The contract follows
-the strictest rule. witforge 0.1 does not support patch contract versions in the tree: a change
+the strictest rule. witforge 0.x does not support patch contract versions in the tree: a change
 ships as a new `v<major>.<minor>` directory (see [`lockfile.md`](lockfile.md)).
 
 ### 5.2 Stable field numbers: the lockfile
@@ -207,7 +207,7 @@ The rules in this section describe the implemented format.
 2. Changes ship as a new minor version (`0.x` while unstable), with the previous WIT kept in the
    tree (`wit/v0.1/`, `wit/v0.2/`, and so on), each with its own `wire.lock` (section 5.2). A new
    major version starts a fresh lockfile. Package versions are `<major>.<minor>.0`; patch,
-   pre-release, and build-metadata contract versions are out of scope for 0.1 (see
+   pre-release, and build-metadata contract versions are out of scope for the current 0.x line (see
    [`lockfile.md`](lockfile.md)).
 3. Authoring policy for a new minor: new members should be defaulted (`option<T>` or `list<T>`),
    so a later version adapter can convert old values to new ones; enum values and variant cases

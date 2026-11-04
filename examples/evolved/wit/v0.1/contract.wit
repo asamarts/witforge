@@ -1,0 +1,27 @@
+package example:tasks@0.1.0;
+
+/// Shared task values.
+interface types {
+    /// One task.
+    record task {
+        /// Stable task id.
+        id: u64,
+        /// Task title.
+        title: string,
+        /// Whether the task is complete.
+        done: bool,
+    }
+}
+
+/// Task operations.
+interface service {
+    use types.{task};
+
+    /// Create a task with the given title.
+    create: func(title: string) -> task;
+}
+
+/// The task service world.
+world task-service {
+    export service;
+}

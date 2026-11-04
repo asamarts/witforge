@@ -39,15 +39,16 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
   spaces; proto uses two; JSON uses two-space indentation and compact nested schemas. Output must
   be valid and compile/parse without a formatting pass.
 - Docs from WIT `///` comments are carried to Rust `///` and proto `//` comments. Empty docs are
-  omitted. `@unstable` and `@since` are metadata in 0.1: they are carried in the model but do
+  omitted. `@unstable` and `@since` are metadata in the current 0.x line: they are carried in the model but do
   not change generated code. Docs and stability are not wire identity and may change.
 - `use` aliases and `type a = b` aliases are emitted as Rust type aliases in the interface that
   names them. Neither creates a protobuf type or a lockfile member; canonical types and proto
   references resolve through the alias to the defining type.
 - Unsupported constructs are refused by the subset checker before an emitter runs. An emitter
   MAY return an internal error if it still sees one.
-- Worlds generate no code in the MVP. They are validated and kept in the model, but generation
-  is interface-driven. Generated world metadata is a later option (see section 8).
+- Worlds generate shared metadata, not traits or per-version types. They are validated and kept
+  in the model, and the Rust emitter writes `worlds.rs` with each world's imports and exports
+  (section 3.6).
 
 ## 2. Inputs and version layout
 
