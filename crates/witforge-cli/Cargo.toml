@@ -20,7 +20,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-witforge = { path = "../witforge", version = "0.1.2" }
+witforge = { path = "../witforge", version = "0.2.0" }
 anyhow.workspace = true
 clap.workspace = true
 serde = { version = "1", features = ["derive"] }

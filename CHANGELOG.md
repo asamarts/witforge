@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-04
+
+0.2.0 is the first pre-1.0 release of the full compiler surface. It adds generated
+version conversions, declaration-order fingerprints, JSON Schema, world metadata,
+`witforge.toml` projects, and the CI plan gate. Generated output changes for contracts with
+multiple versions or worlds, and the schema generator adds a new output; consumers should
+regenerate and commit their generated trees when moving from 0.1.2.
 
 ### Added
 
@@ -47,6 +53,9 @@ All notable changes to this project are documented here. The format follows
 - Evaluated docs-only patch versions and a memberless-definition inventory. Both are declined for
   0.x/1.0: draft docs changes are accepted without wire changes, memberless additions have no
   wire entry, and released docs are caught by the release freeze (`W6-006`).
+- Added `docs/quickstart.md` and runnable `examples/single` and `examples/evolved` trees covering
+  all emitters, configuration, lock continuity, release freezing, and generated conversions
+  (`W7-002`).
 
 ## [0.1.2] - 2026-11-01
 

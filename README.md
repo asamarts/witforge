@@ -17,10 +17,11 @@ while the reverse directions are lossy. witforge exists because no tool performs
 projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
 tie their output to a runtime.
 
-> **Status: 0.1.2.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
-> protobuf, and glue emitters are implemented, with clap-based `witforge check`, `lock`, `rust`,
-> `proto`, and `glue` commands. CI runs on Linux, macOS, and Windows and gates generated-output
-> drift and release freezes. witforge's first consumer is the
+> **Status: 0.2.0.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
+> protobuf, JSON Schema, glue, and version-conversion emitters are implemented, with clap-based
+> `witforge check`, `lock`, `rust`, `proto`, `schema`, and `glue` commands and `witforge.toml`
+> projects. CI runs on Linux, macOS, and Windows and gates generated-output drift, release
+> freezes, and the aplan contract. witforge's first consumer is the
 > [alint](https://github.com/asamarts/alint) plugin contract.
 
 ## Install
