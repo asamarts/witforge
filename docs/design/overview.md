@@ -348,6 +348,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | Docs-only patch versions and a memberless lockfile inventory are declined for 0.x/1.0; draft docs changes are accepted, memberless additions have no wire entry, and released docs are freeze-guarded | section 10.3, [`lockfile.md`](lockfile.md) section 15 |
 | 2026-11-01 | 1.0 keeps `anyhow::Error` at the boundary with the `ContractError` classification; the public API, conformance matrix, release criteria, and deprecation runways are published | [`public-api.md`](public-api.md), [`conformance.md`](conformance.md), [`release-1.0.md`](release-1.0.md) |
 | 2026-11-04 | The plan gate is CI-run again with pinned published aplan 0.5.2; no aplan binary is committed and the four plan commands are part of `ci ok` | [`ci/README.md`](../../ci/README.md) |
+| 2026-11-04 | 0.2.0 is a focused release of the current compiler; 0.3 follows with diff/diagnostics/Action, 0.4 with `wit/deps` packages and opt-in Serde, and 1.0 waits for further consumer validation. Plugin/LSP/registry stay post-1.0 | `ROADMAP.md`, `aplan/` |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

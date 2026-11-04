@@ -95,3 +95,28 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [ ] Wider WIT coverage (maps, resources as opaque handles) only on demand.
 - [x] 1.0 criteria published: stable library API, conformance matrix, release gates, and
       deprecation runways; 1.0.0 has not yet been released.
+
+## 0.2.0: focused compiler release (next)
+
+- [ ] Release the current compiler surface: conversions, order fingerprints, JSON Schema, world
+      metadata, `witforge.toml`, and the CI plan gate.
+- [ ] Add a quickstart, examples, and a clear scope statement before the release.
+
+## 0.3.0: change-review and CI tooling
+
+- [ ] `witforge diff` with human and JSON breaking-change reports.
+- [ ] Structured diagnostics and SARIF output.
+- [ ] GitHub Action, prebuilt binaries, fuzzing, benchmarks, and dependency/security gates.
+- [ ] Release 0.3.0.
+
+## 0.4.0: WIT dependencies and Rust Serde
+
+- [ ] Standard `wit/deps` package dependencies with explicit package identity.
+- [ ] Opt-in per-project Serde generation.
+- [ ] Release 0.4.0.
+
+## 1.0 and beyond
+
+- [ ] Validate 1.0 with additional external consumers, then release 1.0.0.
+- [ ] Evaluate plugin ABI, LSP, and registry/playground after 1.0; do not build them
+      speculatively.
