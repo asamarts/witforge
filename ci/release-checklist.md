@@ -25,7 +25,8 @@ hand, because crates.io cannot trust a repository for a crate that does not exis
       (the seven checks above: CI run 41255894743 on `main` at `546cec1`, the published commit,
       2026-10-31, on GitHub-hosted runners, with the tests on Linux, macOS, and Windows)
 - [x] `aplan check && aplan verify && aplan export-agents-md --check AGENTS.md && aplan check-docs`
-      (local until a published aplan release lets CI run it; run at `546cec1`, 2026-10-31)
+      (run at `546cec1`, 2026-10-31, before the public aplan release existed; the commands now run
+      in the CI `plan` job pinned to aplan 0.5.2)
 - [x] README status, `CHANGELOG.md` (with the publish date), and the workspace version say
       0.1.0.
 - [x] Generation succeeds and reproduces itself for the versions fixture (the generated-output
@@ -100,7 +101,7 @@ explicit release-owner action.
       shows any changed golden output); consumers such as alint pin a release and regenerate
       when they move the pin.
 - [ ] Run the gates of [Before publishing](#before-publishing), then `ci/check-release.sh` and
-      `ci/publish.sh --dry-run`, and the aplan commands locally.
+      `ci/publish.sh --dry-run`, and the aplan commands (also in the CI `plan` job).
 - [ ] Merge to `main` and wait for its CI run (`ci ok`) to pass.
 - [ ] Tag that commit `vX.Y.Z` (annotated) and push the tag. `release.yml` verifies the release,
       publishes each crate whose version is not on crates.io yet, library first, through trusted

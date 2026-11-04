@@ -675,7 +675,7 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
   into a scratch directory and checks that output with `--check`, so it covers witforge itself; a
   consumer runs each generator's `--check` against its own committed output) and
   `ci/check-release-freeze.sh` for released directories and manifest entries. The aplan plan is
-  checked locally until aplan is published (task W5-006 restores the CI gate).
+  checked in CI by the `plan` job with pinned published aplan 0.5.2.
   `ci/check-buf.sh` is an optional extra `buf breaking` check for consumers that use it; the
   lockfile remains the normative wire gate.
 - Exit codes: `0` success; `1` contract, lockfile, or output drift; `2` usage, IO, parse,

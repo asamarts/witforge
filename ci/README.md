@@ -75,8 +75,9 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 - **Secret scanning** and push protection are on.
 
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
-`aplan check-docs`) is checked locally, as the release checklist says, until a published aplan
-release with this plan surface exists; CI then gains a `plan` job that installs that release.
+`aplan check-docs`) runs in the **plan** job on a GitHub-hosted Ubuntu runner. The job installs
+the pinned published release, **aplan 0.5.2**, from crates.io with `cargo install --locked`; no
+aplan binary is committed to this repository. The job is part of `ci ok`.
 
 ## Releases
 

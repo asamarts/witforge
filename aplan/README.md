@@ -32,7 +32,6 @@ aplan summary                  # effort/readiness by phase
 aplan export-agents-md --check AGENTS.md
 ```
 
-aplan is not yet published, so CI does not run it. Run `aplan check`,
-`aplan verify`, `aplan export-agents-md --check AGENTS.md`, and `aplan check-docs`
-before committing plan changes; W5-006 restores the CI gate once aplan is
-published.
+CI runs `aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
+`aplan check-docs` in the `plan` job, using the pinned published aplan release (0.5.2). Run the
+same commands locally before committing plan changes.

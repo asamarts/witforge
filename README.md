@@ -35,8 +35,8 @@ Rust 1.88 or later.
 ## Plan
 
 Task-level planning, dependencies, and closure evidence live in [`aplan/`](https://github.com/asamarts/witforge/blob/main/aplan/README.md)
-and are validated with `aplan check` and `aplan verify` (aplan is not yet published, so CI does
-not run them). [`ROADMAP.md`](https://github.com/asamarts/witforge/blob/main/ROADMAP.md) is the narrative sequence; the plan is the
+and are validated with `aplan check` and `aplan verify`; CI runs those gates with the pinned
+published aplan 0.5.2 release. [`ROADMAP.md`](https://github.com/asamarts/witforge/blob/main/ROADMAP.md) is the narrative sequence; the plan is the
 task-level source of truth.
 
 ## How it works
