@@ -12,6 +12,11 @@ version conversions, declaration-order fingerprints, JSON Schema, world metadata
 multiple versions or worlds, and the schema generator adds a new output; consumers should
 regenerate and commit their generated trees when moving from 0.1.2.
 
+Release commit `dfb06de` (tag `v0.2.0`), CI run 41936185007, release run 41936720164;
+crates.io records both crates as published through GitHub trusted publishing. The published
+crates install with `cargo install witforge-cli --version 0.2.0 --locked`, and docs.rs built
+the library.
+
 ### Added
 
 - `witforge rust` now also emits `convert.rs` for a WIT root with two or more versions. It has

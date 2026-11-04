@@ -96,11 +96,11 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] 1.0 criteria published: stable library API, conformance matrix, release gates, and
       deprecation runways; 1.0.0 has not yet been released.
 
-## 0.2.0: focused compiler release (next)
+## 0.2.0: focused compiler release (done)
 
-- [ ] Release the current compiler surface: conversions, order fingerprints, JSON Schema, world
+- [x] Release the current compiler surface: conversions, order fingerprints, JSON Schema, world
       metadata, `witforge.toml`, and the CI plan gate.
-- [ ] Add a quickstart, examples, and a clear scope statement before the release.
+- [x] Add a quickstart, examples, and a clear scope statement before the release.
 
 ## 0.3.0: change-review and CI tooling
 
