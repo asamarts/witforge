@@ -2,7 +2,7 @@
 id: M-p6
 title: Post-0.1 refinement and 1.0
 phase: 6
-status: todo
+status: done
 blocked_by:
 - W6-001
 - W6-002
@@ -22,10 +22,13 @@ blocked_by:
 tags:
 - milestone
 - p6
+evidence:
+  - kind: commit
+    ref: 993437dcb32294d1e8bfb28d4e75c6f134255844
 ---
 
 ## Exit criteria
 
-- [ ] pre-golive evaluations have recorded decisions
-- [ ] order fingerprinting, version conversions, and JSON Schema are delivered or explicitly declined
-- [ ] the public API and conformance suite are stable for 1.0
+- [x] pre-golive evaluations have recorded decisions
+- [x] order fingerprinting, version conversions, and JSON Schema are delivered or explicitly declined
+- [x] the public API and conformance suite are stable for 1.0
