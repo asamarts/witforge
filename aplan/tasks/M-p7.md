@@ -2,7 +2,7 @@
 id: M-p7
 title: '0.2.0: focused compiler release'
 phase: 7
-status: todo
+status: done
 owner: asamarts
 blocked_by:
 - W7-001
@@ -10,9 +10,12 @@ blocked_by:
 tags:
 - milestone
 - p7
+evidence:
+  - kind: commit
+    ref: 65be93a
 ---
 
 ## Exit criteria
 
-- [ ] the focused compiler release is published as 0.2.0
-- [ ] quickstart and examples make the current surface usable without reading the plan
+- [x] the focused compiler release is published as 0.2.0
+- [x] quickstart and examples make the current surface usable without reading the plan

@@ -102,9 +102,9 @@ Planning, tasking and status live under `aplan/tasks/`, and what judges them is 
 followed by `aplan verify`. Not in issues, not in a TODO comment, not in prose: a document that
 carries status becomes a second copy of it, and the second copy drifts.
 
-Task ids follow this plan's own conventions (`W10-nnn`, `W11-nnn`, `W7-nnn`, `W8-nnn` or
-`W9-nnn`). If work does not fit an existing task, **write the task first**, then do the work: a
-change with no task is a change nobody can find later.
+Task ids follow this plan's own conventions (`W10-nnn`, `W11-nnn`, `W8-nnn` or `W9-nnn`). If
+work does not fit an existing task, **write the task first**, then do the work: a change with
+no task is a change nobody can find later.
 
 ## The loop
 
