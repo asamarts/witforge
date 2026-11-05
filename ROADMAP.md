@@ -104,7 +104,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 
 ## 0.3.0: change-review and CI tooling
 
-- [ ] `witforge diff` with human and JSON breaking-change reports.
+- [x] `witforge diff` with human and JSON breaking-change reports.
 - [ ] Structured diagnostics and SARIF output.
 - [ ] GitHub Action, prebuilt binaries, fuzzing, benchmarks, and dependency/security gates.
 - [ ] Release 0.3.0.
