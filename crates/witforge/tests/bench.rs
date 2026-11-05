@@ -21,6 +21,16 @@ fn contract(root: &Path, interfaces: usize, fields: usize) {
                 let _ = writeln!(source, "        f{field}: u64,");
             }
             source.push_str("    }\n");
+            let _ = writeln!(source, "    enum e{interface}x{type_index} {{ a, b, c }}");
+            let _ = writeln!(
+                source,
+                "    variant v{interface}x{type_index} {{ a, b(u64) }}"
+            );
+            let _ = writeln!(source, "    flags fl{interface}x{type_index} {{ a, b }}");
+            let _ = writeln!(
+                source,
+                "    call{interface}x{type_index}: func(x: u64) -> u64;"
+            );
         }
         source.push_str("}\n");
     }

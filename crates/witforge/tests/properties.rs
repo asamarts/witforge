@@ -101,6 +101,16 @@ proptest! {
     }
 
     #[test]
+    fn arbitrary_lockfile_text_with_line_endings_does_not_panic(
+        chars in prop::collection::vec(any::<char>(), 0..2000),
+    ) {
+        let text: String = chars.into_iter().collect();
+        if let Ok(lock) = WireLock::parse(&text) {
+            prop_assert!(WireLock::parse(&lock.render()).is_ok());
+        }
+    }
+
+    #[test]
     fn emitters_accept_generated_models_without_panicking(
         fields in prop::collection::vec(any::<u8>(), 1..8),
         params in prop::collection::vec(any::<u8>(), 0..4),

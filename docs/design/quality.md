@@ -21,9 +21,9 @@ emitter boundaries with shapes the hand-written golden fixtures may not cover.
 
 ## Benchmark budget
 
-[`crates/witforge/tests/bench.rs`](../../crates/witforge/tests/bench.rs) measures a representative
-small contract and a large contract through loading, modeling, lockfile reconciliation, and all
-four emitters. The CI benchmark job runs it in release mode. The budgets are deliberately
+[`crates/witforge/tests/bench.rs`](../../crates/witforge/tests/bench.rs) measures representative small and large contracts through loading, modeling, lockfile
+reconciliation, and all four emitters; the generated contracts include records, enums, variants,
+flags, and functions. The CI benchmark job runs it in release mode. The budgets are deliberately
 catastrophic-regression ceilings rather than microbenchmark claims: 5 seconds for the small
 contract and 15 seconds for the large one on a shared GitHub-hosted runner. The printed timings
 make a regression visible in the job log.
