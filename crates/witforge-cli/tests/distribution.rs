@@ -26,7 +26,14 @@ fn release_asset_script_packages_the_binary_and_writes_a_checksum() {
     } else {
         PathBuf::from("bash")
     };
-    let bash_path = |path: &Path| path.display().to_string().replace('\\', "/");
+    let bash_path = |path: &Path| {
+        let text = path.display().to_string().replace('\\', "/");
+        if cfg!(windows) && text.len() >= 3 && text.as_bytes()[1] == b':' {
+            format!("/{}/{}", text[..1].to_ascii_lowercase(), &text[3..])
+        } else {
+            text
+        }
+    };
     let output = Command::new(bash)
         .current_dir(repository())
         .arg("ci/release-asset.sh")
