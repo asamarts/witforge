@@ -511,6 +511,10 @@ impl Builder<'_> {
         let old_kind = type_kind_name(&old.kind);
         let new_kind = type_kind_name(&new.kind);
         if old_kind != new_kind {
+            let prefix = format!(
+                "{}/{}/{}",
+                self.old.endpoint.package, interface.name, old.name
+            );
             self.push(
                 ChangeKind::KindChanged {
                     from: old_kind.to_string(),
@@ -519,7 +523,11 @@ impl Builder<'_> {
                 "type",
                 path,
                 None,
-                Breaking::ALL,
+                Breaking {
+                    wire: !self.new.preserves_scope(self.old, &prefix),
+                    source: true,
+                    api: true,
+                },
             );
             return Ok(());
         }

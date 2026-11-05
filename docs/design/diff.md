@@ -52,7 +52,8 @@ comparing the relative order of common members, as in the lockfile's order finge
 Wire-breaking changes are:
 
 - a changed wire number (`renumbered`);
-- a changed member kind or canonical type (`retyped` or `kind-changed`);
+- a changed kind or canonical type of a numbered member (`retyped`);
+- a type kind change (`kind-changed`) whose old numbered entries are not preserved;
 - removal of a member or a whole type, interface, or function whose old lockfile entries are not
   retained with their numbers and reserved.
 
