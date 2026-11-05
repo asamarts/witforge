@@ -17,12 +17,14 @@ fn release_asset_script_packages_the_binary_and_writes_a_checksum() {
     fs::write(&binary, b"#!/bin/sh\necho fake witforge\n").unwrap();
     let out = root.join("dist");
 
+    let bash_path = |path: &Path| path.display().to_string().replace('\\', "/");
     let output = Command::new("bash")
-        .arg(repository().join("ci/release-asset.sh"))
+        .current_dir(repository())
+        .arg("ci/release-asset.sh")
         .arg("v0.3.0")
         .arg("x86_64-unknown-linux-gnu")
-        .arg(&binary)
-        .arg(&out)
+        .arg(bash_path(&binary))
+        .arg(bash_path(&out))
         .output()
         .unwrap();
     assert!(
