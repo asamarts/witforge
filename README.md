@@ -33,6 +33,31 @@ cargo install witforge-cli --locked
 This installs the `witforge` command; the `witforge` crate is the library behind it. Both need
 Rust 1.88 or later.
 
+Starting with **0.3.0**, each release also attaches prebuilt archives for Linux x86_64, macOS
+Intel and Apple silicon, and Windows x86_64, each with a `.sha256` checksum. See
+[`docs/design/action.md`](docs/design/action.md#release-assets) for the archive names and
+verification commands.
+
+## GitHub Action
+
+The action installs the release matching its tag by default, then runs `check`, `diff`, and
+configured generators with `--check`:
+
+```yaml
+- uses: asamarts/witforge@v0.3.0 # pinned: installs witforge 0.3.0
+  with:
+    check: wit/v0.2
+    diff-old: wit/v0.1
+    diff-new: wit/v0.2
+    config: witforge.toml
+    generators: rust,proto
+```
+
+`@main` is a floating ref: it installs the latest published release. Pass `version` to override
+either default, and `github-token: ${{ github.token }}` when querying latest to avoid anonymous
+API rate limits. The full input and checksum behavior is in
+[`docs/design/action.md`](docs/design/action.md#action-usage).
+
 ## Plan
 
 Task-level planning, dependencies, and closure evidence live in [`aplan/`](https://github.com/asamarts/witforge/blob/main/aplan/README.md)

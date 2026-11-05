@@ -1,0 +1,51 @@
+name: witforge
+description: Install a prebuilt witforge release, then check, diff, and generate a WIT contract.
+author: asamarts
+branding:
+  icon: check-circle
+  color: blue
+inputs:
+  version:
+    description: >-
+      Release version to install, with or without a leading `v`. Leave empty to use the action
+      ref when it is a version tag (for example `v0.3.0`), otherwise the latest release.
+    required: false
+    default: ''
+  check:
+    description: >-
+      WIT version directories to pass to `witforge check`, one per line.
+    required: false
+    default: ''
+  diff-old:
+    description: Old version directory or WIT root for `witforge diff`.
+    required: false
+    default: ''
+  diff-new:
+    description: New version directory or WIT root for `witforge diff`.
+    required: false
+    default: ''
+  diff-check:
+    description: Pass `--check` to `witforge diff`, failing on breaking changes.
+    required: false
+    default: 'true'
+  config:
+    description: Optional `witforge.toml` for generate/check runs.
+    required: false
+    default: ''
+  project:
+    description: Optional project name in `witforge.toml`.
+    required: false
+    default: ''
+  generators:
+    description: >-
+      Comma- or whitespace-separated generators to run with `--check` against `config`
+      (`rust`, `proto`, `schema`, `glue`). Empty skips generation.
+    required: false
+    default: 'rust'
+  github-token:
+    description: Token used to query the latest release; pass `${{ github.token }}` for rate limits.
+    required: false
+    default: ''
+runs:
+  using: node24
+  main: action/index.js

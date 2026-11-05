@@ -105,8 +105,10 @@ explicit release-owner action.
 - [ ] Merge to `main` and wait for its CI run (`ci ok`) to pass.
 - [ ] Tag that commit `vX.Y.Z` (annotated) and push the tag. `release.yml` verifies the release,
       publishes each crate whose version is not on crates.io yet, library first, through trusted
-      publishing, and creates the GitHub release from the changelog section. A failed run is
-      re-run and skips what is already published.
+      publishing, creates the GitHub release from the changelog section, then builds and uploads
+      the Linux, macOS, and Windows archives with `.sha256` checksums. A failed run is re-run and
+      skips what is already published; `gh release upload --clobber` repairs a partial asset
+      upload.
 - [ ] Verify `cargo install witforge-cli --version X.Y.Z --locked` reports `witforge X.Y.Z`,
       the GitHub release exists, and docs.rs built the library.
 - [ ] Record the release commit, its CI run, and the release run under the changelog section.

@@ -88,6 +88,8 @@ jobs:
         env:
           SHELLCHECK_OPTS: --enable=check-extra-masked-returns
       - run: shellcheck ci/*.sh ci/runner/*.sh
+      - run: bash ci/test-release-asset.sh
+      - run: node --test action/test.js
 
   test:
     name: test (${{ matrix.os }})

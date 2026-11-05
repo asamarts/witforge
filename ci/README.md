@@ -43,7 +43,9 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 - **workflows and scripts**: pinned, checksum-verified actionlint and shellcheck (the runner
   image's shellcheck changes version, and with it findings and codes) over both workflows, with
   shellcheck's masked-return check enabled for every `run:` script (a `$(...)` whose failure
-  would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`.
+  would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`. It also runs
+  `ci/test-release-asset.sh` for release archive/checksum generation and `node --test
+  action/test.js` for the Action's asset selection and command plan.
 - **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all three
   emitters' output for the versions fixture into a temporary tree and runs `--check` on each
   against it, so generation must succeed and reproduce itself byte for byte (the golden tests

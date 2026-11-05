@@ -119,3 +119,58 @@ jobs:
           RELEASE_NOTES="${RUNNER_TEMP}/notes.md" ci/check-release.sh "${TAG}" >/dev/null
           gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
             --title "witforge ${VERSION}" --notes-file "${RUNNER_TEMP}/notes.md"
+
+  binaries:
+    name: binary (${{ matrix.target }})
+    needs: [verify, github-release]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: write # upload assets to the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - name: Build the release binary
+        shell: bash
+        run: |
+          rustup target add "${{ matrix.target }}"
+          cargo build --locked --release -p witforge-cli --target "${{ matrix.target }}"
+      - name: Package and checksum the asset
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          binary="target/${TARGET}/release/witforge"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            binary="${binary}.exe"
+          fi
+          asset="$(ci/release-asset.sh "${VERSION}" "${TARGET}" "${binary}" dist)"
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${asset}.sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload the asset to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          ASSET: ${{ steps.package.outputs.asset }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+        run: gh release upload "$TAG" "$ASSET" "$CHECKSUM" --clobber
