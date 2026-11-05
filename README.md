@@ -58,6 +58,13 @@ either default, and `github-token: ${{ github.token }}` when querying latest to 
 API rate limits. The full input and checksum behavior is in
 [`docs/design/action.md`](docs/design/action.md#action-usage).
 
+## Security
+
+Report suspected vulnerabilities privately through
+[GitHub private vulnerability reporting](https://github.com/asamarts/witforge/security/advisories/new),
+not a public issue. See [`SECURITY.md`](SECURITY.md) for the supported-version and dependency
+policy.
+
 ## Plan
 
 Task-level planning, dependencies, and closure evidence live in [`aplan/`](https://github.com/asamarts/witforge/blob/main/aplan/README.md)

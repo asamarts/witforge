@@ -54,6 +54,11 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   removed and a released directory can never differ from any commit that listed it, whatever
   the push or pull request. `ci/test-release-freeze.sh` tests that script; the test jobs run it
   on Linux and, with the stock bash 3.2, on macOS.
+- **security**: installs pinned `cargo-audit` and `cargo-deny`, then runs
+  `ci/check-security.sh`: RustSec advisories, the `ci/deny.toml` advisory/ban/license/source
+  policy, and the public [`SECURITY.md`](../SECURITY.md) policy.
+- **benchmark**: runs the small/large contract budget in release mode; property tests run in
+  the normal test matrix and in the MSRV job.
 - **package**: `cargo publish --workspace --dry-run`, which packages and verifies both crates,
   and `ci/test-publish.sh`, which checks that a repeated `ci/publish.sh --dry-run` verifies the
   CLI against the current library rather than a copy cargo cached for an earlier run.
