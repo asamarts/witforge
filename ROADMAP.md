@@ -107,7 +107,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] `witforge diff` with human and JSON breaking-change reports.
 - [x] Structured diagnostics and SARIF output.
 - [x] GitHub Action and prebuilt binaries.
-- [ ] Fuzzing, benchmarks, and dependency/security gates.
+- [x] Fuzzing, benchmarks, and dependency/security gates.
 - [ ] Release 0.3.0.
 
 ## 0.4.0: WIT dependencies and Rust Serde
