@@ -11,6 +11,7 @@
 //!                [--check] [--released PATH]
 //! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
 //!                [--config PATH] [--project NAME] [--check] [--released PATH]
+//! witforge diff  <old> <new> [--json] [--check]
 //! ```
 
 use std::collections::BTreeMap;
@@ -23,6 +24,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 
+use serde_json::{Value, json};
+use witforge::diff::{self, ChangeKind, DiffReport};
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
 use witforge::{
@@ -54,6 +57,8 @@ enum Command {
     Schema(SchemaOptions),
     /// Generate protobuf glue conversions and function helpers.
     Glue(GlueOptions),
+    /// Compare two contract versions and classify breaking changes.
+    Diff(DiffOptions),
 }
 
 #[derive(Debug, Args)]
@@ -136,6 +141,22 @@ struct GlueOptions {
     /// Configuration file with a project root and emitter outputs.
     #[command(flatten)]
     config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct DiffOptions {
+    /// Old version directory or WIT root.
+    #[arg(value_name = "OLD")]
+    old: PathBuf,
+    /// New version directory or WIT root.
+    #[arg(value_name = "NEW")]
+    new: PathBuf,
+    /// Emit machine-readable JSON instead of the human report.
+    #[arg(long)]
+    json: bool,
+    /// Exit non-zero when any wire, source, or generated-API breaking change is found.
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Debug, Args)]
@@ -348,6 +369,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Proto(options) => proto(&options),
         Command::Schema(options) => schema(&options),
         Command::Glue(options) => glue(&options),
+        Command::Diff(options) => diff_command(&options),
     }
 }
 
@@ -570,6 +592,153 @@ fn glue(options: &GlueOptions) -> Result<ExitCode> {
     }
     emit::glue::generate(&paths.root, &paths.out, plain_root, proto_root)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn diff_command(options: &DiffOptions) -> Result<ExitCode> {
+    let report = diff::compare(&options.old, &options.new)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&diff_json(&report))
+                .context("failed to render the diff as JSON")?
+        );
+    } else {
+        println!("{}", render_diff(&report));
+    }
+    if options.check && report.summary.breaking > 0 {
+        eprintln!(
+            "diff: {} breaking change(s); --check failed",
+            report.summary.breaking
+        );
+        return Ok(ExitCode::from(1));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn diff_json(report: &DiffReport) -> Value {
+    let endpoint = |endpoint: &diff::Endpoint| {
+        json!({
+            "path": endpoint.path.display().to_string(),
+            "package": endpoint.package,
+            "version": endpoint.version.to_string(),
+        })
+    };
+    let changes: Vec<Value> = report.changes.iter().map(change_json).collect();
+    json!({
+        "old": endpoint(&report.old),
+        "new": endpoint(&report.new),
+        "changes": changes,
+        "summary": {
+            "changes": report.summary.changes,
+            "breaking": report.summary.breaking,
+            "wire_breaking": report.summary.wire_breaking,
+            "source_breaking": report.summary.source_breaking,
+            "api_breaking": report.summary.api_breaking,
+        },
+    })
+}
+
+fn change_json(change: &diff::Change) -> Value {
+    let mut value = json!({
+        "element": &change.element,
+        "path": &change.path,
+        "number": change.number,
+        "wire_breaking": change.wire_breaking,
+        "source_breaking": change.source_breaking,
+        "api_breaking": change.api_breaking,
+    });
+    let object = value.as_object_mut().expect("JSON object");
+    let (kind, extra) = match &change.kind {
+        ChangeKind::Added { defaulted } => ("added", json!({ "defaulted": defaulted })),
+        ChangeKind::Removed => ("removed", json!({})),
+        ChangeKind::Reordered { before, after } => {
+            ("reordered", json!({ "before": before, "after": after }))
+        }
+        ChangeKind::Retyped { from, to } | ChangeKind::KindChanged { from, to } => {
+            let kind = if matches!(change.kind, ChangeKind::Retyped { .. }) {
+                "retyped"
+            } else {
+                "kind-changed"
+            };
+            (kind, json!({ "from": from, "to": to }))
+        }
+        ChangeKind::Renumbered { from, to } => ("renumbered", json!({ "from": from, "to": to })),
+    };
+    object.insert("kind".to_string(), Value::String(kind.to_string()));
+    if let Some(extra) = extra.as_object() {
+        for (key, value) in extra {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    value
+}
+
+fn render_diff(report: &DiffReport) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "old: {} ({} {})",
+        report.old.path.display(),
+        report.old.package,
+        report.old.version
+    );
+    let _ = writeln!(
+        out,
+        "new: {} ({} {})",
+        report.new.path.display(),
+        report.new.package,
+        report.new.version
+    );
+    if report.changes.is_empty() {
+        let _ = writeln!(out, "no contract changes");
+    }
+    for change in &report.changes {
+        let (kind, detail) = match &change.kind {
+            ChangeKind::Added { defaulted: true } => ("added-defaulted", String::new()),
+            ChangeKind::Added { defaulted: false } => ("added", String::new()),
+            ChangeKind::Removed => ("removed", String::new()),
+            ChangeKind::Reordered { before, after } => (
+                "reordered",
+                format!("{} -> {}", before.join(", "), after.join(", ")),
+            ),
+            ChangeKind::Retyped { from, to } => ("retyped", format!("{from} -> {to}")),
+            ChangeKind::KindChanged { from, to } => ("kind-changed", format!("{from} -> {to}")),
+            ChangeKind::Renumbered { from, to } => ("renumbered", format!("{from} -> {to}")),
+        };
+        let number = change
+            .number
+            .map_or_else(String::new, |number| format!(" number={number}"));
+        let _ = writeln!(
+            out,
+            "{kind:<17} {:<18} {:<32}{number:<10}  wire:{} source:{} api:{}  {detail}",
+            change.element,
+            change.path,
+            status(change.wire_breaking),
+            status(change.source_breaking),
+            status(change.api_breaking),
+        );
+    }
+    let _ = writeln!(
+        out,
+        "summary: {} change(s), {} breaking; wire identity: {}, source: {}, generated API: {}",
+        report.summary.changes,
+        report.summary.breaking,
+        report.summary.wire_breaking,
+        report.summary.source_breaking,
+        report.summary.api_breaking,
+    );
+    if report.summary.breaking > 0 {
+        let _ = writeln!(out, "result: BREAKING");
+    } else {
+        let _ = writeln!(out, "result: COMPATIBLE");
+    }
+    out
+}
+
+fn status(breaking: bool) -> &'static str {
+    if breaking { "BREAKING" } else { "compatible" }
 }
 
 fn check_messages(messages: &[String]) -> ExitCode {

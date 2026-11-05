@@ -25,6 +25,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::json_schema` | `HEADER`, `plan`, `generate`, `check`, `emit_version` |
 | `emit::glue` | `HEADER`, `GlueError`, `plan`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
 | `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `absolute` |
+| `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `compare` |
 | `subset` | `Violation`, `check` |
 
 `Contract` is opaque: its `wit-parser` fields are crate-private and cannot be constructed or

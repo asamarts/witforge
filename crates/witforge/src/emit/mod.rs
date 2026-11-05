@@ -17,7 +17,7 @@ pub mod json_schema;
 pub mod output;
 pub mod proto;
 pub mod rust;
-mod versions;
+pub(crate) mod versions;
 
 #[cfg(test)]
 mod tests {

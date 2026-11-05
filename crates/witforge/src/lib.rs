@@ -20,9 +20,10 @@
 //!   I/O, and parse errors.
 //!
 //! The `witforge` command-line interface (the `witforge-cli` crate) wraps these as the `check`,
-//! `lock`, `rust`, `proto`, `schema`, and `glue` commands. The normative specifications are in
-//! [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
+//! `lock`, `diff`, `rust`, `proto`, `schema`, and `glue` commands. The normative specifications
+//! are in [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
+pub mod diff;
 pub mod emit;
 pub mod lock;
 pub mod model;

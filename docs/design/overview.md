@@ -231,6 +231,15 @@ The rules in this section describe the implemented format.
    handshake, with an adapter for the previous major for a documented period.
 7. For alint's contract, 1.0 freezes at alint v1.0 together with its DSL (alint decision DEC-9).
 
+### 5.4 Change review
+
+`witforge diff <old> <new>` compares two version directories or the highest versions under two
+WIT roots. It reports added, removed, reordered, retyped, kind-changed, renumbered, and
+defaulted changes, with independent wire-identity, source, and generated-API verdicts. `--check`
+fails on any breaking verdict; `--json` is the machine-readable form. The normative rules are in
+[`diff.md`](diff.md). This is a review aid: the lockfile, emitted-output `--check`, and release
+freeze remain the gates that protect a published version.
+
 
 ## 6. Prototype findings and `wit-parser` gotchas
 
