@@ -16,6 +16,7 @@
 //! - [`emit`] generates the [Rust](emit::rust) output (including version-to-version
 //!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema), and
 //!   [glue](emit::glue) output for a WIT root and checks committed output for drift.
+//! - [`diagnostic`] defines the stable machine-readable diagnostics shared by the CLI commands.
 //! - [`ContractError`] marks contract, lockfile, and output violations, as distinct from usage,
 //!   I/O, and parse errors.
 //!
@@ -23,6 +24,7 @@
 //! `lock`, `diff`, `rust`, `proto`, `schema`, and `glue` commands. The normative specifications
 //! are in [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
+pub mod diagnostic;
 pub mod diff;
 pub mod emit;
 pub mod lock;

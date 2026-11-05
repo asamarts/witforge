@@ -12,19 +12,22 @@
 //! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
 //!                [--config PATH] [--project NAME] [--check] [--released PATH]
 //! witforge diff  <old> <new> [--json] [--check]
+//!
+//! All commands accept `--format human|json|sarif`; `human` is the default.
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 
 use serde_json::{Value, json};
+use witforge::diagnostic::{Diagnostic, Severity};
 use witforge::diff::{self, ChangeKind, DiffReport};
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
@@ -38,9 +41,104 @@ use witforge::{
 #[derive(Debug, Parser)]
 #[command(name = "witforge", version, about)]
 struct Cli {
+    /// Emit diagnostics as human text, JSON, or SARIF 2.1.0.
+    #[arg(long, global = true, value_enum, default_value_t = Format::Human)]
+    format: Format,
     /// Command to run.
     #[command(subcommand)]
     command: Command,
+}
+
+/// The diagnostic output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Format {
+    /// Human-readable diagnostics on stderr; the default.
+    Human,
+    /// A versioned JSON diagnostic envelope on stdout.
+    Json,
+    /// SARIF 2.1.0 on stdout.
+    Sarif,
+}
+
+struct Reporter {
+    format: Format,
+    diagnostics: Vec<Diagnostic>,
+    suppressed: bool,
+}
+
+impl Reporter {
+    fn new(format: Format) -> Self {
+        Self {
+            format,
+            diagnostics: Vec::new(),
+            suppressed: false,
+        }
+    }
+
+    fn human(&self) -> bool {
+        self.format == Format::Human
+    }
+
+    fn suppress(&mut self) {
+        self.suppressed = true;
+    }
+
+    fn push(&mut self, diagnostic: Diagnostic) {
+        if self.human() {
+            eprintln!("error: {}", diagnostic.message);
+        } else {
+            self.diagnostics.push(diagnostic);
+        }
+    }
+
+    fn error(&mut self, code: &'static str, message: impl Into<String>, path: Option<String>) {
+        let mut diagnostic = Diagnostic::error(code, message);
+        if let Some(path) = path {
+            diagnostic = diagnostic.with_path(path);
+        }
+        self.push(diagnostic);
+    }
+
+    fn error_with_location(
+        &mut self,
+        code: &'static str,
+        location: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        let location = location.into();
+        if self.human() {
+            eprintln!("error: {location}: {}", message.into());
+        } else {
+            self.diagnostics
+                .push(Diagnostic::error(code, message).with_path(location));
+        }
+    }
+
+    fn note(&mut self, code: &'static str, human: &str, message: impl Into<String>, path: String) {
+        if self.human() {
+            println!("{human}");
+        } else {
+            self.diagnostics
+                .push(Diagnostic::new(code, Severity::Note, message).with_path(path));
+        }
+    }
+
+    fn finish(&self) -> Result<()> {
+        if self.suppressed || self.human() {
+            return Ok(());
+        }
+        match self.format {
+            Format::Human => Ok(()),
+            Format::Json => {
+                println!("{}", diagnostic_json(&self.diagnostics)?);
+                Ok(())
+            }
+            Format::Sarif => {
+                println!("{}", sarif_json(&self.diagnostics)?);
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -362,18 +460,37 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
-    match cli.command {
-        Command::Check(options) => check(&options),
-        Command::Lock(options) => lock(&options),
-        Command::Rust(options) => rust(&options),
-        Command::Proto(options) => proto(&options),
-        Command::Schema(options) => schema(&options),
-        Command::Glue(options) => glue(&options),
-        Command::Diff(options) => diff_command(&options),
+    let mut reporter = Reporter::new(cli.format);
+    let result = match cli.command {
+        Command::Check(options) => check(&options, &mut reporter),
+        Command::Lock(options) => lock(&options, &mut reporter),
+        Command::Rust(options) => rust(&options, &mut reporter),
+        Command::Proto(options) => proto(&options, &mut reporter),
+        Command::Schema(options) => schema(&options, &mut reporter),
+        Command::Glue(options) => glue(&options, &mut reporter),
+        Command::Diff(options) => diff_command(&options, &mut reporter),
+    };
+    match result {
+        Ok(code) => {
+            reporter.finish()?;
+            Ok(code)
+        }
+        Err(error) => {
+            if reporter.human() {
+                return Err(error);
+            }
+            reporter.push(Diagnostic::error("WF9000", format!("{error:#}")));
+            reporter.finish()?;
+            Ok(ExitCode::from(if is_contract_error(&error) {
+                1
+            } else {
+                2
+            }))
+        }
     }
 }
 
-fn check(options: &Options) -> Result<ExitCode> {
+fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_version_directory(&options.dir)?;
     // `check` may verify a released directory; the manifest only has to be valid.
     load_released_manifest(&options.dir, options.released.as_deref())?;
@@ -383,7 +500,7 @@ fn check(options: &Options) -> Result<ExitCode> {
         // The model of a contract outside the subset is not built, so every locked member
         // would look removed; report only the violations, as `lock` does.
         for violation in &violations {
-            eprintln!("error: {violation}");
+            reporter.error_with_location("WF1001", &violation.location, &violation.message);
         }
         return Ok(ExitCode::from(1));
     }
@@ -405,7 +522,11 @@ fn check(options: &Options) -> Result<ExitCode> {
     let package = package_name(&model);
     for lockfile in std::iter::once(&lock).chain(previous.as_ref()) {
         if let Err(err) = lockfile.check_package(&package) {
-            eprintln!("error: {err:#}");
+            reporter.error(
+                "WF1002",
+                format!("{err:#}"),
+                Some(lock_path.display().to_string()),
+            );
             return Ok(ExitCode::from(1));
         }
     }
@@ -413,7 +534,11 @@ fn check(options: &Options) -> Result<ExitCode> {
     let drift = match lock.drift_with(&members, mode) {
         Ok(changes) => changes,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            reporter.error(
+                "WF1100",
+                format!("{err:#}"),
+                Some(lock_path.display().to_string()),
+            );
             return Ok(ExitCode::from(1));
         }
     };
@@ -426,13 +551,17 @@ fn check(options: &Options) -> Result<ExitCode> {
             .as_deref()
             .is_none_or(|text| lock.is_canonical(&text.replace("\r\n", "\n")));
     if !canonical {
-        eprintln!(
-            "error: lockfile {} is not in the form `witforge lock` writes; {}",
-            lock_path.display(),
-            remedy.advice(" to rewrite it")
+        reporter.error(
+            "WF1106",
+            format!(
+                "lockfile {} is not in the form `witforge lock` writes; {}",
+                lock_path.display(),
+                remedy.advice(" to rewrite it")
+            ),
+            Some(lock_path.display().to_string()),
         );
     }
-    report_check_changes(&drift, &remedy);
+    report_check_changes(&drift, &remedy, reporter);
     if drift.is_empty() && canonical {
         Ok(ExitCode::SUCCESS)
     } else {
@@ -440,18 +569,21 @@ fn check(options: &Options) -> Result<ExitCode> {
     }
 }
 
-fn lock(options: &Options) -> Result<ExitCode> {
+fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_not_released(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
     let violations = subset::check(&contract);
     for violation in &violations {
-        eprintln!("error: {violation}");
+        reporter.error_with_location("WF1001", &violation.location, &violation.message);
     }
     if !violations.is_empty() {
-        bail!(ContractError::new(format!(
-            "{} subset violation(s); the lockfile was not updated",
-            violations.len()
-        )));
+        if reporter.human() {
+            bail!(ContractError::new(format!(
+                "{} subset violation(s); the lockfile was not updated",
+                violations.len()
+            )));
+        }
+        return Ok(ExitCode::from(1));
     }
     let model = model::build(&contract)?;
     ensure_directory_version(&options.dir, &model)?;
@@ -476,30 +608,53 @@ fn lock(options: &Options) -> Result<ExitCode> {
         .map_err(|err| ContractError::from_error(&err))?;
     if !changes.reintroduced.is_empty() {
         for (key, number) in &changes.reintroduced {
-            eprintln!("error: {}", reintroduced(key, *number));
+            reporter.error("WF1103", reintroduced(key, *number), Some(key.clone()));
         }
-        bail!(ContractError::new(format!(
-            "{} removed member(s) reintroduced; the lockfile was not updated",
-            changes.reintroduced.len()
-        )));
+        if reporter.human() {
+            bail!(ContractError::new(format!(
+                "{} removed member(s) reintroduced; the lockfile was not updated",
+                changes.reintroduced.len()
+            )));
+        }
+        return Ok(ExitCode::from(1));
     }
     for (key, number) in &changes.dropped {
-        println!("dropped  {key} = {number}");
+        reporter.note(
+            "WF1203",
+            &format!("dropped  {key} = {number}"),
+            format!("dropped {key} = {number}"),
+            key.clone(),
+        );
     }
     for (key, _kind, _ty) in &changes.updated {
-        println!("updated  {key}");
+        reporter.note(
+            "WF1204",
+            &format!("updated  {key}"),
+            format!("updated {key}"),
+            key.clone(),
+        );
     }
     for (key, number) in &changes.reserved {
-        println!("reserved {key} = {number}");
+        reporter.note(
+            "WF1202",
+            &format!("reserved {key} = {number}"),
+            format!("reserved {key} = {number}"),
+            key.clone(),
+        );
     }
     for (key, number) in &changes.added {
-        println!("added    {key} = {number}");
+        reporter.note(
+            "WF1201",
+            &format!("added    {key} = {number}"),
+            format!("added {key} = {number}"),
+            key.clone(),
+        );
     }
     lock.write_atomic(&lock_path)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn rust(options: &RustOptions) -> Result<ExitCode> {
+fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Rust,
         &options.config,
@@ -513,13 +668,16 @@ fn rust(options: &RustOptions) -> Result<ExitCode> {
     // to be valid. The emitter validates every version and lockfile before writing.
     load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        return Ok(check_messages(&emit::rust::check(&paths.root, &paths.out)?));
+        return Ok(check_messages(
+            &emit::rust::check(&paths.root, &paths.out)?,
+            reporter,
+        ));
     }
     emit::rust::generate(&paths.root, &paths.out)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn proto(options: &ProtoOptions) -> Result<ExitCode> {
+fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Proto,
         &options.config,
@@ -531,16 +689,16 @@ fn proto(options: &ProtoOptions) -> Result<ExitCode> {
     )?;
     load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        return Ok(check_messages(&emit::proto::check(
-            &paths.root,
-            &paths.out,
-        )?));
+        return Ok(check_messages(
+            &emit::proto::check(&paths.root, &paths.out)?,
+            reporter,
+        ));
     }
     emit::proto::generate(&paths.root, &paths.out)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn schema(options: &SchemaOptions) -> Result<ExitCode> {
+fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Schema,
         &options.config,
@@ -552,16 +710,16 @@ fn schema(options: &SchemaOptions) -> Result<ExitCode> {
     )?;
     load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        return Ok(check_messages(&emit::json_schema::check(
-            &paths.root,
-            &paths.out,
-        )?));
+        return Ok(check_messages(
+            &emit::json_schema::check(&paths.root, &paths.out)?,
+            reporter,
+        ));
     }
     emit::json_schema::generate(&paths.root, &paths.out)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn glue(options: &GlueOptions) -> Result<ExitCode> {
+fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Glue,
         &options.config,
@@ -583,33 +741,52 @@ fn glue(options: &GlueOptions) -> Result<ExitCode> {
     // stay frozen. As for the other generators, the manifest only has to be valid.
     load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
-        return Ok(check_messages(&emit::glue::check(
-            &paths.root,
-            &paths.out,
-            plain_root,
-            proto_root,
-        )?));
+        return Ok(check_messages(
+            &emit::glue::check(&paths.root, &paths.out, plain_root, proto_root)?,
+            reporter,
+        ));
     }
     emit::glue::generate(&paths.root, &paths.out, plain_root, proto_root)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn diff_command(options: &DiffOptions) -> Result<ExitCode> {
+fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let report = diff::compare(&options.old, &options.new)?;
     if options.json {
+        // `--json` is the diff report; it takes precedence over the diagnostic envelope.
+        reporter.suppress();
         println!(
             "{}",
             serde_json::to_string_pretty(&diff_json(&report))
                 .context("failed to render the diff as JSON")?
         );
-    } else {
+    } else if reporter.human() {
         println!("{}", render_diff(&report));
+    } else {
+        for change in &report.changes {
+            let (code, severity) = if change.is_breaking() {
+                ("WF3001", Severity::Error)
+            } else {
+                ("WF3002", Severity::Note)
+            };
+            let (kind, detail) = change_label(change);
+            let mut message = format!("{} {} {kind}", change.element, change.path);
+            if let Some(number) = change.number {
+                let _ = write!(message, " number {number}");
+            }
+            if !detail.is_empty() {
+                let _ = write!(message, ": {detail}");
+            }
+            reporter.push(Diagnostic::new(code, severity, message).with_path(change.path.clone()));
+        }
     }
     if options.check && report.summary.breaking > 0 {
-        eprintln!(
-            "diff: {} breaking change(s); --check failed",
-            report.summary.breaking
-        );
+        if reporter.human() {
+            eprintln!(
+                "diff: {} breaking change(s); --check failed",
+                report.summary.breaking
+            );
+        }
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
@@ -673,6 +850,21 @@ fn change_json(change: &diff::Change) -> Value {
     value
 }
 
+fn change_label(change: &diff::Change) -> (&'static str, String) {
+    match &change.kind {
+        ChangeKind::Added { defaulted: true } => ("added-defaulted", String::new()),
+        ChangeKind::Added { defaulted: false } => ("added", String::new()),
+        ChangeKind::Removed => ("removed", String::new()),
+        ChangeKind::Reordered { before, after } => (
+            "reordered",
+            format!("{} -> {}", before.join(", "), after.join(", ")),
+        ),
+        ChangeKind::Retyped { from, to } => ("retyped", format!("{from} -> {to}")),
+        ChangeKind::KindChanged { from, to } => ("kind-changed", format!("{from} -> {to}")),
+        ChangeKind::Renumbered { from, to } => ("renumbered", format!("{from} -> {to}")),
+    }
+}
+
 fn render_diff(report: &DiffReport) -> String {
     use std::fmt::Write as _;
 
@@ -695,18 +887,7 @@ fn render_diff(report: &DiffReport) -> String {
         let _ = writeln!(out, "no contract changes");
     }
     for change in &report.changes {
-        let (kind, detail) = match &change.kind {
-            ChangeKind::Added { defaulted: true } => ("added-defaulted", String::new()),
-            ChangeKind::Added { defaulted: false } => ("added", String::new()),
-            ChangeKind::Removed => ("removed", String::new()),
-            ChangeKind::Reordered { before, after } => (
-                "reordered",
-                format!("{} -> {}", before.join(", "), after.join(", ")),
-            ),
-            ChangeKind::Retyped { from, to } => ("retyped", format!("{from} -> {to}")),
-            ChangeKind::KindChanged { from, to } => ("kind-changed", format!("{from} -> {to}")),
-            ChangeKind::Renumbered { from, to } => ("renumbered", format!("{from} -> {to}")),
-        };
+        let (kind, detail) = change_label(change);
         let number = change
             .number
             .map_or_else(String::new, |number| format!(" number={number}"));
@@ -741,9 +922,107 @@ fn status(breaking: bool) -> &'static str {
     if breaking { "BREAKING" } else { "compatible" }
 }
 
-fn check_messages(messages: &[String]) -> ExitCode {
+fn diagnostic_json(diagnostics: &[Diagnostic]) -> Result<String> {
+    let values: Vec<Value> = diagnostics.iter().map(diagnostic_value).collect();
+    serde_json::to_string_pretty(&json!({
+        "version": 1,
+        "tool": {
+            "name": "witforge",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "diagnostics": values,
+    }))
+    .context("failed to render diagnostics as JSON")
+}
+
+fn diagnostic_value(diagnostic: &Diagnostic) -> Value {
+    let mut value = json!({
+        "code": diagnostic.code,
+        "severity": diagnostic.severity.as_str(),
+        "message": &diagnostic.message,
+    });
+    let object = value.as_object_mut().expect("JSON object");
+    if let Some(path) = &diagnostic.path {
+        object.insert("path".to_string(), Value::String(path.clone()));
+    }
+    if let Some(position) = diagnostic.position {
+        object.insert("line".to_string(), json!(position.line));
+        object.insert("column".to_string(), json!(position.column));
+        object.insert("end_line".to_string(), json!(position.end_line));
+        object.insert("end_column".to_string(), json!(position.end_column));
+    }
+    value
+}
+
+fn sarif_json(diagnostics: &[Diagnostic]) -> Result<String> {
+    let mut rules = BTreeSet::new();
+    for diagnostic in diagnostics {
+        rules.insert(diagnostic.code);
+    }
+    let rules: Vec<Value> = rules
+        .into_iter()
+        .map(|code| {
+            json!({
+                "id": code,
+                "shortDescription": { "text": code },
+            })
+        })
+        .collect();
+    let results: Vec<Value> = diagnostics.iter().map(sarif_result).collect();
+    serde_json::to_string_pretty(&json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "witforge",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "informationUri": "https://github.com/asamarts/witforge",
+                    "rules": rules,
+                }
+            },
+            "results": results,
+        }],
+    }))
+    .context("failed to render diagnostics as SARIF")
+}
+
+fn sarif_result(diagnostic: &Diagnostic) -> Value {
+    let mut result = json!({
+        "ruleId": diagnostic.code,
+        "level": diagnostic.severity.as_str(),
+        "message": { "text": &diagnostic.message },
+    });
+    if let Some(path) = &diagnostic.path {
+        let mut physical = json!({
+            "artifactLocation": { "uri": path.replace('\\', "/") },
+        });
+        if let (Some(position), Some(object)) = (diagnostic.position, physical.as_object_mut()) {
+            object.insert(
+                "region".to_string(),
+                json!({
+                    "startLine": position.line,
+                    "startColumn": position.column,
+                    "endLine": position.end_line,
+                    "endColumn": position.end_column,
+                }),
+            );
+        }
+        result["locations"] = json!([{ "physicalLocation": physical }]);
+    }
+    result
+}
+
+fn diagnostic_path(message: &str) -> Option<String> {
+    let start = message.find('`')?;
+    let rest = &message[start + 1..];
+    let end = rest.find('`')?;
+    Some(rest[..end].to_string())
+}
+
+fn check_messages(messages: &[String], reporter: &mut Reporter) -> ExitCode {
     for message in messages {
-        eprintln!("error: {message}");
+        reporter.error("WF2001", message, diagnostic_path(message));
     }
     if messages.is_empty() {
         ExitCode::SUCCESS
@@ -839,29 +1118,49 @@ impl Remedy {
     }
 }
 
-fn report_check_changes(changes: &witforge::lock::Changes, remedy: &Remedy) {
+fn report_check_changes(
+    changes: &witforge::lock::Changes,
+    remedy: &Remedy,
+    reporter: &mut Reporter,
+) {
     for (key, _) in &changes.added {
-        eprintln!("error: {key} has no wire number; {}", remedy.advice(""));
+        reporter.error(
+            "WF1101",
+            format!("{key} has no wire number; {}", remedy.advice("")),
+            Some(key.clone()),
+        );
     }
     for (key, number) in &changes.reserved {
-        eprintln!(
-            "error: {key} = {number} is no longer in the contract; {}",
-            remedy.advice(" to reserve it")
+        reporter.error(
+            "WF1102",
+            format!(
+                "{key} = {number} is no longer in the contract; {}",
+                remedy.advice(" to reserve it")
+            ),
+            Some(key.clone()),
         );
     }
     for (key, number) in &changes.reintroduced {
-        eprintln!("error: {}", reintroduced(key, *number));
+        reporter.error("WF1103", reintroduced(key, *number), Some(key.clone()));
     }
     for (key, number) in &changes.dropped {
-        eprintln!(
-            "error: stale draft {key} = {number}; {}",
-            remedy.advice(" to drop it")
+        reporter.error(
+            "WF1104",
+            format!(
+                "stale draft {key} = {number}; {}",
+                remedy.advice(" to drop it")
+            ),
+            Some(key.clone()),
         );
     }
     for (key, _kind, _ty) in &changes.updated {
-        eprintln!(
-            "error: draft {key} changed kind or type; {}",
-            remedy.advice(" to update it")
+        reporter.error(
+            "WF1105",
+            format!(
+                "draft {key} changed kind or type; {}",
+                remedy.advice(" to update it")
+            ),
+            Some(key.clone()),
         );
     }
 }

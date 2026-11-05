@@ -240,6 +240,13 @@ fails on any breaking verdict; `--json` is the machine-readable form. The normat
 [`diff.md`](diff.md). This is a review aid: the lockfile, emitted-output `--check`, and release
 freeze remain the gates that protect a published version.
 
+### 5.5 Machine-readable diagnostics
+
+`check`, `lock`, `diff`, and the generators accept `--format json` or `--format sarif`.
+Diagnostics have stable codes, severities, paths, and optional source positions; the default
+human output is unchanged. The envelope, SARIF mapping, and code catalogue are in
+[`diagnostics.md`](diagnostics.md).
+
 
 ## 6. Prototype findings and `wit-parser` gotchas
 
