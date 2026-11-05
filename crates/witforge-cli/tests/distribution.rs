@@ -17,8 +17,17 @@ fn release_asset_script_packages_the_binary_and_writes_a_checksum() {
     fs::write(&binary, b"#!/bin/sh\necho fake witforge\n").unwrap();
     let out = root.join("dist");
 
+    let bash = if cfg!(windows) {
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        if !git_bash.is_file() {
+            return;
+        }
+        git_bash.to_path_buf()
+    } else {
+        PathBuf::from("bash")
+    };
     let bash_path = |path: &Path| path.display().to_string().replace('\\', "/");
-    let output = Command::new("bash")
+    let output = Command::new(bash)
         .current_dir(repository())
         .arg("ci/release-asset.sh")
         .arg("v0.3.0")
