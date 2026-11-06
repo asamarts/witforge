@@ -17,12 +17,13 @@ while the reverse directions are lossy. witforge exists because no tool performs
 projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
 tie their output to a runtime.
 
-> **Status: 0.2.0.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
-> protobuf, JSON Schema, glue, and version-conversion emitters are implemented, with clap-based
-> `witforge check`, `lock`, `rust`, `proto`, `schema`, and `glue` commands and `witforge.toml`
-> projects. CI runs on Linux, macOS, and Windows and gates generated-output drift, release
-> freezes, and the aplan contract. witforge's first consumer is the
-> [alint](https://github.com/asamarts/alint) plugin contract.
+> **Status: 0.3.0.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
+> protobuf, JSON Schema, glue, and version-conversion emitters are implemented, alongside
+> `witforge diff`, structured `--format json|sarif` diagnostics, `witforge.toml` projects, and
+> the GitHub Action/prebuilt release archives. CI runs on Linux, macOS, and Windows and gates
+> generated-output drift, release freezes, dependency and security policy, and the aplan
+> contract. witforge's first consumer is the [alint](https://github.com/asamarts/alint) plugin
+> contract.
 
 ## Install
 
@@ -90,11 +91,16 @@ $ witforge lock  wit/v0.1 --first                         number the first versi
 $ cp wit/v0.1/wire.lock wit/v0.2/wire.lock                start a new minor from the last lock
 $ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number its new members
 $ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
+$ witforge diff  wit/v0.1 wit/v0.2 --check               review breaking changes  (CI)
 $ witforge rust  wit --out src/plain                     plain modules + metadata
 $ witforge proto wit --out proto                         protobuf schema
 $ witforge schema wit --out schema                      Draft 7 JSON Schema
 $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
 ```
+
+`--format json|sarif` turns diagnostics from the commands into stable machine-readable output;
+`diff --json` is the full diff report. The formats and code catalogue are in
+[`docs/design/diagnostics.md`](docs/design/diagnostics.md).
 
 A `witforge.toml` project can replace the repeated roots and output paths:
 

@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-06
+
+0.3.0 is the change-review and CI release. It adds `witforge diff`, structured JSON/SARIF
+diagnostics, a GitHub Action with prebuilt Linux/macOS/Windows binaries, and the quality and
+security gates needed before 1.0. Generated output is unchanged for every contract 0.2.0
+accepts; the new CLI options and release artifacts are additive.
+
+### Added
+
+- `witforge diff <old> <new>` compares version directories or WIT roots and reports added,
+  removed, reordered, retyped, kind-changed, renumbered, and defaulted changes with independent
+  wire-identity, source, and generated-API verdicts. `--json` emits the full report and
+  `--check` exits non-zero on a breaking change (`W8-001`).
+- `--format json|sarif` on `check`, `lock`, `diff`, and every generator emits a versioned
+  diagnostic envelope or SARIF 2.1.0. Diagnostics carry stable codes, severities, paths, and
+  optional source positions; human output is unchanged by default (`W8-002`).
+- The repository publishes a GitHub Action and checksum-verified prebuilt archives for Linux
+  x86_64, macOS Intel and Apple silicon, and Windows x86_64. The Action installs the matching
+  release and can run `check`, `diff`, and configured generator checks (`W8-003`).
+- Property/fuzz tests for arbitrary lockfile text and emitter input models, a small/large
+  contract benchmark budget, `cargo audit` and `cargo deny` policy checks, and a public
+  [`SECURITY.md`](SECURITY.md) reporting policy (`W8-004`).
+
+### Changed
+
+- CLI diagnostic collection and JSON/SARIF rendering are isolated from command dispatch; diff
+  member comparison uses a structured comparison specification. Human output and exit codes are
+  unchanged (`W8-006`).
+
 ## [0.2.0] - 2026-11-04
 
 0.2.0 is the first pre-1.0 release of the full compiler surface. It adds generated

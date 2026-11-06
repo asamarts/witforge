@@ -15,10 +15,10 @@ types directly.
 
 ## Install
 
-After the 0.2 release is published:
+After the 0.3 release is published:
 
 ```sh
-cargo install witforge-cli --version 0.2.0 --locked
+cargo install witforge-cli --version 0.3.0 --locked
 witforge --version
 ```
 
@@ -170,6 +170,24 @@ generation.
 
 `wit/released` lists frozen versions. Do not edit a released version's WIT, lockfile, or generated
 Rust module. The release-freeze check and `--check` enforce that rule.
+
+## Review a change
+
+Compare a draft with the previous version before merging it:
+
+```sh
+witforge diff wit/v0.1 wit/v0.2
+witforge diff wit/v0.1 wit/v0.2 --check
+witforge diff wit/v0.1 wit/v0.2 --json
+```
+
+`--check` fails on wire-, source-, or generated-API-breaking changes. `--json` is the complete
+diff report. To make any command's diagnostics machine-readable, add `--format json` or
+`--format sarif`; the catalogue is in [`docs/design/diagnostics.md`](design/diagnostics.md).
+
+For CI, [`asamarts/witforge`](https://github.com/asamarts/witforge) publishes an Action that
+installs the matching release and can run the same checks; see
+[`docs/design/action.md`](design/action.md).
 
 ## Non-Rust consumers
 

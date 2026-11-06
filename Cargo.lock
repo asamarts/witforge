@@ -1651,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "witforge"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "jsonschema",
@@ -1668,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "witforge-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
