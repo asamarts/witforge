@@ -125,7 +125,7 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
       `546cec1`, CI run 41255894743, release run 41261961612; 0.1.1: commit `978c985`, CI run
       41274574941, release run 41274576724; 0.1.2: commit `3f89ec4`, CI run 41341872998,
       release run 41342094380; 0.2.0: commit `dfb06de`, CI run 41936185007, release run
-      41936720164).
+      41936720164; 0.3.0: commit `9ee341a`, CI run 42135517669, release run 42135977082).
 - [x] Keep the released fixtures and generated-output checks in CI.
 - [ ] Move the next contract change to a new minor version directory with `--against`.
 
@@ -139,3 +139,16 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] `cargo install witforge-cli --version 0.2.0 --locked` reported `witforge 0.2.0`; the
       installed binary passed the single-version and evolved-version example checks.
 - [x] crates.io lists both crates at 0.2.0 and docs.rs built the library documentation.
+
+## 0.3.0 record
+
+- [x] Release commit `9ee341a`, annotated tag `v0.3.0`; both pushed to `main`.
+- [x] Main CI run 42135517669 passed on Linux, macOS 15, Windows, MSRV 1.88, security,
+      benchmark, packaging, generated output, release freeze, workflows, and the plan gate.
+- [x] Release run 42135977082 verified the tag, dry-ran the packages, published both crates
+      through trusted publishing, created the GitHub release, and uploaded Linux, macOS x86_64,
+      macOS aarch64, and Windows x86_64 archives with checksums.
+- [x] `cargo install witforge-cli --version 0.3.0 --locked` reported `witforge 0.3.0`; the
+      installed binary passed the single-version and evolved-version example checks.
+- [x] crates.io lists both crates at 0.3.0, docs.rs built the library, and the published Action
+      installed the 0.3.0 Linux asset and ran `check`, `diff`, and a configured `rust --check`.

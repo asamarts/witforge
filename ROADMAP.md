@@ -102,13 +102,13 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       metadata, `witforge.toml`, and the CI plan gate.
 - [x] Add a quickstart, examples, and a clear scope statement before the release.
 
-## 0.3.0: change-review and CI tooling
+## 0.3.0: change-review and CI tooling (done)
 
 - [x] `witforge diff` with human and JSON breaking-change reports.
 - [x] Structured diagnostics and SARIF output.
 - [x] GitHub Action and prebuilt binaries.
 - [x] Fuzzing, benchmarks, and dependency/security gates.
-- [ ] Release 0.3.0.
+- [x] Release 0.3.0.
 
 ## 0.4.0: WIT dependencies and Rust Serde
 

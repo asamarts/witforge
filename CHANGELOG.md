@@ -11,6 +11,13 @@ diagnostics, a GitHub Action with prebuilt Linux/macOS/Windows binaries, and the
 security gates needed before 1.0. Generated output is unchanged for every contract 0.2.0
 accepts; the new CLI options and release artifacts are additive.
 
+Release commit `9ee341a` (tag `v0.3.0`), main CI run 42135517669, release run
+42135977082. crates.io records both crates as published through GitHub trusted publishing;
+`cargo install witforge-cli --version 0.3.0 --locked` reports `witforge 0.3.0`, docs.rs built
+the library, and the release carries the Linux, macOS x86_64, macOS aarch64, and Windows x86_64
+archives with checksums. The published Action was exercised against the tag for `check`, `diff`,
+and a configured `rust --check` run.
+
 ### Added
 
 - `witforge diff <old> <new>` compares version directories or WIT roots and reports added,
