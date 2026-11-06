@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-06
+
+0.4.0 is the dependency and Serde release. It adds standard `deps/` dependency types,
+generated dependency bindings, foreign world interfaces, dependency glue, and opt-in per-project
+Serde derives. Generated output is unchanged for a contract 0.3.0 accepts unless the contract
+uses `deps/` or the project enables `serde = true`.
+
+### Added
+
+- Standard `wit/deps` package dependencies with package-qualified type and interface
+  references. Dependency Rust modules are emitted in `witforge_deps.rs`, protobuf schemas in one
+  sanitized `<namespace>.<package>.v<major>.proto` file per dependency, and only referenced
+  schemas are imported (`W9-001`, `W9-004`).
+- Dependency aliases, lists, options, results, enums, variants, flags, records, and
+  cross-dependency references are generated through their underlying wire shapes; a
+  dependency's unsupported unused items are skipped instead of breaking the root (`W9-004`).
+- Worlds may import and export interfaces from standard `deps/` packages. World metadata keeps
+  the package-qualified interface name, protobuf imports the dependency schema, and glue
+  converts foreign values and dependency interface functions through a shared
+  `witforge_deps.rs` module (`W9-005`).
+- Opt-in Serde derives for generated records, enums, variants, and flags, selected by
+  `[project.<name>.rust] serde = true`, `--serde`, or overridden with `--no-serde`. The default
+  output is unchanged (`W9-002`).
+
+### Changed
+
+- Glue for a contract with dependencies uses package-relative protobuf module paths
+  (`<proto-root>::<namespace>::<package>::v<major>`) so prost's cross-package references
+  resolve. Version adapters copy values whose types are the same pinned dependency type.
+- The JSON Schema test dependency moved to `jsonschema` 0.60, and the CLI configuration
+  dependency moved to `toml` 1.1; both are internal dependency updates with no runtime API
+  change.
+
 ## [0.3.0] - 2026-11-06
 
 0.3.0 is the change-review and CI release. It adds `witforge diff`, structured JSON/SARIF

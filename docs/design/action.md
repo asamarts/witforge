@@ -29,7 +29,7 @@ rather than running the wrong binary.
 ## Installing a prebuilt archive
 
 ```sh
-VERSION=0.3.0
+VERSION=0.4.0
 TARGET=x86_64-unknown-linux-gnu
 BASE="https://github.com/asamarts/witforge/releases/download/v${VERSION}"
 curl -sSfLO "${BASE}/witforge-${VERSION}-${TARGET}.tar.gz"
@@ -48,7 +48,7 @@ The action is published from this repository. It installs the release matching t
 by default:
 
 ```yaml
-- uses: asamarts/witforge@v0.3.0 # pinned: installs witforge 0.3.0
+- uses: asamarts/witforge@v0.4.0 # pinned: installs witforge 0.4.0
   with:
     check: wit/v0.2
     diff-old: wit/v0.1
@@ -63,7 +63,7 @@ published release. A `version` input overrides either default:
 ```yaml
 - uses: asamarts/witforge@main # floats, but installs a specific release
   with:
-    version: 0.3.0
+    version: 0.4.0
 ```
 
 Pass `${{ github.token }}` as `github-token` when querying the latest release to avoid anonymous

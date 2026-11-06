@@ -8,8 +8,8 @@ trap 'rm -rf "$tmp"' EXIT
 printf '#!/bin/sh\necho fake witforge\n' >"$tmp/witforge"
 chmod +x "$tmp/witforge"
 
-asset=$(bash "$root/ci/release-asset.sh" v0.3.0 x86_64-unknown-linux-gnu "$tmp/witforge" "$tmp/dist")
-[ "$asset" = "$tmp/dist/witforge-0.3.0-x86_64-unknown-linux-gnu.tar.gz" ] || {
+asset=$(bash "$root/ci/release-asset.sh" v0.4.0 x86_64-unknown-linux-gnu "$tmp/witforge" "$tmp/dist")
+[ "$asset" = "$tmp/dist/witforge-0.4.0-x86_64-unknown-linux-gnu.tar.gz" ] || {
   echo "unexpected asset path: $asset" >&2
   exit 1
 }
