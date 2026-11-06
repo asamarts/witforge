@@ -164,3 +164,15 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] `cargo install witforge-cli --version 0.4.0 --locked` reported `witforge 0.4.0`.
 - [x] The alint consumer checked its committed generated output against witforge 0.4.0 and
       matched.
+
+## 0.4.1 record
+
+- [x] Release commit `18fce07`, annotated tag `v0.4.1`; both pushed to `main`.
+- [x] Main CI run 42300530773 passed on Linux, macOS 15, Windows, MSRV 1.88, security,
+      benchmark, packaging, generated output, release freeze, workflows, and the plan gate.
+- [x] Release run 42301227582 verified the tag, dry-ran the packages, published both crates
+      through trusted publishing, created the GitHub release, and uploaded the Linux, macOS
+      x86_64, macOS aarch64, and Windows x86_64 archives with checksums.
+- [x] `cargo install witforge-cli --version 0.4.1 --locked` reported `witforge 0.4.1`.
+- [x] The alint consumer checked its committed generated output against witforge 0.4.1 and
+      matched.

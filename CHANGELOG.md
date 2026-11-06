@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows
 change the library API, wire numbers, or generated output for a contract that
 does not use dependency types.
 
+Release commit `18fce07` (tag `v0.4.1`), main CI run 42300530773, release run 42301227582.
+Both crates are published; `cargo install witforge-cli --version 0.4.1 --locked` reports
+`witforge 0.4.1`, and the release carries the usual four platform archives.
+
 ### Fixed
 
 - Nested dependency lists and options now use the same synthesized wrapper
