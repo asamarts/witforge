@@ -1,0 +1,28 @@
+package example:serde@0.1.0;
+
+interface types {
+    record item {
+        id: u64,
+        name: string,
+        score: f64,
+        note: option<string>,
+        tags: list<string>,
+        scores: list<option<f64>>,
+    }
+
+    enum state {
+        ready,
+        done,
+    }
+
+    variant event {
+        started,
+        item(item),
+    }
+
+    flags marks {
+        trace,
+    }
+
+    type alias-item = item;
+}

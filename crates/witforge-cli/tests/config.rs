@@ -215,3 +215,49 @@ out = "out"
     );
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn rust_serde_is_opt_in_and_cli_overrides_the_config() {
+    let root = project("serde");
+    let config = write_config(
+        &root,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.rust]
+out = "generated/serde"
+serde = true
+"#,
+    );
+    let enabled = witforge()
+        .current_dir(&root)
+        .args(["rust", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(enabled.status.success(), "{enabled:?}");
+    let generated = fs::read_to_string(root.join("generated/serde/v0_1.rs")).unwrap();
+    assert!(
+        generated.contains("::serde::Serialize"),
+        "serde derives missing: {generated}"
+    );
+
+    let disabled = witforge()
+        .current_dir(&root)
+        .args(["rust", "--config"])
+        .arg(&config)
+        .arg("--no-serde")
+        .arg("--out")
+        .arg("generated/plain")
+        .output()
+        .unwrap();
+    assert!(disabled.status.success(), "{disabled:?}");
+    let generated = fs::read_to_string(root.join("generated/plain/v0_1.rs")).unwrap();
+    assert!(
+        !generated.contains("::serde::Serialize"),
+        "serde was not disabled: {generated}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

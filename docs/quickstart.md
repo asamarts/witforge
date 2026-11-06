@@ -102,6 +102,7 @@ root = "wit"
 
 [project.hello.rust]
 out = "generated/rust"
+# serde = true  # opt in to Serialize/Deserialize derives
 
 [project.hello.proto]
 out = "generated/proto"
@@ -126,7 +127,8 @@ witforge glue   --config witforge.toml
 
 If the file has more than one project, add `--project NAME`. Paths inside the file are relative to
 the file itself. Explicit CLI paths override configured paths, and the command-line-only form
-continues to work.
+continues to work. `--serde` or `--no-serde` overrides the Rust section's serde setting; the
+generated code then requires the consumer's `serde` crate with `derive`.
 
 ## Evolve a contract
 

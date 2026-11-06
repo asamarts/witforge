@@ -60,7 +60,7 @@ mod tests {
             }
         }
         assert_internal(
-            &rust::plan_versions(&dangling).unwrap_err(),
+            &rust::plan_versions_with_serde(&dangling, false).unwrap_err(),
             "is not in the model",
         );
         assert_internal(

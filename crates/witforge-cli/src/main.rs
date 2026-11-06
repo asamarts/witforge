@@ -4,7 +4,7 @@
 //! witforge check <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
 //! witforge lock  <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
 //! witforge rust  [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
-//!                [--check] [--released PATH]
+//!                [--serde | --no-serde] [--check] [--released PATH]
 //! witforge proto [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
 //!                [--check] [--released PATH]
 //! witforge schema [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
@@ -82,6 +82,12 @@ struct RustOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
+    /// Add serde Serialize/Deserialize derives to generated types.
+    #[arg(long, conflicts_with = "no_serde")]
+    serde: bool,
+    /// Do not add serde derives, overriding a configuration-file setting.
+    #[arg(long = "no-serde", conflicts_with = "serde")]
+    no_serde: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -217,7 +223,7 @@ struct ProjectConfig {
     root: PathBuf,
     /// Released-version manifest, relative to the configuration file.
     released: Option<PathBuf>,
-    rust: Option<OutConfig>,
+    rust: Option<RustConfig>,
     proto: Option<OutConfig>,
     schema: Option<OutConfig>,
     glue: Option<GlueConfig>,
@@ -227,6 +233,14 @@ struct ProjectConfig {
 #[serde(deny_unknown_fields)]
 struct OutConfig {
     out: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RustConfig {
+    out: PathBuf,
+    /// Add serde derives to generated records, enums, variants, and flags.
+    serde: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -247,23 +261,38 @@ enum Emitter {
     Glue,
 }
 
+struct PathOverrides {
+    root: Option<PathBuf>,
+    out: Option<PathBuf>,
+    released: Option<PathBuf>,
+    plain_root: Option<String>,
+    proto_root: Option<String>,
+    serde: Option<bool>,
+}
+
 struct ResolvedPaths {
     root: PathBuf,
     out: PathBuf,
     released: Option<PathBuf>,
     plain_root: Option<String>,
     proto_root: Option<String>,
+    serde: bool,
 }
 
+#[allow(clippy::too_many_lines)]
 fn resolve_paths(
     emitter: Emitter,
     config_args: &ConfigArgs,
-    root: Option<PathBuf>,
-    out: Option<PathBuf>,
-    released: Option<PathBuf>,
-    plain_root: Option<String>,
-    proto_root: Option<String>,
+    overrides: PathOverrides,
 ) -> Result<ResolvedPaths> {
+    let PathOverrides {
+        root,
+        out,
+        released,
+        plain_root,
+        proto_root,
+        serde,
+    } = overrides;
     let Some(config_path) = &config_args.config else {
         if config_args.project.is_some() {
             bail!("`--project` requires `--config`");
@@ -279,6 +308,7 @@ fn resolve_paths(
             released,
             plain_root,
             proto_root,
+            serde: serde.unwrap_or(false),
         });
     };
 
@@ -327,7 +357,7 @@ fn resolve_paths(
     };
     let root = root.unwrap_or_else(|| from_config(&project.root));
     let out = out.or_else(|| match emitter {
-        Emitter::Rust => project.rust.map(|config| from_config(&config.out)),
+        Emitter::Rust => project.rust.as_ref().map(|config| from_config(&config.out)),
         Emitter::Proto => project.proto.map(|config| from_config(&config.out)),
         Emitter::Schema => project.schema.map(|config| from_config(&config.out)),
         Emitter::Glue => project.glue.as_ref().map(|config| from_config(&config.out)),
@@ -349,12 +379,16 @@ fn resolve_paths(
     if matches!(emitter, Emitter::Glue) && (plain_root.is_none() || proto_root.is_none()) {
         bail!("glue requires --plain-root and --proto-root (or a configuration section)");
     }
+    let serde = serde
+        .or_else(|| project.rust.as_ref().and_then(|config| config.serde))
+        .unwrap_or(false);
     Ok(ResolvedPaths {
         root,
         out,
         released,
         plain_root,
         proto_root,
+        serde,
     })
 }
 
@@ -570,22 +604,31 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Rust,
         &options.config,
-        options.root.clone(),
-        options.out.clone(),
-        options.released.clone(),
-        None,
-        None,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: None,
+            proto_root: None,
+            serde: if options.serde {
+                Some(true)
+            } else if options.no_serde {
+                Some(false)
+            } else {
+                None
+            },
+        },
     )?;
     // Generation reproduces released versions without modifying them, so the manifest only has
     // to be valid. The emitter validates every version and lockfile before writing.
     load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
         return Ok(check_messages(
-            &emit::rust::check(&paths.root, &paths.out)?,
+            &emit::rust::check_with_serde(&paths.root, &paths.out, paths.serde)?,
             reporter,
         ));
     }
-    emit::rust::generate(&paths.root, &paths.out)?;
+    emit::rust::generate_with_serde(&paths.root, &paths.out, paths.serde)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -593,11 +636,14 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Proto,
         &options.config,
-        options.root.clone(),
-        options.out.clone(),
-        options.released.clone(),
-        None,
-        None,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: None,
+            proto_root: None,
+            serde: None,
+        },
     )?;
     load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
@@ -614,11 +660,14 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
     let paths = resolve_paths(
         Emitter::Schema,
         &options.config,
-        options.root.clone(),
-        options.out.clone(),
-        options.released.clone(),
-        None,
-        None,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: None,
+            proto_root: None,
+            serde: None,
+        },
     )?;
     load_root_released_manifest(&paths.root, paths.released.as_deref())?;
     if options.check {
@@ -635,11 +684,14 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Glue,
         &options.config,
-        options.root.clone(),
-        options.out.clone(),
-        options.released.clone(),
-        options.plain_root.clone(),
-        options.proto_root.clone(),
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: options.plain_root.clone(),
+            proto_root: options.proto_root.clone(),
+            serde: None,
+        },
     )?;
     let plain_root = paths
         .plain_root

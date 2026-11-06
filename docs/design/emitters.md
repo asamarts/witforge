@@ -186,10 +186,23 @@ Every generated struct or enum gets:
 #[derive(Debug, Clone, PartialEq)]
 ```
 
-There is no `Eq`, `Hash`, `Default`, `Copy`, `serde`, or `prost` derive, and no
-`#[non_exhaustive]`. Fields and variants are `pub`. Type aliases have no derives. Conditional
-`Eq`/`Hash`/`Default` are declined for 0.x/1.0; the float, Default, and frozen-version reasoning
-is in [`overview.md`](overview.md#102-conditional-eqhash-and-default-evaluation-w6-003).
+There is no `Eq`, `Hash`, `Default`, `Copy`, `prost`, or `#[non_exhaustive]` derive, and
+fields and variants are `pub`. Conditional `Eq`/`Hash`/`Default` are declined for 0.x/1.0; the
+float, Default, and frozen-version reasoning is in
+[`overview.md`](overview.md#102-conditional-eqhash-and-default-evaluation-w6-003).
+
+Serde is opt-in. With `[project.<name>.rust] serde = true` (or `--serde`), records, enums,
+variants, and flags additionally derive:
+
+```rust
+#[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
+```
+
+The consumer must depend on `serde` with the `derive` feature. Type aliases cannot derive; their
+target types do. The default output, `--no-serde`, and the existing generated API are unchanged;
+`--serde` overrides a configuration that left it off, and `--no-serde` overrides one that left it
+on. Floats, nested options/lists/results, and all generated structural shapes are covered by a
+compile and JSON round-trip test.
 
 ### 3.4 Type mapping
 
@@ -1237,6 +1250,7 @@ released = "wit/released"
 
 [project.alint.rust]
 out = "src/plain"
+serde = true
 
 [project.alint.proto]
 out = "proto"
@@ -1255,7 +1269,8 @@ proto-root = "crate::proto"
 - `root` is required for each project.
 - `released` is optional; when absent the generator's normal default applies.
 - `rust`, `proto`, `schema`, and `glue` sections are optional. Each output section has an `out`
-  path; `glue` also has optional `plain-root` and `proto-root` strings.
+  path; `rust` also has optional `serde = true|false`; `glue` also has optional `plain-root` and
+  `proto-root` strings.
 - Unknown keys or sections are errors, as are a missing/unsupported version, an empty project
   table, a missing project selected with `--project`, and a missing output section or CLI path
   needed by the selected command.
@@ -1275,7 +1290,8 @@ proto-root = "crate::proto"
 - Config-only invocation (`witforge rust --config ...`) and CLI-only invocation
   (`witforge rust <root> --out ...`) are both valid. The configuration is validated even when
   CLI flags override all of its values.
-- `--check` has no configuration key: it is an action, not a project setting.
+- `--serde` and `--no-serde` override the `rust` section's `serde` value. `--check` has no
+  configuration key: it is an action, not a project setting.
 
 ### 11.3 Testing requirements
 
