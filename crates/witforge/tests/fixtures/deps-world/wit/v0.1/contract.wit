@@ -1,0 +1,12 @@
+package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{thing};
+    record box { value: thing }
+    get: func() -> box;
+}
+
+world plugin {
+    import example:shared/types@0.1.0;
+    export example:other/types@0.1.0;
+}

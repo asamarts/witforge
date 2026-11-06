@@ -2,12 +2,12 @@
 //!
 //! Version 1 of the subset is pure and synchronous, and maps cleanly onto Rust
 //! and protobuf: no resources or handles, no `future`, `stream`, or `error-context`, no `map`, no
-//! fixed-length lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors, and
-//! no foreign interfaces or worlds. Types and functions live in the package's named interfaces,
-//! and a local type may reference a named type from a standard `deps/` package. Worlds only
-//! import and export interfaces defined by this package. Anything the checker does not
-//! recognise is refused rather than passed through, so a new `wit-parser` construct cannot slip
-//! into the generated bindings.
+//! fixed-length lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors.
+//! Types and functions live in the package's named interfaces, and a local type may reference a
+//! named type from a standard `deps/` package. Worlds may import and export interfaces defined
+//! by this package or by a standard `deps/` package. Anything the checker does not recognise is
+//! refused rather than passed through, so a new `wit-parser` construct cannot slip into the
+//! generated bindings.
 
 use std::fmt;
 
@@ -111,21 +111,21 @@ fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<V
                 ),
                 (WorldKey::Interface(_), WorldItem::Interface { id, .. }) => {
                     let iface = &resolve.interfaces[*id];
-                    if iface.package != Some(contract.package) {
-                        // `id_of` panics on an interface without a package.
-                        let name = iface
-                            .package
-                            .and_then(|_| resolve.id_of(*id))
-                            .unwrap_or_default();
-                        refuse(
-                            out,
-                            at,
-                            format!(
-                                "{verb} `{name}` from another package; foreign interfaces are \
-                                 not supported, so use a local interface or a named dependency \
-                                 type"
-                            ),
-                        );
+                    if let Some(package) = iface.package {
+                        if package != contract.package && !contract.is_dependency(package) {
+                            // `id_of` panics on an interface without a package.
+                            let name = resolve.id_of(*id).unwrap_or_default();
+                            refuse(
+                                out,
+                                at,
+                                format!(
+                                    "{verb} `{name}` from a package outside the standard \
+                                     `deps/` directory"
+                                ),
+                            );
+                        }
+                    } else {
+                        refuse(out, at, format!("{verb} an interface with no package"));
                     }
                 }
                 (_, WorldItem::Function(func)) => refuse(

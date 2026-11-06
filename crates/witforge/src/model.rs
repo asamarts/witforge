@@ -244,12 +244,26 @@ pub struct Interface {
 /// A named interface imported or exported by a world.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldInterface {
-    /// The interface name in this package.
+    /// The interface name within its package.
     pub interface: String,
+    /// The defining dependency package, or `None` for an interface in the root package.
+    pub package: Option<Package>,
     /// Documentation on the import or export statement.
     pub docs: String,
     /// Stability metadata on the import or export statement.
     pub stability: Stability,
+}
+
+impl WorldInterface {
+    /// The package-qualified interface name, as `namespace:package/interface` for a dependency
+    /// and `interface` for a local interface.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        match &self.package {
+            Some(package) => format!("{}:{}/{}", package.namespace, package.name, self.interface),
+            None => self.interface.clone(),
+        }
+    }
 }
 
 /// A world and its imported and exported interfaces.
@@ -800,15 +814,35 @@ fn build_world_side<'a>(
                 },
             ) => {
                 let interface = &resolve.interfaces[*id];
-                if interface.package != Some(root) {
-                    bail!("world {verb} an interface from another package");
-                }
                 let name = interface
                     .name
                     .clone()
                     .context("world {verb} an inline interface")?;
+                let package = match interface.package {
+                    Some(package) if package != root => {
+                        let wit_package = &resolve.packages[package];
+                        let wit_version = wit_package
+                            .name
+                            .version
+                            .as_ref()
+                            .context("a dependency package has no version")?;
+                        Some(Package {
+                            namespace: wit_package.name.namespace.clone(),
+                            name: wit_package.name.name.clone(),
+                            version: Version {
+                                major: wit_version.major,
+                                minor: wit_version.minor,
+                                patch: wit_version.patch,
+                            },
+                            docs: docs(&wit_package.docs),
+                        })
+                    }
+                    Some(_) => None,
+                    None => bail!("world {verb} an interface with no package"),
+                };
                 out.push(WorldInterface {
                     interface: name,
+                    package,
                     docs: docs(item_docs),
                     stability: stability(item_stability),
                 });

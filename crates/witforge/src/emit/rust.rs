@@ -669,13 +669,13 @@ fn emit_worlds(versions: &[Version]) -> Result<String> {
             let imports = world
                 .imports
                 .iter()
-                .map(|interface| format!("{:?}", interface.interface))
+                .map(|interface| format!("{:?}", interface.qualified_name()))
                 .collect::<Vec<_>>()
                 .join(", ");
             let exports = world
                 .exports
                 .iter()
-                .map(|interface| format!("{:?}", interface.interface))
+                .map(|interface| format!("{:?}", interface.qualified_name()))
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(

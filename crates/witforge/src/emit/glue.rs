@@ -13,7 +13,8 @@ use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions};
 use crate::lock::WireLock;
 use crate::model::{
-    Case, Field, Flag, Interface, Model, QualifiedName, ResultExpr, TypeDef, TypeDefKind, TypeExpr,
+    Case, Dependency, Field, Flag, Interface, Model, QualifiedName, ResultExpr, TypeDef,
+    TypeDefKind, TypeExpr,
 };
 
 /// The ownership header on every generated glue file.
@@ -109,15 +110,23 @@ pub(crate) fn plan_versions(
     for version in versions {
         highest.insert(version.major, version);
     }
-    let package = &versions
+    let first = versions
         .first()
-        .context("no version directories found under WIT root")?
-        .model
-        .package;
-    for version in versions {
-        ensure_no_foreign_values(&version.model)?;
+        .context("no version directories found under WIT root")?;
+    let package = &first.model.package;
+    if versions
+        .iter()
+        .any(|version| version.model.dependencies != first.model.dependencies)
+    {
+        contract_bail!("versions disagree about their dependency packages");
     }
     let mut files = GeneratedFiles::new(HEADER);
+    if !first.model.dependencies.is_empty() {
+        files.insert(
+            "witforge_deps.rs",
+            emit_dependency_glue(&first.model.dependencies, plain_root, proto_root)?,
+        )?;
+    }
     let mut majors = Vec::new();
     for (major, version) in &highest {
         let generated = emit_version(&version.model, &version.lock, plain_root, proto_root)
@@ -129,7 +138,12 @@ pub(crate) fn plan_versions(
     }
     files.insert(
         "mod.rs",
-        root_source(&package.namespace, &package.name, &majors)?,
+        root_source(
+            &package.namespace,
+            &package.name,
+            &majors,
+            !first.model.dependencies.is_empty(),
+        )?,
     )?;
     Ok(files)
 }
@@ -161,69 +175,51 @@ pub fn check(
     plan(wit_root, plain_root, proto_root)?.check(out)
 }
 
-fn ensure_no_foreign_values(model: &Model) -> Result<()> {
-    for interface in &model.interfaces {
-        for def in &interface.types {
-            ensure_type_has_no_foreign_values(&def.kind)?;
-        }
-        for function in &interface.functions {
-            for param in &function.params {
-                ensure_expr_has_no_foreign_values(&param.ty)?;
+fn emit_dependency_glue(
+    dependencies: &[Dependency],
+    plain_root: &str,
+    proto_root: &str,
+) -> Result<String> {
+    let mut out = String::new();
+    writeln!(out, "{HEADER}")?;
+    writeln!(out, "// source: wit/deps")?;
+    writeln!(out)?;
+    writeln!(out, "pub use super::GlueError;")?;
+    for dependency in dependencies {
+        let model = Model {
+            package: dependency.package.clone(),
+            interfaces: dependency.interfaces.clone(),
+            worlds: Vec::new(),
+            dependencies: dependencies
+                .iter()
+                .filter(|other| {
+                    other.package.namespace != dependency.package.namespace
+                        || other.package.name != dependency.package.name
+                })
+                .cloned()
+                .collect(),
+        };
+        let members = model.members()?;
+        let mut lock = WireLock::default();
+        lock.reconcile(&members)?;
+        let emitter = Emitter::new_dependency(&model, &lock, plain_root, proto_root, dependency)?;
+        let body = emitter.emit_body()?;
+        writeln!(
+            out,
+            "pub mod {} {{",
+            dependency_module_name(&dependency.package.namespace, &dependency.package.name)?
+        )?;
+        for line in body.lines() {
+            if line.is_empty() {
+                writeln!(out)?;
+            } else {
+                writeln!(out, "    {line}")?;
             }
-            if let Some(result) = &function.result {
-                ensure_expr_has_no_foreign_values(result)?;
-            }
         }
+        writeln!(out, "}}")?;
+        writeln!(out)?;
     }
-    Ok(())
-}
-
-fn ensure_type_has_no_foreign_values(kind: &TypeDefKind) -> Result<()> {
-    match kind {
-        TypeDefKind::Record(fields) => {
-            for field in fields {
-                ensure_expr_has_no_foreign_values(&field.ty)?;
-            }
-        }
-        TypeDefKind::Variant(cases) => {
-            for case in cases {
-                if let Some(payload) = &case.payload {
-                    ensure_expr_has_no_foreign_values(payload)?;
-                }
-            }
-        }
-        TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
-        TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
-            ensure_expr_has_no_foreign_values(ty)?;
-        }
-        TypeDefKind::Result(result) => {
-            for ty in [&result.ok, &result.err].into_iter().flatten() {
-                ensure_expr_has_no_foreign_values(ty)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn ensure_expr_has_no_foreign_values(ty: &TypeExpr) -> Result<()> {
-    match ty {
-        TypeExpr::Named(name) if name.is_foreign() => {
-            contract_bail!(
-                "glue for dependency value `{name}` is not supported yet (W9-005); keep the \
-                 value local or generate only Rust and protobuf for this contract"
-            );
-        }
-        TypeExpr::List(element) | TypeExpr::Option(element) => {
-            ensure_expr_has_no_foreign_values(element)?;
-        }
-        TypeExpr::Result(result) => {
-            for ty in [&result.ok, &result.err].into_iter().flatten() {
-                ensure_expr_has_no_foreign_values(ty)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
+    Ok(out)
 }
 
 /// Validate a Rust module path used as a generated reference root.
@@ -280,6 +276,21 @@ pub fn validate_module_root(root: &str) -> Result<()> {
     Ok(())
 }
 
+fn dependency_module_name(namespace: &str, package: &str) -> Result<String> {
+    rust_ident(
+        &format!("{}_{}", snake_case(namespace), snake_case(package)),
+        "dependency module",
+    )
+}
+
+fn dependency_proto_base(proto_root: &str, namespace: &str, package: &str, major: u64) -> String {
+    format!(
+        "{proto_root}::{}::{}::v{major}",
+        snake_case(namespace),
+        snake_case(package)
+    )
+}
+
 const RUST_KEYWORDS: &[&str] = &[
     "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
     "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
@@ -294,10 +305,15 @@ const RUST_KEYWORDS: &[&str] = &[
 ///
 /// Returns an error when a generated module name is invalid.
 pub fn emit_root(model: &Model, majors: &[u64]) -> Result<String> {
-    root_source(&model.package.namespace, &model.package.name, majors)
+    root_source(
+        &model.package.namespace,
+        &model.package.name,
+        majors,
+        !model.dependencies.is_empty(),
+    )
 }
 
-fn root_source(namespace: &str, name: &str, majors: &[u64]) -> Result<String> {
+fn root_source(namespace: &str, name: &str, majors: &[u64], dependencies: bool) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{HEADER}")?;
     writeln!(out, "// source: {namespace}:{name}")?;
@@ -306,6 +322,10 @@ fn root_source(namespace: &str, name: &str, majors: &[u64]) -> Result<String> {
     for major in majors {
         writeln!(out)?;
         writeln!(out, "pub mod v{major};")?;
+    }
+    if dependencies {
+        writeln!(out)?;
+        writeln!(out, "pub mod witforge_deps;")?;
     }
     Ok(out)
 }
@@ -334,6 +354,9 @@ struct Emitter<'a> {
     major: u64,
     minor: u64,
     type_prefix: String,
+    plain_base_override: Option<String>,
+    proto_base_override: Option<String>,
+    dependency: bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -349,6 +372,17 @@ impl<'a> Emitter<'a> {
         if proto_root.trim().is_empty() {
             bail!("proto root module path is empty");
         }
+        let proto_base_override = if model.dependencies.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{}::{}::{}::v{}",
+                proto_root.trim(),
+                snake_case(&model.package.namespace),
+                snake_case(&model.package.name),
+                model.package.version.major
+            ))
+        };
         Ok(Self {
             model,
             lock,
@@ -357,7 +391,33 @@ impl<'a> Emitter<'a> {
             major: model.package.version.major,
             minor: model.package.version.minor,
             type_prefix: "super::super".to_string(),
+            plain_base_override: None,
+            proto_base_override,
+            dependency: false,
         })
+    }
+
+    fn new_dependency(
+        model: &'a Model,
+        lock: &'a WireLock,
+        plain_root: &str,
+        proto_root: &str,
+        dependency: &Dependency,
+    ) -> Result<Self> {
+        let mut emitter = Self::new(model, lock, plain_root, proto_root)?;
+        emitter.plain_base_override = Some(format!(
+            "{}::witforge_deps::{}",
+            emitter.plain_root,
+            dependency_module_name(&dependency.package.namespace, &dependency.package.name)?
+        ));
+        emitter.proto_base_override = Some(dependency_proto_base(
+            &emitter.proto_root,
+            &dependency.package.namespace,
+            &dependency.package.name,
+            dependency.package.version.major,
+        ));
+        emitter.dependency = true;
+        Ok(emitter)
     }
 
     fn with_type_prefix(&self, prefix: &str) -> Self {
@@ -369,11 +429,13 @@ impl<'a> Emitter<'a> {
             major: self.major,
             minor: self.minor,
             type_prefix: prefix.to_string(),
+            plain_base_override: self.plain_base_override.clone(),
+            proto_base_override: self.proto_base_override.clone(),
+            dependency: self.dependency,
         }
     }
 
     fn emit(&self) -> Result<String> {
-        self.check_module_names()?;
         let mut out = String::new();
         writeln!(out, "{HEADER}")?;
         writeln!(
@@ -382,6 +444,16 @@ impl<'a> Emitter<'a> {
             self.model.package.namespace, self.model.package.name, self.model.package.version
         )?;
         writeln!(out)?;
+        out.push_str(&self.emit_body()?);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    fn emit_body(&self) -> Result<String> {
+        self.check_module_names()?;
+        let mut out = String::new();
         writeln!(out, "#[allow(unused_imports)]")?;
         writeln!(out, "use super::GlueError;")?;
         for interface in &self.model.interfaces {
@@ -404,9 +476,6 @@ impl<'a> Emitter<'a> {
                 self.emit_functions(&mut out, interface)?;
             }
             writeln!(out, "}}")?;
-        }
-        if !out.ends_with('\n') {
-            out.push('\n');
         }
         Ok(out)
     }
@@ -455,11 +524,15 @@ impl<'a> Emitter<'a> {
     }
 
     fn plain_base(&self) -> String {
-        format!("{}::v{}_{}", self.plain_root, self.major, self.minor)
+        self.plain_base_override
+            .clone()
+            .unwrap_or_else(|| format!("{}::v{}_{}", self.plain_root, self.major, self.minor))
     }
 
     fn proto_base(&self) -> String {
-        format!("{}::v{}", self.proto_root, self.major)
+        self.proto_base_override
+            .clone()
+            .unwrap_or_else(|| format!("{}::v{}", self.proto_root, self.major))
     }
 
     fn plain_type(&self, ty: &TypeExpr) -> Result<String> {
@@ -496,6 +569,252 @@ impl<'a> Emitter<'a> {
         slot.map_or_else(|| Ok("()".to_string()), |ty| self.plain_type(ty))
     }
 
+    fn foreign_type_def<'b>(
+        &'b self,
+        context: Option<&'b Dependency>,
+        name: &QualifiedName,
+    ) -> Result<Option<(&'b Dependency, &'b TypeDef)>> {
+        if let Some((namespace, package)) = name.package() {
+            let dependency = self
+                .model
+                .dependency_package(namespace, package)
+                .with_context(|| {
+                    format!("dependency `{namespace}:{package}` is not in the model")
+                })?;
+            let def = dependency
+                .interfaces
+                .iter()
+                .find(|interface| interface.name == name.interface_name())
+                .and_then(|interface| interface.types.iter().find(|def| def.name == name.name))
+                .with_context(|| format!("named type `{name}` is not in the dependency model"))?;
+            return Ok(Some((dependency, def)));
+        }
+        let Some(dependency) = context else {
+            return Ok(None);
+        };
+        let def = dependency
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name.interface_name())
+            .and_then(|interface| interface.types.iter().find(|def| def.name == name.name))
+            .with_context(|| format!("named type `{name}` is not in the dependency model"))?;
+        Ok(Some((dependency, def)))
+    }
+
+    fn foreign_proto_type(&self, name: &QualifiedName) -> Result<String> {
+        let (dependency, def) = self
+            .foreign_type_def(None, name)?
+            .context("foreign type needs a dependency package")?;
+        self.foreign_proto_type_in(Some(dependency), name, &def.kind)
+    }
+
+    fn foreign_proto_type_in(
+        &self,
+        context: Option<&Dependency>,
+        name: &QualifiedName,
+        kind: &TypeDefKind,
+    ) -> Result<String> {
+        match kind {
+            TypeDefKind::Enum(_) => Ok("i32".to_string()),
+            TypeDefKind::Alias(target) => self.foreign_proto_type_expr(context, target),
+            TypeDefKind::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeDefKind::List(element) => Ok(format!(
+                "::std::vec::Vec<{}>",
+                self.foreign_proto_singular_expr(context, element)?
+            )),
+            TypeDefKind::Option(payload) => Ok(format!(
+                "::core::option::Option<{}>",
+                self.foreign_proto_singular_expr(context, payload)?
+            )),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Flags(_)
+            | TypeDefKind::Result(_) => {
+                let dependency = context.context("foreign type has no dependency context")?;
+                self.dependency_proto_type(name, dependency)
+            }
+        }
+    }
+
+    fn foreign_proto_type_expr(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<String> {
+        match ty {
+            TypeExpr::Named(name) => {
+                if name.package().is_some() {
+                    self.foreign_proto_type(name)
+                } else {
+                    let (dependency, def) = self
+                        .foreign_type_def(context, name)?
+                        .context("foreign alias target has no dependency context")?;
+                    self.foreign_proto_type_in(Some(dependency), name, &def.kind)
+                }
+            }
+            TypeExpr::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeExpr::List(element) => Ok(format!(
+                "::std::vec::Vec<{}>",
+                self.foreign_proto_singular_expr(context, element)?
+            )),
+            TypeExpr::Option(payload) => Ok(format!(
+                "::core::option::Option<{}>",
+                self.foreign_proto_singular_expr(context, payload)?
+            )),
+            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U64 => Ok("u64".to_string()),
+            TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
+            TypeExpr::S64 => Ok("i64".to_string()),
+            TypeExpr::F32 => Ok("f32".to_string()),
+            TypeExpr::F64 => Ok("f64".to_string()),
+            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::Result(_) => bail!("foreign result needs a named wrapper"),
+        }
+    }
+
+    fn foreign_proto_singular(&self, name: &QualifiedName) -> Result<String> {
+        let (dependency, def) = self
+            .foreign_type_def(None, name)?
+            .context("foreign type needs a dependency package")?;
+        self.foreign_proto_singular_in(Some(dependency), name, &def.kind)
+    }
+
+    fn foreign_proto_singular_in(
+        &self,
+        context: Option<&Dependency>,
+        name: &QualifiedName,
+        kind: &TypeDefKind,
+    ) -> Result<String> {
+        match kind {
+            TypeDefKind::Enum(_) => Ok("i32".to_string()),
+            TypeDefKind::Alias(target) => self.foreign_proto_singular_expr(context, target),
+            TypeDefKind::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeDefKind::List(element) => Ok(format!(
+                "::std::vec::Vec<{}>",
+                self.foreign_proto_singular_expr(context, element)?
+            )),
+            TypeDefKind::Option(payload) => Ok(format!(
+                "::core::option::Option<{}>",
+                self.foreign_proto_singular_expr(context, payload)?
+            )),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Flags(_)
+            | TypeDefKind::Result(_) => {
+                let dependency = context.context("foreign type has no dependency context")?;
+                self.dependency_proto_type(name, dependency)
+            }
+        }
+    }
+
+    fn foreign_proto_singular_expr(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<String> {
+        match ty {
+            TypeExpr::Named(name) => {
+                if name.package().is_some() {
+                    self.foreign_proto_singular(name)
+                } else {
+                    let (dependency, def) = self
+                        .foreign_type_def(context, name)?
+                        .context("foreign alias target has no dependency context")?;
+                    self.foreign_proto_singular_in(Some(dependency), name, &def.kind)
+                }
+            }
+            TypeExpr::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeExpr::List(element) => Ok(format!(
+                "::std::vec::Vec<{}>",
+                self.foreign_proto_singular_expr(context, element)?
+            )),
+            TypeExpr::Option(payload) => Ok(format!(
+                "::core::option::Option<{}>",
+                self.foreign_proto_singular_expr(context, payload)?
+            )),
+            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U64 => Ok("u64".to_string()),
+            TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
+            TypeExpr::S64 => Ok("i64".to_string()),
+            TypeExpr::F32 => Ok("f32".to_string()),
+            TypeExpr::F64 => Ok("f64".to_string()),
+            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::Result(_) => bail!("foreign result needs a named wrapper"),
+        }
+    }
+
+    fn dependency_proto_type(
+        &self,
+        name: &QualifiedName,
+        dependency: &Dependency,
+    ) -> Result<String> {
+        let interface = rust_ident(&pascal_case(name.interface_name()), "proto interface")?;
+        let ty = rust_ident(&pascal_case(&name.name), "proto type")?;
+        Ok(format!(
+            "{}::{interface}{ty}",
+            dependency_proto_base(
+                &self.proto_root,
+                &dependency.package.namespace,
+                &dependency.package.name,
+                dependency.package.version.major
+            )
+        ))
+    }
+
+    fn foreign_form(&self, name: &QualifiedName) -> Result<Form> {
+        let (dependency, def) = self
+            .foreign_type_def(None, name)?
+            .context("foreign type needs a dependency package")?;
+        self.foreign_form_kind(Some(dependency), &def.kind)
+    }
+
+    fn foreign_form_kind(&self, context: Option<&Dependency>, kind: &TypeDefKind) -> Result<Form> {
+        match kind {
+            TypeDefKind::Alias(target) => self.foreign_form_expr(context, target),
+            TypeDefKind::Enum(_) => Ok(Form::Enum),
+            TypeDefKind::List(element) if is_u8(element) => Ok(Form::Bytes),
+            TypeDefKind::List(_) => Ok(Form::List),
+            TypeDefKind::Option(_) => Ok(Form::Option),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Flags(_)
+            | TypeDefKind::Result(_) => Ok(Form::Message),
+        }
+    }
+
+    fn foreign_form_expr(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<Form> {
+        match ty {
+            TypeExpr::Named(name) => {
+                if name.package().is_some() {
+                    self.foreign_form(name)
+                } else {
+                    let (dependency, def) = self
+                        .foreign_type_def(context, name)?
+                        .context("foreign alias target has no dependency context")?;
+                    self.foreign_form_kind(Some(dependency), &def.kind)
+                }
+            }
+            TypeExpr::List(element) if is_u8(element) => Ok(Form::Bytes),
+            TypeExpr::List(_) => Ok(Form::List),
+            TypeExpr::Option(_) => Ok(Form::Option),
+            TypeExpr::Result(_) => Ok(Form::Message),
+            TypeExpr::Bool
+            | TypeExpr::U8
+            | TypeExpr::U16
+            | TypeExpr::U32
+            | TypeExpr::U64
+            | TypeExpr::S8
+            | TypeExpr::S16
+            | TypeExpr::S32
+            | TypeExpr::S64
+            | TypeExpr::F32
+            | TypeExpr::F64
+            | TypeExpr::String => Ok(Form::Scalar),
+        }
+    }
+
     fn plain_named(&self, name: &QualifiedName) -> Result<String> {
         self.model.type_def(name).with_context(|| {
             format!(
@@ -503,6 +822,15 @@ impl<'a> Emitter<'a> {
                 name.interface, name.name
             )
         })?;
+        if let Some((namespace, package)) = name.package() {
+            let package = dependency_module_name(namespace, package)?;
+            let interface = rust_ident(&snake_case(name.interface_name()), "interface module")?;
+            let ty = rust_ident(&pascal_case(&name.name), "type")?;
+            return Ok(format!(
+                "{}::witforge_deps::{package}::{interface}::{ty}",
+                self.plain_root
+            ));
+        }
         let interface = rust_ident(&snake_case(&name.interface), "interface module")?;
         let ty = rust_ident(&pascal_case(&name.name), "type")?;
         Ok(format!("{}::{interface}::{ty}", self.plain_base()))
@@ -512,6 +840,21 @@ impl<'a> Emitter<'a> {
         let interface = rust_ident(&snake_case(interface), "interface module")?;
         let ty = rust_ident(&snake_case(ty), "type module")?;
         Ok(format!("{}::{interface}::{ty}", self.type_prefix))
+    }
+
+    fn foreign_type_module(&self, name: &QualifiedName) -> Result<String> {
+        let (namespace, package) = name
+            .package()
+            .context("foreign type module needs a dependency package")?;
+        let package = dependency_module_name(namespace, package)?;
+        let interface = rust_ident(&snake_case(name.interface_name()), "interface module")?;
+        let ty = rust_ident(&snake_case(&name.name), "type module")?;
+        let base = if self.dependency {
+            format!("{}::super", self.type_prefix)
+        } else {
+            format!("{}::super::witforge_deps", self.type_prefix)
+        };
+        Ok(format!("{base}::{package}::{interface}::{ty}"))
     }
 
     fn proto_type(&self, ty: &TypeExpr) -> Result<String> {
@@ -535,6 +878,9 @@ impl<'a> Emitter<'a> {
             )),
             TypeExpr::Result(_) => self.proto_wrapper_name(ty),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    return self.foreign_proto_type(name);
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.proto_type(target),
@@ -584,6 +930,9 @@ impl<'a> Emitter<'a> {
             }
             TypeExpr::Result(_) => self.proto_wrapper_name(ty),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    return self.foreign_proto_singular(name);
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.proto_singular_type(target),
@@ -680,6 +1029,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(_) => Ok(Form::Option),
             TypeExpr::Result(_) => Ok(Form::Message),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    return self.foreign_form(name);
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.form(target),
@@ -1103,6 +1455,9 @@ impl Emitter<'_> {
     ) -> Result<()> {
         let proto = self.proto_type(target)?;
         let target_module = match target {
+            TypeExpr::Named(target_name) if target_name.is_foreign() => {
+                self.foreign_type_module(target_name)?
+            }
             TypeExpr::Named(target_name) => {
                 self.plain_type_module(&target_name.interface, &target_name.name)?
             }
@@ -1606,6 +1961,10 @@ impl Emitter<'_> {
             )),
             TypeExpr::Result(result) => Ok(self.encode_inline_result(expr, result)?),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    let module = self.foreign_type_module(name)?;
+                    return Ok(format!("{module}::to_proto({expr})"));
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.encode_value(expr, target),
@@ -1656,6 +2015,10 @@ impl Emitter<'_> {
             }
             TypeExpr::Result(result) => self.encode_inline_result(expr, result),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    let module = self.foreign_type_module(name)?;
+                    return Ok(format!("{module}::to_proto({expr})"));
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.encode_singular(expr, target),
@@ -1729,6 +2092,10 @@ impl Emitter<'_> {
             )),
             TypeExpr::Result(result) => self.decode_inline_result(expr, result, identity),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    let module = self.foreign_type_module(name)?;
+                    return Ok(format!("{module}::from_proto({expr})?"));
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.decode_value(expr, target, identity),
@@ -1777,6 +2144,10 @@ impl Emitter<'_> {
             }
             TypeExpr::Result(result) => self.decode_inline_result(expr, result, identity),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    let module = self.foreign_type_module(name)?;
+                    return Ok(format!("{module}::from_proto({expr})?"));
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.decode_singular(expr, target, identity),

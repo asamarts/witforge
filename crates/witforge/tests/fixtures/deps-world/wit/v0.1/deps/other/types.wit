@@ -1,0 +1,4 @@
+package example:other@0.1.0;
+interface types {
+    record other-thing { label: string }
+}

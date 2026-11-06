@@ -290,7 +290,8 @@ pub mod v0_1 {
 - Every version gets a `WORLDS` constant, including an empty array when that version has no
   worlds.
 - Worlds are emitted in source order; imported and exported interface names are in source order
-  and are separate fields, so direction is explicit.
+  and are separate fields, so direction is explicit. A dependency interface is written with its
+  package-qualified name, such as `example:shared/types`; a local interface keeps its bare name.
 - The metadata has no runtime dependency and does not reference generated traits or types.
 - `worlds.rs` is shared output: adding a version adds its module and can change the file, while
   released per-version Rust modules remain unchanged.
@@ -299,8 +300,8 @@ pub mod v0_1 {
 
 ### 3.7 Dependency modules
 
-When the package references a named type from a standard `deps/` package, `rust` also emits
-`witforge_deps.rs` and declares `pub mod witforge_deps;` in `mod.rs`. Each dependency package is
+When the package references a named type or a world interface from a standard `deps/` package,
+`rust` also emits `witforge_deps.rs` and declares `pub mod witforge_deps;` in `mod.rs`. Each dependency package is
 a module named `<namespace>_<package>` and each interface is a module beneath it. Local
 foreign-type references use `super::super::witforge_deps::...`; references between dependency
 packages use `super::super::...`.
@@ -727,7 +728,7 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
 | `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version, `convert.rs` when there are two or more versions, `worlds.rs` when any version has a world, `witforge_deps.rs` when the package uses standard `deps/` types |
 | `proto` | `v<major>.proto` for every major, `<namespace>.<package>.v<major>.proto` for every dependency |
 | `schema` | `v<major>_<minor>.schema.json` for every version |
-| `glue` | `mod.rs`, `v<major>.rs` for every major |
+| `glue` | `mod.rs`, `v<major>.rs` for every major, `witforge_deps.rs` when the package has dependencies |
 
 Rust per-version files contain inline interface modules. `mod.rs` declares every version module
 in ascending order and, when present, `witforge_deps`, `convert`, and `worlds`. `witforge_deps.rs`
@@ -737,8 +738,7 @@ metadata (section 3.6). Proto files are generated from the highest minor in each
 dependency schema has a sanitized `<namespace>.<package>.v<major>.proto` name and is imported
 only by files that reference it. JSON Schema files are generated for every version and contain
 all named definitions (section 10). Glue files are generated from the highest minor in each major
-and reference its plain module; `glue` refuses a local value whose type comes from `deps/` until
-the foreign-interface and glue work (`W9-005`) lands.
+and reference its plain module and the shared dependency glue module.
 
 ## 6. Testing requirements
 
@@ -768,7 +768,8 @@ the foreign-interface and glue work (`W9-005`) lands.
   under `std::env::temp_dir()`, for `rust`, `proto`, `schema`, `glue`, and `--check`.
 - Lockfile property tests with `proptest`.
 - Protobuf glue round-trip tests (Rust value -> proto -> Rust; proto -> JSON -> proto -> Rust)
-  through the generated glue and helpers.
+  through the generated glue and helpers, including dependency values and dependency interface
+  functions.
 
 ## 7. Protobuf glue
 
@@ -781,7 +782,8 @@ and the later version-conversion layer.
 - Glue covers every named type in the highest minor of each major, including records, variants,
   enums, flags, aliases, `use` aliases, named `list`/`option`/`result`, and named structural
   forms.
-- Glue covers every interface function in that version.
+- Glue covers every interface function in that version, and every dependency type and interface
+  function under the shared dependency glue module.
 - Older minors get no glue module; they are not the proto schema’s source version.
 - The emitter uses the same model, canonical types, collision rules, and naming conversion as
   the Rust and proto emitters. It converts to and from the prost types generated from the
@@ -801,23 +803,29 @@ witforge glue <wit-root> --out <dir> \
   [--check] [--released <path>]
 ```
 
-- `--plain-root` is the Rust module that contains `v<major>_<minor>` modules, for example
-  `crate::generated`.
-- `--proto-root` is the Rust module that contains `v<major>` modules, for example
-  `crate::proto::example::plugin`.
+- `--plain-root` is the Rust module that contains `v<major>_<minor>` modules and, for a contract
+  with dependencies, `witforge_deps`, for example `crate::generated`.
+- `--proto-root` is the Rust module that contains the root protobuf module and dependency
+  modules, for example `crate::proto`. Without dependencies the root is
+  `<proto-root>::v<major>`; with dependencies it is
+  `<proto-root>::<root-namespace>::<root-package>::v<major>`.
 - Both roots are required. The tool does not guess them.
 - Each root MUST be a valid Rust module path: `crate`, `self`, `super`, or identifiers (including
   raw identifiers) separated by `::`; empty segments, trailing `::`, generics, and whitespace are
   errors.
 - Generated references:
-  - plain: `<plain-root>::v<major>_<minor>::...`
-  - proto: `<proto-root>::v<major>::...`
+  - plain local: `<plain-root>::v<major>_<minor>::...`
+  - plain dependency: `<plain-root>::witforge_deps::<namespace>_<package>::...`
+  - proto local: `<proto-root>::v<major>::...` without dependencies, or
+    `<proto-root>::<namespace>::<package>::v<major>::...` with dependencies
+  - proto dependency: `<proto-root>::<dependency-namespace>::<dependency-package>::v<major>::...`
 - Output:
 
   ```text
-  <out>/mod.rs      // GlueError and v0, v1, ...
+  <out>/mod.rs      // GlueError, v0, v1, and witforge_deps when needed
   <out>/v0.rs
   <out>/v1.rs
+  <out>/witforge_deps.rs
   ```
 
 - One glue module per major, matching the one-proto-per-major rule. `mod.rs` declares the major
@@ -837,9 +845,10 @@ witforge glue <wit-root> --out <dir> \
 pub enum GlueError { ... }
 
 pub mod v0;
+pub mod witforge_deps; // when the package has dependencies
 ```
 
-`v0.rs` mirrors interfaces:
+`v0.rs` mirrors local interfaces:
 
 ```rust
 pub mod types {
@@ -854,8 +863,21 @@ pub mod analyzer {
 }
 ```
 
+`witforge_deps.rs` mirrors dependency packages and interfaces:
+
+```rust
+pub mod example_shared {
+    pub mod types {
+        pub mod thing { /* to_proto / from_proto */ }
+        pub mod functions { /* dependency interface functions */ }
+    }
+}
+```
+
 - Types are direct children of their interface module: `glue::types::span`.
 - Functions live under a `functions` container: `glue::analyzer::functions::analyze`.
+- Dependency modules use the same shape under
+  `glue::witforge_deps::<namespace>_<package>::<interface>`.
 - The converted module name `functions` is reserved for that container; a type whose converted
   name is `functions` is a hard error.
 - Type and function module names use the Rust snake_case conversion and collision rules. A

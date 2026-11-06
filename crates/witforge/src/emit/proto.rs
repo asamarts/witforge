@@ -696,6 +696,13 @@ impl<'a> Emitter<'a> {
                 }
             }
         }
+        for world in &self.model.worlds {
+            for interface in world.imports.iter().chain(&world.exports) {
+                if let Some(package) = &interface.package {
+                    names.insert((package.namespace.clone(), package.name.clone()));
+                }
+            }
+        }
         names
     }
 

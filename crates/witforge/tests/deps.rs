@@ -4,8 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use witforge::emit::{glue, proto, rust};
-use witforge::is_contract_error;
+use witforge::emit::{proto, rust};
 use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model::{self, TypeDefKind, TypeExpr};
@@ -103,6 +102,10 @@ fn unsupported_fixture() -> PathBuf {
 
 fn convert_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-convert/wit")
+}
+
+fn world_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-world/wit")
 }
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -216,10 +219,36 @@ fn foreign_types_convert_across_versions() {
 }
 
 #[test]
-fn glue_refuses_foreign_values_as_a_contract_error() {
-    let error = glue::plan(&advanced_fixture(), "crate::plain", "crate::pb").unwrap_err();
-    assert!(is_contract_error(&error), "{error:#}");
-    let message = format!("{error:#}");
-    assert!(message.contains("glue for dependency value"), "{message}");
-    assert!(message.contains("W9-005"), "{message}");
+fn foreign_world_interfaces_keep_package_identity() {
+    let root = world_fixture();
+    let contract = load(&root.join("v0.1")).unwrap();
+    let model = model::build(&contract).unwrap();
+    let world = &model.worlds[0];
+    assert_eq!(world.name, "plugin");
+    assert_eq!(world.imports[0].qualified_name(), "example:shared/types");
+    assert_eq!(world.imports[0].package.as_ref().unwrap().name, "shared");
+    assert_eq!(world.exports[0].qualified_name(), "example:other/types");
+
+    let files = rust::plan(&root).unwrap();
+    let worlds = files.files().get("worlds.rs").unwrap();
+    assert!(worlds.contains("example:shared/types"), "{worlds}");
+    assert!(worlds.contains("example:other/types"), "{worlds}");
+    let dependencies = files.files().get("witforge_deps.rs").unwrap();
+    assert!(dependencies.contains("pub trait Types"), "{dependencies}");
+    compile_generated_rust(&root, "deps-world-rust");
+
+    let proto_out = temp_dir("deps-world-proto");
+    let _ = fs::remove_dir_all(&proto_out);
+    proto::plan(&root).unwrap().write(&proto_out).unwrap();
+    let schema = fs::read_to_string(proto_out.join("v0.proto")).unwrap();
+    assert!(
+        schema.contains("import \"example.shared.v0.proto\";"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("import \"example.other.v0.proto\";"),
+        "{schema}"
+    );
+    protox::compile([proto_out.join("v0.proto")], [&proto_out]).unwrap();
+    fs::remove_dir_all(&proto_out).unwrap();
 }

@@ -910,47 +910,41 @@ impl Builder<'_> {
         old: &[WorldInterface],
         new: &[WorldInterface],
     ) {
-        let old_names: BTreeSet<&str> = old
-            .iter()
-            .map(|interface| interface.interface.as_str())
-            .collect();
-        let new_names: BTreeSet<&str> = new
-            .iter()
-            .map(|interface| interface.interface.as_str())
-            .collect();
+        let old_names: BTreeSet<String> = old.iter().map(WorldInterface::qualified_name).collect();
+        let new_names: BTreeSet<String> = new.iter().map(WorldInterface::qualified_name).collect();
         for interface in new
             .iter()
-            .filter(|i| !old_names.contains(i.interface.as_str()))
+            .filter(|i| !old_names.contains(&i.qualified_name()))
         {
             self.push(
                 ChangeKind::Added { defaulted: false },
                 format!("world {side}"),
-                format!("{world}/{side}/{}", interface.interface),
+                format!("{world}/{side}/{}", interface.qualified_name()),
                 None,
                 Breaking::SOURCE,
             );
         }
         for interface in old
             .iter()
-            .filter(|i| !new_names.contains(i.interface.as_str()))
+            .filter(|i| !new_names.contains(&i.qualified_name()))
         {
             self.push(
                 ChangeKind::Removed,
                 format!("world {side}"),
-                format!("{world}/{side}/{}", interface.interface),
+                format!("{world}/{side}/{}", interface.qualified_name()),
                 None,
                 Breaking::SOURCE,
             );
         }
         let before: Vec<String> = old
             .iter()
-            .filter(|interface| new_names.contains(interface.interface.as_str()))
-            .map(|interface| interface.interface.clone())
+            .filter(|interface| new_names.contains(&interface.qualified_name()))
+            .map(WorldInterface::qualified_name)
             .collect();
         let after: Vec<String> = new
             .iter()
-            .filter(|interface| old_names.contains(interface.interface.as_str()))
-            .map(|interface| interface.interface.clone())
+            .filter(|interface| old_names.contains(&interface.qualified_name()))
+            .map(WorldInterface::qualified_name)
             .collect();
         if before != after {
             self.push(

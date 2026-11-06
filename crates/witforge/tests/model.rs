@@ -1398,7 +1398,6 @@ fn build_refuses_subsets_the_converter_cannot_represent() {
         "world-type",
         "world-function",
         "inline-interface",
-        "foreign-interface",
         "unversioned",
         "version-patch",
     ] {

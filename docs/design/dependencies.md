@@ -1,6 +1,6 @@
 # WIT package dependencies
 
-Status: implemented 2026-11-06 (`W9-001`, `W9-004`).
+Status: implemented 2026-11-06 (`W9-001`, `W9-004`, `W9-005`).
 
 witforge accepts the standard WIT dependency layout: a version directory may contain a `deps/`
 directory of WIT packages, and a local package may reference a named type from a dependency with
@@ -35,9 +35,20 @@ example:shared/types/item
  ^namespace ^package ^interface ^type
 ```
 
-Local names keep the existing `interface/type` form. The package version is not part of a
-lockfile key or canonical type: the dependency pin is the versioned `use` path plus the content
-under `deps/`, and a dependency version bump must not renumber a local contract.
+Local names keep the existing `interface/type` form. A foreign world import or export uses the
+same package identity:
+
+```wit
+world plugin {
+    import example:shared/types@0.1.0;
+    export example:other/types@0.1.0;
+}
+```
+
+The model stores the interface name and the dependency package metadata separately; its
+qualified name is `example:shared/types`. The dependency version is not part of a lockfile key
+or canonical type: the dependency pin is the versioned `use` path plus the content under
+`deps/`, and a dependency version bump must not renumber a local contract.
 
 ## Generated references
 
@@ -52,11 +63,12 @@ package's types:
 
 The Rust emitter writes dependency modules into `witforge_deps.rs`; the protobuf emitter writes
 one `<namespace>.<package>.v<major>.proto` file per dependency and imports the schemas a file
-actually references. A dependency may use a type from another package under the same `deps/`
-directory; that import is emitted from the dependency's schema as well. Alias, list, option, and
-result shapes resolve through their dependency definitions, so a foreign alias maps to its
-underlying message or scalar rather than to a non-existent alias message. A foreign enum field
-keeps the same proto3 presence as a local enum field.
+actually references. World metadata uses the package-qualified interface name. A dependency
+may use a type from another package under the same `deps/` directory; that import is emitted
+from the dependency's schema as well. Alias, list, option, and result shapes resolve through
+their dependency definitions, so a foreign alias maps to its underlying message or scalar
+rather than to a non-existent alias message. A foreign enum field keeps the same proto3
+presence as a local enum field.
 
 Dependency packages are generated on a best-effort basis: supported types and functions are
 included, and unsupported unused items are skipped. If the root references an item that could
@@ -64,11 +76,18 @@ not be represented, the emitter reports a missing dependency type instead of sil
 broken binding. `deps/` is one level deep, as `wit-parser` defines; a repository-level
 multi-package workspace and a dependency-generation command remain separate later work.
 
+Glue uses the same package-qualified references. It emits a shared `witforge_deps.rs` module
+with conversion functions for each dependency type and interface function; the root glue file
+calls those functions for local values whose type is foreign. The generated proto module layout
+for a dependency is `<proto-root>::<namespace>::<package>::v<major>`; when a contract has
+dependencies, the root types use `<proto-root>::<root-namespace>::<root-package>::v<major>` so
+that prost's package-relative references resolve. The plain dependency types remain at
+`<plain-root>::witforge_deps::<namespace>_<package>::<interface>::<Type>`.
+
 JSON Schema still uses an external `urn:witforge:<qualified-name>` reference rather than
 generating dependency schemas. The version adapters in `convert.rs` copy a value whose type is
 the same pinned dependency type in both versions; a changed dependency type is not a local
-conversion and must be handled by a new contract type. Glue for foreign values requires the
-dependency's glue and is the separate `W9-005` work.
+conversion and must be handled by a new contract type.
 
 ## Lockfiles and release freezes
 
@@ -88,9 +107,12 @@ are explicitly later work, not part of this compatibility rule.
 
 - A nested `package` block in the root source remains refused; only packages under `deps/` are
   dependencies.
-- Foreign interfaces in worlds are still outside the subset; named dependency types are the
-  supported surface. `W9-005` covers interface imports and dependency glue.
+- A world may import or export a named interface from a standard `deps/` package. Interfaces
+  from a nested package outside `deps/` remain refused.
+- Dependency packages must use the supported subset for any item the root actually references;
+  unsupported unused items are skipped.
 - Tests cover a local package importing a pinned dependency, a missing dependency, two
   dependencies declaring the same package name, aliases, lists, options, results, variants,
   cross-dependency references, hyphenated package names, unused unsupported dependency items,
-  generated Rust/protobuf compilation, and version conversion with foreign values.
+  foreign world imports and exports, generated Rust/protobuf/glue compilation and round-trips,
+  and version conversion with foreign values.
