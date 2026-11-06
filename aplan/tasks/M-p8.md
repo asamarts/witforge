@@ -2,7 +2,7 @@
 id: M-p8
 title: '0.3.0: change-review and CI tooling'
 phase: 8
-status: todo
+status: done
 owner: asamarts
 blocked_by:
 - W8-001
@@ -14,9 +14,12 @@ blocked_by:
 tags:
 - milestone
 - p8
+evidence:
+  - kind: commit
+    ref: 7c807cf
 ---
 
 ## Exit criteria
 
-- [ ] contract changes have a human and machine-readable review path
-- [ ] diagnostics and Action support are released as 0.3.0
+- [x] contract changes have a human and machine-readable review path
+- [x] diagnostics and Action support are released as 0.3.0
