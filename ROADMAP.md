@@ -113,7 +113,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 ## 0.4.0: WIT dependencies and Rust Serde
 
 - [x] Standard `wit/deps` package dependencies with explicit package identity.
-- [ ] Opt-in per-project Serde generation.
+- [x] Opt-in per-project Serde generation.
 - [ ] Release 0.4.0.
 
 ## 1.0 and beyond
