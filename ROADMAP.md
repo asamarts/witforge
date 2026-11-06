@@ -114,9 +114,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 
 - [x] Standard `wit/deps` package dependencies with explicit package identity (`W9-001`).
 - [x] Generated dependency Rust and protobuf bindings (`W9-004`).
-- [ ] Foreign interfaces and dependency glue (`W9-005`).
+- [x] Foreign interfaces and dependency glue (`W9-005`).
 - [x] Opt-in per-project Serde generation (`W9-002`).
-- [ ] Release 0.4.0 (`W9-003`).
+- [x] Release 0.4.0 (`W9-003`).
 
 ## 1.0 and beyond
 

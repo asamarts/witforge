@@ -11,6 +11,11 @@ generated dependency bindings, foreign world interfaces, dependency glue, and op
 Serde derives. Generated output is unchanged for a contract 0.3.0 accepts unless the contract
 uses `deps/` or the project enables `serde = true`.
 
+Release commit `b61b75d` (tag `v0.4.0`), main CI run 42292759706, release run 42293555045.
+Both crates are published through GitHub trusted publishing; `cargo install witforge-cli
+--version 0.4.0 --locked` reports `witforge 0.4.0`, and the release carries Linux, macOS x86_64,
+macOS aarch64, and Windows x86_64 archives with checksums.
+
 ### Added
 
 - Standard `wit/deps` package dependencies with package-qualified type and interface

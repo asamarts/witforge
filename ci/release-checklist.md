@@ -152,3 +152,15 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
       installed binary passed the single-version and evolved-version example checks.
 - [x] crates.io lists both crates at 0.3.0, docs.rs built the library, and the published Action
       installed the 0.3.0 Linux asset and ran `check`, `diff`, and a configured `rust --check`.
+
+## 0.4.0 record
+
+- [x] Release commit `b61b75d`, annotated tag `v0.4.0`; both pushed to `main`.
+- [x] Main CI run 42292759706 passed on Linux, macOS 15, Windows, MSRV 1.88, security,
+      benchmark, packaging, generated output, release freeze, workflows, and the plan gate.
+- [x] Release run 42293555045 verified the tag, dry-ran the packages, published both crates
+      through trusted publishing, created the GitHub release, and uploaded Linux, macOS x86_64,
+      macOS aarch64, and Windows x86_64 archives with checksums.
+- [x] `cargo install witforge-cli --version 0.4.0 --locked` reported `witforge 0.4.0`.
+- [x] The alint consumer checked its committed generated output against witforge 0.4.0 and
+      matched.
