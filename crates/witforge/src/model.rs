@@ -279,6 +279,15 @@ pub struct Package {
     pub docs: String,
 }
 
+/// One resolved dependency package from the standard `deps/` layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dependency {
+    /// The dependency package metadata.
+    pub package: Package,
+    /// Interfaces in source order.
+    pub interfaces: Vec<Interface>,
+}
+
 /// The owned model of one contract version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model {
@@ -288,6 +297,8 @@ pub struct Model {
     pub interfaces: Vec<Interface>,
     /// Worlds in source order.
     pub worlds: Vec<World>,
+    /// Standard `deps/` packages, sorted by package name.
+    pub dependencies: Vec<Dependency>,
 }
 
 impl Model {
@@ -299,9 +310,27 @@ impl Model {
             .find(|interface| interface.name == name)
     }
 
-    /// Find a named type by its qualified name.
+    /// Find a dependency package by its `(namespace, package)` identity.
+    #[must_use]
+    pub fn dependency_package(&self, namespace: &str, package: &str) -> Option<&Dependency> {
+        self.dependencies.iter().find(|dependency| {
+            dependency.package.namespace == namespace && dependency.package.name == package
+        })
+    }
+
+    /// Find a named type by its qualified name, including dependency types.
     #[must_use]
     pub fn type_def(&self, name: &QualifiedName) -> Option<&TypeDef> {
+        if let Some((namespace, package)) = name.package() {
+            return self
+                .dependency_package(namespace, package)?
+                .interfaces
+                .iter()
+                .find(|interface| interface.name == name.interface_name())?
+                .types
+                .iter()
+                .find(|def| def.name == name.name);
+        }
         self.interface(&name.interface)?
             .types
             .iter()
@@ -491,10 +520,50 @@ pub fn build(contract: &Contract) -> Result<Model> {
         .map(|(name, id)| build_world(resolve, root, name, *id))
         .collect::<Result<Vec<_>>>()?;
 
+    let mut dependencies = Vec::new();
+    for package_id in &contract.dependencies {
+        let wit_package = &resolve.packages[*package_id];
+        let wit_version = wit_package
+            .name
+            .version
+            .as_ref()
+            .context("a dependency package has no version")?;
+        ensure!(
+            wit_version.patch == 0
+                && wit_version.pre.as_str().is_empty()
+                && wit_version.build.as_str().is_empty(),
+            "dependency versions must be `<major>.<minor>.0`"
+        );
+        let dependency_package = Package {
+            namespace: wit_package.name.namespace.clone(),
+            name: wit_package.name.name.clone(),
+            version: Version {
+                major: wit_version.major,
+                minor: wit_version.minor,
+                patch: wit_version.patch,
+            },
+            docs: docs(&wit_package.docs),
+        };
+        let mut interface_ids: Vec<_> = wit_package.interfaces.iter().collect();
+        interface_ids.sort_by_key(|(_, id)| source_key(resolve.interfaces[**id].span));
+        let dependency_interfaces = interface_ids
+            .into_iter()
+            .map(|(name, id)| build_interface(resolve, *package_id, name, *id))
+            .collect::<Result<Vec<_>>>()?;
+        dependencies.push(Dependency {
+            package: dependency_package,
+            interfaces: dependency_interfaces,
+        });
+    }
+    dependencies.sort_by(|left, right| {
+        (&left.package.namespace, &left.package.name)
+            .cmp(&(&right.package.namespace, &right.package.name))
+    });
     Ok(Model {
         package,
         interfaces,
         worlds,
+        dependencies,
     })
 }
 

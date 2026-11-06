@@ -29,14 +29,14 @@ fn dependency_types_are_qualified_and_emitted_distinctly() {
 
     let rust = rust::emit_version(&model).unwrap();
     assert!(
-        rust.contains("crate::witforge_deps::example_shared::types::Item"),
+        rust.contains("super::super::witforge_deps::example_shared::types::Item"),
         "{rust}"
     );
     let lock = WireLock::parse(&fs::read_to_string(root.join("v0.1/wire.lock")).unwrap()).unwrap();
     let proto = proto::emit_major(&model, &lock).unwrap();
-    assert!(proto.contains("example.shared.TypesItem"), "{proto}");
+    assert!(proto.contains("example.shared.v0.TypesItem"), "{proto}");
     assert!(
-        proto.contains("example.shared.TypesItem result = 1;"),
+        proto.contains("example.shared.v0.TypesItem result = 1;"),
         "{proto}"
     );
 }
@@ -78,4 +78,15 @@ fn ambiguous_dependency_is_an_error() {
         "{message}"
     );
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn generated_protobuf_dependency_bindings_compile() {
+    let root = fixture();
+    let out = std::env::temp_dir().join(format!("witforge-deps-proto-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    proto::plan(&root).unwrap().write(&out).unwrap();
+    assert!(out.join("example.shared.v0.proto").is_file());
+    protox::compile([out.join("v0.proto")], [&out]).unwrap();
+    fs::remove_dir_all(&out).unwrap();
 }

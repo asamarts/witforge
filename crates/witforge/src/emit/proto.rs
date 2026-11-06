@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions};
 use crate::lock::{MemberKey, WireLock};
@@ -29,7 +30,7 @@ const ONEOF_VALUE: &str = "witforge_value";
 /// # Errors
 ///
 /// Returns an error for a missing or symlinked version directory or an unreadable or invalid
-/// lockfile, and a [`ContractError`](crate::ContractError) for an inconsistent package, subset
+/// lockfile, and a [`ContractError`] for an inconsistent package, subset
 /// violations, a stale lockfile, or a generated-name collision.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     plan_versions(&load_versions(wit_root)?)
@@ -38,7 +39,7 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 /// Plan the protobuf output for validated `versions`, which [`load_versions`] returns.
 ///
 /// An emitter error is passed on as the emitter classified it: a contract violation stays a
-/// [`ContractError`](crate::ContractError) and an internal error stays a plain error.
+/// [`ContractError`] and an internal error stays a plain error.
 pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
     // Versions are in ascending order, so the last one of each major is its highest minor.
     let mut highest: BTreeMap<u64, &Version> = BTreeMap::new();
@@ -46,10 +47,39 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
         highest.insert(version.major, version);
     }
     let mut files = GeneratedFiles::new(HEADER);
-    for (major, version) in highest {
+    for (major, version) in &highest {
         let generated = emit_major(&version.model, &version.lock)
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.proto"), generated)?;
+    }
+    let first = versions
+        .first()
+        .context("no version directories found under WIT root")?;
+    if versions
+        .iter()
+        .any(|version| version.model.dependencies != first.model.dependencies)
+    {
+        bail!(ContractError::new(
+            "versions disagree about their dependency packages"
+        ));
+    }
+    for dependency in &first.model.dependencies {
+        let model = Model {
+            package: dependency.package.clone(),
+            interfaces: dependency.interfaces.clone(),
+            worlds: Vec::new(),
+            dependencies: Vec::new(),
+        };
+        let members = model.members()?;
+        let mut lock = WireLock::default();
+        lock.reconcile(&members)?;
+        let generated = emit_major(&model, &lock)
+            .with_context(|| format!("dependency {}", dependency.package.name))?;
+        let filename = format!(
+            "{}.{}.v{}.proto",
+            dependency.package.namespace, dependency.package.name, dependency.package.version.major
+        );
+        files.insert(filename, generated)?;
     }
     Ok(files)
 }
@@ -83,7 +113,7 @@ pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<String>> {
 ///
 /// # Errors
 ///
-/// Returns a [`ContractError`](crate::ContractError) for an invalid or colliding proto name or a
+/// Returns a [`ContractError`] for an invalid or colliding proto name or a
 /// generated wrapper collision, and a plain error for a missing lockfile entry or an unknown
 /// named type, which a validated model and lockfile never produce.
 pub fn emit_major(model: &Model, lock: &WireLock) -> Result<String> {
@@ -143,6 +173,18 @@ impl<'a> Emitter<'a> {
         writeln!(out)?;
         writeln!(out, "package {};", self.package)?;
         writeln!(out)?;
+        for dependency in &self.model.dependencies {
+            writeln!(
+                out,
+                "import \"{}.{}.v{}.proto\";",
+                dependency.package.namespace,
+                dependency.package.name,
+                dependency.package.version.major
+            )?;
+        }
+        if !self.model.dependencies.is_empty() {
+            writeln!(out)?;
+        }
         writeln!(out, "message {EMPTY} {{}}")?;
 
         for interface in &self.model.interfaces {
@@ -620,10 +662,12 @@ impl<'a> Emitter<'a> {
             .collect()
     }
 
-    fn foreign_name(name: &QualifiedName) -> Option<String> {
+    fn foreign_name(&self, name: &QualifiedName) -> Option<String> {
         let (namespace, package) = name.package()?;
+        let dependency = self.model.dependency_package(namespace, package)?;
         Some(format!(
-            "{namespace}.{package}.{}{}",
+            "{namespace}.{package}.v{}.{}{}",
+            dependency.package.version.major,
             pascal_case(name.interface_name()),
             pascal_case(&name.name)
         ))
@@ -644,7 +688,7 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => self.direct_option(payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
-                if let Some(foreign) = Self::foreign_name(name) {
+                if let Some(foreign) = self.foreign_name(name) {
                     return Ok(foreign);
                 }
                 let kind = self.named(name)?.kind.clone();
@@ -683,7 +727,7 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => self.option_wrapper(None, payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
-                if let Some(foreign) = Self::foreign_name(name) {
+                if let Some(foreign) = self.foreign_name(name) {
                     return Ok(foreign);
                 }
                 let kind = self.named(name)?.kind.clone();
@@ -919,7 +963,7 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => Ok(format!("OptionOf{}", self.shape_name(payload)?)),
             TypeExpr::Result(result) => self.result_shape_name(result),
             TypeExpr::Named(name) => {
-                if let Some(foreign) = Self::foreign_name(name) {
+                if let Some(foreign) = self.foreign_name(name) {
                     return Ok(foreign.replace('.', "_"));
                 }
                 let def = self.named(name)?;

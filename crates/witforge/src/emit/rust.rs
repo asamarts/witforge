@@ -70,6 +70,22 @@ pub(crate) fn plan_versions_with_serde(
         files.insert("convert.rs", converted)?;
         module_lines.push("pub mod convert;".to_string());
     }
+    let first_dependencies = &versions
+        .first()
+        .context("no version directories found under WIT root")?
+        .model
+        .dependencies;
+    if versions
+        .iter()
+        .any(|version| version.model.dependencies != *first_dependencies)
+    {
+        contract_bail!("versions disagree about their dependency packages");
+    }
+    if !first_dependencies.is_empty() {
+        let dependency_source = emit_dependency_bindings(first_dependencies, serde)?;
+        files.insert("witforge_deps.rs", dependency_source)?;
+        module_lines.push("pub mod witforge_deps;".to_string());
+    }
     if versions
         .iter()
         .any(|version| !version.model.worlds.is_empty())
@@ -257,6 +273,68 @@ fn emit_interface(
     }
     emit_trait(out, model, interface, &trait_name)?;
     Ok(())
+}
+
+fn emit_dependency_bindings(
+    dependencies: &[crate::model::Dependency],
+    serde: bool,
+) -> Result<String> {
+    let mut out = String::new();
+    writeln!(out, "{HEADER}")?;
+    writeln!(out, "// source: wit/deps")?;
+    if serde {
+        writeln!(
+            out,
+            "// serde derives require the consumer's `serde` crate with `derive`."
+        )?;
+    }
+    writeln!(out)?;
+    let mut module_names = BTreeMap::new();
+    for dependency in dependencies {
+        let module = rust_ident(
+            &format!(
+                "{}_{}",
+                snake_case(&dependency.package.namespace),
+                snake_case(&dependency.package.name)
+            ),
+            "dependency package module",
+        )?;
+        if let Some(previous) = module_names.insert(module.clone(), dependency.package.name.clone())
+        {
+            contract_bail!(
+                "dependency packages `{previous}` and `{}` both map to Rust module `{module}`",
+                dependency.package.name
+            );
+        }
+        writeln!(out, "pub mod {module} {{")?;
+        for interface in &dependency.interfaces {
+            let interface_module =
+                rust_ident(&snake_case(&interface.name), "dependency interface module")?;
+            writeln!(out, "    pub mod {interface_module} {{")?;
+            let mut body = String::new();
+            emit_interface(&mut body, &dependency_model(dependency), interface, serde)?;
+            for line in body.lines() {
+                if line.is_empty() {
+                    out.push('\n');
+                } else {
+                    writeln!(out, "    {line}")?;
+                }
+            }
+            writeln!(out, "    }}")?;
+        }
+        writeln!(out, "}}")?;
+        writeln!(out)?;
+    }
+    Ok(out)
+}
+
+fn dependency_model(dependency: &crate::model::Dependency) -> Model {
+    Model {
+        package: dependency.package.clone(),
+        interfaces: dependency.interfaces.clone(),
+        worlds: Vec::new(),
+        dependencies: Vec::new(),
+    }
 }
 
 fn write_derives(out: &mut String, serde: bool) -> Result<()> {
@@ -467,7 +545,7 @@ fn map_type(model: &Model, current_interface: &str, ty: &TypeExpr) -> Result<Str
                 )?;
                 let type_name = rust_ident(&pascal_case(&name.name), "type")?;
                 return Ok(format!(
-                    "crate::witforge_deps::{package}::{interface}::{type_name}"
+                    "super::super::witforge_deps::{package}::{interface}::{type_name}"
                 ));
             }
             model.type_def(name).with_context(|| {

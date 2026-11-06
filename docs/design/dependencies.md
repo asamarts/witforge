@@ -44,14 +44,15 @@ under `deps/`, and a dependency version bump must not renumber a local contract.
 The emitters deliberately keep dependency references external rather than copying or
 redefining another package's types:
 
-- Rust: `crate::witforge_deps::<namespace>_<package>::<interface>::<Type>`.
-- Protobuf: `<namespace>.<package>.<Interface><Type>`.
+- Rust: `super::super::witforge_deps::<namespace>_<package>::<interface>::<Type>`.
+- Protobuf: `<namespace>.<package>.v<major>.<Interface><Type>`.
 
-A consumer that needs compiled dependency types supplies those generated dependency modules
-alongside the local output. The repository-level multi-package workspace and a dependency
-generation command are separate later work; `deps/` is one level deep, as `wit-parser` defines.
-JSON Schema uses an external `urn:witforge:<qualified-name>` reference. Glue for foreign values
-requires the dependency's glue and is outside this task's generated Rust/protobuf surface.
+The Rust emitter writes the dependency modules into `witforge_deps.rs`; the protobuf emitter
+writes one `<namespace>.<package>.v<major>.proto` file per dependency and imports it from the
+root schema. `deps/` is one level deep, as `wit-parser` defines. JSON Schema uses an external
+`urn:witforge:<qualified-name>` reference. Glue for foreign values requires the dependency's
+glue and is outside this task's generated Rust/protobuf surface. A repository-level multi-package
+workspace and a dependency-generation command remain separate later work.
 
 ## Lockfiles and release freezes
 

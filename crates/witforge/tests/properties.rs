@@ -89,6 +89,7 @@ fn model(fields: &[u8], params: &[u8], result: u8) -> Model {
             }],
         }],
         worlds: Vec::new(),
+        dependencies: Vec::new(),
     }
 }
 

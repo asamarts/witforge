@@ -18,7 +18,7 @@ The public surface is the modules and items below. Within 1.x:
 | Module | Stable surface |
 |---|---|
 | crate root | `Contract`, `ContractError`, `load`, `is_contract_error`, `ReleasedManifest`, release-manifest helpers, version-directory and released-directory helpers |
-| `model` | `Version`, `Stability`, `QualifiedName`, `TypeExpr`, `ResultExpr`, `Field`, `Case`, `Flag`, `TypeDef`, `TypeDefKind`, `Param`, `Function`, `Interface`, `WorldInterface`, `World`, `Package`, `Model`, `MemberKind`, `Member`, `build`, and `members` |
+| `model` | `Version`, `Stability`, `QualifiedName`, `TypeExpr`, `ResultExpr`, `Field`, `Case`, `Flag`, `TypeDef`, `TypeDefKind`, `Param`, `Function`, `Interface`, `WorldInterface`, `World`, `Package`, `Dependency`, `Model`, `MemberKind`, `Member`, `build`, and `members` |
 | `lock` | `HEADER`, `ORDER_HEADER`, `PackageName`, `MemberKey`, `Entry`, `WireLock`, `LockMode`, `Changes`, and their documented methods |
 | `emit::rust` | `HEADER`, `plan`, `plan_with_serde`, `generate`, `generate_with_serde`, `check`, `check_with_serde`, `version_module_name`, `emit_version`, `emit_version_with_serde` |
 | `emit::proto` | `HEADER`, `plan`, `generate`, `check`, `emit_major` |
