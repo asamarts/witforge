@@ -53,7 +53,8 @@ fn dependency_glue_roundtrips_a_foreign_value() {
         .unwrap();
     let glue_files = glue::plan(&root, "crate::plain", "crate::proto").unwrap();
     glue_files.write(&out.join("glue")).unwrap();
-    assert!(glue_files.check(&out.join("glue")).unwrap().is_empty());
+    let drift = glue_files.check(&out.join("glue")).unwrap();
+    assert_eq!(drift, Vec::<String>::new());
     assert!(glue_files.files().contains_key("witforge_deps.rs"));
     proto::plan(&root)
         .unwrap()
