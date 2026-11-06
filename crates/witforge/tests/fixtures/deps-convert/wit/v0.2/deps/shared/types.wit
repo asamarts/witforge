@@ -1,0 +1,7 @@
+package example:shared@0.1.0;
+
+interface types {
+    record thing { id: u64 }
+    enum choice { one, two }
+    type numbers = list<u64>;
+}

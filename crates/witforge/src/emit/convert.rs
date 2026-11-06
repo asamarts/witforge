@@ -645,6 +645,13 @@ fn convert_expr(
                      evolution requires a new type instead of removing a referenced type"
                 );
             }
+            if source_name.is_foreign() || target_name.is_foreign() {
+                // Dependency packages are pinned and frozen with the version directory; the
+                // same package-qualified name is the same value across these versions.
+                return Ok(format!(
+                    "::core::result::Result::Ok(({expression}).clone())"
+                ));
+            }
             let interface_module =
                 rust_ident(&snake_case(&source_name.interface), "interface module")?;
             let function = rust_ident(&snake_case(&source_name.name), "conversion function")?;
@@ -794,6 +801,17 @@ fn rust_type_expr(version: &Version, ty: &TypeExpr, version_alias: &str) -> Resu
                     "type `{name}` is missing from the target version; evolution requires a new \
                      type instead of removing a referenced type"
                 );
+            }
+            if let Some((namespace, package)) = name.package() {
+                let module = format!("{}_{}", snake_case(namespace), snake_case(package));
+                let interface = rust_ident(
+                    &snake_case(name.interface_name()),
+                    "dependency interface module",
+                )?;
+                let type_name = rust_ident(&pascal_case(&name.name), "type")?;
+                return Ok(format!(
+                    "super::super::super::witforge_deps::{module}::{interface}::{type_name}"
+                ));
             }
             let interface_module = rust_ident(&snake_case(&name.interface), "interface module")?;
             let type_name = rust_ident(&pascal_case(&name.name), "type")?;

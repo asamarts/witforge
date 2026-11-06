@@ -114,6 +114,9 @@ pub(crate) fn plan_versions(
         .context("no version directories found under WIT root")?
         .model
         .package;
+    for version in versions {
+        ensure_no_foreign_values(&version.model)?;
+    }
     let mut files = GeneratedFiles::new(HEADER);
     let mut majors = Vec::new();
     for (major, version) in &highest {
@@ -156,6 +159,71 @@ pub fn check(
 ) -> Result<Vec<String>> {
     ensure_outside_wit_root(wit_root, out)?;
     plan(wit_root, plain_root, proto_root)?.check(out)
+}
+
+fn ensure_no_foreign_values(model: &Model) -> Result<()> {
+    for interface in &model.interfaces {
+        for def in &interface.types {
+            ensure_type_has_no_foreign_values(&def.kind)?;
+        }
+        for function in &interface.functions {
+            for param in &function.params {
+                ensure_expr_has_no_foreign_values(&param.ty)?;
+            }
+            if let Some(result) = &function.result {
+                ensure_expr_has_no_foreign_values(result)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_type_has_no_foreign_values(kind: &TypeDefKind) -> Result<()> {
+    match kind {
+        TypeDefKind::Record(fields) => {
+            for field in fields {
+                ensure_expr_has_no_foreign_values(&field.ty)?;
+            }
+        }
+        TypeDefKind::Variant(cases) => {
+            for case in cases {
+                if let Some(payload) = &case.payload {
+                    ensure_expr_has_no_foreign_values(payload)?;
+                }
+            }
+        }
+        TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
+        TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
+            ensure_expr_has_no_foreign_values(ty)?;
+        }
+        TypeDefKind::Result(result) => {
+            for ty in [&result.ok, &result.err].into_iter().flatten() {
+                ensure_expr_has_no_foreign_values(ty)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_expr_has_no_foreign_values(ty: &TypeExpr) -> Result<()> {
+    match ty {
+        TypeExpr::Named(name) if name.is_foreign() => {
+            contract_bail!(
+                "glue for dependency value `{name}` is not supported yet (W9-005); keep the \
+                 value local or generate only Rust and protobuf for this contract"
+            );
+        }
+        TypeExpr::List(element) | TypeExpr::Option(element) => {
+            ensure_expr_has_no_foreign_values(element)?;
+        }
+        TypeExpr::Result(result) => {
+            for ty in [&result.ok, &result.err].into_iter().flatten() {
+                ensure_expr_has_no_foreign_values(ty)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Validate a Rust module path used as a generated reference root.

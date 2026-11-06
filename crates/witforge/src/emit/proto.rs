@@ -11,8 +11,8 @@ use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions};
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
-    Case, Field, Function, MemberKind, Model, QualifiedName, ResultExpr, TypeDef, TypeDefKind,
-    TypeExpr,
+    Case, Dependency, Field, Function, MemberKind, Model, QualifiedName, ResultExpr, TypeDef,
+    TypeDefKind, TypeExpr,
 };
 
 /// The ownership header on every generated protobuf file.
@@ -63,22 +63,34 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
             "versions disagree about their dependency packages"
         ));
     }
+    let mut dependency_files = BTreeSet::new();
     for dependency in &first.model.dependencies {
         let model = Model {
             package: dependency.package.clone(),
             interfaces: dependency.interfaces.clone(),
             worlds: Vec::new(),
-            dependencies: Vec::new(),
+            dependencies: first
+                .model
+                .dependencies
+                .iter()
+                .filter(|other| {
+                    other.package.namespace != dependency.package.namespace
+                        || other.package.name != dependency.package.name
+                })
+                .cloned()
+                .collect(),
         };
         let members = model.members()?;
         let mut lock = WireLock::default();
         lock.reconcile(&members)?;
         let generated = emit_major(&model, &lock)
             .with_context(|| format!("dependency {}", dependency.package.name))?;
-        let filename = format!(
-            "{}.{}.v{}.proto",
-            dependency.package.namespace, dependency.package.name, dependency.package.version.major
-        );
+        let filename = dependency_file_name(dependency);
+        if !dependency_files.insert(filename.clone()) {
+            bail!(ContractError::new(format!(
+                "dependency packages both generate `{filename}`"
+            )));
+        }
         files.insert(filename, generated)?;
     }
     Ok(files)
@@ -137,6 +149,11 @@ enum WrapperKind {
     Result(ResultExpr),
 }
 
+struct ResolvedType<'a> {
+    dependency: Option<&'a Dependency>,
+    def: &'a TypeDef,
+}
+
 impl<'a> Emitter<'a> {
     fn new(model: &'a Model, lock: &'a WireLock) -> Result<Self> {
         let namespace = proto_ident(&model.package.namespace.replace('-', "_"), "namespace")?;
@@ -173,16 +190,18 @@ impl<'a> Emitter<'a> {
         writeln!(out)?;
         writeln!(out, "package {};", self.package)?;
         writeln!(out)?;
+        let referenced = self.referenced_dependencies();
+        let mut wrote_import = false;
         for dependency in &self.model.dependencies {
-            writeln!(
-                out,
-                "import \"{}.{}.v{}.proto\";",
-                dependency.package.namespace,
-                dependency.package.name,
-                dependency.package.version.major
-            )?;
+            if referenced.contains(&(
+                dependency.package.namespace.clone(),
+                dependency.package.name.clone(),
+            )) {
+                writeln!(out, "import \"{}\";", dependency_file_name(dependency))?;
+                wrote_import = true;
+            }
         }
-        if !self.model.dependencies.is_empty() {
+        if wrote_import {
             writeln!(out)?;
         }
         writeln!(out, "message {EMPTY} {{}}")?;
@@ -662,15 +681,463 @@ impl<'a> Emitter<'a> {
             .collect()
     }
 
-    fn foreign_name(&self, name: &QualifiedName) -> Option<String> {
-        let (namespace, package) = name.package()?;
-        let dependency = self.model.dependency_package(namespace, package)?;
-        Some(format!(
-            "{namespace}.{package}.v{}.{}{}",
-            dependency.package.version.major,
+    fn referenced_dependencies(&self) -> BTreeSet<(String, String)> {
+        let mut names = BTreeSet::new();
+        for interface in &self.model.interfaces {
+            for def in &interface.types {
+                collect_type_dependencies(&def.kind, &mut names);
+            }
+            for function in &interface.functions {
+                for param in &function.params {
+                    collect_expr_dependencies(&param.ty, &mut names);
+                }
+                if let Some(result) = &function.result {
+                    collect_expr_dependencies(result, &mut names);
+                }
+            }
+        }
+        names
+    }
+
+    fn resolve_owned(
+        &self,
+        context: Option<&Dependency>,
+        name: &QualifiedName,
+    ) -> Result<(Option<Dependency>, TypeDefKind)> {
+        let resolved = self.resolve_type(context, name)?;
+        Ok((resolved.dependency.cloned(), resolved.def.kind.clone()))
+    }
+
+    fn resolve_type<'b>(
+        &'b self,
+        context: Option<&'b Dependency>,
+        name: &QualifiedName,
+    ) -> Result<ResolvedType<'b>> {
+        if let Some((namespace, package)) = name.package() {
+            let dependency = self
+                .model
+                .dependency_package(namespace, package)
+                .with_context(|| {
+                    format!("dependency `{namespace}:{package}` is not in the model")
+                })?;
+            let def = dependency
+                .interfaces
+                .iter()
+                .find(|interface| interface.name == name.interface_name())
+                .and_then(|interface| interface.types.iter().find(|def| def.name == name.name))
+                .with_context(|| {
+                    format!("named type `{name}` is not in dependency `{namespace}:{package}`")
+                })?;
+            return Ok(ResolvedType {
+                dependency: Some(dependency),
+                def,
+            });
+        }
+        if let Some(dependency) = context {
+            let def = dependency
+                .interfaces
+                .iter()
+                .find(|interface| interface.name == name.interface_name())
+                .and_then(|interface| interface.types.iter().find(|def| def.name == name.name))
+                .with_context(|| {
+                    format!(
+                        "named type `{name}` is not in dependency `{}:{}`",
+                        dependency.package.namespace, dependency.package.name
+                    )
+                })?;
+            return Ok(ResolvedType {
+                dependency: Some(dependency),
+                def,
+            });
+        }
+        let def = self.model.type_def(name).with_context(|| {
+            format!(
+                "named type `{}/{}` is not in the model",
+                name.interface, name.name
+            )
+        })?;
+        Ok(ResolvedType {
+            dependency: None,
+            def,
+        })
+    }
+
+    fn type_ref(
+        &mut self,
+        dependency: Option<&Dependency>,
+        name: &QualifiedName,
+    ) -> Result<String> {
+        if let Some(dependency) = dependency
+            && (dependency.package.namespace != self.model.package.namespace
+                || dependency.package.name != self.model.package.name)
+        {
+            return Ok(format!(
+                "{}.{}{}",
+                dependency_proto_package(dependency),
+                pascal_case(name.interface_name()),
+                pascal_case(&name.name)
+            ));
+        }
+        self.user_name(name.interface_name(), &name.name)
+    }
+
+    fn foreign_direct(&mut self, name: &QualifiedName, required: bool) -> Result<String> {
+        let (dependency, kind) = self.resolve_owned(None, name)?;
+        self.foreign_direct_kind(dependency.as_ref(), name, &kind, required)
+    }
+
+    fn foreign_direct_kind(
+        &mut self,
+        dependency: Option<&Dependency>,
+        name: &QualifiedName,
+        kind: &TypeDefKind,
+        required: bool,
+    ) -> Result<String> {
+        match kind {
+            TypeDefKind::Alias(target) => self.foreign_direct_ty(dependency, target, required),
+            TypeDefKind::Enum(_) => Ok(optional(&self.type_ref(dependency, name)?, required)),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Flags(_)
+            | TypeDefKind::Result(_) => self.type_ref(dependency, name),
+            TypeDefKind::List(element) if is_u8(element) => Ok(optional("bytes", required)),
+            TypeDefKind::List(element) => Ok(format!(
+                "repeated {}",
+                self.foreign_singular_ty(dependency, element)?
+            )),
+            TypeDefKind::Option(payload) => self.foreign_direct_option_ty(dependency, payload),
+        }
+    }
+
+    fn foreign_direct_ty(
+        &mut self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+        required: bool,
+    ) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok(optional("bool", required)),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok(optional("uint32", required)),
+            TypeExpr::U64 => Ok(optional("uint64", required)),
+            TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok(optional("sint32", required)),
+            TypeExpr::S64 => Ok(optional("sint64", required)),
+            TypeExpr::F32 => Ok(optional("float", required)),
+            TypeExpr::F64 => Ok(optional("double", required)),
+            TypeExpr::String => Ok(optional("string", required)),
+            TypeExpr::List(element) if is_u8(element) => Ok(optional("bytes", required)),
+            TypeExpr::List(element) => Ok(format!(
+                "repeated {}",
+                self.foreign_singular_ty(context, element)?
+            )),
+            TypeExpr::Option(payload) => self.foreign_direct_option_ty(context, payload),
+            TypeExpr::Result(result) => self.foreign_result_wrapper_ty(context, result),
+            TypeExpr::Named(name) => {
+                let (dependency, kind) = self.resolve_owned(context, name)?;
+                self.foreign_direct_kind(dependency.as_ref(), name, &kind, required)
+            }
+        }
+    }
+
+    fn foreign_singular(&mut self, name: &QualifiedName) -> Result<String> {
+        let (dependency, kind) = self.resolve_owned(None, name)?;
+        self.foreign_singular_kind(dependency.as_ref(), name, &kind)
+    }
+
+    fn foreign_singular_kind(
+        &mut self,
+        dependency: Option<&Dependency>,
+        name: &QualifiedName,
+        kind: &TypeDefKind,
+    ) -> Result<String> {
+        match kind {
+            TypeDefKind::Alias(target) => self.foreign_singular_ty(dependency, target),
+            TypeDefKind::Enum(_)
+            | TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Flags(_)
+            | TypeDefKind::Result(_) => self.type_ref(dependency, name),
+            TypeDefKind::List(element) if is_u8(element) => Ok("bytes".to_string()),
+            TypeDefKind::List(element) => self.foreign_list_wrapper_ty(dependency, element),
+            TypeDefKind::Option(payload) => self.foreign_option_wrapper_ty(dependency, payload),
+        }
+    }
+
+    fn foreign_singular_ty(
+        &mut self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("uint32".to_string()),
+            TypeExpr::U64 => Ok("uint64".to_string()),
+            TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("sint32".to_string()),
+            TypeExpr::S64 => Ok("sint64".to_string()),
+            TypeExpr::F32 => Ok("float".to_string()),
+            TypeExpr::F64 => Ok("double".to_string()),
+            TypeExpr::String => Ok("string".to_string()),
+            TypeExpr::List(element) if is_u8(element) => Ok("bytes".to_string()),
+            TypeExpr::List(element) => self.foreign_list_wrapper_ty(context, element),
+            TypeExpr::Option(payload) => self.foreign_option_wrapper_ty(context, payload),
+            TypeExpr::Result(result) => self.foreign_result_wrapper_ty(context, result),
+            TypeExpr::Named(name) => {
+                let (dependency, kind) = self.resolve_owned(context, name)?;
+                self.foreign_singular_kind(dependency.as_ref(), name, &kind)
+            }
+        }
+    }
+
+    fn foreign_shape(&self, name: &QualifiedName) -> Result<Shape> {
+        let resolved = self.resolve_type(None, name)?;
+        self.foreign_shape_kind(resolved.dependency, &resolved.def.kind)
+    }
+
+    fn foreign_shape_kind(
+        &self,
+        context: Option<&Dependency>,
+        kind: &TypeDefKind,
+    ) -> Result<Shape> {
+        match kind {
+            TypeDefKind::Alias(target) => self.foreign_shape_ty(context, target),
+            TypeDefKind::Enum(_) => Ok(Shape::Scalar),
+            TypeDefKind::List(element) if is_u8(element) => Ok(Shape::Bytes),
+            TypeDefKind::List(_) => Ok(Shape::List),
+            TypeDefKind::Option(_) => Ok(Shape::Option),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Flags(_)
+            | TypeDefKind::Result(_) => Ok(Shape::Message),
+        }
+    }
+
+    fn foreign_shape_ty(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<Shape> {
+        match ty {
+            TypeExpr::Bool
+            | TypeExpr::U8
+            | TypeExpr::U16
+            | TypeExpr::U32
+            | TypeExpr::U64
+            | TypeExpr::S8
+            | TypeExpr::S16
+            | TypeExpr::S32
+            | TypeExpr::S64
+            | TypeExpr::F32
+            | TypeExpr::F64
+            | TypeExpr::String => Ok(Shape::Scalar),
+            TypeExpr::List(element) if is_u8(element) => Ok(Shape::Bytes),
+            TypeExpr::List(_) => Ok(Shape::List),
+            TypeExpr::Option(_) => Ok(Shape::Option),
+            TypeExpr::Result(_) => Ok(Shape::Message),
+            TypeExpr::Named(name) => {
+                let resolved = self.resolve_type(context, name)?;
+                self.foreign_shape_kind(resolved.dependency, &resolved.def.kind)
+            }
+        }
+    }
+
+    fn foreign_shape_name(&self, name: &QualifiedName) -> Result<String> {
+        let resolved = self.resolve_type(None, name)?;
+        self.foreign_shape_name_kind(resolved.dependency, name, &resolved.def.kind)
+    }
+
+    fn foreign_shape_name_kind(
+        &self,
+        dependency: Option<&Dependency>,
+        name: &QualifiedName,
+        kind: &TypeDefKind,
+    ) -> Result<String> {
+        match kind {
+            TypeDefKind::Alias(target) => self.foreign_shape_name_ty(dependency, target),
+            TypeDefKind::List(element) => Ok(format!(
+                "ListOf{}",
+                self.foreign_shape_name_ty(dependency, element)?
+            )),
+            TypeDefKind::Option(payload) => Ok(format!(
+                "OptionOf{}",
+                self.foreign_shape_name_ty(dependency, payload)?
+            )),
+            TypeDefKind::Result(result) => self.foreign_result_shape_name(dependency, result),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Enum(_)
+            | TypeDefKind::Flags(_) => {
+                Ok(self.type_ref_for_shape(dependency, name).replace('.', "_"))
+            }
+        }
+    }
+
+    fn foreign_shape_name_ty(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("Bool".to_string()),
+            TypeExpr::U8 => Ok("U8".to_string()),
+            TypeExpr::U16 => Ok("U16".to_string()),
+            TypeExpr::U32 => Ok("U32".to_string()),
+            TypeExpr::U64 => Ok("U64".to_string()),
+            TypeExpr::S8 => Ok("S8".to_string()),
+            TypeExpr::S16 => Ok("S16".to_string()),
+            TypeExpr::S32 => Ok("S32".to_string()),
+            TypeExpr::S64 => Ok("S64".to_string()),
+            TypeExpr::F32 => Ok("F32".to_string()),
+            TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::String => Ok("String".to_string()),
+            TypeExpr::List(element) => Ok(format!(
+                "ListOf{}",
+                self.foreign_shape_name_ty(context, element)?
+            )),
+            TypeExpr::Option(payload) => Ok(format!(
+                "OptionOf{}",
+                self.foreign_shape_name_ty(context, payload)?
+            )),
+            TypeExpr::Result(result) => self.foreign_result_shape_name(context, result),
+            TypeExpr::Named(name) => {
+                let resolved = self.resolve_type(context, name)?;
+                self.foreign_shape_name_kind(resolved.dependency, name, &resolved.def.kind)
+            }
+        }
+    }
+
+    fn foreign_result_shape_name(
+        &self,
+        context: Option<&Dependency>,
+        result: &ResultExpr,
+    ) -> Result<String> {
+        let ok = match &result.ok {
+            Some(ty) => self.foreign_shape_name_ty(context, ty)?,
+            None => "Empty".to_string(),
+        };
+        let err = match &result.err {
+            Some(ty) => self.foreign_shape_name_ty(context, ty)?,
+            None => "Empty".to_string(),
+        };
+        Ok(format!("ResultOf{ok}And{err}"))
+    }
+
+    fn type_ref_for_shape(&self, dependency: Option<&Dependency>, name: &QualifiedName) -> String {
+        if let Some(dependency) = dependency
+            && (dependency.package.namespace != self.model.package.namespace
+                || dependency.package.name != self.model.package.name)
+        {
+            return format!(
+                "{}.{}{}",
+                dependency_proto_package(dependency),
+                pascal_case(name.interface_name()),
+                pascal_case(&name.name)
+            );
+        }
+        format!(
+            "{}{}",
             pascal_case(name.interface_name()),
             pascal_case(&name.name)
-        ))
+        )
+    }
+
+    fn foreign_direct_option_ty(
+        &mut self,
+        context: Option<&Dependency>,
+        payload: &TypeExpr,
+    ) -> Result<String> {
+        match self.foreign_shape_ty(context, payload)? {
+            Shape::Scalar | Shape::Bytes => Ok(format!(
+                "optional {}",
+                self.foreign_singular_ty(context, payload)?
+            )),
+            Shape::Message | Shape::List | Shape::Option => {
+                self.foreign_singular_ty(context, payload)
+            }
+        }
+    }
+
+    fn foreign_list_wrapper_ty(
+        &mut self,
+        context: Option<&Dependency>,
+        element: &TypeExpr,
+    ) -> Result<String> {
+        let name = format!(
+            "WitforgeListOf{}",
+            self.foreign_shape_name_ty(context, element)?
+        );
+        self.ensure_foreign_wrapper(
+            name.clone(),
+            WrapperKind::List(element.clone()),
+            "anonymous list".to_string(),
+            context,
+        )?;
+        Ok(name)
+    }
+
+    fn foreign_option_wrapper_ty(
+        &mut self,
+        context: Option<&Dependency>,
+        payload: &TypeExpr,
+    ) -> Result<String> {
+        let name = format!(
+            "WitforgeOptionOf{}",
+            self.foreign_shape_name_ty(context, payload)?
+        );
+        let some = self.foreign_singular_ty(context, payload)?;
+        self.ensure_wrapper(
+            name.clone(),
+            WrapperKind::OptionValue(some),
+            "anonymous option".to_string(),
+        )?;
+        Ok(name)
+    }
+
+    fn foreign_result_wrapper_ty(
+        &mut self,
+        context: Option<&Dependency>,
+        result: &ResultExpr,
+    ) -> Result<String> {
+        let name = format!(
+            "Witforge{}",
+            self.foreign_result_shape_name(context, result)?
+        );
+        self.ensure_foreign_wrapper(
+            name.clone(),
+            WrapperKind::Result(result.clone()),
+            "anonymous result".to_string(),
+            context,
+        )?;
+        Ok(name)
+    }
+
+    fn ensure_foreign_wrapper(
+        &mut self,
+        name: String,
+        kind: WrapperKind,
+        source: String,
+        context: Option<&Dependency>,
+    ) -> Result<()> {
+        if self.wrappers.contains_key(&name) {
+            return Ok(());
+        }
+        self.register_top(&name, source)?;
+        let body = match kind {
+            WrapperKind::List(element) => {
+                let ty = self.foreign_singular_ty(context, &element)?;
+                format!("message {name} {{\n  repeated {ty} values = 1;\n}}")
+            }
+            WrapperKind::OptionValue(some) => {
+                format!(
+                    "message {name} {{\n  oneof value {{\n    Empty none = 1;\n    {some} some = 2;\n  }}\n}}"
+                )
+            }
+            WrapperKind::Result(result) => {
+                let ok = match &result.ok {
+                    Some(ok) => self.foreign_singular_ty(context, ok)?,
+                    None => EMPTY.to_string(),
+                };
+                let err = match &result.err {
+                    Some(err) => self.foreign_singular_ty(context, err)?,
+                    None => EMPTY.to_string(),
+                };
+                format!(
+                    "message {name} {{\n  oneof value {{\n    {ok} ok = 1;\n    {err} err = 2;\n  }}\n}}"
+                )
+            }
+        };
+        self.wrappers.insert(name, body);
+        Ok(())
     }
 
     fn direct(&mut self, ty: &TypeExpr, required: bool) -> Result<String> {
@@ -688,8 +1155,8 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => self.direct_option(payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
-                if let Some(foreign) = self.foreign_name(name) {
-                    return Ok(foreign);
+                if name.is_foreign() {
+                    return self.foreign_direct(name, required);
                 }
                 let kind = self.named(name)?.kind.clone();
                 match &kind {
@@ -727,8 +1194,8 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => self.option_wrapper(None, payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
-                if let Some(foreign) = self.foreign_name(name) {
-                    return Ok(foreign);
+                if name.is_foreign() {
+                    return self.foreign_singular(name);
                 }
                 let kind = self.named(name)?.kind.clone();
                 match &kind {
@@ -819,13 +1286,19 @@ impl<'a> Emitter<'a> {
     }
 
     fn list_element(&self, ty: &TypeExpr) -> Result<TypeExpr> {
+        self.list_element_in(None, ty)
+    }
+
+    fn list_element_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<TypeExpr> {
         match ty {
-            TypeExpr::List(element) => Ok((**element).clone()),
+            TypeExpr::List(element) => Ok(qualify_type(context, element)),
             TypeExpr::Named(name) => {
-                let kind = self.named(name)?.kind.clone();
+                let (dependency, kind) = self.resolve_owned(context, name)?;
                 match kind {
-                    TypeDefKind::List(element) => Ok(element),
-                    TypeDefKind::Alias(target) => self.list_element(&target),
+                    TypeDefKind::List(element) => Ok(qualify_type(dependency.as_ref(), &element)),
+                    TypeDefKind::Alias(target) => {
+                        self.list_element_in(dependency.as_ref(), &target)
+                    }
                     _ => bail!("named option `{name}` has a non-list shape"),
                 }
             }
@@ -834,13 +1307,19 @@ impl<'a> Emitter<'a> {
     }
 
     fn option_payload(&self, ty: &TypeExpr) -> Result<TypeExpr> {
+        self.option_payload_in(None, ty)
+    }
+
+    fn option_payload_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<TypeExpr> {
         match ty {
-            TypeExpr::Option(payload) => Ok((**payload).clone()),
+            TypeExpr::Option(payload) => Ok(qualify_type(context, payload)),
             TypeExpr::Named(name) => {
-                let kind = self.named(name)?.kind.clone();
+                let (dependency, kind) = self.resolve_owned(context, name)?;
                 match kind {
-                    TypeDefKind::Option(payload) => Ok(payload),
-                    TypeDefKind::Alias(target) => self.option_payload(&target),
+                    TypeDefKind::Option(payload) => Ok(qualify_type(dependency.as_ref(), &payload)),
+                    TypeDefKind::Alias(target) => {
+                        self.option_payload_in(dependency.as_ref(), &target)
+                    }
                     _ => bail!("named option `{name}` has a non-option shape"),
                 }
             }
@@ -927,7 +1406,7 @@ impl<'a> Emitter<'a> {
             TypeExpr::Result(_) => Ok(Shape::Message),
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
-                    return Ok(Shape::Message);
+                    return self.foreign_shape(name);
                 }
                 let def = self.named(name)?;
                 match &def.kind {
@@ -963,8 +1442,8 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => Ok(format!("OptionOf{}", self.shape_name(payload)?)),
             TypeExpr::Result(result) => self.result_shape_name(result),
             TypeExpr::Named(name) => {
-                if let Some(foreign) = self.foreign_name(name) {
-                    return Ok(foreign.replace('.', "_"));
+                if name.is_foreign() {
+                    return self.foreign_shape_name(name);
                 }
                 let def = self.named(name)?;
                 match &def.kind {
@@ -1063,6 +1542,109 @@ enum Shape {
     Message,
     List,
     Option,
+}
+
+fn collect_type_dependencies(kind: &TypeDefKind, names: &mut BTreeSet<(String, String)>) {
+    match kind {
+        TypeDefKind::Record(fields) => {
+            for field in fields {
+                collect_expr_dependencies(&field.ty, names);
+            }
+        }
+        TypeDefKind::Variant(cases) => {
+            for case in cases {
+                if let Some(payload) = &case.payload {
+                    collect_expr_dependencies(payload, names);
+                }
+            }
+        }
+        TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
+        TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
+            collect_expr_dependencies(ty, names);
+        }
+        TypeDefKind::Result(result) => {
+            for ty in [&result.ok, &result.err].into_iter().flatten() {
+                collect_expr_dependencies(ty, names);
+            }
+        }
+    }
+}
+
+fn collect_expr_dependencies(ty: &TypeExpr, names: &mut BTreeSet<(String, String)>) {
+    match ty {
+        TypeExpr::Named(name) => {
+            if let Some((namespace, package)) = name.package() {
+                names.insert((namespace.to_string(), package.to_string()));
+            }
+        }
+        TypeExpr::List(element) | TypeExpr::Option(element) => {
+            collect_expr_dependencies(element, names);
+        }
+        TypeExpr::Result(result) => {
+            for ty in [&result.ok, &result.err].into_iter().flatten() {
+                collect_expr_dependencies(ty, names);
+            }
+        }
+        TypeExpr::Bool
+        | TypeExpr::U8
+        | TypeExpr::U16
+        | TypeExpr::U32
+        | TypeExpr::U64
+        | TypeExpr::S8
+        | TypeExpr::S16
+        | TypeExpr::S32
+        | TypeExpr::S64
+        | TypeExpr::F32
+        | TypeExpr::F64
+        | TypeExpr::String => {}
+    }
+}
+
+fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
+    let Some(dependency) = dependency else {
+        return ty.clone();
+    };
+    match ty {
+        TypeExpr::Named(name) if name.package().is_none() => TypeExpr::Named(QualifiedName {
+            interface: format!(
+                "{}:{}/{}",
+                dependency.package.namespace,
+                dependency.package.name,
+                name.interface_name()
+            ),
+            name: name.name.clone(),
+        }),
+        TypeExpr::List(element) => {
+            TypeExpr::List(Box::new(qualify_type(Some(dependency), element)))
+        }
+        TypeExpr::Option(payload) => {
+            TypeExpr::Option(Box::new(qualify_type(Some(dependency), payload)))
+        }
+        TypeExpr::Result(result) => TypeExpr::Result(ResultExpr {
+            ok: result
+                .ok
+                .as_ref()
+                .map(|ty| Box::new(qualify_type(Some(dependency), ty))),
+            err: result
+                .err
+                .as_ref()
+                .map(|ty| Box::new(qualify_type(Some(dependency), ty))),
+        }),
+        _ => ty.clone(),
+    }
+}
+
+fn dependency_proto_package(dependency: &Dependency) -> String {
+    format!(
+        "{}.{}.v{}",
+        dependency.package.namespace.replace('-', "_"),
+        dependency.package.name.replace('-', "_"),
+        dependency.package.version.major
+    )
+}
+
+fn dependency_file_name(dependency: &Dependency) -> String {
+    format!("{}.proto", dependency_proto_package(dependency))
 }
 
 fn optional(ty: &str, required: bool) -> String {

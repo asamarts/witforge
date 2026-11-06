@@ -238,7 +238,13 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
         let module = rust_ident(&snake_case(&interface.name), "interface module")?;
         write_docs(&mut out, 0, &interface.docs)?;
         writeln!(out, "pub mod {module} {{")?;
-        emit_interface(&mut out, model, interface, serde)?;
+        emit_interface(
+            &mut out,
+            model,
+            interface,
+            serde,
+            "super::super::witforge_deps",
+        )?;
         writeln!(out, "}}\n")?;
     }
     for interface in &model.interfaces {
@@ -254,6 +260,7 @@ fn emit_interface(
     model: &Model,
     interface: &crate::model::Interface,
     serde: bool,
+    foreign_base: &str,
 ) -> Result<()> {
     let trait_name = rust_ident(&pascal_case(&interface.name), "interface trait")?;
     let mut type_names: BTreeMap<String, String> = BTreeMap::new();
@@ -269,9 +276,9 @@ fn emit_interface(
         )?;
     }
     for def in &interface.types {
-        emit_type_def(out, model, interface, def, serde)?;
+        emit_type_def(out, model, interface, def, serde, foreign_base)?;
     }
-    emit_trait(out, model, interface, &trait_name)?;
+    emit_trait(out, model, interface, &trait_name, foreign_base)?;
     Ok(())
 }
 
@@ -312,7 +319,13 @@ fn emit_dependency_bindings(
                 rust_ident(&snake_case(&interface.name), "dependency interface module")?;
             writeln!(out, "    pub mod {interface_module} {{")?;
             let mut body = String::new();
-            emit_interface(&mut body, &dependency_model(dependency), interface, serde)?;
+            emit_interface(
+                &mut body,
+                &dependency_model(dependency, dependencies),
+                interface,
+                serde,
+                "super::super",
+            )?;
             for line in body.lines() {
                 if line.is_empty() {
                     out.push('\n');
@@ -328,12 +341,22 @@ fn emit_dependency_bindings(
     Ok(out)
 }
 
-fn dependency_model(dependency: &crate::model::Dependency) -> Model {
+fn dependency_model(
+    dependency: &crate::model::Dependency,
+    dependencies: &[crate::model::Dependency],
+) -> Model {
     Model {
         package: dependency.package.clone(),
         interfaces: dependency.interfaces.clone(),
         worlds: Vec::new(),
-        dependencies: Vec::new(),
+        dependencies: dependencies
+            .iter()
+            .filter(|other| {
+                other.package.namespace != dependency.package.namespace
+                    || other.package.name != dependency.package.name
+            })
+            .cloned()
+            .collect(),
     }
 }
 
@@ -349,6 +372,7 @@ fn write_derives(out: &mut String, serde: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_record(
     out: &mut String,
     model: &Model,
@@ -357,6 +381,7 @@ fn emit_record(
     name: &str,
     fields: &[crate::model::Field],
     serde: bool,
+    foreign_base: &str,
 ) -> Result<()> {
     write_derives(out, serde)?;
     writeln!(out, "    pub struct {name} {{")?;
@@ -370,7 +395,7 @@ fn emit_record(
             &format!("{}/{}", interface.name, def.name),
         )?;
         write_docs(out, 8, &field.docs)?;
-        let ty = map_type(model, &interface.name, &field.ty)?;
+        let ty = map_type(model, &interface.name, &field.ty, foreign_base)?;
         writeln!(out, "        pub {field_name}: {ty},")?;
     }
     writeln!(out, "    }}")?;
@@ -383,12 +408,22 @@ fn emit_type_def(
     interface: &crate::model::Interface,
     def: &TypeDef,
     serde: bool,
+    foreign_base: &str,
 ) -> Result<()> {
     let name = rust_ident(&pascal_case(&def.name), "type")?;
     write_docs(out, 4, &def.docs)?;
     match &def.kind {
         TypeDefKind::Record(fields) => {
-            emit_record(out, model, interface, def, &name, fields, serde)?;
+            emit_record(
+                out,
+                model,
+                interface,
+                def,
+                &name,
+                fields,
+                serde,
+                foreign_base,
+            )?;
         }
         TypeDefKind::Variant(cases) => {
             write_derives(out, serde)?;
@@ -404,7 +439,7 @@ fn emit_type_def(
                 )?;
                 write_docs(out, 8, &case.docs)?;
                 if let Some(payload) = &case.payload {
-                    let ty = map_type(model, &interface.name, payload)?;
+                    let ty = map_type(model, &interface.name, payload, foreign_base)?;
                     writeln!(out, "        {case_name}({ty}),")?;
                 } else {
                     writeln!(out, "        {case_name},")?;
@@ -447,25 +482,25 @@ fn emit_type_def(
             writeln!(out, "    }}")?;
         }
         TypeDefKind::Alias(target) => {
-            let ty = map_type(model, &interface.name, target)?;
+            let ty = map_type(model, &interface.name, target, foreign_base)?;
             writeln!(out, "    pub type {name} = {ty};")?;
         }
         TypeDefKind::List(element) => {
-            let ty = map_type(model, &interface.name, element)?;
+            let ty = map_type(model, &interface.name, element, foreign_base)?;
             writeln!(out, "    pub type {name} = ::std::vec::Vec<{ty}>;")?;
         }
         TypeDefKind::Option(payload) => {
-            let ty = map_type(model, &interface.name, payload)?;
+            let ty = map_type(model, &interface.name, payload, foreign_base)?;
             writeln!(out, "    pub type {name} = ::std::option::Option<{ty}>;")?;
         }
         TypeDefKind::Result(result) => {
             let ok = result.ok.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, &interface.name, ty),
+                |ty| map_type(model, &interface.name, ty, foreign_base),
             )?;
             let err = result.err.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, &interface.name, ty),
+                |ty| map_type(model, &interface.name, ty, foreign_base),
             )?;
             writeln!(
                 out,
@@ -481,6 +516,7 @@ fn emit_trait(
     model: &Model,
     interface: &crate::model::Interface,
     trait_name: &str,
+    foreign_base: &str,
 ) -> Result<()> {
     writeln!(out, "    pub trait {trait_name} {{")?;
     let mut function_names = BTreeMap::new();
@@ -503,12 +539,12 @@ fn emit_trait(
                 &format!("parameter {}", param.name),
                 &format!("function {}/{}", interface.name, function.name),
             )?;
-            let ty = map_type(model, &interface.name, &param.ty)?;
+            let ty = map_type(model, &interface.name, &param.ty, foreign_base)?;
             write!(out, ", {param_name}: {ty}")?;
         }
         write!(out, ")")?;
         if let Some(result) = &function.result {
-            let ty = map_type(model, &interface.name, result)?;
+            let ty = map_type(model, &interface.name, result, foreign_base)?;
             write!(out, " -> {ty}")?;
         } else {
             write!(out, " -> ()")?;
@@ -519,7 +555,12 @@ fn emit_trait(
     Ok(())
 }
 
-fn map_type(model: &Model, current_interface: &str, ty: &TypeExpr) -> Result<String> {
+fn map_type(
+    model: &Model,
+    current_interface: &str,
+    ty: &TypeExpr,
+    foreign_base: &str,
+) -> Result<String> {
     match ty {
         TypeExpr::Bool => Ok("bool".to_string()),
         TypeExpr::U8 => Ok("u8".to_string()),
@@ -545,7 +586,7 @@ fn map_type(model: &Model, current_interface: &str, ty: &TypeExpr) -> Result<Str
                 )?;
                 let type_name = rust_ident(&pascal_case(&name.name), "type")?;
                 return Ok(format!(
-                    "super::super::witforge_deps::{package}::{interface}::{type_name}"
+                    "{foreign_base}::{package}::{interface}::{type_name}"
                 ));
             }
             model.type_def(name).with_context(|| {
@@ -564,20 +605,20 @@ fn map_type(model: &Model, current_interface: &str, ty: &TypeExpr) -> Result<Str
         }
         TypeExpr::List(element) => Ok(format!(
             "::std::vec::Vec<{}>",
-            map_type(model, current_interface, element)?
+            map_type(model, current_interface, element, foreign_base)?
         )),
         TypeExpr::Option(payload) => Ok(format!(
             "::std::option::Option<{}>",
-            map_type(model, current_interface, payload)?
+            map_type(model, current_interface, payload, foreign_base)?
         )),
         TypeExpr::Result(result) => {
             let ok = result.ok.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, current_interface, ty),
+                |ty| map_type(model, current_interface, ty, foreign_base),
             )?;
             let err = result.err.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, current_interface, ty),
+                |ty| map_type(model, current_interface, ty, foreign_base),
             )?;
             Ok(format!("::std::result::Result<{ok}, {err}>"))
         }

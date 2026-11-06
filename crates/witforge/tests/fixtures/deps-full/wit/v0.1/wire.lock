@@ -1,0 +1,14 @@
+# witforge wire lockfile v2
+example:app/api.get-alias = 2 method example:shared/types/alias-thing
+example:app/api.get-choice = 4 method example:shared/types/choice
+example:app/api.get-hyphen = 11 method my-ns:my-dep/types/hyphen-thing
+example:app/api.get-list = 5 method example:shared/types/numbers
+example:app/api.get-opt = 6 method example:shared/types/opt-thing
+example:app/api.get-other = 10 method example:other/types/other-thing
+example:app/api.get-result = 7 method example:shared/types/outcome
+example:app/api.get-scalar = 3 method example:shared/types/scalar-alias
+example:app/api.get-thing = 1 method example:shared/types/thing
+example:app/api.get-var = 8 method example:shared/types/var-thing
+example:app/api.get-wrapper = 9 method example:shared/types/wrapper
+# witforge order v1
+# order example:app/api 7a27ce23adcf2245 = get-thing get-alias get-scalar get-choice get-list get-opt get-result get-var get-wrapper get-other get-hyphen

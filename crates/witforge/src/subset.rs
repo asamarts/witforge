@@ -1,12 +1,13 @@
 //! The restricted WIT subset that every contract must stay inside.
 //!
-//! Version 1 of the subset is pure, synchronous, and self-contained, and maps cleanly onto Rust
+//! Version 1 of the subset is pure and synchronous, and maps cleanly onto Rust
 //! and protobuf: no resources or handles, no `future`, `stream`, or `error-context`, no `map`, no
 //! fixed-length lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors, and
-//! nothing from another package. Types and functions live in the package's named interfaces, and
-//! worlds only import and export those interfaces. Anything the checker does not recognise is
-//! refused rather than passed through, so a new `wit-parser` construct cannot slip into the
-//! generated bindings.
+//! no foreign interfaces or worlds. Types and functions live in the package's named interfaces,
+//! and a local type may reference a named type from a standard `deps/` package. Worlds only
+//! import and export interfaces defined by this package. Anything the checker does not
+//! recognise is refused rather than passed through, so a new `wit-parser` construct cannot slip
+//! into the generated bindings.
 
 use std::fmt;
 
@@ -120,8 +121,9 @@ fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<V
                             out,
                             at,
                             format!(
-                                "{verb} `{name}` from another package; a contract must be \
-                                 self-contained"
+                                "{verb} `{name}` from another package; foreign interfaces are \
+                                 not supported, so use a local interface or a named dependency \
+                                 type"
                             ),
                         );
                     }

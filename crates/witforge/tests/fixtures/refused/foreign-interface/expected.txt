@@ -1,1 +1,1 @@
-example:bad/plugin: imports `example:other/host@1.0.0` from another package; a contract must be self-contained
+example:bad/plugin: imports `example:other/host@1.0.0` from another package; foreign interfaces are not supported, so use a local interface or a named dependency type

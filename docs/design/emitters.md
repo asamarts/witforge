@@ -297,11 +297,24 @@ pub mod v0_1 {
 - A root with no worlds emits no `worlds.rs` and no `worlds` declaration.
 
 
+### 3.7 Dependency modules
+
+When the package references a named type from a standard `deps/` package, `rust` also emits
+`witforge_deps.rs` and declares `pub mod witforge_deps;` in `mod.rs`. Each dependency package is
+a module named `<namespace>_<package>` and each interface is a module beneath it. Local
+foreign-type references use `super::super::witforge_deps::...`; references between dependency
+packages use `super::super::...`.
+
+Unsupported dependency items that the root does not use are skipped rather than failing the
+root. If the root uses an item that could not be represented, the emitter reports a missing
+dependency type. See [`dependencies.md`](dependencies.md).
+
 ## 4. Protobuf emitter
 
 ### 4.1 File, package, and names
 
-- One file per major: `<out>/v<major>.proto`.
+- One file per major: `<out>/v<major>.proto`; one file per dependency:
+  `<out>/<namespace>.<package>.v<major>.proto`, with `-` replaced by `_` in both names.
 - Package: `<namespace>.<name>.v<major>`, with `-` replaced by `_`.
 - File header:
 
@@ -711,18 +724,21 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
 
 | Command | Expected files |
 |---|---|
-| `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version, `convert.rs` when there are two or more versions, `worlds.rs` when any version has a world |
-| `proto` | `v<major>.proto` for every major |
+| `rust` | `mod.rs`, `v<major>_<minor>.rs` for every version, `convert.rs` when there are two or more versions, `worlds.rs` when any version has a world, `witforge_deps.rs` when the package uses standard `deps/` types |
+| `proto` | `v<major>.proto` for every major, `<namespace>.<package>.v<major>.proto` for every dependency |
 | `schema` | `v<major>_<minor>.schema.json` for every version |
 | `glue` | `mod.rs`, `v<major>.rs` for every major |
 
 Rust per-version files contain inline interface modules. `mod.rs` declares every version module
-in ascending order and, when present, `convert` and `worlds`. `convert.rs` contains one module
-per adjacent version pair in each direction (section 9); `worlds.rs` contains per-version world
-metadata (section 3.6). Proto files are generated from the highest minor in
-each major. JSON Schema files are generated for every version and contain all named definitions
-(section 10). Glue files are generated from the highest minor in each major and reference its
-plain module.
+in ascending order and, when present, `witforge_deps`, `convert`, and `worlds`. `witforge_deps.rs`
+contains the generated dependency modules (section 3.7). `convert.rs` contains one module per
+adjacent version pair in each direction (section 9); `worlds.rs` contains per-version world
+metadata (section 3.6). Proto files are generated from the highest minor in each major; each
+dependency schema has a sanitized `<namespace>.<package>.v<major>.proto` name and is imported
+only by files that reference it. JSON Schema files are generated for every version and contain
+all named definitions (section 10). Glue files are generated from the highest minor in each major
+and reference its plain module; `glue` refuses a local value whose type comes from `deps/` until
+the foreign-interface and glue work (`W9-005`) lands.
 
 ## 6. Testing requirements
 
@@ -732,6 +748,10 @@ plain module.
 - Golden tests cover docs, keyword escaping, name collisions, aliases, named
   list/option/result, nested wrappers, direct-vs-singular wrapper forms for named options,
   one-sided results, payload-less variants, flags, and reserved members.
+- Dependency tests: a local package importing pinned dependency types, aliases, lists, options,
+  results, enums, variants, cross-dependency references, and hyphenated package names; generated
+  Rust and protobuf compile; a dependency's unused unsupported item does not break the root; and
+  version conversion copies a pinned foreign value.
 - Determinism tests: two runs produce byte-identical output; LF only; no timestamps.
 - `--check` tests: missing, changed, extra generated, and unrelated files, including files that
   are not UTF-8 text, and an expected path that is a symlink, a directory, a FIFO, or a file

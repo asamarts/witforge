@@ -1,0 +1,6 @@
+package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{thing};
+    get: func() -> thing;
+}

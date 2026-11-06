@@ -1,0 +1,11 @@
+package example:shared@0.1.0;
+
+interface types {
+    record thing { id: u64 }
+}
+
+interface extra {
+    resource handle {
+        ping: func();
+    }
+}

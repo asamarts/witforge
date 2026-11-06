@@ -1,0 +1,18 @@
+package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{thing, alias-thing, scalar-alias, choice, numbers, opt-thing, outcome, var-thing, wrapper};
+    use example:other/types@0.1.0.{other-thing};
+    use my-ns:my-dep/types@0.1.0.{hyphen-thing};
+    get-thing: func() -> thing;
+    get-alias: func() -> alias-thing;
+    get-scalar: func() -> scalar-alias;
+    get-choice: func() -> choice;
+    get-list: func() -> numbers;
+    get-opt: func() -> opt-thing;
+    get-result: func() -> outcome;
+    get-var: func() -> var-thing;
+    get-wrapper: func() -> wrapper;
+    get-other: func() -> other-thing;
+    get-hyphen: func() -> hyphen-thing;
+}

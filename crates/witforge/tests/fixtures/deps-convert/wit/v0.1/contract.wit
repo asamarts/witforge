@@ -1,0 +1,8 @@
+package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{thing, choice, numbers};
+    record box { value: thing, values: list<thing> }
+    get-box: func() -> box;
+    get-list: func() -> numbers;
+}

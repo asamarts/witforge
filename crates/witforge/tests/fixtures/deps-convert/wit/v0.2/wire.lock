@@ -1,0 +1,8 @@
+# witforge wire lockfile v2
+example:app/api.get-box = 1 method api/box
+example:app/api.get-list = 2 method example:shared/types/numbers
+example:app/api/box.value = 1 field example:shared/types/thing
+example:app/api/box.values = 2 field list<example:shared/types/thing>
+# witforge order v1
+# order example:app/api a70c79125c4d0f12 = get-box get-list
+# order example:app/api/box 9c7aea13034cd56c = value values

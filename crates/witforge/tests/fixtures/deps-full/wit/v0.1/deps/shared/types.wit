@@ -1,0 +1,15 @@
+package example:shared@0.1.0;
+
+interface types {
+    use example:other/types@0.1.0.{other-thing};
+
+    record thing { id: u64 }
+    type alias-thing = thing;
+    type scalar-alias = u64;
+    enum choice { one, two }
+    type numbers = list<u64>;
+    type opt-thing = option<thing>;
+    type outcome = result<thing, string>;
+    variant var-thing { none, some(thing) }
+    record wrapper { other: other-thing, alias: alias-thing, items: numbers, opt: opt-thing, choice: choice }
+}

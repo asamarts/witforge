@@ -1,0 +1,5 @@
+package my-ns:my-dep@0.1.0;
+
+interface types {
+    record hyphen-thing { label: string }
+}

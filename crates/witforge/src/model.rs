@@ -3,7 +3,8 @@
 //! The model is the boundary between `wit-parser` and the rest of witforge. It contains no
 //! `wit-parser` types, so an upstream bump only changes the conversion code in [`build`]. The
 //! subset checker runs before construction; the conversion also refuses anything it cannot
-//! represent, such as resources, tuples, foreign types, and world-defined types.
+//! represent, such as resources, tuples, and world-defined types. Named types from standard
+//! `deps/` packages are represented with their package identity.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -468,9 +469,11 @@ impl TypeExpr {
 ///
 /// # Errors
 ///
-/// Returns an error for a subset violation, an unsupported `wit-parser` construct, a foreign or
+/// Returns an error for a subset violation, an unsupported `wit-parser` construct, a
 /// world-defined type, a non-freestanding function, or a contract version that is not
-/// `major.minor.0`.
+/// `major.minor.0`. Unsupported items in dependency interfaces are skipped: the root subset
+/// decides what a contract may use, and the emitters report a missing dependency type if the
+/// root references one that could not be represented.
 pub fn build(contract: &Contract) -> Result<Model> {
     let violations = crate::subset::check(contract);
     if !violations.is_empty() {
@@ -548,8 +551,8 @@ pub fn build(contract: &Contract) -> Result<Model> {
         interface_ids.sort_by_key(|(_, id)| source_key(resolve.interfaces[**id].span));
         let dependency_interfaces = interface_ids
             .into_iter()
-            .map(|(name, id)| build_interface(resolve, *package_id, name, *id))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|(name, id)| build_dependency_interface(resolve, *package_id, name, *id))
+            .collect();
         dependencies.push(Dependency {
             package: dependency_package,
             interfaces: dependency_interfaces,
@@ -565,6 +568,36 @@ pub fn build(contract: &Contract) -> Result<Model> {
         worlds,
         dependencies,
     })
+}
+
+fn build_dependency_interface(
+    resolve: &Resolve,
+    root: PackageId,
+    name: &str,
+    id: InterfaceId,
+) -> Interface {
+    let interface = &resolve.interfaces[id];
+    let mut type_ids: Vec<_> = interface.types.iter().collect();
+    type_ids.sort_by_key(|(_, id)| source_key(resolve.types[**id].span));
+    let types = type_ids
+        .into_iter()
+        .filter_map(|(type_name, type_id)| build_type_def(resolve, root, type_name, *type_id).ok())
+        .collect();
+    let mut function_ids: Vec<_> = interface.functions.iter().collect();
+    function_ids.sort_by_key(|(_, function)| source_key(function.span));
+    let functions = function_ids
+        .into_iter()
+        .filter_map(|(function_name, function)| {
+            build_function(resolve, root, function_name, function).ok()
+        })
+        .collect();
+    Interface {
+        name: name.to_string(),
+        docs: docs(&interface.docs),
+        stability: stability(&interface.stability),
+        types,
+        functions,
+    }
 }
 
 fn build_interface(
