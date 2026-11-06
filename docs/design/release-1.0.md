@@ -12,7 +12,8 @@ completeness alone is not enough.
 - [ ] the boundary error policy is published: `anyhow::Error` plus the stable `ContractError`
       classification, with no unclassified contract failure
 - [ ] the conformance matrix and `tests/conformance.rs` cover every supported WIT construct and
-      every emitter mapping row
+      every emitter mapping row, including standard `deps/` types, foreign world interfaces and
+      dependency glue, version conversion with foreign values, and opt-in Serde
 - [ ] the release test matrix is green on Linux, macOS, and Windows, and on MSRV 1.88
 - [ ] `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace --locked`, `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`,

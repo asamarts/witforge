@@ -15,4 +15,12 @@ interface api {
     get-wrapper: func() -> wrapper;
     get-other: func() -> other-thing;
     get-hyphen: func() -> hyphen-thing;
+    type list-of-opt = list<opt-thing>;
+    type option-of-opt = option<opt-thing>;
+    type list-of-outcome = list<outcome>;
+    type option-of-numbers = option<numbers>;
+    get-list-opt: func() -> list-of-opt;
+    get-option-opt: func() -> option-of-opt;
+    get-list-outcome: func() -> list-of-outcome;
+    get-option-numbers: func() -> option-of-numbers;
 }

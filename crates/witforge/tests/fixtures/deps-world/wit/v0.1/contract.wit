@@ -1,9 +1,13 @@
 package example:app@0.1.0;
 
 interface api {
-    use example:shared/types@0.1.0.{thing};
+    use example:shared/types@0.1.0.{thing, numbers};
     record box { value: thing }
+    type maybe-numbers = option<numbers>;
+    type many-numbers = list<numbers>;
     get: func() -> box;
+    get-maybe: func() -> maybe-numbers;
+    get-many: func() -> many-numbers;
 }
 
 world plugin {

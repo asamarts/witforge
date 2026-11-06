@@ -276,6 +276,16 @@ pub fn validate_module_root(root: &str) -> Result<()> {
     Ok(())
 }
 
+fn dependency_shape_name(dependency: &Dependency, name: &QualifiedName) -> String {
+    format!(
+        "{}{}{}{}",
+        pascal_case(&dependency.package.namespace),
+        pascal_case(&dependency.package.name),
+        pascal_case(name.interface_name()),
+        pascal_case(&name.name)
+    )
+}
+
 fn dependency_module_name(namespace: &str, package: &str) -> Result<String> {
     rust_ident(
         &format!("{}_{}", snake_case(namespace), snake_case(package)),
@@ -289,6 +299,40 @@ fn dependency_proto_base(proto_root: &str, namespace: &str, package: &str, major
         snake_case(namespace),
         snake_case(package)
     )
+}
+
+fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
+    let Some(dependency) = dependency else {
+        return ty.clone();
+    };
+    match ty {
+        TypeExpr::Named(name) if name.package().is_none() => TypeExpr::Named(QualifiedName {
+            interface: format!(
+                "{}:{}/{}",
+                dependency.package.namespace,
+                dependency.package.name,
+                name.interface_name()
+            ),
+            name: name.name.clone(),
+        }),
+        TypeExpr::List(element) => {
+            TypeExpr::List(Box::new(qualify_type(Some(dependency), element)))
+        }
+        TypeExpr::Option(payload) => {
+            TypeExpr::Option(Box::new(qualify_type(Some(dependency), payload)))
+        }
+        TypeExpr::Result(result) => TypeExpr::Result(ResultExpr {
+            ok: result
+                .ok
+                .as_ref()
+                .map(|ty| Box::new(qualify_type(Some(dependency), ty))),
+            err: result
+                .err
+                .as_ref()
+                .map(|ty| Box::new(qualify_type(Some(dependency), ty))),
+        }),
+        _ => ty.clone(),
+    }
 }
 
 const RUST_KEYWORDS: &[&str] = &[
@@ -690,14 +734,20 @@ impl<'a> Emitter<'a> {
             TypeDefKind::Enum(_) => Ok("i32".to_string()),
             TypeDefKind::Alias(target) => self.foreign_proto_singular_expr(context, target),
             TypeDefKind::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
-            TypeDefKind::List(element) => Ok(format!(
-                "::std::vec::Vec<{}>",
-                self.foreign_proto_singular_expr(context, element)?
-            )),
-            TypeDefKind::Option(payload) => Ok(format!(
-                "::core::option::Option<{}>",
-                self.foreign_proto_singular_expr(context, payload)?
-            )),
+            TypeDefKind::List(element) => {
+                let name = format!(
+                    "WitforgeListOf{}",
+                    self.foreign_shape_name_ty(context, element)?
+                );
+                self.proto_user_type_path(&name)
+            }
+            TypeDefKind::Option(payload) => {
+                let name = format!(
+                    "WitforgeOptionOf{}",
+                    self.foreign_shape_name_ty(context, payload)?
+                );
+                self.proto_user_type_path(&name)
+            }
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
@@ -725,14 +775,20 @@ impl<'a> Emitter<'a> {
                 }
             }
             TypeExpr::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
-            TypeExpr::List(element) => Ok(format!(
-                "::std::vec::Vec<{}>",
-                self.foreign_proto_singular_expr(context, element)?
-            )),
-            TypeExpr::Option(payload) => Ok(format!(
-                "::core::option::Option<{}>",
-                self.foreign_proto_singular_expr(context, payload)?
-            )),
+            TypeExpr::List(element) => {
+                let name = format!(
+                    "WitforgeListOf{}",
+                    self.foreign_shape_name_ty(context, element)?
+                );
+                self.proto_user_type_path(&name)
+            }
+            TypeExpr::Option(payload) => {
+                let name = format!(
+                    "WitforgeOptionOf{}",
+                    self.foreign_shape_name_ty(context, payload)?
+                );
+                self.proto_user_type_path(&name)
+            }
             TypeExpr::Bool => Ok("bool".to_string()),
             TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
             TypeExpr::U64 => Ok("u64".to_string()),
@@ -743,6 +799,91 @@ impl<'a> Emitter<'a> {
             TypeExpr::String => Ok("::std::string::String".to_string()),
             TypeExpr::Result(_) => bail!("foreign result needs a named wrapper"),
         }
+    }
+
+    fn foreign_shape_name(&self, name: &QualifiedName) -> Result<String> {
+        let (dependency, def) = self
+            .foreign_type_def(None, name)?
+            .context("foreign type needs a dependency package")?;
+        self.foreign_shape_name_kind(Some(dependency), name, &def.kind)
+    }
+
+    fn foreign_shape_name_kind(
+        &self,
+        context: Option<&Dependency>,
+        name: &QualifiedName,
+        kind: &TypeDefKind,
+    ) -> Result<String> {
+        match kind {
+            TypeDefKind::Alias(target) => self.foreign_shape_name_ty(context, target),
+            TypeDefKind::List(element) => Ok(format!(
+                "ListOf{}",
+                self.foreign_shape_name_ty(context, element)?
+            )),
+            TypeDefKind::Option(payload) => Ok(format!(
+                "OptionOf{}",
+                self.foreign_shape_name_ty(context, payload)?
+            )),
+            TypeDefKind::Result(result) => self.foreign_result_shape_name(context, result),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Enum(_)
+            | TypeDefKind::Flags(_) => {
+                let dependency = context.context("foreign type has no dependency context")?;
+                Ok(dependency_shape_name(dependency, name))
+            }
+        }
+    }
+
+    fn foreign_shape_name_ty(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("Bool".to_string()),
+            TypeExpr::U8 => Ok("U8".to_string()),
+            TypeExpr::U16 => Ok("U16".to_string()),
+            TypeExpr::U32 => Ok("U32".to_string()),
+            TypeExpr::U64 => Ok("U64".to_string()),
+            TypeExpr::S8 => Ok("S8".to_string()),
+            TypeExpr::S16 => Ok("S16".to_string()),
+            TypeExpr::S32 => Ok("S32".to_string()),
+            TypeExpr::S64 => Ok("S64".to_string()),
+            TypeExpr::F32 => Ok("F32".to_string()),
+            TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::String => Ok("String".to_string()),
+            TypeExpr::List(element) => Ok(format!(
+                "ListOf{}",
+                self.foreign_shape_name_ty(context, element)?
+            )),
+            TypeExpr::Option(payload) => Ok(format!(
+                "OptionOf{}",
+                self.foreign_shape_name_ty(context, payload)?
+            )),
+            TypeExpr::Result(result) => self.foreign_result_shape_name(context, result),
+            TypeExpr::Named(name) => {
+                if name.package().is_some() {
+                    return self.foreign_shape_name(name);
+                }
+                let (dependency, def) = self
+                    .foreign_type_def(context, name)?
+                    .context("foreign alias target has no dependency context")?;
+                self.foreign_shape_name_kind(Some(dependency), name, &def.kind)
+            }
+        }
+    }
+
+    fn foreign_result_shape_name(
+        &self,
+        context: Option<&Dependency>,
+        result: &ResultExpr,
+    ) -> Result<String> {
+        let ok = match &result.ok {
+            Some(ty) => self.foreign_shape_name_ty(context, ty)?,
+            None => "Empty".to_string(),
+        };
+        let err = match &result.err {
+            Some(ty) => self.foreign_shape_name_ty(context, ty)?,
+            None => "Empty".to_string(),
+        };
+        Ok(format!("ResultOf{ok}And{err}"))
     }
 
     fn dependency_proto_type(
@@ -1070,6 +1211,9 @@ impl<'a> Emitter<'a> {
                 self.shape_slot(result.err.as_deref())?
             )),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    return self.foreign_shape_name(name);
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.shape_name(target),
@@ -1983,6 +2127,7 @@ impl Emitter<'_> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn encode_singular(&self, expr: &str, ty: &TypeExpr) -> Result<String> {
         match ty {
             TypeExpr::Bool
@@ -2016,8 +2161,40 @@ impl Emitter<'_> {
             TypeExpr::Result(result) => self.encode_inline_result(expr, result),
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
-                    let module = self.foreign_type_module(name)?;
-                    return Ok(format!("{module}::to_proto({expr})"));
+                    let (dependency, def) = self
+                        .foreign_type_def(None, name)?
+                        .context("foreign type needs a dependency package")?;
+                    match &def.kind {
+                        TypeDefKind::Alias(target) => {
+                            let target = qualify_type(Some(dependency), target);
+                            return self.encode_singular(expr, &target);
+                        }
+                        TypeDefKind::List(element) => {
+                            let element = qualify_type(Some(dependency), element);
+                            let wrapper = self.foreign_proto_singular(name)?;
+                            return Ok(format!(
+                                "{wrapper} {{ values: {expr}.iter().map(|item| {}).collect() }}",
+                                self.encode_singular("item", &element)?
+                            ));
+                        }
+                        TypeDefKind::Option(payload) => {
+                            let payload = qualify_type(Some(dependency), payload);
+                            let wrapper = self.foreign_proto_singular(name)?;
+                            let oneof = self.proto_oneof(
+                                wrapper.rsplit("::").next().unwrap_or_default(),
+                                "value",
+                            )?;
+                            let empty = self.proto_empty()?;
+                            return Ok(format!(
+                                "match {expr} {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some({})) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}",
+                                self.encode_singular("value", &payload)?
+                            ));
+                        }
+                        _ => {
+                            let module = self.foreign_type_module(name)?;
+                            return Ok(format!("{module}::to_proto({expr})"));
+                        }
+                    }
                 }
                 let def = self.named(name)?;
                 match &def.kind {
@@ -2114,6 +2291,7 @@ impl Emitter<'_> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn decode_singular(&self, expr: &str, ty: &TypeExpr, identity: &str) -> Result<String> {
         match ty {
             TypeExpr::Bool
@@ -2145,8 +2323,38 @@ impl Emitter<'_> {
             TypeExpr::Result(result) => self.decode_inline_result(expr, result, identity),
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
-                    let module = self.foreign_type_module(name)?;
-                    return Ok(format!("{module}::from_proto({expr})?"));
+                    let (dependency, def) = self
+                        .foreign_type_def(None, name)?
+                        .context("foreign type needs a dependency package")?;
+                    match &def.kind {
+                        TypeDefKind::Alias(target) => {
+                            let target = qualify_type(Some(dependency), target);
+                            return self.decode_singular(expr, &target, identity);
+                        }
+                        TypeDefKind::List(element) => {
+                            let element = qualify_type(Some(dependency), element);
+                            return Ok(format!(
+                                "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
+                                self.decode_singular("item", &element, identity)?
+                            ));
+                        }
+                        TypeDefKind::Option(payload) => {
+                            let payload = qualify_type(Some(dependency), payload);
+                            let wrapper = self.foreign_proto_singular(name)?;
+                            let oneof = self.proto_oneof(
+                                wrapper.rsplit("::").next().unwrap_or_default(),
+                                "value",
+                            )?;
+                            return Ok(format!(
+                                "match {expr}.value {{ ::core::option::Option::Some({oneof}::Some(value)) => ::core::option::Option::Some({}), ::core::option::Option::Some({oneof}::None(_)) | ::core::option::Option::None => ::core::option::Option::None }}",
+                                self.decode_singular("value", &payload, identity)?
+                            ));
+                        }
+                        _ => {
+                            let module = self.foreign_type_module(name)?;
+                            return Ok(format!("{module}::from_proto({expr})?"));
+                        }
+                    }
                 }
                 let def = self.named(name)?;
                 match &def.kind {
@@ -2281,13 +2489,24 @@ impl Emitter<'_> {
     }
 
     fn list_element(&self, ty: &TypeExpr) -> Result<TypeExpr> {
+        self.list_element_in(None, ty)
+    }
+
+    fn list_element_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<TypeExpr> {
         match ty {
-            TypeExpr::List(element) => Ok((**element).clone()),
+            TypeExpr::List(element) => Ok(qualify_type(context, element)),
             TypeExpr::Named(name) => {
-                let kind = self.named(name)?.kind.clone();
+                let (dependency, kind) = if name.is_foreign() {
+                    let (dependency, def) = self
+                        .foreign_type_def(None, name)?
+                        .context("foreign type needs a dependency package")?;
+                    (Some(dependency), def.kind.clone())
+                } else {
+                    (None, self.named(name)?.kind.clone())
+                };
                 match kind {
-                    TypeDefKind::List(element) => Ok(element),
-                    TypeDefKind::Alias(target) => self.list_element(&target),
+                    TypeDefKind::List(element) => Ok(qualify_type(dependency, &element)),
+                    TypeDefKind::Alias(target) => self.list_element_in(dependency, &target),
                     _ => bail!("type `{name}` is not a list"),
                 }
             }
@@ -2296,13 +2515,24 @@ impl Emitter<'_> {
     }
 
     fn option_payload(&self, ty: &TypeExpr) -> Result<TypeExpr> {
+        self.option_payload_in(None, ty)
+    }
+
+    fn option_payload_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<TypeExpr> {
         match ty {
-            TypeExpr::Option(payload) => Ok((**payload).clone()),
+            TypeExpr::Option(payload) => Ok(qualify_type(context, payload)),
             TypeExpr::Named(name) => {
-                let kind = self.named(name)?.kind.clone();
+                let (dependency, kind) = if name.is_foreign() {
+                    let (dependency, def) = self
+                        .foreign_type_def(None, name)?
+                        .context("foreign type needs a dependency package")?;
+                    (Some(dependency), def.kind.clone())
+                } else {
+                    (None, self.named(name)?.kind.clone())
+                };
                 match kind {
-                    TypeDefKind::Option(payload) => Ok(payload),
-                    TypeDefKind::Alias(target) => self.option_payload(&target),
+                    TypeDefKind::Option(payload) => Ok(qualify_type(dependency, &payload)),
+                    TypeDefKind::Alias(target) => self.option_payload_in(dependency, &target),
                     _ => bail!("type `{name}` is not an option"),
                 }
             }

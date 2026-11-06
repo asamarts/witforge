@@ -99,7 +99,7 @@ fn full_dependency_glue_compiles_and_roundtrips() {
         out.join("glue/mod.rs")
     ));
     main.push_str(
-        r"
+        r#"
 fn main() {
     let thing = plain::witforge_deps::example_shared::types::Thing { id: 7 };
     let other = plain::witforge_deps::example_other::types::OtherThing { id: 8 };
@@ -118,8 +118,28 @@ fn main() {
     let encoded = glue::v0::api::numbers::to_proto(&numbers);
     let decoded = glue::v0::api::numbers::from_proto(encoded).unwrap();
     assert_eq!(numbers, decoded);
+
+    let list_opt = vec![Some(thing.clone()), None];
+    let encoded = glue::v0::api::list_of_opt::to_proto(&list_opt);
+    let decoded = glue::v0::api::list_of_opt::from_proto(encoded).unwrap();
+    assert_eq!(list_opt, decoded);
+
+    let option_opt = Some(Some(thing.clone()));
+    let encoded = glue::v0::api::option_of_opt::to_proto(&option_opt);
+    let decoded = glue::v0::api::option_of_opt::from_proto(encoded).unwrap();
+    assert_eq!(option_opt, decoded);
+
+    let list_outcome = vec![Ok(thing.clone()), Err("bad".to_string())];
+    let encoded = glue::v0::api::list_of_outcome::to_proto(&list_outcome);
+    let decoded = glue::v0::api::list_of_outcome::from_proto(encoded).unwrap();
+    assert_eq!(list_outcome, decoded);
+
+    let option_numbers = Some(numbers.clone());
+    let encoded = glue::v0::api::option_of_numbers::to_proto(&option_numbers);
+    let decoded = glue::v0::api::option_of_numbers::from_proto(encoded).unwrap();
+    assert_eq!(option_numbers, decoded);
 }
-",
+"#,
     );
     fs::write(out.join("main.rs"), main).unwrap();
 

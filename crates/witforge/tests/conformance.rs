@@ -200,6 +200,11 @@ fn the_committed_conformance_matrix_names_every_fixture() {
         "fixtures/emit/glue/contract/contract.wit",
         "fixtures/versions/wit",
         "fixtures/versions/convert",
+        "fixtures/deps-full/wit",
+        "fixtures/deps-world/wit",
+        "fixtures/deps-convert/wit",
+        "fixtures/deps-unsupported/wit",
+        "fixtures/serde",
     ] {
         assert!(
             matrix.contains(fixture),

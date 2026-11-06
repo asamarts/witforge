@@ -18,8 +18,9 @@ owned, read-only representation of one contract version:
 - it is independent of `wit-parser` types, so an upstream bump changes one conversion module;
 - it is total over the supported subset. Anything outside the subset is refused before model
   construction, so the model never has to represent resources, tuples, maps, `future`, `stream`,
-  `error-context`, or world-defined types/functions. Named types from `wit/deps` dependencies are
-  retained as package-qualified references; see [`dependencies.md`](dependencies.md).
+  `error-context`, or world-defined types/functions. Named types and world interfaces from
+  `wit/deps` dependencies are retained as package-qualified references; see
+  [`dependencies.md`](dependencies.md).
 
 The model does not resolve names at emit time. Named references are by qualified name, and the
 canonical type rules are shared with the lockfile.
@@ -33,6 +34,7 @@ pub struct Model {
     pub package: Package,
     pub interfaces: Vec<Interface>,   // source order
     pub worlds: Vec<World>,           // source order
+    pub dependencies: Vec<Dependency>, // standard deps, sorted by package name
 }
 
 pub struct Package {
@@ -107,9 +109,15 @@ pub struct World {
 }
 
 pub struct WorldInterface {
-    pub interface: String,            // interface name in this package
+    pub interface: String,            // interface name within its package
+    pub package: Option<Package>,     // the dependency package, or None for the root
     pub docs: String,
     pub stability: Stability,
+}
+
+pub struct Dependency {
+    pub package: Package,
+    pub interfaces: Vec<Interface>,
 }
 
 pub enum TypeExpr {
@@ -179,14 +187,17 @@ model::build(&Contract) -> Result<Model>
   projection, using a named message when that projection requires one (a named result, or an
   option of a list/option), as specified in [`emitters.md`](emitters.md); the lockfile expands
   them at use sites.
-- A named reference MUST resolve to the defining interface. A reference to a type in a world,
-  another package, or an interface outside the package is an error.
+- A named reference MUST resolve to the defining interface. A local reference resolves in the
+  root package; a reference with package identity resolves in the corresponding standard
+  `deps/` package. A reference to a type defined in a world, or to a package outside the
+  standard dependency layout, is an error.
 - `TypeExpr::Named` preserves the name written at the reference site, including a `use` alias or
   a named list/option/result definition. Rust uses that name (and emits an alias where needed);
   canonical display expands it as described in section 4; proto inlines it.
 - Worlds MUST contain only the named interfaces they import or export. A world `use` names a
   type and defines nothing; it is not a world item in the model. World-defined types/functions
-  are refused before construction.
+  are refused before construction. An imported or exported interface may belong to the root
+  package or to a standard `deps/` package; its package identity is preserved.
 - The package version MUST be `major.minor.0`; the model uses the version for module/proto names
   and freeze checks, but never for lockfile keys.
 - The model MUST NOT contain source spans in the current 0.x line. If diagnostics need them later, add them as an

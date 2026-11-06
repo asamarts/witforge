@@ -968,7 +968,8 @@ impl<'a> Emitter<'a> {
             | TypeDefKind::Variant(_)
             | TypeDefKind::Enum(_)
             | TypeDefKind::Flags(_) => {
-                Ok(self.type_ref_for_shape(dependency, name).replace('.', "_"))
+                let dependency = dependency.context("foreign type has no dependency context")?;
+                Ok(dependency_shape_name(dependency, name))
             }
         }
     }
@@ -1017,25 +1018,6 @@ impl<'a> Emitter<'a> {
             None => "Empty".to_string(),
         };
         Ok(format!("ResultOf{ok}And{err}"))
-    }
-
-    fn type_ref_for_shape(&self, dependency: Option<&Dependency>, name: &QualifiedName) -> String {
-        if let Some(dependency) = dependency
-            && (dependency.package.namespace != self.model.package.namespace
-                || dependency.package.name != self.model.package.name)
-        {
-            return format!(
-                "{}.{}{}",
-                dependency_proto_package(dependency),
-                pascal_case(name.interface_name()),
-                pascal_case(&name.name)
-            );
-        }
-        format!(
-            "{}{}",
-            pascal_case(name.interface_name()),
-            pascal_case(&name.name)
-        )
     }
 
     fn foreign_direct_option_ty(
@@ -1639,6 +1621,16 @@ fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
         }),
         _ => ty.clone(),
     }
+}
+
+fn dependency_shape_name(dependency: &Dependency, name: &QualifiedName) -> String {
+    format!(
+        "{}{}{}{}",
+        pascal_case(&dependency.package.namespace),
+        pascal_case(&dependency.package.name),
+        pascal_case(name.interface_name()),
+        pascal_case(&name.name)
+    )
 }
 
 fn dependency_proto_package(dependency: &Dependency) -> String {

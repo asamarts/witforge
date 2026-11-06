@@ -1,6 +1,8 @@
 # witforge wire lockfile v2
 example:app/api.get = 1 method api/box
+example:app/api.get-many = 3 method list<example:shared/types/numbers>
+example:app/api.get-maybe = 2 method option<example:shared/types/numbers>
 example:app/api/box.value = 1 field example:shared/types/thing
 # witforge order v1
-# order example:app/api 67285a71efad3eb5 = get
+# order example:app/api 30d6ee094388862e = get get-maybe get-many
 # order example:app/api/box 2127cccf1a4df19e = value

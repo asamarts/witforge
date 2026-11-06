@@ -123,6 +123,20 @@ fn main() {
     let request = glue::witforge_deps::example_shared::types::functions::ping::to_request(&direct);
     let round = glue::witforge_deps::example_shared::types::functions::ping::from_request(request).unwrap();
     assert_eq!(direct, round);
+
+    let numbers = vec![
+        plain::witforge_deps::example_shared::types::Thing { id: 11 },
+        plain::witforge_deps::example_shared::types::Thing { id: 12 },
+    ];
+    let maybe = Some(numbers.clone());
+    let encoded = glue::v0::api::maybe_numbers::to_proto(&maybe);
+    let decoded = glue::v0::api::maybe_numbers::from_proto(encoded).unwrap();
+    assert_eq!(maybe, decoded);
+
+    let many = vec![numbers.clone(), numbers];
+    let encoded = glue::v0::api::many_numbers::to_proto(&many);
+    let decoded = glue::v0::api::many_numbers::from_proto(encoded).unwrap();
+    assert_eq!(many, decoded);
 }
 ",
     );

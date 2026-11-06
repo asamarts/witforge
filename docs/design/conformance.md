@@ -23,6 +23,11 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 |---|---|
 | `fixtures/versions/wit` | two minors, lockfile continuity, released v0.1, order fingerprints, worlds, conversion output |
 | `fixtures/versions/convert` | several types, variants, enums, flags, aliases, named structural types, and old-to-new/new-to-old conversions |
+| `fixtures/deps-full/wit` | standard `deps/` types, aliases, lists, options, results, cross-dependency references, hyphenated package names, and generated Rust/protobuf/glue |
+| `fixtures/deps-world/wit` | foreign world imports and exports, dependency glue, and a foreign value round-trip |
+| `fixtures/deps-convert/wit` | version conversion with pinned foreign values |
+| `fixtures/deps-unsupported/wit` | unused unsupported dependency items and a supported root |
+| `fixtures/serde` | opt-in Serde derives and JSON round-trip |
 
 ## Gates
 
