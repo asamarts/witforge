@@ -246,7 +246,12 @@ fn conversions_compile_and_run_against_generated_types() {
                         return;
                     }
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("E0514") {
+                    if stderr.contains("E0514")
+                        || stderr.contains("multiple different versions of crate `serde_core`")
+                    {
+                        // The test directory also contains rlibs from earlier Cargo builds
+                        // with different feature sets. Try the remaining combinations before
+                        // treating the generated glue as broken.
                         last_error = Some(stderr.into_owned());
                         continue;
                     }

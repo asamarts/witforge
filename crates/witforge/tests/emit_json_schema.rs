@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use jsonschema::JSONSchema;
+use jsonschema::Validator;
 use serde_json::{Value, json};
 use witforge::emit::json_schema;
 use witforge::load;
@@ -25,7 +25,7 @@ fn temp(name: &str) -> PathBuf {
     path
 }
 
-fn compile_definition(schema: &Value, definition: &str) -> JSONSchema {
+fn compile_definition(schema: &Value, definition: &str) -> Validator {
     let pointer = format!(
         "#/definitions/{}",
         definition.replace('~', "~0").replace('/', "~1")
@@ -35,7 +35,7 @@ fn compile_definition(schema: &Value, definition: &str) -> JSONSchema {
         "definitions": schema["definitions"].clone(),
         "$ref": pointer,
     });
-    JSONSchema::compile(&wrapper).unwrap()
+    jsonschema::validator_for(&wrapper).unwrap()
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -58,7 +58,7 @@ fn emits_the_golden_schema_for_every_mapping_row() {
     let schema: Value = serde_json::from_str(&actual).unwrap();
     assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
     assert!(schema["definitions"].is_object());
-    JSONSchema::compile(&schema).unwrap();
+    jsonschema::validator_for(&schema).unwrap();
 }
 
 #[test]

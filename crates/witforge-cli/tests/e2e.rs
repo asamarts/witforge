@@ -263,7 +263,12 @@ fn alint_contract_generates_compiles_and_roundtrips() {
                         return;
                     }
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("E0514") {
+                    if stderr.contains("E0514")
+                        || stderr.contains("multiple different versions of crate `serde_core`")
+                    {
+                        // The test directory also contains rlibs from earlier Cargo builds
+                        // with different feature sets. Try the remaining combinations before
+                        // treating the generated glue as broken.
                         last_error = Some(stderr.into_owned());
                         continue;
                     }
