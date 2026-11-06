@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-11-06
+
+0.4.1 is a patch for dependency glue edge cases found after 0.4.0. It does not
+change the library API, wire numbers, or generated output for a contract that
+does not use dependency types.
+
+### Fixed
+
+- Nested dependency lists and options now use the same synthesized wrapper
+  names as the protobuf emitter and prost, so `list<foreign list>`,
+  `list<foreign option>`, and `option<foreign option>` round-trip.
+- Foreign wrapper names are PascalCase without underscores, avoiding a
+  mismatch between the `.proto` message name and prost's Rust name.
+- The 1.0 conformance matrix covers the dependency, foreign-world, dependency
+  conversion, and Serde fixtures.
+
 ## [0.4.0] - 2026-11-06
 
 0.4.0 is the dependency and Serde release. It adds standard `deps/` dependency types,
