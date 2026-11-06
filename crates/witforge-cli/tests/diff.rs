@@ -469,3 +469,140 @@ interface types {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn diff_reports_renumbering_as_wire_only() {
+    let root = workspace("renumber");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:renumber@0.1.0;
+interface types {
+    record task { first: u8, second: u8 }
+}
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:renumber@0.2.0;
+interface types {
+    record task { first: u8, second: u8 }
+}
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    let lock_path = new.join("wire.lock");
+    let text = fs::read_to_string(&lock_path)
+        .unwrap()
+        .replace(
+            "example:renumber/types/task.first = 1 field u8",
+            "example:renumber/types/task.first = 2 field u8",
+        )
+        .replace(
+            "example:renumber/types/task.second = 2 field u8",
+            "example:renumber/types/task.second = 1 field u8",
+        );
+    fs::write(&lock_path, text).unwrap();
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let changes = report["changes"].as_array().unwrap();
+    let renumbered: Vec<_> = changes
+        .iter()
+        .filter(|change| change["kind"] == "renumbered")
+        .collect();
+    assert_eq!(renumbered.len(), 2);
+    assert!(
+        renumbered
+            .iter()
+            .all(|change| change["wire_breaking"] == true
+                && change["source_breaking"] == false
+                && change["api_breaking"] == false)
+    );
+    assert_eq!(report["summary"]["wire_breaking"], 2);
+    assert_eq!(report["summary"]["source_breaking"], 0);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_reports_world_imports_and_exports() {
+    let root = workspace("worlds");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:worlds@0.1.0;
+interface i { record r { x: u8 } }
+interface j { record s { y: u8 } }
+world w { export i; }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:worlds@0.2.0;
+interface i { record r { x: u8 } }
+interface j { record s { y: u8 } }
+world w { import j; export i; }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    lock(&root, "new/v0.2");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let changes = report["changes"].as_array().unwrap();
+    let added = changes
+        .iter()
+        .find(|change| change["kind"] == "added" && change["element"] == "world import")
+        .expect("world import addition");
+    assert_eq!(added["path"], "w/import/j");
+    assert_eq!(added["wire_breaking"], false);
+    assert_eq!(added["source_breaking"], true);
+    assert_eq!(added["api_breaking"], false);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_refuses_different_package_names() {
+    let root = workspace("packages");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:one@0.1.0;
+interface i { record r { x: u8 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:two@0.2.0;
+interface i { record r { x: u8 } }
+",
+    );
+    lock(&root, "old/v0.1");
+    lock(&root, "new/v0.2");
+
+    let output = diff(&root.join("old/v0.1"), &root.join("new/v0.2"), &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("example:one"), "{stderr}");
+    assert!(stderr.contains("example:two"), "{stderr}");
+
+    fs::remove_dir_all(&root).unwrap();
+}

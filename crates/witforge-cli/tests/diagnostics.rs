@@ -258,3 +258,17 @@ interface types {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn lock_emits_structured_subset_errors() {
+    let refused = repo().join("crates/witforge/tests/fixtures/refused/resource");
+    let path = refused.display().to_string();
+    let output = output(&["lock", &path, "--first", "--format", "json"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(&output);
+    let diagnostics = value["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0]["code"], "WF1001");
+    assert_eq!(diagnostics[0]["severity"], "error");
+    assert_eq!(diagnostics[0]["path"], "example:bad/types/blob");
+}

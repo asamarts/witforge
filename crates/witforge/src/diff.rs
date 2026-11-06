@@ -388,6 +388,14 @@ impl Breaking {
     };
 }
 
+struct MemberComparison<'a> {
+    element: &'a str,
+    path: &'a str,
+    parent: &'a str,
+    api_on_reorder: bool,
+    defaulted: &'a BTreeSet<String>,
+}
+
 impl Builder<'_> {
     fn push(
         &mut self,
@@ -549,11 +557,13 @@ impl Builder<'_> {
                 self.compare_members(
                     &member_pairs(self.old, &parent, &old_names)?,
                     &member_pairs(self.new, &parent, &new_names)?,
-                    "flag",
-                    &path,
-                    &parent,
-                    false,
-                    &BTreeSet::new(),
+                    &MemberComparison {
+                        element: "flag",
+                        path: &path,
+                        parent: &parent,
+                        api_on_reorder: false,
+                        defaulted: &BTreeSet::new(),
+                    },
                 )
             }
             _ => {
@@ -587,19 +597,21 @@ impl Builder<'_> {
         let parent = format!("{}/{}", interface.name, old.name);
         let old_names: Vec<String> = old_fields.iter().map(|field| field.name.clone()).collect();
         let new_names: Vec<String> = new_fields.iter().map(|field| field.name.clone()).collect();
-        let defaulted: BTreeSet<&str> = new_fields
+        let defaulted: BTreeSet<String> = new_fields
             .iter()
             .filter(|field| defaultable(&self.new.model, &field.ty))
-            .map(|field| field.name.as_str())
+            .map(|field| field.name.clone())
             .collect();
         self.compare_members(
             &member_pairs(self.old, &parent, &old_names)?,
             &member_pairs(self.new, &parent, &new_names)?,
-            "record field",
-            &path,
-            &parent,
-            false,
-            &defaulted,
+            &MemberComparison {
+                element: "record field",
+                path: &path,
+                parent: &parent,
+                api_on_reorder: false,
+                defaulted: &defaulted,
+            },
         )
     }
 
@@ -618,25 +630,29 @@ impl Builder<'_> {
         self.compare_members(
             &member_pairs(self.old, &parent, &old_names)?,
             &member_pairs(self.new, &parent, &new_names)?,
-            element,
-            &path,
-            &parent,
-            false,
-            &BTreeSet::new(),
+            &MemberComparison {
+                element,
+                path: &path,
+                parent: &parent,
+                api_on_reorder: false,
+                defaulted: &BTreeSet::new(),
+            },
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn compare_members(
         &mut self,
         old: &[(String, String)],
         new: &[(String, String)],
-        element: &str,
-        path: &str,
-        parent: &str,
-        api_on_reorder: bool,
-        defaulted: &BTreeSet<&str>,
+        spec: &MemberComparison<'_>,
     ) -> Result<()> {
+        let MemberComparison {
+            element,
+            path,
+            parent,
+            api_on_reorder,
+            defaulted,
+        } = spec;
         let old_map: BTreeMap<&str, &str> = old
             .iter()
             .map(|(name, ty)| (name.as_str(), ty.as_str()))
@@ -645,30 +661,23 @@ impl Builder<'_> {
             .iter()
             .map(|(name, ty)| (name.as_str(), ty.as_str()))
             .collect();
-        for (name, ty) in new {
-            if old_map.contains_key(name.as_str()) {
-                continue;
-            }
+        for name in new_map.keys().filter(|name| !old_map.contains_key(**name)) {
             self.push(
                 ChangeKind::Added {
-                    defaulted: defaulted.contains(name.as_str()),
+                    defaulted: defaulted.contains(*name),
                 },
-                element,
+                *element,
                 format!("{path}.{name}"),
                 Some(self.new.number(parent, name)?),
                 Breaking::SOURCE_API,
             );
-            let _ = ty;
         }
-        for (name, ty) in old {
-            if new_map.contains_key(name.as_str()) {
-                continue;
-            }
+        for name in old_map.keys().filter(|name| !new_map.contains_key(**name)) {
             let number = self.old.number(parent, name)?;
             let key = format!("{}/{parent}.{name}", self.old.endpoint.package);
             self.push(
                 ChangeKind::Removed,
-                element,
+                *element,
                 format!("{path}.{name}"),
                 Some(number),
                 Breaking {
@@ -677,7 +686,6 @@ impl Builder<'_> {
                     api: true,
                 },
             );
-            let _ = ty;
         }
         for (name, old_ty) in &old_map {
             let Some(new_ty) = new_map.get(name) else {
@@ -690,7 +698,7 @@ impl Builder<'_> {
                         from: (*old_ty).to_string(),
                         to: (*new_ty).to_string(),
                     },
-                    element,
+                    *element,
                     format!("{path}.{name}"),
                     Some(self.new.number(parent, name)?),
                     Breaking::ALL,
@@ -703,7 +711,7 @@ impl Builder<'_> {
                         from: old_number,
                         to: new_number,
                     },
-                    element,
+                    *element,
                     format!("{path}.{name}"),
                     Some(new_number),
                     Breaking::WIRE,
@@ -724,12 +732,12 @@ impl Builder<'_> {
             self.push(
                 ChangeKind::Reordered { before, after },
                 format!("{element} order"),
-                path,
+                *path,
                 None,
                 Breaking {
                     wire: false,
                     source: true,
-                    api: api_on_reorder,
+                    api: *api_on_reorder,
                 },
             );
         }
@@ -768,11 +776,13 @@ impl Builder<'_> {
         self.compare_members(
             &old_params,
             &new_params,
-            "parameter",
-            &path,
-            &parent,
-            true,
-            &BTreeSet::new(),
+            &MemberComparison {
+                element: "parameter",
+                path: &path,
+                parent: &parent,
+                api_on_reorder: true,
+                defaulted: &BTreeSet::new(),
+            },
         )?;
         let old_result = self.old.member_type(interface, name)?;
         let new_result = self.new.member_type(interface, name)?;
