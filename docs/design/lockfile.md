@@ -145,8 +145,10 @@ param-key        = package "/" interface "#" function "." parameter
 - Names are the raw WIT names after `%` escaping is removed (`%type` is `type`).
 - A `use` alias does not create a key. Members are locked where they are defined.
 - Types and functions must be defined in the package's named interfaces; the subset checker
-  refuses world-defined types/functions and foreign types/interfaces.
-- Keys whose package prefix does not match the contract package are refused by `check`.
+  refuses world-defined types/functions and foreign interfaces. Named types from standard
+  `deps/` packages are allowed and are canonicalized with package identity.
+- Keys whose package prefix does not match the contract package are refused by `check`; a
+  foreign type appears only inside a local entry's canonical type.
 - Unknown key shapes, duplicate keys, and keys with an empty component are parse errors.
 
 ## 4. Entry format
@@ -235,6 +237,7 @@ type          = primitive | named | list | option | result
 primitive     = "bool" | "u8" | "u16" | "u32" | "u64"
               | "s8" | "s16" | "s32" | "s64" | "f32" | "f64" | "string"
 named         = interface "/" type
+              | namespace ":" package "/" interface "/" type
 list          = "list<" type ">"
 option        = "option<" type ">"
 result        = "result<" slot "," slot ">"

@@ -1,0 +1,8 @@
+package example:shared@0.1.0;
+
+interface types {
+    record item {
+        id: u64,
+        label: string,
+    }
+}

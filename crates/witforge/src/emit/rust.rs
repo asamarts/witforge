@@ -387,6 +387,20 @@ fn map_type(model: &Model, current_interface: &str, ty: &TypeExpr) -> Result<Str
         TypeExpr::F64 => Ok("f64".to_string()),
         TypeExpr::String => Ok("::std::string::String".to_string()),
         TypeExpr::Named(name) => {
+            if let Some((namespace, package)) = name.package() {
+                let package = rust_ident(
+                    &format!("{}_{}", snake_case(namespace), snake_case(package)),
+                    "dependency package module",
+                )?;
+                let interface = rust_ident(
+                    &snake_case(name.interface_name()),
+                    "dependency interface module",
+                )?;
+                let type_name = rust_ident(&pascal_case(&name.name), "type")?;
+                return Ok(format!(
+                    "crate::witforge_deps::{package}::{interface}::{type_name}"
+                ));
+            }
             model.type_def(name).with_context(|| {
                 format!(
                     "named type `{}/{}` is not in the model",

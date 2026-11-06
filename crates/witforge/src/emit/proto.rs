@@ -620,6 +620,15 @@ impl<'a> Emitter<'a> {
             .collect()
     }
 
+    fn foreign_name(name: &QualifiedName) -> Option<String> {
+        let (namespace, package) = name.package()?;
+        Some(format!(
+            "{namespace}.{package}.{}{}",
+            pascal_case(name.interface_name()),
+            pascal_case(&name.name)
+        ))
+    }
+
     fn direct(&mut self, ty: &TypeExpr, required: bool) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok(optional("bool", required)),
@@ -635,6 +644,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => self.direct_option(payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
+                if let Some(foreign) = Self::foreign_name(name) {
+                    return Ok(foreign);
+                }
                 let kind = self.named(name)?.kind.clone();
                 match &kind {
                     TypeDefKind::Alias(target) => self.direct(target, required),
@@ -671,6 +683,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => self.option_wrapper(None, payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
+                if let Some(foreign) = Self::foreign_name(name) {
+                    return Ok(foreign);
+                }
                 let kind = self.named(name)?.kind.clone();
                 match &kind {
                     TypeDefKind::Alias(target) => self.singular(target),
@@ -867,6 +882,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(_) => Ok(Shape::Option),
             TypeExpr::Result(_) => Ok(Shape::Message),
             TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    return Ok(Shape::Message);
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.shape(target),
@@ -901,6 +919,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::Option(payload) => Ok(format!("OptionOf{}", self.shape_name(payload)?)),
             TypeExpr::Result(result) => self.result_shape_name(result),
             TypeExpr::Named(name) => {
+                if let Some(foreign) = Self::foreign_name(name) {
+                    return Ok(foreign.replace('.', "_"));
+                }
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.shape_name(target),

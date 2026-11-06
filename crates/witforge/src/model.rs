@@ -51,7 +51,7 @@ pub enum Stability {
     },
 }
 
-/// A type reference to a named type in the contract package.
+/// A type reference to a named type in the contract package or a standard `deps/` dependency.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QualifiedName {
     /// The defining interface.
@@ -63,6 +63,30 @@ pub struct QualifiedName {
 impl fmt::Display for QualifiedName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.interface, self.name)
+    }
+}
+
+impl QualifiedName {
+    /// The package identity when this name belongs to a dependency, as
+    /// `(namespace, package)`; `None` for a name in the root package.
+    #[must_use]
+    pub fn package(&self) -> Option<(&str, &str)> {
+        let (package, _) = self.interface.split_once('/')?;
+        package.split_once(':')
+    }
+
+    /// The interface component without a dependency package prefix.
+    #[must_use]
+    pub fn interface_name(&self) -> &str {
+        self.interface
+            .split_once('/')
+            .map_or(self.interface.as_str(), |(_, interface)| interface)
+    }
+
+    /// Whether this name belongs to a dependency package.
+    #[must_use]
+    pub fn is_foreign(&self) -> bool {
+        self.package().is_some()
     }
 }
 
@@ -350,6 +374,9 @@ impl Model {
         name: &QualifiedName,
         visiting: &mut HashSet<QualifiedName>,
     ) -> Result<String> {
+        if name.is_foreign() {
+            return Ok(name.to_string());
+        }
         if !visiting.insert(name.clone()) {
             bail!("canonical type cycle at `{name}`");
         }
@@ -746,10 +773,13 @@ fn type_id_expr(resolve: &Resolve, root: PackageId, id: TypeId) -> Result<TypeEx
             TypeOwner::World(_) => bail!("type `{name}` is defined in a world"),
             TypeOwner::None => bail!("named type `{name}` has no owner"),
         };
-        ensure!(
-            package == Some(root),
-            "type `{name}` comes from another package"
-        );
+        let interface = if package == Some(root) {
+            interface
+        } else {
+            let package = package.context("named type has no package")?;
+            let package = &resolve.packages[package].name;
+            format!("{}:{}/{}", package.namespace, package.name, interface)
+        };
         match &def.kind {
             WitTypeDefKind::Record(_)
             | WitTypeDefKind::Variant(_)

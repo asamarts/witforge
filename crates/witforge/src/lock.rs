@@ -1024,6 +1024,11 @@ impl<'a> CanonicalTypeParser<'a> {
             self.expect('>')?;
             return Ok(());
         }
+        if self.eat(':') {
+            self.ident()?;
+            self.expect('/')?;
+            self.ident()?;
+        }
         if self.peek() == Some('/') {
             self.expect('/')?;
             self.ident()?;

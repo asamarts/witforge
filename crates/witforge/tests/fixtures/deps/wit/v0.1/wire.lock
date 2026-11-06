@@ -1,0 +1,7 @@
+# witforge wire lockfile v2
+example:app/api#put.value = 1 param example:shared/types/item
+example:app/api.get = 1 method example:shared/types/item
+example:app/api.put = 2 method example:shared/types/item
+# witforge order v1
+# order example:app/api facb1ba85e1cd0da = get put
+# order example:app/api#put 2127cccf1a4df19e = value

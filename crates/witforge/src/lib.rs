@@ -98,6 +98,16 @@ pub fn is_contract_error(error: &anyhow::Error) -> bool {
 pub struct Contract {
     pub(crate) resolve: Resolve,
     pub(crate) package: PackageId,
+    pub(crate) dependencies: Vec<PackageId>,
+}
+
+impl Contract {
+    /// Whether `package` is one of the standard `deps/` packages, rather than the root
+    /// package or a nested package block in the root's source.
+    #[must_use]
+    pub(crate) fn is_dependency(&self, package: PackageId) -> bool {
+        self.dependencies.contains(&package)
+    }
 }
 
 /// Load the WIT package in `dir`.
@@ -113,10 +123,26 @@ pub fn load(dir: &Path) -> Result<Contract> {
         all_features: true,
         ..Resolve::default()
     };
-    let (package, _sources) = resolve
+    let (package, sources) = resolve
         .push_dir(dir)
         .with_context(|| format!("failed to load the WIT package in {}", dir.display()))?;
-    Ok(Contract { resolve, package })
+    let deps_dir = dir.join("deps");
+    let dependencies = resolve
+        .packages
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| *id != package)
+        .filter(|id| {
+            sources
+                .package_paths(*id)
+                .is_some_and(|mut paths| paths.all(|path| path.starts_with(&deps_dir)))
+        })
+        .collect();
+    Ok(Contract {
+        resolve,
+        package,
+        dependencies,
+    })
 }
 
 /// The default released-version manifest name.

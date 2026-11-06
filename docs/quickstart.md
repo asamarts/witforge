@@ -209,8 +209,10 @@ The current subset is deliberately pure and synchronous:
 - types and functions live in named interfaces;
 - records, variants, enums, flags, aliases, `use` aliases, lists, options, and results are
   supported;
-- resources, maps, async, futures, streams, tuples, chars, fixed-length lists, foreign packages,
-  and world-defined types are currently refused.
+- resources, maps, async, futures, streams, tuples, chars, fixed-length lists, foreign interfaces,
+  multi-package workspaces, and world-defined types are currently refused.
+- named types from packages under a version directory's standard `deps/` layout are supported
+  as package-qualified references; see [`dependencies.md`](design/dependencies.md).
 
 Run `witforge check` for the exact diagnostic. `docs/design/overview.md` has the full contract
 model and the reasons for each refusal.

@@ -192,6 +192,12 @@ fn type_schema(model: &Model, interface: &Interface, ty: &TypeExpr) -> Result<St
         TypeExpr::F32 | TypeExpr::F64 => Ok("{\"type\":\"number\"}".to_string()),
         TypeExpr::String => Ok("{\"type\":\"string\"}".to_string()),
         TypeExpr::Named(name) => {
+            if name.is_foreign() {
+                return Ok(format!(
+                    "{{\"$ref\":{}}}",
+                    json_string(&format!("urn:witforge:{name}"))
+                ));
+            }
             model
                 .type_def(name)
                 .with_context(|| format!("named type `{name}` is not in the model"))?;

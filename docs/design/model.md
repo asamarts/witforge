@@ -18,7 +18,8 @@ owned, read-only representation of one contract version:
 - it is independent of `wit-parser` types, so an upstream bump changes one conversion module;
 - it is total over the supported subset. Anything outside the subset is refused before model
   construction, so the model never has to represent resources, tuples, maps, `future`, `stream`,
-  `error-context`, foreign types, or world-defined types/functions.
+  `error-context`, or world-defined types/functions. Named types from `wit/deps` dependencies are
+  retained as package-qualified references; see [`dependencies.md`](dependencies.md).
 
 The model does not resolve names at emit time. Named references are by qualified name, and the
 canonical type rules are shared with the lockfile.
@@ -129,6 +130,7 @@ pub struct ResultExpr {
 }
 
 pub struct QualifiedName {
+    // Local: `interface/type`. Dependency: `namespace:package/interface/type`.
     pub interface: String,
     pub name: String,
 }
@@ -258,8 +260,10 @@ boundary, but internal conversion errors SHOULD name the item and the unsupporte
 - canonical display matches golden strings for every construct and nesting;
 - member extraction matches golden keys/kinds/types and skips aliases/named structural types;
 - an interface-local `use ... as ...` alias resolves to the defining type;
-- refused constructs and foreign/world-owned types return a model error or are stopped by the
-  subset before construction;
+- a `use` alias to a named type in a standard `deps/` package retains `namespace:package`
+  identity;
+- refused constructs and world-owned types return a model error or are stopped by the subset
+  before construction;
 - a compile-time or API test that no `wit_parser` type appears in the public model API.
 
 ## 8. Deferred and pre-golive

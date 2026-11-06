@@ -11,8 +11,7 @@
 use std::fmt;
 
 use wit_parser::{
-    Function, FunctionKind, PackageId, Type, TypeDefKind, TypeId, TypeOwner, WorldId, WorldItem,
-    WorldKey,
+    Function, FunctionKind, Type, TypeDefKind, TypeId, TypeOwner, WorldId, WorldItem, WorldKey,
 };
 
 use crate::Contract;
@@ -64,14 +63,13 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
     // `package ns:name { ... }` block or a dependency, and nothing in it is locked or generated,
     // so it is refused rather than silently left out of the output.
     for (id, other) in &resolve.packages {
-        if id != contract.package {
+        if id != contract.package && !contract.is_dependency(id) {
             refuse(
                 &mut out,
                 &pkg,
                 format!(
-                    "the version directory also loads package `{}`, from a nested `package` \
-                     block or `deps/`; a contract is one self-contained package, and another \
-                     package is neither locked nor generated",
+                    "the version directory also loads package `{}` from a nested `package` \
+                     block; dependencies must live under the standard `deps/` directory",
                     other.name
                 ),
             );
@@ -277,38 +275,14 @@ fn check_type(contract: &Contract, ty: &Type, at: &str, out: &mut Vec<Violation>
         Type::ErrorContext => refuse(out, at, "`error-context` is not supported"),
         Type::Id(id) => {
             let def = &contract.resolve.types[*id];
-            match &def.name {
-                // Anonymous types (`option<T>`, `list<T>`, `result<..>`, tuples) are checked
-                // where they are used.
-                None => check_def(contract, *id, at, out),
-                // Named types are checked at their own definition, which must be in this
-                // package: the lockfile and the emitters cover only the contract's package.
-                Some(name) => {
-                    let package = package_of(contract, def.owner);
-                    if package != Some(contract.package) {
-                        let from = package.map_or_else(String::new, |p| {
-                            contract.resolve.packages[p].name.to_string()
-                        });
-                        refuse(
-                            out,
-                            at,
-                            format!(
-                                "uses `{name}` from another package (`{from}`); a contract must \
-                                 be self-contained"
-                            ),
-                        );
-                    }
-                }
+            // Anonymous types (`option<T>`, `list<T>`, `result<..>`, tuples) are checked
+            // where they are used. A named dependency type is resolved by wit-parser through
+            // the standard deps layout; its own package is responsible for its subset and the
+            // model records the qualified package identity.
+            if def.name.is_none() {
+                check_def(contract, *id, at, out);
             }
         }
-    }
-}
-
-fn package_of(contract: &Contract, owner: TypeOwner) -> Option<PackageId> {
-    match owner {
-        TypeOwner::Interface(id) => contract.resolve.interfaces[id].package,
-        TypeOwner::World(id) => contract.resolve.worlds[id].package,
-        TypeOwner::None => None,
     }
 }
 

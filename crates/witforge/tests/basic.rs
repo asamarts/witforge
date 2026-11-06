@@ -44,7 +44,7 @@ fn every_refused_construct_is_reported() {
         cases += 1;
     }
     assert!(
-        cases >= 22,
+        cases >= 21,
         "only {cases} refused-construct fixtures were found"
     );
 }

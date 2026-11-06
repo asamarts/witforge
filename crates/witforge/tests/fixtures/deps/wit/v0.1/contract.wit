@@ -1,0 +1,7 @@
+package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{item};
+    get: func() -> item;
+    put: func(value: item) -> item;
+}
