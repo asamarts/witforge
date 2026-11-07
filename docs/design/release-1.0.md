@@ -8,7 +8,8 @@ completeness alone is not enough.
 ## Release criteria
 
 - [ ] the public API inventory in [`public-api.md`](public-api.md) is reviewed and documented;
-      `cargo doc` and `missing_docs` are clean
+      `cargo doc` and `missing_docs` are clean; the dependency-aware `WorldInterface` and
+      `Model.dependencies` additions are covered by the 0.4.1 baseline semver check
 - [ ] the boundary error policy is published: `anyhow::Error` plus the stable `ContractError`
       classification, with no unclassified contract failure
 - [ ] the conformance matrix and `tests/conformance.rs` cover every supported WIT construct and
@@ -20,7 +21,8 @@ completeness alone is not enough.
       `ci/check-generated.sh`, and `ci/check-release-freeze.sh` pass
 - [ ] the alint consumer pin and its CI are green against the 1.0 candidate
 - [ ] `CHANGELOG.md`, README status, workspace versions, and the release checklist agree
-- [ ] the protobuf compatibility check is clean for every released major
+- [ ] the protobuf compatibility check is clean for every released major, and JSON Schema
+      dependency references resolve from the generated files
 - [ ] aplan `check`, `verify`, `export-agents-md --check`, and `check-docs` pass
 - [ ] the release owner records the tag commit, CI run, and publish run in the changelog section
 

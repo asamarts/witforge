@@ -32,6 +32,13 @@ The public surface is the modules and items below. Within 1.x:
 `Contract` is opaque: its `wit-parser` fields are crate-private and cannot be constructed or
 mutated by downstream code.
 
+`WorldInterface` carries the interface name plus an optional dependency `Package`, and
+`Model.dependencies` carries standard `deps/` packages. These fields are part of the 1.0 model
+surface. For a root with dependencies, `emit::rust::plan`, `emit::proto::plan`,
+`emit::json_schema::plan`, and `emit::glue::plan` are the complete entry points: they emit the
+shared dependency files. The lower-level `emit_version`, `emit_major`, and `emit_root` functions
+emit one local file and do not create the shared dependency files themselves.
+
 ## Errors
 
 The boundary error type is `anyhow::Error`. Contract, lockfile, and generated-output violations

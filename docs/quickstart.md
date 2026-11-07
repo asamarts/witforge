@@ -221,6 +221,39 @@ The current subset is deliberately pure and synchronous:
 Run `witforge check` for the exact diagnostic. `docs/design/overview.md` has the full contract
 model and the reasons for each refusal.
 
+## Dependencies and Serde
+
+A version directory may use standard `deps/` packages. Put the dependency under
+`wit/v0.1/deps/`, declare its package, and import its types or interfaces normally:
+
+```wit
+package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{item};
+    get: func() -> item;
+}
+
+world plugin {
+    import example:shared/types@0.1.0;
+}
+```
+
+`witforge rust`, `proto`, `schema`, and `glue` generate the dependency bindings alongside the
+local output. See [`design/dependencies.md`](design/dependencies.md) for the generated files and
+the dependency glue layout.
+
+Serde is opt-in per project:
+
+```toml
+[project.demo.rust]
+out = "generated/rust"
+serde = true
+```
+
+The default generated output is unchanged; enabling Serde requires the consumer's `serde` crate
+with the `derive` feature. `--serde` and `--no-serde` override the configuration.
+
 ## Examples
 
 - [`examples/single`](../examples/single/) — one version, all four generators, config-driven.

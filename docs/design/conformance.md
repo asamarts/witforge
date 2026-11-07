@@ -38,3 +38,6 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 - Generated output is checked by `ci/check-generated.sh`, and release directories by
   `ci/check-release-freeze.sh`.
 - CI runs the suite on Linux, macOS, and Windows; MSRV is tested at 1.88.
+- The 1.0 compatibility check runs `ci/check-buf.sh` with buf 1.74 against the released tags
+  (v0.1.2, v0.2.0, v0.3.0, v0.4.1) and the dependency fixtures; it is clean. The CI workflow keeps
+  this as an optional workflow-dispatch job, while the release owner runs it before a release.

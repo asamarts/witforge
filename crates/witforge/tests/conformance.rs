@@ -212,3 +212,55 @@ fn the_committed_conformance_matrix_names_every_fixture() {
         );
     }
 }
+
+#[test]
+fn dependency_and_serde_fixtures_cover_every_emitter() {
+    for name in [
+        "deps-full",
+        "deps-world",
+        "deps-convert",
+        "deps-unsupported",
+    ] {
+        let root = fixture(name).join("wit");
+        let contract = load(&root.join("v0.1")).unwrap();
+        let model = model::build(&contract).unwrap();
+        assert!(!model.dependencies.is_empty(), "{name}");
+        assert!(
+            !rust::plan(&root).unwrap().files().is_empty(),
+            "{name} rust"
+        );
+        assert!(
+            !proto::plan(&root).unwrap().files().is_empty(),
+            "{name} proto"
+        );
+        assert!(
+            !json_schema::plan(&root).unwrap().files().is_empty(),
+            "{name} schema"
+        );
+        assert!(
+            !glue::plan(&root, "crate::plain", "crate::proto")
+                .unwrap()
+                .files()
+                .is_empty(),
+            "{name} glue"
+        );
+    }
+
+    let world_contract = load(&fixture("deps-world").join("wit/v0.1")).unwrap();
+    let world_model = model::build(&world_contract).unwrap();
+    assert_eq!(
+        world_model.worlds[0].imports[0].qualified_name(),
+        "example:shared/types"
+    );
+
+    let serde_model = model::build(&load(&fixture("serde")).unwrap()).unwrap();
+    assert_eq!(
+        rust::emit_version(&serde_model).unwrap(),
+        rust::emit_version_with_serde(&serde_model, false).unwrap()
+    );
+    assert!(
+        rust::emit_version_with_serde(&serde_model, true)
+            .unwrap()
+            .contains("::serde::Serialize")
+    );
+}

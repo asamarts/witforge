@@ -7,12 +7,12 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::rust::version_module_name;
 use crate::emit::versions::{Version, load_versions};
-use crate::model::{Interface, Model, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
+use crate::model::{Dependency, Interface, Model, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
 
 /// The first line of every generated schema.
 ///
@@ -37,6 +37,40 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
         let generated = emit_version(&version.model)
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("{module}.schema.json"), generated)?;
+    }
+    let first = versions
+        .first()
+        .context("no version directories found under WIT root")?;
+    if versions
+        .iter()
+        .any(|version| version.model.dependencies != first.model.dependencies)
+    {
+        bail!("versions disagree about their dependency packages");
+    }
+    let mut dependency_files = std::collections::BTreeSet::new();
+    for dependency in &first.model.dependencies {
+        let model = Model {
+            package: dependency.package.clone(),
+            interfaces: dependency.interfaces.clone(),
+            worlds: Vec::new(),
+            dependencies: first
+                .model
+                .dependencies
+                .iter()
+                .filter(|other| {
+                    other.package.namespace != dependency.package.namespace
+                        || other.package.name != dependency.package.name
+                })
+                .cloned()
+                .collect(),
+        };
+        let generated = emit_version(&model)
+            .with_context(|| format!("dependency {}", dependency.package.name))?;
+        let filename = dependency_schema_filename(dependency);
+        if !dependency_files.insert(filename.clone()) {
+            bail!("dependency packages both generate `{filename}`");
+        }
+        files.insert(filename, generated)?;
     }
     Ok(files)
 }
@@ -192,10 +226,21 @@ fn type_schema(model: &Model, interface: &Interface, ty: &TypeExpr) -> Result<St
         TypeExpr::F32 | TypeExpr::F64 => Ok("{\"type\":\"number\"}".to_string()),
         TypeExpr::String => Ok("{\"type\":\"string\"}".to_string()),
         TypeExpr::Named(name) => {
-            if name.is_foreign() {
+            if let Some((namespace, package)) = name.package() {
+                let dependency =
+                    model
+                        .dependency_package(namespace, package)
+                        .with_context(|| {
+                            format!("dependency `{namespace}:{package}` is not in the model")
+                        })?;
+                let key = format!("{}/{}", name.interface_name(), name.name);
                 return Ok(format!(
                     "{{\"$ref\":{}}}",
-                    json_string(&format!("urn:witforge:{name}"))
+                    json_string(&format!(
+                        "{}#/definitions/{}",
+                        dependency_schema_filename(dependency),
+                        pointer(&key)
+                    ))
                 ));
             }
             model
@@ -273,6 +318,15 @@ fn with_description(description: &str, schema: String) -> String {
             &schema[1..]
         )
     }
+}
+
+fn dependency_schema_filename(dependency: &Dependency) -> String {
+    format!(
+        "{}.{}.v{}.schema.json",
+        dependency.package.namespace.replace('-', "_"),
+        dependency.package.name.replace('-', "_"),
+        dependency.package.version.major
+    )
 }
 
 fn pointer(value: &str) -> String {

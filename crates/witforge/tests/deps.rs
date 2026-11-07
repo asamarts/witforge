@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use witforge::emit::{proto, rust};
+use witforge::emit::{json_schema, proto, rust};
 use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model::{self, TypeDefKind, TypeExpr};
@@ -251,4 +251,27 @@ fn foreign_world_interfaces_keep_package_identity() {
     );
     protox::compile([proto_out.join("v0.proto")], [&proto_out]).unwrap();
     fs::remove_dir_all(&proto_out).unwrap();
+}
+
+#[test]
+fn dependency_schema_files_are_self_contained() {
+    let root = world_fixture();
+    let out = temp_dir("deps-schema");
+    let _ = fs::remove_dir_all(&out);
+    json_schema::plan(&root).unwrap().write(&out).unwrap();
+    assert!(out.join("v0_1.schema.json").is_file());
+    assert!(out.join("example.shared.v0.schema.json").is_file());
+    assert!(out.join("example.other.v0.schema.json").is_file());
+    let root_schema = fs::read_to_string(out.join("v0_1.schema.json")).unwrap();
+    assert!(
+        root_schema.contains("example.shared.v0.schema.json#/definitions/types~1thing"),
+        "{root_schema}"
+    );
+    assert!(!root_schema.contains("urn:witforge:"), "{root_schema}");
+    let dependency = serde_json::from_str::<serde_json::Value>(
+        &fs::read_to_string(out.join("example.shared.v0.schema.json")).unwrap(),
+    )
+    .unwrap();
+    jsonschema::validator_for(&dependency).unwrap();
+    fs::remove_dir_all(&out).unwrap();
 }

@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-11-01 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-11-06 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
@@ -355,6 +355,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | `check` requires the canonical lockfile rendering; a nested package is refused. Standard `deps/` dependency packages are supported as package-qualified foreign type references; multi-package workspaces/registries remain later work | [`dependencies.md`](dependencies.md), [`lockfile.md`](lockfile.md) |
 | 2026-11-06 | Worlds may import and export dependency interfaces; dependency glue is generated under a shared `witforge_deps` module | [`dependencies.md`](dependencies.md), [`emitters.md`](emitters.md) |
 | 2026-11-06 | 0.4.0 released with `deps/` types, foreign world interfaces, dependency glue, and opt-in Serde. Post-release hardening covers nested foreign structural glue; 1.0 validation owns the remaining consumer and conformance work | `ROADMAP.md`, [`dependencies.md`](dependencies.md), [`release-1.0.md`](release-1.0.md) |
+| 2026-11-06 | JSON Schema dependency files are emitted and referenced relatively; the leaner-glue Option C is declined for 1.0. The 1.0 conformance suite now checks dependency and Serde fixtures through every emitter | [`dependencies.md`](dependencies.md), [`emitters.md`](emitters.md), [`conformance.md`](conformance.md) |
 | 2026-11-01 | `check` reads CRLF as LF and requires the canonical lockfile only for an unreleased version, which `lock` can rewrite; a released lockfile is kept as released by the freeze check (supersedes that part of the previous entry). A directory named `v<major>.<minor>` holds that version for every command, and `glue` refuses what `proto` refuses | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `rust` emits `convert.rs` for every adjacent version pair, in both directions; conversions default `option`/`list` additions, report removed required members and unknown cases, and refuse retypes and kind changes | section 5.3, [`emitters.md`](emitters.md) section 9 |
 | 2026-11-01 | The lockfile gains an additive per-parent declaration-order fingerprint section; `--against` refuses reorders of common type members and parameters, ignoring additions and removals, and old v2 lockfiles migrate on the next `lock` | [`lockfile.md`](lockfile.md) section 16 |

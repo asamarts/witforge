@@ -69,8 +69,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Measure owned Rust parameters and consider borrowed parameters (`&str`, `&[T]`):
       owned remains the 0.x/1.0 policy; borrowed needs a measured consumer path and a new
       contract version.
-- [ ] Evaluate a leaner glue surface that skips trivial structural aliases (the glue Option C)
-      while keeping message-backed and `use` aliases.
+- [x] Evaluate a leaner glue surface that skips trivial structural aliases (the glue Option C)
+      while keeping message-backed and `use` aliases. Declined for 1.0: no consumer requested the
+      reduced surface, and the complete conversion surface is already tested and stable.
 - [x] Conditional `Eq`/`Hash` and a narrow `Default` policy: declined for 0.x/1.0; requires a
       consumer request and a new contract version with an explicit float/default policy.
 - [x] Generated world metadata (`W6-004`): additive shared `worlds.rs` with explicit per-version

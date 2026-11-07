@@ -84,10 +84,12 @@ dependencies, the root types use `<proto-root>::<root-namespace>::<root-package>
 that prost's package-relative references resolve. The plain dependency types remain at
 `<plain-root>::witforge_deps::<namespace>_<package>::<interface>::<Type>`.
 
-JSON Schema still uses an external `urn:witforge:<qualified-name>` reference rather than
-generating dependency schemas. The version adapters in `convert.rs` copy a value whose type is
-the same pinned dependency type in both versions; a changed dependency type is not a local
-conversion and must be handled by a new contract type.
+JSON Schema also emits one `<namespace>.<package>.v<major>.schema.json` file per dependency.
+A root or dependency schema refers to a foreign definition with a relative file reference,
+`<namespace>.<package>.v<major>.schema.json#/definitions/<interface>/<type>`, so a consumer can
+resolve dependency values by keeping the generated schema files together. The version adapters
+in `convert.rs` copy a value whose type is the same pinned dependency type in both versions; a
+changed dependency type is not a local conversion and must be handled by a new contract type.
 
 ## Lockfiles and release freezes
 
