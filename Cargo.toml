@@ -12,7 +12,7 @@ repository = "https://github.com/asamarts/witforge"
 [workspace.dependencies]
 # Pinned exactly: wit-parser makes breaking 0.x releases roughly monthly and its
 # enums are exhaustive, so every bump is deliberate (see docs/design/overview.md).
-wit-parser = { version = "=0.262.0", default-features = false, features = ["std"] }
+wit-parser = { version = "=0.263.0", default-features = false, features = ["std"] }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
 
