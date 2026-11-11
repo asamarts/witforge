@@ -15,7 +15,8 @@ Release commit `386cf1a` (tag `v0.4.3`), exact-commit main CI run 42964347193, r
 42964949155. Both crates are published; `cargo install witforge-cli --version 0.4.3 --locked`
 reports `witforge 0.4.3`, docs.rs built the library, and the release carries four platform
 archives with checksums. The tagged Action passed `check` and all four configured generator
-checks on every release target.
+checks on every release target; the pinned published Action then passed four-target CI run
+42966331937.
 
 ### Fixed
 

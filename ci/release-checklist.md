@@ -214,3 +214,6 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
       reported `witforge 0.4.3`; docs.rs built the library documentation.
 - [x] The tagged Action passed `check` and all four configured generator checks on Linux x86_64,
       macOS arm64, macOS Intel, and Windows x86_64.
+- [x] Main CI run 42966331937 invoked the pinned published `asamarts/witforge@v0.4.3` Action
+      against all four release targets; every target downloaded its matching 0.4.3 archive and
+      passed a real contract check.
