@@ -230,3 +230,39 @@ jobs:
           ASSET: ${{ steps.package.outputs.asset }}
           CHECKSUM: ${{ steps.package.outputs.checksum }}
         run: gh release upload "$TAG" "$ASSET" "$CHECKSUM" --clobber
+
+  action-smoke:
+    name: published Action smoke
+    needs: [verify, binaries]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install 0.4.2 and check a version
+        uses: asamarts/witforge@v0.4.2
+        with:
+          version: 0.4.2
+          check: examples/evolved/wit/v0.2
+          generators: ""
+          github-token: ${{ github.token }}
+      - name: Materialize expected configured output
+        shell: bash
+        run: |
+          witforge rust --config examples/evolved/witforge.toml
+          witforge proto --config examples/evolved/witforge.toml
+          witforge schema --config examples/evolved/witforge.toml
+          witforge glue --config examples/evolved/witforge.toml
+      - name: Check configured output through the published Action
+        uses: asamarts/witforge@v0.4.2
+        with:
+          version: 0.4.2
+          check: examples/evolved/wit/v0.2
+          config: examples/evolved/witforge.toml
+          project: tasks
+          generators: rust,proto,schema,glue
+          github-token: ${{ github.token }}

@@ -112,9 +112,10 @@ explicit release-owner action.
       queries the Actions API for a successful `ci ok` job at the tag commit, then verifies the
       release, reruns semver and historical-generator protobuf compatibility, publishes each
       crate whose version is not on crates.io yet, library first, through trusted publishing,
-      creates the GitHub release from the changelog section, and builds and uploads the Linux,
-      macOS, and Windows archives with `.sha256` checksums. A failed run is re-run and skips what
-      is already published; `gh release upload --clobber` repairs a partial asset upload.
+      creates the GitHub release from the changelog section, builds and uploads the Linux,
+      macOS, and Windows archives with `.sha256` checksums, then runs the pinned published Action
+      through `check` and all four configured generator checks. A failed run is re-run and skips
+      what is already published; `gh release upload --clobber` repairs a partial asset upload.
 - [ ] Verify `cargo install witforge-cli --version X.Y.Z --locked` reports `witforge X.Y.Z`,
       the GitHub release exists, and docs.rs built the library.
 - [ ] Record the release commit, its exact-commit `ci ok` URL, and the release run URL under the
