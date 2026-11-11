@@ -254,6 +254,26 @@ serde = true
 The default generated output is unchanged; enabling Serde requires the consumer's `serde` crate
 with the `derive` feature. `--serde` and `--no-serde` override the configuration.
 
+## JSON Schema and Rust Serde
+
+These outputs project the same WIT value model, but they do not define one identical JSON wire
+format:
+
+- generated Rust Serde uses Rust identifiers, so a WIT field such as `start-byte` is serialized
+  as `start_byte`;
+- JSON Schema preserves the WIT member name, so the corresponding property is `start-byte`;
+- every record property is required in the schema; `option<T>` permits `null` as the property's
+  value rather than making the property omittable;
+- derived Rust `Option<T>` accepts a missing field as `None` and serializes `None` as `null`;
+- neither projection supplies application-specific defaults such as “missing severity means
+  warning.”
+
+Use the schema for the WIT-shaped JSON value it describes. If an existing JSON protocol has
+snake_case names, omitted fields, numeric enum conventions, or defaults, exercise the generated
+Serde types against committed fixtures and keep those semantics in an explicit application
+adapter. Do not claim that the generated JSON Schema validates that protocol unless its names and
+presence rules actually match.
+
 ## Examples
 
 - [`examples/single`](../examples/single/) — one version, all four generators, config-driven.

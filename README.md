@@ -24,6 +24,24 @@ tie their output to a runtime.
 > generated-output drift, release freezes, dependency and security policy, and the aplan
 > contract. witforge's first consumer is the [alint](https://github.com/asamarts/alint) plugin
 > contract.
+> The 1.0 release remains intentionally blocked on successful independent-consumer validation.
+
+## When to use witforge
+
+witforge fits contracts where hand-written WIT is authoritative, the callable surface is pure and
+synchronous, and consumers need two or more of: stable plain Rust values, protobuf wire identity,
+JSON Schema, compatibility review, or generated version adapters.
+
+Use [`wit-bindgen`](docs/design/wit-bindgen.md) and a Component Model runtime directly when the
+only requirement is guest/host Component Model bindings. witforge does not load components,
+generate protobuf services, own process framing, or add resources, streams, callbacks, retries,
+capabilities, or failure policy.
+
+The Rust Serde and JSON Schema outputs are separate projections. In particular, Rust field names
+are snake_case while JSON Schema preserves WIT member spelling, normally kebab-case; optional WIT
+values also do not mean an omittable schema property. See
+[`JSON Schema and Rust Serde`](docs/quickstart.md#json-schema-and-rust-serde) before using both for
+one JSON wire format.
 
 ## Install
 
@@ -174,9 +192,11 @@ path, or an internal error.
 The design is in
 [docs/design/overview.md](https://github.com/asamarts/witforge/blob/main/docs/design/overview.md);
 the [plugin-framework evaluation](docs/design/plugin-framework.md) records witforge's role in a
-possible WIT-first multi-host kit; the 1.0 API policy is in
-[docs/design/public-api.md](docs/design/public-api.md), and the release criteria and deprecation
-runways are in [docs/design/release-1.0.md](docs/design/release-1.0.md).
+possible WIT-first multi-host kit; the
+[`wit-bindgen` boundary](docs/design/wit-bindgen.md) distinguishes runtime bindings from
+witforge's projections; the 1.0 API policy is in
+[`docs/design/public-api.md`](docs/design/public-api.md), and the release criteria and deprecation
+runways are in [`docs/design/release-1.0.md`](docs/design/release-1.0.md).
 
 ## License
 
