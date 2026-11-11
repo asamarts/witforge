@@ -43,7 +43,7 @@ inputs:
     required: false
     default: 'rust'
   github-token:
-    description: Token used to query the latest release; pass `${{ github.token }}` for rate limits.
+    description: Token used to query the latest release; pass the workflow token for rate limits.
     required: false
     default: ''
 runs:
