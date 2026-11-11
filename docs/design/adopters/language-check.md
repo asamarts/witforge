@@ -275,7 +275,26 @@ Change it to **defer** if maintainers want one generated JSON Schema that exactl
 
 ## Outreach evidence packet
 
-No outreach occurred during `W11-006`.
+### Outreach readiness review
+
+Re-reviewed on 2026-11-11 before starting `W11-017`:
+
+- Language Check `main` still resolves to reviewed commit `cc32d5a`;
+- the current contribution policy still directs reports to GitHub Issues;
+- a fresh issue search found no witforge, WIT, or plugin-contract proposal to continue;
+- published witforge 0.4.3 installed from crates.io and ran the single-version example through
+  `check`, all four generators, and every generator's `--check`;
+- witforge's README now states the high-fit profile, runtime non-goals, pre-1.0 adoption gate, and
+  wit-bindgen boundary;
+- the existing quickstart now documents the JSON Schema/Serde naming and presence differences
+  exposed by this assessment.
+
+Decision: **ready for discovery outreach**. Another speculative adopter guide or unrequested
+feature round is not a prerequisite. The purpose of the issue is to learn whether the demonstrated
+problem matters before building more surface. The evidence-based adopter guide remains
+[`W11-029`](../../../aplan/tasks/W11-029.md), after a real independent integration.
+
+No outreach occurred during `W11-006`, and none has been posted under `W11-017`; the final message is human-owned.
 
 Canonical path: search again, then open a focused GitHub issue under Language Check's [contribution policy](https://github.com/KaiErikNiermann/LangCheck/blob/cc32d5ae31b43baba1350159bbd8a7a9b3efec96/CONTRIBUTING.md). The human owner must write the final message in their own words.
 
