@@ -1,201 +1,170 @@
 # witforge
 
-**A WIT-first contract compiler.** Write a contract once, as a
-[WIT](https://component-model.bytecodealliance.org/design/wit.html) package, and generate the
-bindings the other sides of the contract need:
+[![CI](https://github.com/asamarts/witforge/actions/workflows/ci.yml/badge.svg)](https://github.com/asamarts/witforge/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/witforge-cli.svg)](https://crates.io/crates/witforge-cli)
+[![docs](https://img.shields.io/badge/docs-guide-blue.svg)](https://asamarts.github.io/witforge/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-brightgreen.svg)](Cargo.toml)
 
-- plain Rust types and traits (no wasmtime or component-runtime dependency), for native
-  implementations and for hosts;
-- a protobuf schema with **stable field numbers**, for out-of-process implementations in any
-  language;
-- Draft 7 JSON Schema definitions for value validation;
-- generated old-to-new and new-to-old adapters between contract versions.
+**Compile one hand-written WIT contract into the runtime-independent artifacts its consumers
+need.**
 
-WIT is the strictest of these type systems (the component model treats a published record,
-variant, enum, or flags type as frozen), so projecting it onto Rust and protobuf loses nothing,
-while the reverse directions are lossy. witforge exists because no tool performs that
-projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
-tie their output to a runtime.
+witforge checks a deliberately portable WIT subset, locks protobuf field and method numbers, and
+generates stable Rust, protobuf, JSON Schema, glue, compatibility reports, and adapters between
+contract versions.
 
-> **Status: 0.4.3.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
-> protobuf, JSON Schema, glue, and version-conversion emitters are implemented, alongside
-> `witforge diff`, structured `--format json|sarif` diagnostics, `witforge.toml` projects, and
-> the GitHub Action/prebuilt release archives. CI runs on Linux, macOS, and Windows and gates
-> generated-output drift, release freezes, dependency and security policy, and the aplan
-> contract. witforge's first consumer is the [alint](https://github.com/asamarts/alint) plugin
-> contract.
-> The 1.0 release remains intentionally blocked on successful independent-consumer validation.
+Current release: **0.4.3**. The 1.0 release remains intentionally gated on successful independent
+consumer validation.
 
-## When to use witforge
+## Outputs
 
-witforge fits contracts where hand-written WIT is authoritative, the callable surface is pure and
-synchronous, and consumers need two or more of: stable plain Rust values, protobuf wire identity,
-JSON Schema, compatibility review, or generated version adapters.
+| Output | Purpose |
+|---|---|
+| Plain Rust | Owned structs, enums, interface traits, world metadata, and optional Serde derives |
+| Protobuf | Messages and method IDs with append-only numbers from `wire.lock` |
+| JSON Schema | Draft 7 definitions for WIT-shaped values |
+| Rust glue | Checked conversion between plain Rust and prost-generated protobuf types |
+| Version adapters | Old-to-new and new-to-old conversion between adjacent contract versions |
+| Diff and diagnostics | Human, JSON, and SARIF compatibility/change reports |
 
-Use [`wit-bindgen`](https://github.com/bytecodealliance/wit-bindgen) and a Component Model runtime directly when the
-only requirement is guest/host Component Model bindings. witforge does not load components,
-generate protobuf services, own process framing, or add resources, streams, callbacks, retries,
-capabilities, or failure policy.
+## When it fits
 
-The Rust Serde and JSON Schema outputs are separate projections. In particular, Rust field names
-are snake_case while JSON Schema preserves WIT member spelling, normally kebab-case; optional WIT
-values also do not mean an omittable schema property. See
-[`JSON Schema and Rust Serde`](docs/quickstart.md#json-schema-and-rust-serde) before using both for
-one JSON wire format.
+Use witforge when:
+
+- hand-written WIT is the source of truth;
+- the callable contract is pure, synchronous, and value-oriented;
+- native Rust and out-of-process implementations share the same values;
+- protobuf identity must remain stable across releases;
+- generated output is committed and checked in CI;
+- contract changes need explicit compatibility review.
+
+Use [wit-bindgen](https://github.com/bytecodealliance/wit-bindgen) and a Component Model runtime
+directly when you only need guest and host Component Model bindings.
+
+witforge does not load components, generate protobuf services, own process framing, or define
+callbacks, retries, capabilities, resource limits, discovery, or failure policy. Direct Go source
+generation is not available yet; non-Rust consumers currently use the emitted protobuf schema and
+their normal language toolchain.
 
 ## Install
 
 ```sh
-cargo install witforge-cli --locked
+cargo install witforge-cli --version 0.4.3 --locked
+witforge --version
 ```
 
-This installs the `witforge` command; the `witforge` crate is the library behind it. Both need
-Rust 1.88 or later.
+Prebuilt checksum files and archives are also published for Linux x86_64, macOS Intel and Apple
+silicon, and Windows x86_64.
 
-Starting with **0.3.0**, each release also attaches prebuilt archives for Linux x86_64, macOS
-Intel and Apple silicon, and Windows x86_64, each with a `.sha256` checksum. See
-[`docs/design/action.md`](docs/design/action.md#release-assets) for the archive names and
-verification commands.
+## Five-minute example
 
-## GitHub Action
+Create `wit/v0.1/contract.wit`:
 
-The action installs the release matching its tag by default, then runs `check`, `diff`, and
-configured generators with `--check`. It uses GitHub's Node 24 runtime. CI executes the
-checked-out Action before publication and the pinned published Action on Linux x86_64, macOS
-arm64, macOS Intel, and Windows x86_64:
+```wit
+package example:checker@0.1.0;
+
+interface api {
+  record request {
+    text: string,
+  }
+
+  record diagnostic {
+    start: u32,
+    end: u32,
+    message: string,
+  }
+
+  check: func(input: request) -> list<diagnostic>;
+}
+
+world plugin {
+  export api;
+}
+```
+
+Lock and validate the first version:
+
+```sh
+witforge lock wit/v0.1 --first
+witforge check wit/v0.1
+```
+
+Generate the projections:
+
+```sh
+witforge rust wit --out generated/rust
+witforge proto wit --out generated/proto
+witforge schema wit --out generated/schema
+witforge glue wit --out generated/glue \
+  --plain-root crate::plain \
+  --proto-root crate::proto
+```
+
+Every generator supports `--check`, which writes nothing and fails when committed output differs.
+
+For configuration, dependencies, evolution, and complete command sequences, continue with the
+[documentation](https://asamarts.github.io/witforge/) or the
+[repository quickstart](docs/quickstart.md).
+
+## Evolve a contract
+
+Keep each contract version in its own directory. Start a new minor from the previous lockfile:
+
+```sh
+cp wit/v0.1/wire.lock wit/v0.2/wire.lock
+witforge lock wit/v0.2 --against wit/v0.1/wire.lock
+witforge check wit/v0.2 --against wit/v0.1/wire.lock
+witforge diff wit/v0.1 wit/v0.2 --check
+```
+
+Released WIT, lockfiles, dependency packages, and generated per-version Rust modules are immutable.
+Create a new version directory instead of editing a released one.
+
+## CI
+
+Pin the Action to the same release used locally:
 
 ```yaml
-- uses: asamarts/witforge@v0.4.3 # pinned: installs witforge 0.4.3
+- uses: asamarts/witforge@v0.4.3
   with:
     check: wit/v0.2
     diff-old: wit/v0.1
     diff-new: wit/v0.2
     config: witforge.toml
-    generators: rust,proto
+    generators: rust,proto,schema,glue
 ```
 
-`@main` is a floating ref: it installs the latest published release. Pass `version` to override
-either default, and `github-token: ${{ github.token }}` when querying latest to avoid anonymous
-API rate limits. The full input and checksum behavior is in
-[`docs/design/action.md`](docs/design/action.md#action-usage).
+The Action downloads the matching checksum-verified release binary and runs configured generators
+with `--check`. See the [CI guide](https://asamarts.github.io/witforge/guide/ci.html).
+
+## Important JSON boundary
+
+Rust Serde and JSON Schema project the same WIT values, but they do not define one identical JSON
+wire format. Rust fields are snake_case; JSON Schema preserves WIT spelling, normally kebab-case.
+WIT `option<T>` permits `null` but does not make a schema property omittable.
+
+Read [JSON Schema and Rust Serde](https://asamarts.github.io/witforge/guide/json-projections.html)
+before applying both outputs to an existing JSON protocol.
+
+## Documentation and examples
+
+- [Documentation site](https://asamarts.github.io/witforge/)
+- [Quickstart](docs/quickstart.md)
+- [Single-version example](examples/single)
+- [Evolved-contract example](examples/evolved)
+- [Design overview](docs/design/overview.md)
+- [Public API policy](docs/design/public-api.md)
+- [Release criteria](docs/design/release-1.0.md)
+
+The first consumer is the [alint](https://github.com/asamarts/alint) plugin contract. Task-level
+planning and closure evidence live under [`aplan/`](aplan/README.md); [`ROADMAP.md`](ROADMAP.md)
+is the narrative sequence.
 
 ## Security
 
-Report suspected vulnerabilities privately through
+Report vulnerabilities through
 [GitHub private vulnerability reporting](https://github.com/asamarts/witforge/security/advisories/new),
-not a public issue. See [`SECURITY.md`](SECURITY.md) for the supported-version and dependency
-policy.
-
-## Plan
-
-Task-level planning, dependencies, and closure evidence live in [`aplan/`](https://github.com/asamarts/witforge/blob/main/aplan/README.md)
-and are validated with `aplan check` and `aplan verify`; CI runs those gates with the pinned
-published aplan 0.5.2 release. [`ROADMAP.md`](https://github.com/asamarts/witforge/blob/main/ROADMAP.md) is the narrative sequence; the plan is the
-task-level source of truth.
-
-## How it works
-
-See [`docs/quickstart.md`](docs/quickstart.md) for an install-to-generated-code walkthrough and [`examples/`](examples/) for runnable single-version and evolved contracts.
-
-```text
-wit/                      hand-written contracts (the source of truth)
-  released                released version directories
-  v0.1/
-    *.wit
-    wire.lock             append-only protobuf numbers, committed
-  v0.2/
-    *.wit
-    wire.lock
-
-$ witforge lock  wit/v0.1 --first                         number the first version
-$ cp wit/v0.1/wire.lock wit/v0.2/wire.lock                start a new minor from the last lock
-$ witforge lock  wit/v0.2 --against wit/v0.1/wire.lock   number its new members
-$ witforge check wit/v0.2 --against wit/v0.1/wire.lock   subset + continuity   (CI)
-$ witforge diff  wit/v0.1 wit/v0.2 --check               review breaking changes  (CI)
-$ witforge rust  wit --out src/plain                     plain modules + metadata
-$ witforge proto wit --out proto                         protobuf schema
-$ witforge schema wit --out schema                      Draft 7 JSON Schema
-$ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
-```
-
-`check` validates one version directory and cannot prove that dependency pins stayed identical
-across a WIT root. Every generator compares the complete pinned dependency graph across all
-versions, and `diff` refuses a mismatched graph; CI should run both a generator `--check` and the
-reviewed `diff`.
-
-`--format json|sarif` turns diagnostics from the commands into stable machine-readable output;
-`diff --json` is the full diff report. The formats and code catalogue are in
-[`docs/design/diagnostics.md`](docs/design/diagnostics.md).
-
-A `witforge.toml` project can replace the repeated roots and output paths:
-
-```toml
-version = 1
-[project.alint]
-root = "wit"
-[project.alint.rust]
-out = "src/plain"
-[project.alint.proto]
-out = "proto"
-```
-
-Use `witforge rust --config witforge.toml`; `--project NAME` selects a project when the file has
-more than one. CLI paths override the configuration, and the command-line-only form above remains
-valid.
-
-`rust` also writes `worlds.rs` when a contract has worlds, exposing each world's imported and
-exported interface names, and `convert.rs` when the WIT root has more than one version: one
-module per adjacent version pair in each direction. Old-to-new conversions default defaultable additions;
-new-to-old conversions report a removed required member as `ConversionError::MissingMember`;
-added or removed variant and enum cases report `UnknownCase`; retyped or kind-changed types are
-refused rather than converted silently.
-
-`--proto-root` names the Rust module that holds the prost types generated from the emitted
-schema (for example by `prost-build` in a build script), not the directory the schema is
-written to. Every generated file starts with witforge's header, and `--check` on any generator
-fails instead of writing when its output would change. Give each generator its own output
-root: generation replaces and removes only files that carry the header, and refuses to replace a
-symlink, a directory, or a file without the header at an expected path.
-
-The generators also refuse a minor whose `wire.lock` does not keep every entry of the previous
-minor's, so a lockfile started fresh instead of copied cannot renumber the shared per-major
-schema. For a version not yet released, `check` accepts the lockfile only as `lock` writes it
-(CRLF line endings read as LF); pin `wire.lock` and `*.wit` to LF in `.gitattributes`
-(`wire.lock text eol=lf`, `*.wit text eol=lf`). No command follows a version directory that is
-a symlink, so a released version cannot change through a link's target.
-
-Every command exits `1` for a contract, lockfile, or output violation: a subset violation, a
-version directory holding another package version, a stale or discontinuous lockfile, a
-generated-name collision, or `--check` drift, which includes an expected path that generation
-would refuse; `check` also exits `1` for an unreleased version's lockfile that is not in the
-form `lock` writes. It exits `2` for a usage, I/O, or parse error, a released or symlinked
-version directory, an output root inside the WIT root, a generation run refused by an expected
-path, or an internal error.
-
-- **The subset.** Contracts stay inside a pure, synchronous subset of WIT: no resources or
-  handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length lists, no `char`,
-  no tuples, and no `async` functions or `get`/`set` accessors. Types and functions live in named
-  interfaces. A root may use supported types or world interfaces from pinned packages under the
-  standard `deps/` directory; every version in one generated WIT root must resolve the identical
-  dependency graph. Anything required by the root that is unrecognised is refused, never passed
-  through.
-- **The lockfile.** WIT members carry no field numbers, so `wire.lock` maps every record field,
-  variant case, enum case, flag, function method id, and function parameter to a number that
-  never changes. New members get the next free number in their parent; removed members stay,
-  marked `reserved`, and their names cannot come back; nothing is renumbered or deleted, and the
-  package version is not part of the key, so version bumps never renumber anything. Entries also
-  record their kind and canonical type, so a type or kind change is caught even when protobuf
-  would not see it. An additive order section fingerprints each type's and function's live
-  declaration order; `--against` catches reorders of common members without treating additions
-  or removals as reorders.
-
-The design is in
-[docs/design/overview.md](https://github.com/asamarts/witforge/blob/main/docs/design/overview.md);
-the 1.0 API policy is in [`docs/design/public-api.md`](docs/design/public-api.md), and the release
-criteria and deprecation runways are in
-[`docs/design/release-1.0.md`](docs/design/release-1.0.md).
+not a public issue. See [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/asamarts/witforge/blob/main/LICENSE-APACHE) or
-[MIT license](https://github.com/asamarts/witforge/blob/main/LICENSE-MIT), at your option.
+Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.

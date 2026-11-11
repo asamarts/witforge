@@ -1,3 +1,8 @@
+---
+layout: default
+title: Quickstart
+---
+
 # witforge quickstart
 
 witforge turns one hand-written [WIT](https://component-model.bytecodealliance.org/design/wit.html)
@@ -185,11 +190,11 @@ witforge diff wit/v0.1 wit/v0.2 --json
 
 `--check` fails on wire-, source-, or generated-API-breaking changes. `--json` is the complete
 diff report. To make any command's diagnostics machine-readable, add `--format json` or
-`--format sarif`; the catalogue is in [`docs/design/diagnostics.md`](design/diagnostics.md).
+`--format sarif`; the catalogue is in the [diagnostics specification](https://github.com/asamarts/witforge/blob/main/docs/design/diagnostics.md).
 
 For CI, [`asamarts/witforge`](https://github.com/asamarts/witforge) publishes an Action that
 installs the matching release and can run the same checks; see
-[`docs/design/action.md`](design/action.md).
+the [Action specification](https://github.com/asamarts/witforge/blob/main/docs/design/action.md).
 
 ## Non-Rust consumers
 
@@ -215,11 +220,12 @@ The current subset is deliberately pure and synchronous:
   workspaces, and world-defined types are currently refused.
 - named types and interfaces from packages under a version directory's standard `deps/` layout
   are supported as package-qualified references; worlds may import and export dependency
-  interfaces, and glue covers dependency types and functions. See
-  [`dependencies.md`](design/dependencies.md).
+  interfaces, and glue covers dependency types and functions. See the
+  [dependency specification](https://github.com/asamarts/witforge/blob/main/docs/design/dependencies.md).
 
-Run `witforge check` for the exact diagnostic. `docs/design/overview.md` has the full contract
-model and the reasons for each refusal.
+Run `witforge check` for the exact diagnostic. The
+[design overview](https://github.com/asamarts/witforge/blob/main/docs/design/overview.md) has the
+full contract model and the reasons for each refusal.
 
 ## Dependencies and Serde
 
@@ -240,8 +246,9 @@ world plugin {
 ```
 
 `witforge rust`, `proto`, `schema`, and `glue` generate the dependency bindings alongside the
-local output. See [`design/dependencies.md`](design/dependencies.md) for the generated files and
-the dependency glue layout.
+local output. See the
+[dependency specification](https://github.com/asamarts/witforge/blob/main/docs/design/dependencies.md)
+for the generated files and dependency glue layout.
 
 Serde is opt-in per project:
 
@@ -276,9 +283,10 @@ presence rules actually match.
 
 ## Examples
 
-- [`examples/single`](../examples/single/) — one version, all four generators, config-driven.
-- [`examples/evolved`](../examples/evolved/) — released v0.1 plus draft v0.2, lock continuity and
-  generated conversions.
+- [`examples/single`](https://github.com/asamarts/witforge/tree/main/examples/single) — one
+  version, all four generators, config-driven.
+- [`examples/evolved`](https://github.com/asamarts/witforge/tree/main/examples/evolved) — released
+  v0.1 plus draft v0.2, lock continuity and generated conversions.
 
 ## Troubleshooting
 

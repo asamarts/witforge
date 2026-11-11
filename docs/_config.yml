@@ -1,0 +1,14 @@
+title: witforge
+description: WIT-first contract compiler for stable Rust, protobuf, JSON Schema, and versioned adapters
+url: https://asamarts.github.io
+baseurl: /witforge
+repository: asamarts/witforge
+theme: jekyll-theme-minimal
+show_downloads: true
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+exclude:
+  - aplan-pilot.md
+  - design
