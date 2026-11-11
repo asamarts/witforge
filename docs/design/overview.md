@@ -15,6 +15,8 @@ The evaluation of a WIT-first, multi-host plugin kit and its boundary from witfo
 [`plugin-framework.md`](plugin-framework.md).
 The boundary between wit-bindgen's guest Component Model bindings and witforge's
 runtime-independent contract projections is recorded in [`wit-bindgen.md`](wit-bindgen.md).
+Independent-adopter evidence, evaluation, and outreach rules are recorded in
+[`external-adoption.md`](external-adoption.md).
 
 ## 1. Purpose and scope
 
@@ -374,6 +376,8 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-04 | The plan gate is CI-run again with pinned published aplan 0.5.2; no aplan binary is committed and the four plan commands are part of `ci ok` | [`ci/README.md`](../../ci/README.md) |
 | 2026-11-04 | 0.2.0 is a focused release of the current compiler; 0.3 follows with diff/diagnostics/Action, 0.4 with `wit/deps` packages and opt-in Serde, and 1.0 waits for further consumer validation. Plugin/LSP/registry stay post-1.0 | `ROADMAP.md`, `aplan/` |
 | 2026-11-11 | A general Wasm plugin framework is declined as witforge scope; direct Wasmtime is the alint pilot baseline, and any reusable WIT-first multi-host kit stays separate until real applications demonstrate repeated runtime or protocol mechanics | [`plugin-framework.md`](plugin-framework.md) |
+| 2026-11-11 | Independent candidates must pass evidence-backed problem, capability, bounded-slice, and ownership gates before human-authored outreach; defer, no-contact, and no-response outcomes do not weaken the external-adoption requirement | [`external-adoption.md`](external-adoption.md) |
+| 2026-11-11 | wit-bindgen remains the guest Canonical ABI generator and Wasmtime owns host bindings; witforge remains runtime-independent, prefers guest type remapping where proven, and declines a generic bridge without adopter measurements | [`wit-bindgen.md`](wit-bindgen.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
