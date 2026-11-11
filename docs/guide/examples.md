@@ -33,8 +33,12 @@ witforge glue --config witforge.toml
 ```sh
 cd witforge/examples/evolved
 witforge check wit/v0.2 --against wit/v0.1/wire.lock
-witforge diff wit/v0.1 wit/v0.2 --check
+witforge diff wit/v0.1 wit/v0.2
 witforge rust --config witforge.toml
 ```
+
+The example adds defaultable fields. Version-adapter generation accepts them, but `diff --check`
+still reports a source/generated-API break. Use plain `diff` to review the example; add `--check`
+when project policy forbids those changes.
 
 Generated output is ignored in the examples so the commands can be run repeatedly in a scratch checkout.

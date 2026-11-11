@@ -113,11 +113,15 @@ Keep each contract version in its own directory. Start a new minor from the prev
 cp wit/v0.1/wire.lock wit/v0.2/wire.lock
 witforge lock wit/v0.2 --against wit/v0.1/wire.lock
 witforge check wit/v0.2 --against wit/v0.1/wire.lock
-witforge diff wit/v0.1 wit/v0.2 --check
+witforge diff wit/v0.1 wit/v0.2
 ```
 
 Released WIT, lockfiles, dependency packages, and generated per-version Rust modules are immutable.
 Create a new version directory instead of editing a released one.
+
+Add `--check` when CI must reject source- or generated-API-breaking changes. The evolved repository
+example intentionally adds defaultable fields, so its adapters can convert old values even though
+`diff --check` reports the source/API change.
 
 ## CI
 
