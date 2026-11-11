@@ -286,23 +286,23 @@ fn exposed_dependency_interface_refuses_unsupported_items() {
     fs::create_dir_all(&dependency).unwrap();
     fs::write(
         version.join("contract.wit"),
-        r#"package example:app@0.1.0;
+        r"package example:app@0.1.0;
 
 world plugin {
     import example:shared/types@0.1.0;
 }
-"#,
+",
     )
     .unwrap();
     fs::write(
         dependency.join("types.wit"),
-        r#"package example:shared@0.1.0;
+        r"package example:shared@0.1.0;
 
 interface types {
     resource session;
     open: func() -> session;
 }
-"#,
+",
     )
     .unwrap();
     fs::write(version.join("wire.lock"), WireLock::default().render()).unwrap();
@@ -336,37 +336,37 @@ fn glue_refuses_colliding_dependency_module_names() {
     fs::create_dir_all(version.join("deps/second")).unwrap();
     fs::write(
         version.join("contract.wit"),
-        r#"package example:app@0.1.0;
+        r"package example:app@0.1.0;
 
 interface api {
     use my-ns:dep/types@0.1.0.{thing as first-thing};
     use my:ns-dep/types@0.1.0.{thing as second-thing};
 }
-"#,
+",
     )
     .unwrap();
     fs::write(
         version.join("deps/first/types.wit"),
-        r#"package my-ns:dep@0.1.0;
+        r"package my-ns:dep@0.1.0;
 
 interface types {
     record thing {
         value: string,
     }
 }
-"#,
+",
     )
     .unwrap();
     fs::write(
         version.join("deps/second/types.wit"),
-        r#"package my:ns-dep@0.1.0;
+        r"package my:ns-dep@0.1.0;
 
 interface types {
     record thing {
         value: string,
     }
 }
-"#,
+",
     )
     .unwrap();
     fs::write(version.join("wire.lock"), WireLock::default().render()).unwrap();
@@ -402,11 +402,11 @@ fn write_dependency_version(root: &Path, minor: u64, dependency_spec: Option<Dep
     fs::write(
         version.join("contract.wit"),
         format!(
-            r#"package example:app@0.{minor}.0;
+            r"package example:app@0.{minor}.0;
 
 interface api {{
 {use_item}}}
-"#
+"
         ),
     )
     .unwrap();
@@ -416,14 +416,14 @@ interface api {{
         fs::write(
             dependency.join("types.wit"),
             format!(
-                r#"package example:shared@{version};
+                r"package example:shared@{version};
 
 interface types {{
     {docs}record thing {{
         value: {field_type},
     }}
 }}
-"#,
+",
                 version = spec.version,
                 docs = spec.docs,
                 field_type = spec.field_type

@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-11-10
+
+0.4.2 restores the published GitHub Action on GitHub's supported Node 24 runtime and hardens
+dependency and release validation. It does not change the library API, wire numbers, or generated
+output for a contract accepted by 0.4.1.
+
+### Fixed
+
+- The JavaScript Action now declares Node 24, and CI executes the checked-out Action through
+  `uses: ./` so a stale runtime declaration cannot pass unit tests unnoticed.
+- A dependency interface imported or exported by a root world is validated as a complete API;
+  unsupported required items are refused instead of silently omitted.
+- Glue refuses dependency package names that normalize to one Rust module, and JSON Schema uses
+  the same contract-error classification as the other generators.
+
+### Changed
+
+- Every generator and `diff` now use one detailed comparison requiring an identical pinned
+  dependency graph across versions in a WIT root.
+- The 1.0 and tag release gates deny public API breaks since 0.4.1, compare protobuf with
+  historical release generators, require `ci ok` for the exact tag commit, and deny yanked
+  dependencies.
+
 ## [0.4.1] - 2026-11-06
 
 0.4.1 is a patch for dependency glue edge cases found after 0.4.0. It does not

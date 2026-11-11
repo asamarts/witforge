@@ -18,7 +18,7 @@ types directly.
 After the 0.3 release is published:
 
 ```sh
-cargo install witforge-cli --version 0.4.1 --locked
+cargo install witforge-cli --version 0.4.2 --locked
 witforge --version
 ```
 
