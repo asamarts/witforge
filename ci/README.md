@@ -46,6 +46,10 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`. It also runs
   `ci/test-release-asset.sh` for release archive/checksum generation and `node --test
   action/test.js` for the Action's asset selection and command plan.
+- **published Action**: invokes the pinned remote release ref on Linux x86_64, macOS arm64,
+  macOS Intel, and Windows x86_64. Each job downloads its platform archive, verifies its checksum,
+  extracts it, adds it to `PATH`, and runs a real contract check. The workflows job separately
+  executes `uses: ./` so Action changes are covered before a release exists.
 - **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all four
   emitters' output for the versions fixture into a temporary tree and runs `--check` on each
   against it, so generation must succeed and reproduce itself byte for byte (the golden tests
@@ -104,10 +108,11 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
   minted through trusted publishing for that job. Nothing to publish skips the token request.
 - **github-release**: creates the GitHub release from the changelog section, unless it exists.
 - **binaries**: builds and uploads the four platform archives and SHA-256 checksum files.
-- **published Action smoke**: after all release archives are uploaded, invokes the Action from
-  the checked-out release tag on a hosted runner, installs that tag's version, runs `check`,
-  materializes all configured outputs, then invokes the Action again to verify all four
-  generators with `--check`.
+- **tagged Action smoke**: after all release archives are uploaded, invokes the checked-out tag's
+  Action on Linux x86_64, macOS arm64, macOS Intel, and Windows x86_64. Each job installs that
+  tag's platform asset, runs `check`, materializes all configured outputs, then invokes the
+  Action again to verify all four generators with `--check`. Main CI's pinned remote-ref matrix
+  independently proves published tag resolution.
 
 A manual run (`gh workflow run release.yml`, from a branch or a tag) runs only **verify**:
 **publish** and **github-release** require a tag push (`github.event_name == 'push'`), not just

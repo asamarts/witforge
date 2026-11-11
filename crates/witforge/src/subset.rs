@@ -40,6 +40,7 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
     let package = &resolve.packages[contract.package];
     let pkg = format!("{}:{}", package.name.namespace, package.name.name);
     let mut out = Vec::new();
+    let mut required_dependency_types = HashSet::new();
 
     if package.name.version.is_none() {
         refuse(
@@ -85,20 +86,46 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
         for (type_name, &type_id) in &iface.types {
             let at = format!("{pkg}/{iface_name}/{type_name}");
             check_def(contract, type_id, &at, &mut out);
+            check_dependency_def(
+                contract,
+                type_id,
+                &at,
+                &mut required_dependency_types,
+                &mut out,
+            );
         }
         for (func_name, func) in &iface.functions {
             let at = format!("{pkg}/{iface_name}#{func_name}");
             check_function(contract, func, &at, &mut out);
+            check_dependency_function_refs(
+                contract,
+                func,
+                &at,
+                &mut required_dependency_types,
+                &mut out,
+            );
         }
     }
 
     for (world_name, &world_id) in &package.worlds {
-        check_world(contract, world_id, &format!("{pkg}/{world_name}"), &mut out);
+        check_world(
+            contract,
+            world_id,
+            &format!("{pkg}/{world_name}"),
+            &mut required_dependency_types,
+            &mut out,
+        );
     }
     out
 }
 
-fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<Violation>) {
+fn check_world(
+    contract: &Contract,
+    world_id: WorldId,
+    at: &str,
+    required_dependency_types: &mut HashSet<TypeId>,
+    out: &mut Vec<Violation>,
+) {
     let resolve = &contract.resolve;
     let world = &resolve.worlds[world_id];
     for (verb, items) in [("imports", &world.imports), ("exports", &world.exports)] {
@@ -115,7 +142,12 @@ fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<V
                     if let Some(package) = iface.package {
                         if package != contract.package {
                             if contract.is_dependency(package) {
-                                check_dependency_interface(contract, *id, out);
+                                check_dependency_interface(
+                                    contract,
+                                    *id,
+                                    required_dependency_types,
+                                    out,
+                                );
                             } else {
                                 // `id_of` panics on an interface without a package.
                                 let name = resolve.id_of(*id).unwrap_or_default();
@@ -141,6 +173,7 @@ fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<V
                 ),
                 (_, WorldItem::Type { id, .. }) => {
                     check_world_type(contract, world_id, *id, at, out);
+                    check_dependency_def(contract, *id, at, required_dependency_types, out);
                 }
             }
         }
@@ -155,6 +188,7 @@ fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<V
 fn check_dependency_interface(
     contract: &Contract,
     interface_id: wit_parser::InterfaceId,
+    visited: &mut HashSet<TypeId>,
     out: &mut Vec<Violation>,
 ) {
     let resolve = &contract.resolve;
@@ -168,31 +202,34 @@ fn check_dependency_interface(
         "{}:{}/{interface_name}",
         package.name.namespace, package.name.name
     );
-    let mut visited = HashSet::new();
     for (name, id) in &interface.types {
-        check_dependency_def(contract, *id, &format!("{base}/{name}"), &mut visited, out);
+        check_dependency_def(contract, *id, &format!("{base}/{name}"), visited, out);
     }
     for (name, function) in &interface.functions {
         let at = format!("{base}#{name}");
         check_function(contract, function, &at, out);
-        for param in &function.params {
-            check_dependency_type_refs(
-                contract,
-                &param.ty,
-                &format!("{at}({})", param.name),
-                &mut visited,
-                out,
-            );
-        }
-        if let Some(result) = &function.result {
-            check_dependency_type_refs(
-                contract,
-                result,
-                &format!("{at} -> result"),
-                &mut visited,
-                out,
-            );
-        }
+        check_dependency_function_refs(contract, function, &at, visited, out);
+    }
+}
+
+fn check_dependency_function_refs(
+    contract: &Contract,
+    function: &Function,
+    at: &str,
+    visited: &mut HashSet<TypeId>,
+    out: &mut Vec<Violation>,
+) {
+    for param in &function.params {
+        check_dependency_type_refs(
+            contract,
+            &param.ty,
+            &format!("{at}({})", param.name),
+            visited,
+            out,
+        );
+    }
+    if let Some(result) = &function.result {
+        check_dependency_type_refs(contract, result, &format!("{at} -> result"), visited, out);
     }
 }
 
@@ -206,7 +243,9 @@ fn check_dependency_def(
     if !visited.insert(id) {
         return;
     }
-    check_def(contract, id, at, out);
+    if is_dependency_def(contract, id) {
+        check_def(contract, id, at, out);
+    }
     check_dependency_def_refs(contract, id, at, visited, out);
 }
 
@@ -275,11 +314,28 @@ fn check_dependency_type_refs(
     };
     let def = &contract.resolve.types[*id];
     if def.name.is_some() {
-        let location = dependency_type_location(contract, *id).unwrap_or_else(|| at.to_string());
-        check_dependency_def(contract, *id, &location, visited, out);
+        let location = is_dependency_def(contract, *id)
+            .then(|| dependency_type_location(contract, *id))
+            .flatten();
+        check_dependency_def(
+            contract,
+            *id,
+            location.as_deref().unwrap_or(at),
+            visited,
+            out,
+        );
     } else {
         check_dependency_def_refs(contract, *id, at, visited, out);
     }
+}
+
+fn is_dependency_def(contract: &Contract, id: TypeId) -> bool {
+    let TypeOwner::Interface(interface_id) = contract.resolve.types[id].owner else {
+        return false;
+    };
+    contract.resolve.interfaces[interface_id]
+        .package
+        .is_some_and(|package| contract.is_dependency(package))
 }
 
 fn dependency_type_location(contract: &Contract, id: TypeId) -> Option<String> {

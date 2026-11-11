@@ -26,7 +26,7 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 | `fixtures/deps-full/wit` | standard `deps/` types, aliases, lists, options, results, cross-dependency references, hyphenated package names, and generated Rust/protobuf/glue |
 | `fixtures/deps-world/wit` | foreign world imports and exports, dependency glue, and a foreign value round-trip |
 | `fixtures/deps-convert/wit` | version conversion with pinned foreign values |
-| `fixtures/deps-unsupported/wit` | unused unsupported dependency items and a supported root |
+| `fixtures/deps-unsupported/wit` | unsupported unexposed dependency items and a supported root; `tests/deps.rs` separately proves a required unsupported type is refused transitively |
 | `fixtures/serde` | opt-in Serde derives and JSON round-trip |
 
 ## Gates

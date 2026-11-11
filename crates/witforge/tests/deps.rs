@@ -328,6 +328,66 @@ interface types {
 }
 
 #[test]
+fn referenced_unsupported_dependency_type_is_refused() {
+    let root = temp_dir("deps-required-unsupported-type");
+    let _ = fs::remove_dir_all(&root);
+    let version = root.join("v0.1");
+    let dependency = version.join("deps/shared");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        version.join("contract.wit"),
+        r"package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{bad};
+    get: func() -> bad;
+}
+",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("types.wit"),
+        r"package example:shared@0.1.0;
+
+interface types {
+    record hidden {
+        value: char,
+    }
+    type bad = hidden;
+}
+",
+    )
+    .unwrap();
+    fs::write(version.join("wire.lock"), WireLock::default().render()).unwrap();
+
+    let contract = load(&version).unwrap();
+    let violations = subset::check(&contract);
+    assert!(
+        violations.iter().any(|violation| {
+            violation.location == "example:shared/types/hidden.value"
+                && violation.message.contains("`char` is not supported")
+        }),
+        "{violations:#?}"
+    );
+    let errors = [
+        rust::plan(&root).unwrap_err(),
+        proto::plan(&root).unwrap_err(),
+        json_schema::plan(&root).unwrap_err(),
+        glue::plan(&root, "plain", "proto").unwrap_err(),
+    ];
+    for error in errors {
+        let message = format!("{error:#}");
+        assert!(witforge::is_contract_error(&error), "{message}");
+        assert!(
+            message.contains("example:shared/types/hidden.value"),
+            "{message}"
+        );
+        assert!(message.contains("`char` is not supported"), "{message}");
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn glue_refuses_colliding_dependency_module_names() {
     let root = temp_dir("deps-glue-module-collision");
     let _ = fs::remove_dir_all(&root);
@@ -384,12 +444,14 @@ interface types {
 struct DependencySpec {
     version: &'static str,
     docs: &'static str,
+    field_docs: &'static str,
     field_type: &'static str,
 }
 
 const DEFAULT_DEPENDENCY: DependencySpec = DependencySpec {
     version: "0.1.0",
     docs: "",
+    field_docs: "",
     field_type: "string",
 };
 
@@ -420,12 +482,13 @@ interface api {{
 
 interface types {{
     {docs}record thing {{
-        value: {field_type},
+        {field_docs}value: {field_type},
     }}
 }}
 ",
                 version = spec.version,
                 docs = spec.docs,
+                field_docs = spec.field_docs,
                 field_type = spec.field_type
             ),
         )
@@ -446,6 +509,10 @@ fn generators_and_diff_refuse_dependency_graph_changes() {
     };
     let changed_shape = DependencySpec {
         field_type: "u64",
+        ..DEFAULT_DEPENDENCY
+    };
+    let changed_field_docs = DependencySpec {
+        field_docs: "/// Changed field docs.\n        ",
         ..DEFAULT_DEPENDENCY
     };
     let cases = [
@@ -478,6 +545,12 @@ fn generators_and_diff_refuse_dependency_graph_changes() {
             Some(DEFAULT_DEPENDENCY),
             Some(changed_docs),
             "dependency type `example:shared/types/thing` metadata changes",
+        ),
+        (
+            "field-docs",
+            Some(DEFAULT_DEPENDENCY),
+            Some(changed_field_docs),
+            "dependency type `example:shared/types/thing` member metadata changes",
         ),
     ];
 

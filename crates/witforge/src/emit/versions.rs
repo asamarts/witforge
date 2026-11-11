@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::lock::{PackageName, WireLock};
-use crate::model::{self, Dependency, Interface, Model};
+use crate::model::{self, Dependency, Interface, Model, TypeDef, TypeDefKind};
 use crate::{ContractError, load, subset};
 
 /// One validated `v<major>.<minor>` version directory.
@@ -75,9 +75,9 @@ fn dependency_graph_change(old: &[Dependency], new: &[Dependency]) -> Option<Str
             ));
         }
     }
-    let old_order: Vec<_> = old.iter().map(dependency_name).collect();
-    let new_order: Vec<_> = new.iter().map(dependency_name).collect();
-    if old_order != new_order {
+    if !old.iter().zip(new).all(|(old, new)| {
+        old.package.namespace == new.package.namespace && old.package.name == new.package.name
+    }) {
         return Some("dependency package order changes".to_string());
     }
     None
@@ -104,8 +104,11 @@ fn dependency_interface_change(
             else {
                 return Some(format!("dependency type `{path}` was removed"));
             };
-            if ty.kind != candidate_ty.kind {
+            if !same_type_shape(&ty.kind, &candidate_ty.kind) {
                 return Some(format!("dependency type `{path}` shape changes"));
+            }
+            if ty.kind != candidate_ty.kind {
+                return Some(format!("dependency type `{path}` member metadata changes"));
             }
             if ty.docs != candidate_ty.docs || ty.stability != candidate_ty.stability {
                 return Some(format!("dependency type `{path}` metadata changes"));
@@ -119,9 +122,7 @@ fn dependency_interface_change(
                 ));
             }
         }
-        let old_type_order: Vec<_> = interface.types.iter().map(|item| &item.name).collect();
-        let new_type_order: Vec<_> = candidate.types.iter().map(|item| &item.name).collect();
-        if old_type_order != new_type_order {
+        if !same_type_order(&interface.types, &candidate.types) {
             return Some(format!("dependency type order in `{qualified}` changes"));
         }
         for function in &interface.functions {
@@ -156,11 +157,12 @@ fn dependency_interface_change(
                 ));
             }
         }
-        let old_function_order: Vec<_> =
-            interface.functions.iter().map(|item| &item.name).collect();
-        let new_function_order: Vec<_> =
-            candidate.functions.iter().map(|item| &item.name).collect();
-        if old_function_order != new_function_order {
+        if !interface
+            .functions
+            .iter()
+            .map(|item| &item.name)
+            .eq(candidate.functions.iter().map(|item| &item.name))
+        {
             return Some(format!(
                 "dependency function order in `{qualified}` changes"
             ));
@@ -174,12 +176,48 @@ fn dependency_interface_change(
             ));
         }
     }
-    let old_order: Vec<_> = old.iter().map(|item| &item.name).collect();
-    let new_order: Vec<_> = new.iter().map(|item| &item.name).collect();
-    if old_order != new_order {
+    if !old
+        .iter()
+        .map(|item| &item.name)
+        .eq(new.iter().map(|item| &item.name))
+    {
         return Some(format!("dependency interface order in `{package}` changes"));
     }
     None
+}
+
+fn same_type_order(old: &[TypeDef], new: &[TypeDef]) -> bool {
+    old.iter()
+        .map(|item| &item.name)
+        .eq(new.iter().map(|item| &item.name))
+}
+
+fn same_type_shape(old: &TypeDefKind, new: &TypeDefKind) -> bool {
+    match (old, new) {
+        (TypeDefKind::Record(old), TypeDefKind::Record(new)) => {
+            old.len() == new.len()
+                && old
+                    .iter()
+                    .zip(new)
+                    .all(|(old, new)| old.name == new.name && old.ty == new.ty)
+        }
+        (TypeDefKind::Variant(old), TypeDefKind::Variant(new))
+        | (TypeDefKind::Enum(old), TypeDefKind::Enum(new)) => {
+            old.len() == new.len()
+                && old
+                    .iter()
+                    .zip(new)
+                    .all(|(old, new)| old.name == new.name && old.payload == new.payload)
+        }
+        (TypeDefKind::Flags(old), TypeDefKind::Flags(new)) => {
+            old.len() == new.len() && old.iter().zip(new).all(|(old, new)| old.name == new.name)
+        }
+        (TypeDefKind::Alias(old), TypeDefKind::Alias(new))
+        | (TypeDefKind::List(old), TypeDefKind::List(new))
+        | (TypeDefKind::Option(old), TypeDefKind::Option(new)) => old == new,
+        (TypeDefKind::Result(old), TypeDefKind::Result(new)) => old == new,
+        _ => false,
+    }
 }
 
 fn find_dependency<'a>(

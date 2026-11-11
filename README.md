@@ -42,8 +42,9 @@ verification commands.
 ## GitHub Action
 
 The action installs the release matching its tag by default, then runs `check`, `diff`, and
-configured generators with `--check`. It uses GitHub's Node 24 runtime and is smoke-tested
-through `uses: ./` in this repository's CI:
+configured generators with `--check`. It uses GitHub's Node 24 runtime. CI executes the
+checked-out Action before publication and the pinned published Action on Linux x86_64, macOS
+arm64, macOS Intel, and Windows x86_64:
 
 ```yaml
 - uses: asamarts/witforge@v0.4.2 # pinned: installs witforge 0.4.2

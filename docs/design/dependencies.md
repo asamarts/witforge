@@ -72,12 +72,12 @@ rather than to a non-existent alias message. A foreign enum field keeps the same
 presence as a local enum field.
 
 Dependency packages are generated on a best-effort basis: supported types and functions are
-included, and unsupported unused items are skipped. A local `use` makes the referenced type
-required; importing or exporting a dependency interface from a root world makes every item in
-that interface required. Required unsupported items are refused by the subset checker before
-generation instead of being omitted. `deps/` is one level deep, as `wit-parser` defines; a
-repository-level multi-package workspace and a dependency-generation command remain separate
-later work.
+included, and unsupported unexposed items are skipped. A local `use` makes the referenced type
+and every named type it reaches required; importing or exporting a dependency interface from a
+root world makes every item in that interface required. Required unsupported items are refused
+by the subset checker before generation instead of being omitted. `deps/` is one level deep, as
+`wit-parser` defines; a repository-level multi-package workspace and a dependency-generation
+command remain separate later work.
 
 Glue uses the same package-qualified references. It emits a shared `witforge_deps.rs` module
 with conversion functions for each dependency type and interface function; the root glue file
@@ -98,9 +98,9 @@ changed dependency type is not a local conversion and must be handled by a new c
 
 Every version directory in one generated WIT root MUST resolve the identical pinned dependency
 graph. Identity covers the package namespace, name, and version; interface, type, and function
-inventories and source order; shapes and signatures; stability metadata; and docs. The emitters
-write one shared dependency binding surface, so allowing any of those inputs to vary would make
-the generated result depend on which contract version happened to supply it.
+inventories and their source order; shapes and signatures; stability metadata; and docs. The
+emitters write one shared dependency binding surface, so allowing any of those inputs to vary
+would make the generated result depend on which contract version happened to supply it.
 
 `rust`, `proto`, `schema`, and `glue` compare every version with the first and refuse the first
 changed package, version, interface, type, or function. `diff` applies the same comparison and
@@ -112,9 +112,10 @@ supported subset, has a current lockfile, and—when `--against` is supplied—c
 lockfile. It cannot prove cross-version dependency identity. CI MUST also run a generator
 `--check` over the WIT root, and SHOULD run `diff` for a reviewed version pair.
 
-Only dependencies reached by the root are included in this graph. Unsupported items elsewhere
-in an otherwise unused package remain irrelevant; a world import or export reaches the complete
-dependency interface.
+Every package loaded from the standard `deps/` directory contributes its supported generated
+surface to this graph, including a package the root does not reference. Root reachability instead
+decides which unsupported items are required and therefore refused: a local `use` reaches its
+type transitively, and a world import or export reaches the complete dependency interface.
 
 
 ## Lockfiles and release freezes
@@ -137,14 +138,15 @@ are explicitly later work, not part of this compatibility rule.
   dependencies.
 - A world may import or export a named interface from a standard `deps/` package. Interfaces
   from a nested package outside `deps/` remain refused.
-- Dependency packages must use the supported subset for any item the root actually references.
-  A world import or export references the dependency interface's complete API; unsupported
-  items elsewhere in an otherwise unused dependency remain skippable.
+- Dependency packages must use the supported subset for every item a root type reaches
+  transitively. A world import or export reaches the dependency interface's complete API;
+  unsupported items elsewhere in an unexposed dependency remain skippable.
 - Every emitter refuses package or module names that normalize to the same generated name.
   These contract failures use exit `1`, including cross-version dependency disagreement.
 - Tests cover a local package importing a pinned dependency, a missing dependency, two
   dependencies declaring the same package name, aliases, lists, options, results, variants,
   cross-dependency references, hyphenated package names, unused unsupported dependency items,
-  rejected unsupported items in a world-exposed dependency interface, dependency generated-name
-  collisions, foreign world imports and exports, generated Rust/protobuf/glue compilation and
-  round-trips, and version conversion with foreign values.
+  rejected unsupported types reached through a local `use`, rejected unsupported items in a
+  world-exposed dependency interface, dependency generated-name collisions, foreign world
+  imports and exports, generated Rust/protobuf/glue compilation and round-trips, and version
+  conversion with foreign values.

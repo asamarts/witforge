@@ -99,6 +99,30 @@ jobs:
           check: crates/witforge/tests/fixtures/versions/wit/v0.2
           github-token: ${{ github.token }}
 
+  published-action:
+    name: published Action (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-15, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # A remote pinned ref proves tag resolution and each published platform archive. The local
+      # Action smoke above remains the pre-publication proof for changes to action.yml/action/.
+      - name: Smoke the published 0.4.2 Action
+        uses: asamarts/witforge@v0.4.2
+        with:
+          version: 0.4.2
+          check: crates/witforge/tests/fixtures/versions/wit/v0.2
+          generators: ""
+          github-token: ${{ github.token }}
+
   test:
     name: test (${{ matrix.os }})
     strategy:
@@ -302,7 +326,7 @@ jobs:
   ok:
     name: ci ok
     if: always()
-    needs: [lint, workflows, test, msrv, package, semver, generated, plan, benchmark, security, buf]
+    needs: [lint, workflows, published-action, test, msrv, package, semver, generated, plan, benchmark, security, buf]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

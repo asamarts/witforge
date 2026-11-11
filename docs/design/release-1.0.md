@@ -22,6 +22,8 @@ completeness alone is not enough.
       --no-deps`, `ci/check-generated.sh`, `ci/check-release-freeze.sh
       crates/witforge/tests/fixtures/versions/wit`, and `ci/check-security.sh` pass; cargo-deny
       refuses yanked crates
+- [ ] the checked-out Action and the pinned published Action pass on Linux x86_64, macOS arm64,
+      macOS Intel, and Windows x86_64; each platform installs and verifies its own release archive
 - [ ] the alint consumer pin and its CI are green against the 1.0 candidate
 - [ ] `CHANGELOG.md`, README status, workspace versions, and the release checklist agree
 - [ ] with `BUF_REQUIRED=1`, `ci/check-buf.sh` compares candidate output with each published

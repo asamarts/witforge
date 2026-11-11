@@ -48,8 +48,10 @@ The action is published from this repository. It installs the release matching t
 by default:
 
 The JavaScript entry point uses GitHub's Node 24 Action runtime and has no npm dependencies. CI
-executes the checked-out action with `uses: ./`; running `action/test.js` alone does not exercise
-the runtime declared in `action.yml`.
+executes the checked-out action with `uses: ./` so changes to `action.yml` are covered before
+publication, then executes a pinned published ref on Linux x86_64, macOS arm64, macOS Intel, and
+Windows x86_64. Running `action/test.js` alone does not exercise GitHub's runtime, remote tag
+resolution, archive extraction, or PATH propagation.
 
 ```yaml
 - uses: asamarts/witforge@v0.4.2 # pinned: installs witforge 0.4.2
@@ -107,4 +109,8 @@ immutable commits.
 The `v*` tag workflow runs after the GitHub release is created. Its binary matrix builds the
 four targets, packages each with `ci/release-asset.sh`, verifies the generated checksum, and
 uploads the archive and checksum with `gh release upload --clobber`, so a rerun repairs a partial
-upload. The crates.io publish remains a separate, earlier job.
+upload. The crates.io publish remains a separate, earlier job. After all four assets exist, the
+checked-out tag's Action installs and verifies each target on Linux x86_64, macOS arm64, macOS
+Intel, and Windows x86_64, runs `check`, and verifies all four configured generators. Main CI
+separately invokes the pinned remote release ref on the same four-target matrix, proving GitHub
+tag resolution rather than only the checked-out Action.

@@ -485,9 +485,9 @@ impl TypeExpr {
 ///
 /// Returns an error for a subset violation, an unsupported `wit-parser` construct, a
 /// world-defined type, a non-freestanding function, or a contract version that is not
-/// `major.minor.0`. Unsupported items in dependency interfaces are skipped: the root subset
-/// decides what a contract may use, and the emitters report a missing dependency type if the
-/// root references one that could not be represented.
+/// `major.minor.0`. Unsupported items in dependency interfaces are skipped only when no root type
+/// or world reaches them; the subset checker traverses every required dependency definition before
+/// this conversion starts.
 pub fn build(contract: &Contract) -> Result<Model> {
     let violations = crate::subset::check(contract);
     if !violations.is_empty() {

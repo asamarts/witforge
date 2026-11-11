@@ -232,10 +232,14 @@ jobs:
         run: gh release upload "$TAG" "$ASSET" "$CHECKSUM" --clobber
 
   action-smoke:
-    name: published Action smoke
+    name: tagged Action smoke (${{ matrix.runner }})
     needs: [verify, binaries]
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-15, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     permissions:
       contents: read

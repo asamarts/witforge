@@ -120,6 +120,8 @@ explicit release-owner action.
       the GitHub release exists, and docs.rs built the library.
 - [ ] Record the release commit, its exact-commit `ci ok` URL, and the release run URL under the
       changelog section.
+- [ ] Update CI's pinned published-Action ref and `version` to `vX.Y.Z`, push the release record,
+      and require all four hosted target jobs to pass.
 
 A new crate in the workspace needs its first version published by hand, as for 0.1.0 above. If
 trusted publishing itself fails (for example a changed workflow or environment name that no

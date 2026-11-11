@@ -44,8 +44,9 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
 - `use` aliases and `type a = b` aliases are emitted as Rust type aliases in the interface that
   names them. Neither creates a protobuf type or a lockfile member; canonical types and proto
   references resolve through the alias to the defining type.
-- Unsupported constructs are refused by the subset checker before an emitter runs. An emitter
-  MAY return an internal error if it still sees one.
+- Unsupported root constructs and dependency constructs reached by a root type or world are
+  refused by the subset checker before an emitter runs. Unsupported unexposed dependency items
+  MAY be skipped; an emitter MAY return an internal error if it still sees any required one.
 - Worlds generate shared metadata, not traits or per-version types. They are validated and kept
   in the model, and the Rust emitter writes `worlds.rs` with each world's imports and exports
   (section 3.6).
@@ -75,9 +76,12 @@ wit/
 - Versions are processed in ascending semver order.
 - The generator validates the subset and the lockfile for every version before writing
   anything. A stale or invalid version fails the whole generation.
-- Every version MUST resolve the identical pinned dependency graph, including package versions,
-  inventories, order, shapes, signatures, stability, and docs. All generators use one shared
-  comparison and report the first changed package, interface, type, or function.
+- Every version MUST resolve the identical pinned dependency graph, including every supported
+  package loaded from `deps/`, package versions, interface/type/function inventories and source
+  order, shapes, signatures, stability, and docs. Root reachability decides which unsupported
+  dependency items are required; it does not remove supported packages from generated output.
+  All generators use one shared comparison and report the first changed package, interface,
+  type, or function.
 - Within each major, every minor's lockfile MUST continue the previous minor's: every previous
   entry is kept with the same number, kind, and canonical type, and a reserved entry stays
   reserved (the continuity `check --against` verifies; see
