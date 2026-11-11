@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-11-06 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-11-11 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
@@ -10,6 +10,9 @@ alint's
 and [`plugin-architecture.md`](https://github.com/asamarts/alint/blob/main/docs/design/plugin-architecture.md)
 (sections 6 to 8). This document is canonical for witforge's architecture; the linked
 specifications are normative for their areas.
+
+The evaluation of a WIT-first, multi-host plugin kit and its boundary from witforge is recorded in
+[`plugin-framework.md`](plugin-framework.md).
 
 ## 1. Purpose and scope
 
@@ -298,8 +301,8 @@ witforge into a test crate, which checks the plain types, the `.proto` schema, a
 against alint's hand-written host types (alint PRs #409, #412, #414, and #415); the repository went
 public for 0.1.0.
 
-alint consumes only published releases. Its CI installs the release it pins (0.1.2 since
-2026-11-01) from crates.io, checks the contract, and regenerates the committed output with
+alint consumes only published releases. Its CI installs the release it pins (0.4.1 since
+2026-11-06) from crates.io, checks the contract, and regenerates the committed output with
 `--check`, so witforge's `main` can change without breaking alint, and alint sees a change only
 when it moves the pin. A change to generated output or to what `check` accepts therefore reaches
 alint as a pull request there that bumps the pin and commits the regenerated files, and it needs
@@ -368,6 +371,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | 1.0 keeps `anyhow::Error` at the boundary with the `ContractError` classification; the public API, conformance matrix, release criteria, and deprecation runways are published | [`public-api.md`](public-api.md), [`conformance.md`](conformance.md), [`release-1.0.md`](release-1.0.md) |
 | 2026-11-04 | The plan gate is CI-run again with pinned published aplan 0.5.2; no aplan binary is committed and the four plan commands are part of `ci ok` | [`ci/README.md`](../../ci/README.md) |
 | 2026-11-04 | 0.2.0 is a focused release of the current compiler; 0.3 follows with diff/diagnostics/Action, 0.4 with `wit/deps` packages and opt-in Serde, and 1.0 waits for further consumer validation. Plugin/LSP/registry stay post-1.0 | `ROADMAP.md`, `aplan/` |
+| 2026-11-11 | A general Wasm plugin framework is declined as witforge scope; direct Wasmtime is the alint pilot baseline, and any reusable WIT-first multi-host kit stays separate until real applications demonstrate repeated runtime or protocol mechanics | [`plugin-framework.md`](plugin-framework.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
