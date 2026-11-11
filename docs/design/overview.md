@@ -13,6 +13,8 @@ specifications are normative for their areas.
 
 The evaluation of a WIT-first, multi-host plugin kit and its boundary from witforge is recorded in
 [`plugin-framework.md`](plugin-framework.md).
+The boundary between wit-bindgen's guest Component Model bindings and witforge's
+runtime-independent contract projections is recorded in [`wit-bindgen.md`](wit-bindgen.md).
 
 ## 1. Purpose and scope
 
