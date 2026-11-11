@@ -15,10 +15,10 @@ types directly.
 
 ## Install
 
-After the 0.3 release is published:
+Install the current release:
 
 ```sh
-cargo install witforge-cli --version 0.4.2 --locked
+cargo install witforge-cli --version 0.4.3 --locked
 witforge --version
 ```
 

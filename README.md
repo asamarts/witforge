@@ -17,7 +17,7 @@ while the reverse directions are lossy. witforge exists because no tool performs
 projection: the ecosystem's converters go from protobuf to WIT, and the WIT bindings generators
 tie their output to a runtime.
 
-> **Status: 0.4.2.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
+> **Status: 0.4.3.** The loading, subset-checker, internal-model, v2 append-only lockfile, Rust,
 > protobuf, JSON Schema, glue, and version-conversion emitters are implemented, alongside
 > `witforge diff`, structured `--format json|sarif` diagnostics, `witforge.toml` projects, and
 > the GitHub Action/prebuilt release archives. CI runs on Linux, macOS, and Windows and gates
@@ -47,7 +47,7 @@ checked-out Action before publication and the pinned published Action on Linux x
 arm64, macOS Intel, and Windows x86_64:
 
 ```yaml
-- uses: asamarts/witforge@v0.4.2 # pinned: installs witforge 0.4.2
+- uses: asamarts/witforge@v0.4.3 # pinned: installs witforge 0.4.3
   with:
     check: wit/v0.2
     diff-old: wit/v0.1

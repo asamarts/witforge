@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-11-11
+
+0.4.3 closes dependency-validation and release-proof gaps found in the post-0.4.2 audit. It
+does not change the library API, wire numbers, or generated output for a valid contract accepted
+by 0.4.2. A contract that exposes an unsupported dependency type is now refused instead of
+producing incomplete generated output.
+
+### Fixed
+
+- Dependency types reached transitively through root types, aliases, functions, and worlds are
+  checked before generation. Unsupported dependency definitions remain skippable only when the
+  root contract does not expose them.
+- Dependency-version diagnostics distinguish member-documentation changes from wire-shape
+  changes without allocating temporary order vectors.
+
+### Changed
+
+- CI executes the pinned published Action on Linux x86_64, macOS arm64, macOS Intel, and Windows
+  x86_64. Tag releases execute the checked-out tag on the same four targets after uploading the
+  matching archives.
+
 ## [0.4.2] - 2026-11-10
 
 0.4.2 restores the published GitHub Action on GitHub's supported Node 24 runtime and hardens
