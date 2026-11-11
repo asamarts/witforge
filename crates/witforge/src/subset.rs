@@ -9,6 +9,7 @@
 //! refused rather than passed through, so a new `wit-parser` construct cannot slip into the
 //! generated bindings.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use wit_parser::{
@@ -112,17 +113,21 @@ fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<V
                 (WorldKey::Interface(_), WorldItem::Interface { id, .. }) => {
                     let iface = &resolve.interfaces[*id];
                     if let Some(package) = iface.package {
-                        if package != contract.package && !contract.is_dependency(package) {
-                            // `id_of` panics on an interface without a package.
-                            let name = resolve.id_of(*id).unwrap_or_default();
-                            refuse(
-                                out,
-                                at,
-                                format!(
-                                    "{verb} `{name}` from a package outside the standard \
-                                     `deps/` directory"
-                                ),
-                            );
+                        if package != contract.package {
+                            if contract.is_dependency(package) {
+                                check_dependency_interface(contract, *id, out);
+                            } else {
+                                // `id_of` panics on an interface without a package.
+                                let name = resolve.id_of(*id).unwrap_or_default();
+                                refuse(
+                                    out,
+                                    at,
+                                    format!(
+                                        "{verb} `{name}` from a package outside the standard \
+                                         `deps/` directory"
+                                    ),
+                                );
+                            }
                         }
                     } else {
                         refuse(out, at, format!("{verb} an interface with no package"));
@@ -140,6 +145,159 @@ fn check_world(contract: &Contract, world_id: WorldId, at: &str, out: &mut Vec<V
             }
         }
     }
+}
+
+/// Validate every item exposed by a dependency interface and every named type it reaches.
+///
+/// Unsupported items in an otherwise unused dependency remain ignorable. Importing or exporting
+/// the interface from a root world makes its complete API part of the root contract, so dropping
+/// one of those items would silently generate a different interface.
+fn check_dependency_interface(
+    contract: &Contract,
+    interface_id: wit_parser::InterfaceId,
+    out: &mut Vec<Violation>,
+) {
+    let resolve = &contract.resolve;
+    let interface = &resolve.interfaces[interface_id];
+    let Some(package_id) = interface.package else {
+        return;
+    };
+    let package = &resolve.packages[package_id];
+    let interface_name = interface.name.as_deref().unwrap_or_default();
+    let base = format!(
+        "{}:{}/{interface_name}",
+        package.name.namespace, package.name.name
+    );
+    let mut visited = HashSet::new();
+    for (name, id) in &interface.types {
+        check_dependency_def(contract, *id, &format!("{base}/{name}"), &mut visited, out);
+    }
+    for (name, function) in &interface.functions {
+        let at = format!("{base}#{name}");
+        check_function(contract, function, &at, out);
+        for param in &function.params {
+            check_dependency_type_refs(
+                contract,
+                &param.ty,
+                &format!("{at}({})", param.name),
+                &mut visited,
+                out,
+            );
+        }
+        if let Some(result) = &function.result {
+            check_dependency_type_refs(
+                contract,
+                result,
+                &format!("{at} -> result"),
+                &mut visited,
+                out,
+            );
+        }
+    }
+}
+
+fn check_dependency_def(
+    contract: &Contract,
+    id: TypeId,
+    at: &str,
+    visited: &mut HashSet<TypeId>,
+    out: &mut Vec<Violation>,
+) {
+    if !visited.insert(id) {
+        return;
+    }
+    check_def(contract, id, at, out);
+    check_dependency_def_refs(contract, id, at, visited, out);
+}
+
+fn check_dependency_def_refs(
+    contract: &Contract,
+    id: TypeId,
+    at: &str,
+    visited: &mut HashSet<TypeId>,
+    out: &mut Vec<Violation>,
+) {
+    match &contract.resolve.types[id].kind {
+        TypeDefKind::Record(record) => {
+            for field in &record.fields {
+                check_dependency_type_refs(
+                    contract,
+                    &field.ty,
+                    &format!("{at}.{}", field.name),
+                    visited,
+                    out,
+                );
+            }
+        }
+        TypeDefKind::Variant(variant) => {
+            for case in &variant.cases {
+                if let Some(ty) = &case.ty {
+                    check_dependency_type_refs(
+                        contract,
+                        ty,
+                        &format!("{at}.{}", case.name),
+                        visited,
+                        out,
+                    );
+                }
+            }
+        }
+        TypeDefKind::Option(ty) | TypeDefKind::List(ty) | TypeDefKind::Type(ty) => {
+            check_dependency_type_refs(contract, ty, at, visited, out);
+        }
+        TypeDefKind::Result(result) => {
+            for ty in [&result.ok, &result.err].into_iter().flatten() {
+                check_dependency_type_refs(contract, ty, at, visited, out);
+            }
+        }
+        TypeDefKind::Enum(_)
+        | TypeDefKind::Flags(_)
+        | TypeDefKind::Tuple(_)
+        | TypeDefKind::Resource
+        | TypeDefKind::Handle(_)
+        | TypeDefKind::Map(..)
+        | TypeDefKind::FixedLengthList(..)
+        | TypeDefKind::Future(_)
+        | TypeDefKind::Stream(_)
+        | TypeDefKind::Unknown => {}
+    }
+}
+
+fn check_dependency_type_refs(
+    contract: &Contract,
+    ty: &Type,
+    at: &str,
+    visited: &mut HashSet<TypeId>,
+    out: &mut Vec<Violation>,
+) {
+    let Type::Id(id) = ty else {
+        return;
+    };
+    let def = &contract.resolve.types[*id];
+    if def.name.is_some() {
+        let location = dependency_type_location(contract, *id).unwrap_or_else(|| at.to_string());
+        check_dependency_def(contract, *id, &location, visited, out);
+    } else {
+        check_dependency_def_refs(contract, *id, at, visited, out);
+    }
+}
+
+fn dependency_type_location(contract: &Contract, id: TypeId) -> Option<String> {
+    let resolve = &contract.resolve;
+    let def = &resolve.types[id];
+    let name = def.name.as_deref()?;
+    let TypeOwner::Interface(interface_id) = def.owner else {
+        return None;
+    };
+    let interface = &resolve.interfaces[interface_id];
+    let package = &resolve.packages[interface.package?];
+    Some(format!(
+        "{}:{}/{}/{}",
+        package.name.namespace,
+        package.name.name,
+        interface.name.as_deref()?,
+        name
+    ))
 }
 
 fn check_world_type(

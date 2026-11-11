@@ -4,10 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use witforge::emit::{json_schema, proto, rust};
+use witforge::emit::{glue, json_schema, proto, rust};
 use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model::{self, TypeDefKind, TypeExpr};
+use witforge::subset;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps/wit")
@@ -274,4 +275,234 @@ fn dependency_schema_files_are_self_contained() {
     .unwrap();
     jsonschema::validator_for(&dependency).unwrap();
     fs::remove_dir_all(&out).unwrap();
+}
+
+#[test]
+fn exposed_dependency_interface_refuses_unsupported_items() {
+    let root = temp_dir("deps-world-unsupported");
+    let _ = fs::remove_dir_all(&root);
+    let version = root.join("v0.1");
+    let dependency = version.join("deps/shared");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        version.join("contract.wit"),
+        r#"package example:app@0.1.0;
+
+world plugin {
+    import example:shared/types@0.1.0;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("types.wit"),
+        r#"package example:shared@0.1.0;
+
+interface types {
+    resource session;
+    open: func() -> session;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(version.join("wire.lock"), WireLock::default().render()).unwrap();
+
+    let contract = load(&version).unwrap();
+    let violations = subset::check(&contract);
+    assert!(
+        violations.iter().any(|violation| {
+            violation.location == "example:shared/types/session"
+                && violation.message.contains("resources")
+        }),
+        "{violations:#?}"
+    );
+    let error = rust::plan(&root).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(witforge::is_contract_error(&error), "{message}");
+    assert!(
+        message.contains("example:shared/types/session"),
+        "{message}"
+    );
+    assert!(message.contains("resources"), "{message}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn glue_refuses_colliding_dependency_module_names() {
+    let root = temp_dir("deps-glue-module-collision");
+    let _ = fs::remove_dir_all(&root);
+    let version = root.join("v0.1");
+    fs::create_dir_all(version.join("deps/first")).unwrap();
+    fs::create_dir_all(version.join("deps/second")).unwrap();
+    fs::write(
+        version.join("contract.wit"),
+        r#"package example:app@0.1.0;
+
+interface api {
+    use my-ns:dep/types@0.1.0.{thing as first-thing};
+    use my:ns-dep/types@0.1.0.{thing as second-thing};
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        version.join("deps/first/types.wit"),
+        r#"package my-ns:dep@0.1.0;
+
+interface types {
+    record thing {
+        value: string,
+    }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        version.join("deps/second/types.wit"),
+        r#"package my:ns-dep@0.1.0;
+
+interface types {
+    record thing {
+        value: string,
+    }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(version.join("wire.lock"), WireLock::default().render()).unwrap();
+
+    let error = glue::plan(&root, "plain", "proto").unwrap_err();
+    let message = format!("{error:#}");
+    assert!(witforge::is_contract_error(&error), "{message}");
+    assert!(message.contains("my-ns:dep"), "{message}");
+    assert!(message.contains("my:ns-dep"), "{message}");
+    assert!(message.contains("my_ns_dep"), "{message}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[derive(Clone, Copy)]
+struct DependencySpec {
+    version: &'static str,
+    docs: &'static str,
+    field_type: &'static str,
+}
+
+const DEFAULT_DEPENDENCY: DependencySpec = DependencySpec {
+    version: "0.1.0",
+    docs: "",
+    field_type: "string",
+};
+
+fn write_dependency_version(root: &Path, minor: u64, dependency_spec: Option<DependencySpec>) {
+    let version = root.join(format!("v0.{minor}"));
+    fs::create_dir_all(&version).unwrap();
+    let use_item = dependency_spec.map_or_else(String::new, |spec| {
+        format!("    use example:shared/types@{}.{{thing}};\n", spec.version)
+    });
+    fs::write(
+        version.join("contract.wit"),
+        format!(
+            r#"package example:app@0.{minor}.0;
+
+interface api {{
+{use_item}}}
+"#
+        ),
+    )
+    .unwrap();
+    if let Some(spec) = dependency_spec {
+        let dependency = version.join("deps/shared");
+        fs::create_dir_all(&dependency).unwrap();
+        fs::write(
+            dependency.join("types.wit"),
+            format!(
+                r#"package example:shared@{version};
+
+interface types {{
+    {docs}record thing {{
+        value: {field_type},
+    }}
+}}
+"#,
+                version = spec.version,
+                docs = spec.docs,
+                field_type = spec.field_type
+            ),
+        )
+        .unwrap();
+    }
+    fs::write(version.join("wire.lock"), WireLock::default().render()).unwrap();
+}
+
+#[test]
+fn generators_and_diff_refuse_dependency_graph_changes() {
+    let changed_docs = DependencySpec {
+        docs: "/// Changed dependency docs.\n    ",
+        ..DEFAULT_DEPENDENCY
+    };
+    let changed_version = DependencySpec {
+        version: "0.2.0",
+        ..DEFAULT_DEPENDENCY
+    };
+    let changed_shape = DependencySpec {
+        field_type: "u64",
+        ..DEFAULT_DEPENDENCY
+    };
+    let cases = [
+        (
+            "added",
+            None,
+            Some(DEFAULT_DEPENDENCY),
+            "dependency package `example:shared` was added",
+        ),
+        (
+            "removed",
+            Some(DEFAULT_DEPENDENCY),
+            None,
+            "dependency package `example:shared` was removed",
+        ),
+        (
+            "version",
+            Some(DEFAULT_DEPENDENCY),
+            Some(changed_version),
+            "dependency package `example:shared` version changes from 0.1.0 to 0.2.0",
+        ),
+        (
+            "shape",
+            Some(DEFAULT_DEPENDENCY),
+            Some(changed_shape),
+            "dependency type `example:shared/types/thing` shape changes",
+        ),
+        (
+            "docs",
+            Some(DEFAULT_DEPENDENCY),
+            Some(changed_docs),
+            "dependency type `example:shared/types/thing` metadata changes",
+        ),
+    ];
+
+    for (case, old, new, expected) in cases {
+        let root = temp_dir(&format!("deps-graph-{case}"));
+        let _ = fs::remove_dir_all(&root);
+        write_dependency_version(&root, 1, old);
+        write_dependency_version(&root, 2, new);
+
+        let errors = [
+            rust::plan(&root).unwrap_err(),
+            proto::plan(&root).unwrap_err(),
+            json_schema::plan(&root).unwrap_err(),
+            glue::plan(&root, "plain", "proto").unwrap_err(),
+            witforge::diff::compare(&root.join("v0.1"), &root.join("v0.2")).unwrap_err(),
+        ];
+        for error in errors {
+            let message = format!("{error:#}");
+            assert!(witforge::is_contract_error(&error), "{case}: {message}");
+            assert!(message.contains(expected), "{case}: {message}");
+            assert!(
+                message.contains("identical pinned dependency graph"),
+                "{case}: {message}"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

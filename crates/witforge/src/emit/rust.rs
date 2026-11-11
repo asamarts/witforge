@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
-use crate::emit::versions::{Version, load_versions};
+use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
 /// The ownership header on every generated Rust file.
@@ -49,6 +49,7 @@ pub(crate) fn plan_versions_with_serde(
     versions: &[Version],
     serde: bool,
 ) -> Result<GeneratedFiles> {
+    let dependencies = shared_dependencies(versions)?;
     let mut modules = BTreeMap::new();
     let mut files = GeneratedFiles::new(HEADER);
     let mut module_lines = Vec::new();
@@ -70,19 +71,8 @@ pub(crate) fn plan_versions_with_serde(
         files.insert("convert.rs", converted)?;
         module_lines.push("pub mod convert;".to_string());
     }
-    let first_dependencies = &versions
-        .first()
-        .context("no version directories found under WIT root")?
-        .model
-        .dependencies;
-    if versions
-        .iter()
-        .any(|version| version.model.dependencies != *first_dependencies)
-    {
-        contract_bail!("versions disagree about their dependency packages");
-    }
-    if !first_dependencies.is_empty() {
-        let dependency_source = emit_dependency_bindings(first_dependencies, serde)?;
+    if !dependencies.is_empty() {
+        let dependency_source = emit_dependency_bindings(dependencies, serde)?;
         files.insert("witforge_deps.rs", dependency_source)?;
         module_lines.push("pub mod witforge_deps;".to_string());
     }

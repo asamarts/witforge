@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::lock::{PackageName, WireLock};
-use crate::model::{self, Model};
+use crate::model::{self, Dependency, Interface, Model};
 use crate::{ContractError, load, subset};
 
 /// One validated `v<major>.<minor>` version directory.
@@ -19,6 +19,184 @@ pub(crate) struct Version {
     pub(crate) model: Model,
     /// The version's committed lockfile.
     pub(crate) lock: WireLock,
+}
+
+/// Return the one dependency graph shared by all generated versions.
+///
+/// Dependency bindings are emitted once and used by every generated version. Exact graph
+/// equality therefore includes package pins, source order, API shapes, stability, and docs.
+pub(crate) fn shared_dependencies(versions: &[Version]) -> Result<&[Dependency]> {
+    let first = versions
+        .first()
+        .context("no version directories found under WIT root")?;
+    for version in &versions[1..] {
+        ensure_same_dependency_graph(&first.model.dependencies, &version.model.dependencies)?;
+    }
+    Ok(&first.model.dependencies)
+}
+
+/// Refuse two dependency graphs that cannot share one generated binding surface.
+pub(crate) fn ensure_same_dependency_graph(old: &[Dependency], new: &[Dependency]) -> Result<()> {
+    if let Some(change) = dependency_graph_change(old, new) {
+        bail!(ContractError::new(format!(
+            "dependency graph differs: {change}; every version in a generated WIT root must use \
+             an identical pinned dependency graph"
+        )));
+    }
+    Ok(())
+}
+
+fn dependency_graph_change(old: &[Dependency], new: &[Dependency]) -> Option<String> {
+    for dependency in old {
+        let name = dependency_name(dependency);
+        let Some(candidate) = find_dependency(new, dependency) else {
+            return Some(format!("dependency package `{name}` was removed"));
+        };
+        if dependency.package.version != candidate.package.version {
+            return Some(format!(
+                "dependency package `{name}` version changes from {} to {}",
+                dependency.package.version, candidate.package.version
+            ));
+        }
+        if dependency.package.docs != candidate.package.docs {
+            return Some(format!("dependency package `{name}` docs change"));
+        }
+        if let Some(change) =
+            dependency_interface_change(&name, &dependency.interfaces, &candidate.interfaces)
+        {
+            return Some(change);
+        }
+    }
+    for dependency in new {
+        if find_dependency(old, dependency).is_none() {
+            return Some(format!(
+                "dependency package `{}` was added",
+                dependency_name(dependency)
+            ));
+        }
+    }
+    let old_order: Vec<_> = old.iter().map(dependency_name).collect();
+    let new_order: Vec<_> = new.iter().map(dependency_name).collect();
+    if old_order != new_order {
+        return Some("dependency package order changes".to_string());
+    }
+    None
+}
+
+fn dependency_interface_change(
+    package: &str,
+    old: &[Interface],
+    new: &[Interface],
+) -> Option<String> {
+    for interface in old {
+        let qualified = format!("{package}/{}", interface.name);
+        let Some(candidate) = new.iter().find(|item| item.name == interface.name) else {
+            return Some(format!("dependency interface `{qualified}` was removed"));
+        };
+        if interface.docs != candidate.docs || interface.stability != candidate.stability {
+            return Some(format!(
+                "dependency interface `{qualified}` metadata changes"
+            ));
+        }
+        for ty in &interface.types {
+            let path = format!("{qualified}/{}", ty.name);
+            let Some(candidate_ty) = candidate.types.iter().find(|item| item.name == ty.name)
+            else {
+                return Some(format!("dependency type `{path}` was removed"));
+            };
+            if ty.kind != candidate_ty.kind {
+                return Some(format!("dependency type `{path}` shape changes"));
+            }
+            if ty.docs != candidate_ty.docs || ty.stability != candidate_ty.stability {
+                return Some(format!("dependency type `{path}` metadata changes"));
+            }
+        }
+        for ty in &candidate.types {
+            if interface.types.iter().all(|item| item.name != ty.name) {
+                return Some(format!(
+                    "dependency type `{qualified}/{}` was added",
+                    ty.name
+                ));
+            }
+        }
+        let old_type_order: Vec<_> = interface.types.iter().map(|item| &item.name).collect();
+        let new_type_order: Vec<_> = candidate.types.iter().map(|item| &item.name).collect();
+        if old_type_order != new_type_order {
+            return Some(format!("dependency type order in `{qualified}` changes"));
+        }
+        for function in &interface.functions {
+            let path = format!("{qualified}#{}", function.name);
+            let Some(candidate_function) = candidate
+                .functions
+                .iter()
+                .find(|item| item.name == function.name)
+            else {
+                return Some(format!("dependency function `{path}` was removed"));
+            };
+            if function.params != candidate_function.params
+                || function.result != candidate_function.result
+            {
+                return Some(format!("dependency function `{path}` signature changes"));
+            }
+            if function.docs != candidate_function.docs
+                || function.stability != candidate_function.stability
+            {
+                return Some(format!("dependency function `{path}` metadata changes"));
+            }
+        }
+        for function in &candidate.functions {
+            if interface
+                .functions
+                .iter()
+                .all(|item| item.name != function.name)
+            {
+                return Some(format!(
+                    "dependency function `{qualified}#{}` was added",
+                    function.name
+                ));
+            }
+        }
+        let old_function_order: Vec<_> =
+            interface.functions.iter().map(|item| &item.name).collect();
+        let new_function_order: Vec<_> =
+            candidate.functions.iter().map(|item| &item.name).collect();
+        if old_function_order != new_function_order {
+            return Some(format!(
+                "dependency function order in `{qualified}` changes"
+            ));
+        }
+    }
+    for interface in new {
+        if old.iter().all(|item| item.name != interface.name) {
+            return Some(format!(
+                "dependency interface `{package}/{}` was added",
+                interface.name
+            ));
+        }
+    }
+    let old_order: Vec<_> = old.iter().map(|item| &item.name).collect();
+    let new_order: Vec<_> = new.iter().map(|item| &item.name).collect();
+    if old_order != new_order {
+        return Some(format!("dependency interface order in `{package}` changes"));
+    }
+    None
+}
+
+fn find_dependency<'a>(
+    dependencies: &'a [Dependency],
+    target: &Dependency,
+) -> Option<&'a Dependency> {
+    dependencies.iter().find(|dependency| {
+        dependency.package.namespace == target.package.namespace
+            && dependency.package.name == target.package.name
+    })
+}
+
+fn dependency_name(dependency: &Dependency) -> String {
+    format!(
+        "{}:{}",
+        dependency.package.namespace, dependency.package.name
+    )
 }
 
 /// Discover and validate every version directory under `wit_root`, in ascending semver order.

@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
-use crate::emit::versions::{Version, load_versions};
+use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
     Case, Dependency, Field, Function, MemberKind, Model, QualifiedName, ResultExpr, TypeDef,
@@ -41,6 +41,7 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 /// An emitter error is passed on as the emitter classified it: a contract violation stays a
 /// [`ContractError`] and an internal error stays a plain error.
 pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
+    let dependencies = shared_dependencies(versions)?;
     // Versions are in ascending order, so the last one of each major is its highest minor.
     let mut highest: BTreeMap<u64, &Version> = BTreeMap::new();
     for version in versions {
@@ -52,26 +53,13 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.proto"), generated)?;
     }
-    let first = versions
-        .first()
-        .context("no version directories found under WIT root")?;
-    if versions
-        .iter()
-        .any(|version| version.model.dependencies != first.model.dependencies)
-    {
-        bail!(ContractError::new(
-            "versions disagree about their dependency packages"
-        ));
-    }
     let mut dependency_files = BTreeSet::new();
-    for dependency in &first.model.dependencies {
+    for dependency in dependencies {
         let model = Model {
             package: dependency.package.clone(),
             interfaces: dependency.interfaces.clone(),
             worlds: Vec::new(),
-            dependencies: first
-                .model
-                .dependencies
+            dependencies: dependencies
                 .iter()
                 .filter(|other| {
                     other.package.namespace != dependency.package.namespace

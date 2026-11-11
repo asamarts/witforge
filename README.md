@@ -42,7 +42,8 @@ verification commands.
 ## GitHub Action
 
 The action installs the release matching its tag by default, then runs `check`, `diff`, and
-configured generators with `--check`:
+configured generators with `--check`. It uses GitHub's Node 24 runtime and is smoke-tested
+through `uses: ./` in this repository's CI:
 
 ```yaml
 - uses: asamarts/witforge@v0.4.1 # pinned: installs witforge 0.4.1
@@ -98,6 +99,11 @@ $ witforge schema wit --out schema                      Draft 7 JSON Schema
 $ witforge glue  wit --out src/glue --plain-root crate::plain --proto-root crate::pb
 ```
 
+`check` validates one version directory and cannot prove that dependency pins stayed identical
+across a WIT root. Every generator compares the complete pinned dependency graph across all
+versions, and `diff` refuses a mismatched graph; CI should run both a generator `--check` and the
+reviewed `diff`.
+
 `--format json|sarif` turns diagnostics from the commands into stable machine-readable output;
 `diff --json` is the full diff report. The formats and code catalogue are in
 [`docs/design/diagnostics.md`](docs/design/diagnostics.md).
@@ -147,12 +153,13 @@ form `lock` writes. It exits `2` for a usage, I/O, or parse error, a released or
 version directory, an output root inside the WIT root, a generation run refused by an expected
 path, or an internal error.
 
-- **The subset.** Contracts stay inside a pure, synchronous, self-contained subset of WIT: no
-  resources or handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length
-  lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors, nothing from
-  another package, and package versions are `<major>.<minor>.0`. Types and functions live in
-  the package's named interfaces, which worlds import and export. Anything unrecognised is
-  refused, never passed through.
+- **The subset.** Contracts stay inside a pure, synchronous subset of WIT: no resources or
+  handles, no `future`, `stream`, or `error-context`, no `map`, no fixed-length lists, no `char`,
+  no tuples, and no `async` functions or `get`/`set` accessors. Types and functions live in named
+  interfaces. A root may use supported types or world interfaces from pinned packages under the
+  standard `deps/` directory; every version in one generated WIT root must resolve the identical
+  dependency graph. Anything required by the root that is unrecognised is refused, never passed
+  through.
 - **The lockfile.** WIT members carry no field numbers, so `wire.lock` maps every record field,
   variant case, enum case, flag, function method id, and function parameter to a number that
   never changes. New members get the next free number in their parent; removed members stay,

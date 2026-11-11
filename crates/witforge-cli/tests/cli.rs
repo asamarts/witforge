@@ -1196,7 +1196,7 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
     ] {
         assert_ne!(contract, original);
         fs::write(&source, &contract).unwrap();
-        for command in ["rust", "proto", "glue"] {
+        for command in ["rust", "proto", "schema", "glue"] {
             for check in [false, true] {
                 let output = run(command, check);
                 assert_eq!(

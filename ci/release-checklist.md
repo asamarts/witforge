@@ -100,18 +100,25 @@ explicit release-owner action.
       changes for a contract the previous release accepts (`git diff vPREV -- crates/*/tests`
       shows any changed golden output); consumers such as alint pin a release and regenerate
       when they move the pin.
-- [ ] Run the gates of [Before publishing](#before-publishing), then `ci/check-release.sh` and
-      `ci/publish.sh --dry-run`, and the aplan commands (also in the CI `plan` job).
-- [ ] Merge to `main` and wait for its CI run (`ci ok`) to pass.
-- [ ] Tag that commit `vX.Y.Z` (annotated) and push the tag. `release.yml` verifies the release,
-      publishes each crate whose version is not on crates.io yet, library first, through trusted
-      publishing, creates the GitHub release from the changelog section, then builds and uploads
-      the Linux, macOS, and Windows archives with `.sha256` checksums. A failed run is re-run and
-      skips what is already published; `gh release upload --clobber` repairs a partial asset
-      upload.
+- [ ] Run the gates of [Before publishing](#before-publishing), then
+      `cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type
+      minor`, `ci/check-release.sh`, `ci/publish.sh --dry-run`, the historical-generator
+      `ci/check-buf.sh` loops in [`release-1.0.md`](../docs/design/release-1.0.md), and the aplan
+      commands (also in CI).
+- [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass. Record the commit SHA
+      and job URL; `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push
+      --status success` must identify that run.
+- [ ] Tag that exact commit `vX.Y.Z` (annotated) and push the tag. `release.yml` independently
+      queries the Actions API for a successful `ci ok` job at the tag commit, then verifies the
+      release, reruns semver and historical-generator protobuf compatibility, publishes each
+      crate whose version is not on crates.io yet, library first, through trusted publishing,
+      creates the GitHub release from the changelog section, and builds and uploads the Linux,
+      macOS, and Windows archives with `.sha256` checksums. A failed run is re-run and skips what
+      is already published; `gh release upload --clobber` repairs a partial asset upload.
 - [ ] Verify `cargo install witforge-cli --version X.Y.Z --locked` reports `witforge X.Y.Z`,
       the GitHub release exists, and docs.rs built the library.
-- [ ] Record the release commit, its CI run, and the release run under the changelog section.
+- [ ] Record the release commit, its exact-commit `ci ok` URL, and the release run URL under the
+      changelog section.
 
 A new crate in the workspace needs its first version published by hand, as for 0.1.0 above. If
 trusted publishing itself fails (for example a changed workflow or environment name that no

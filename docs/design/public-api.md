@@ -23,7 +23,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::rust` | `HEADER`, `plan`, `plan_with_serde`, `generate`, `generate_with_serde`, `check`, `check_with_serde`, `version_module_name`, `emit_version`, `emit_version_with_serde` |
 | `emit::proto` | `HEADER`, `plan`, `generate`, `check`, `emit_major` |
 | `emit::json_schema` | `HEADER`, `plan`, `generate`, `check`, `emit_version` |
-| `emit::glue` | `HEADER`, `GlueError`, `plan`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
+| `emit::glue` | `HEADER`, `plan`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
 | `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `absolute` |
 | `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `compare` |
 | `diagnostic` | `Diagnostic`, `Position`, `Severity` |
@@ -55,6 +55,10 @@ The Rust, protobuf, JSON Schema, and glue emitters are covered by [`emitters.md`
 the lockfile and frozen-version rules are in [`lockfile.md`](lockfile.md). Generated output is
 part of the release contract: the conformance matrix and `--check` gates are in
 [`conformance.md`](conformance.md).
+
+`GlueError` is a type written into generated glue source. It is part of that generated-output
+contract, not an item exported by the `witforge` library; there is no
+`witforge::emit::glue::GlueError`.
 
 ## MSRV and platforms
 

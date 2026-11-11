@@ -14,8 +14,9 @@ A change can be compatible in one view and breaking in another. For example, add
 conversion defaults the field), but it changes the component type and breaks struct literals in
 the generated Rust API.
 
-Docs and stability attributes are not compared: they are not wire identity and do not change
-generated code.
+Root-package docs and stability attributes are not compared: they are not wire identity and do
+not change generated code. Dependency docs and stability are part of the exact pinned dependency
+graph described below.
 
 ## Selecting the compared versions
 
@@ -28,6 +29,12 @@ Each argument is one of:
 Both endpoints must declare the same `namespace:name`. The selected version directories must
 have valid WIT, a current lockfile, and a wire number for every live member; otherwise the
 command fails rather than guessing.
+
+Both endpoints must resolve the identical pinned dependency graph: package identities and
+versions, interface/type/function inventories and order, shapes and signatures, stability, and
+docs. `diff` refuses the first mismatch as a contract violation instead of describing it as a
+compatible local change. This is the same comparison every generator uses because dependency
+bindings are one shared output across versions.
 
 ## Change categories
 
@@ -134,7 +141,9 @@ I/O, and parse failures.
 
 ## Limits
 
-`diff` compares contract structure, not docs, stability attributes, or generated file bytes.
-Generated output changes caused by an existing contract (for example a new emitter convention)
-are detected by each emitter's `--check`, not by `diff`. A future memberless-inventory or
-semantic-diff rule would extend this document rather than inferring from generated files.
+`diff` compares root-contract structure, not root docs, root stability attributes, or generated
+file bytes. It does validate exact dependency-graph identity, including dependency docs and
+stability. Generated output changes caused by an existing contract (for example a new emitter
+convention) are detected by each emitter's `--check`, not by `diff`. A future
+memberless-inventory or semantic-diff rule would extend this document rather than inferring from
+generated files.

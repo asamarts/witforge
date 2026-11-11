@@ -1,7 +1,7 @@
 # Dependency policy checked by `ci/check-security.sh`.
 [advisories]
 version = 2
-yanked = "warn"
+yanked = "deny"
 ignore = []
 
 [bans]

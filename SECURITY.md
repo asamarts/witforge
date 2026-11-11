@@ -2,8 +2,10 @@
 
 ## Supported versions
 
-Security fixes are applied to the latest released 0.x version of witforge. Older 0.x releases
-may receive a fix only when the issue affects a supported consumer and a patch release is safe.
+Security fixes are applied to the latest stable release line: the latest 0.x release until 1.0,
+then the latest 1.x release. Older 0.x releases are unsupported after 1.0. An older release may
+receive a fix only when the issue affects a supported consumer and a backport is safe; that is
+an exception, not a support promise.
 
 ## Reporting a vulnerability
 

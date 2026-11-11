@@ -64,8 +64,8 @@ jobs:
       - name: Install actionlint and shellcheck
         shell: bash
         env:
-          ACTIONLINT_VERSION: 1.7.7
-          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          ACTIONLINT_VERSION: 1.7.8
+          ACTIONLINT_SHA256: be92c2652ab7b6d08425428797ceabeb16e31a781c07bc388456b4e592f3e36a
           SHELLCHECK_VERSION: 0.11.0
           SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
         run: |
@@ -90,6 +90,14 @@ jobs:
       - run: shellcheck ci/*.sh ci/runner/*.sh
       - run: bash ci/test-release-asset.sh
       - run: node --test action/test.js
+      # Execute the checked-out action through GitHub's JavaScript-action runtime. Unit tests
+      # call index.js directly and therefore cannot catch a retired `runs.using` value.
+      - name: Smoke the local Action
+        uses: ./
+        with:
+          version: 0.4.1
+          check: crates/witforge/tests/fixtures/versions/wit/v0.2
+          github-token: ${{ github.token }}
 
   test:
     name: test (${{ matrix.os }})
@@ -148,6 +156,24 @@ jobs:
       # A second dry run after a library change verifies the CLI against the change, not against
       # the library cargo unpacked and built for the first run.
       - run: ci/test-publish.sh
+
+  semver:
+    name: public API compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - run: cargo install --locked cargo-semver-checks --version 0.51.0
+      # Override the inferred 1.0 major release type: the declared 1.0 policy preserves the
+      # reviewed 0.4.1 library surface rather than permitting a last-minute breaking change.
+      - run: cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type minor
 
   benchmark:
     name: benchmark budget
@@ -230,10 +256,10 @@ jobs:
       - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit
 
   buf:
-    name: optional buf breaking
+    name: optional historical buf breaking
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.buf_breaking }}
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -255,12 +281,20 @@ jobs:
             "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
           echo "${BUF_SHA256}  $RUNNER_TEMP/buf" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/buf"
-      # Compares the fixture's generated schema with the one at HEAD^.
-      - run: ci/check-buf.sh
+      - name: Compare candidate schemas with historical release generators
+        shell: bash
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
           BUF: ${{ runner.temp }}/buf
           BUF_REQUIRED: "1"
+          WITFORGE_BASE_CACHE: ${{ runner.temp }}/witforge-baselines
+        run: |
+          for release in v0.1.2 v0.2.0 v0.3.0 v0.4.1; do
+            ci/check-buf.sh crates/witforge/tests/fixtures/versions/wit "$release"
+          done
+          for fixture in deps deps-full deps-world deps-convert deps-unsupported; do
+            ci/check-buf.sh "crates/witforge/tests/fixtures/${fixture}/wit" v0.4.1
+          done
 
   # The one check branch protection requires: every job above passed, or, for the optional buf
   # job only, was skipped. Requiring this instead of each job keeps the rule valid when a job is
@@ -268,7 +302,7 @@ jobs:
   ok:
     name: ci ok
     if: always()
-    needs: [lint, workflows, test, msrv, package, generated, plan, benchmark, security, buf]
+    needs: [lint, workflows, test, msrv, package, semver, generated, plan, benchmark, security, buf]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

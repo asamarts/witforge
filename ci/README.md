@@ -46,7 +46,7 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`. It also runs
   `ci/test-release-asset.sh` for release archive/checksum generation and `node --test
   action/test.js` for the Action's asset selection and command plan.
-- **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all three
+- **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all four
   emitters' output for the versions fixture into a temporary tree and runs `--check` on each
   against it, so generation must succeed and reproduce itself byte for byte (the golden tests
   pin the output's content). Then `ci/check-release-freeze.sh` on the versions fixture: it reads
@@ -62,10 +62,13 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 - **package**: `cargo publish --workspace --dry-run`, which packages and verifies both crates,
   and `ci/test-publish.sh`, which checks that a repeated `ci/publish.sh --dry-run` verifies the
   CLI against the current library rather than a copy cargo cached for an earlier run.
-- **buf** (workflow dispatch only): optional `buf breaking`, comparing the protobuf output
-  generated at the base commit with the output generated now. It is off by default because the
-  lockfile is the normative wire check; the manual input is exposed for consumers that also run
-  `buf`. The job installs a pinned `buf` and fails if it cannot run it.
+- **public API compatibility**: installs cargo-semver-checks 0.51.0 and compares the library
+  with the published 0.4.1 baseline using `--release-type minor`. The override deliberately
+  denies breaking changes for the 1.0 candidate instead of treating the major bump as permission.
+- **buf** (workflow dispatch only): optional `buf breaking`. The old schema is generated from
+  each released tag by that tag's published witforge binary; the candidate binary generates only
+  the new schema. The versions fixture is checked against every released major and the dependency
+  fixtures against 0.4.1. The job installs pinned buf 1.74 and fails if any tool cannot run.
 
 - **ci ok**: passes only when every job above passed (the optional buf job may be skipped).
   It is the one check the repository's `main` ruleset requires before a pull request merges,
@@ -91,9 +94,11 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
 `.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed:
 
 - **verify**: `ci/check-release.sh` requires one version for both crates, `witforge-cli`'s
-  dependency on `witforge` to require that version (the CLI uses the library's API as of it), a
-  dated `CHANGELOG.md` section with entries for it, and a tag that matches the version, points
-  at the checked-out commit, and is on `main`. Then the tests and `ci/publish.sh --dry-run`.
+  dependency on `witforge` to require that version, a dated `CHANGELOG.md` section with entries
+  for it, and a tag that matches the version, points at the checked-out commit, and is on `main`.
+  For a tag push, it also requires a successful `ci ok` job whose head SHA is that exact commit.
+  Then it runs the tests, the 0.4.1 semver baseline, historical-generator protobuf compatibility,
+  and `ci/publish.sh --dry-run`.
 - **publish** (environment `release`, which only `v*` tags may use): publishes, library first,
   each crate whose version is not on crates.io yet (`ci/publish.sh`), with a crates.io token
   minted through trusted publishing for that job. Nothing to publish skips the token request.

@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
-use crate::emit::versions::{Version, load_versions};
+use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::lock::WireLock;
 use crate::model::{
     Case, Dependency, Field, Flag, Interface, Model, QualifiedName, ResultExpr, TypeDef,
@@ -105,6 +105,7 @@ pub(crate) fn plan_versions(
     plain_root: &str,
     proto_root: &str,
 ) -> Result<GeneratedFiles> {
+    let dependencies = shared_dependencies(versions)?;
     // Versions are in ascending order, so the last one of each major is its highest minor.
     let mut highest: BTreeMap<u64, &Version> = BTreeMap::new();
     for version in versions {
@@ -114,17 +115,11 @@ pub(crate) fn plan_versions(
         .first()
         .context("no version directories found under WIT root")?;
     let package = &first.model.package;
-    if versions
-        .iter()
-        .any(|version| version.model.dependencies != first.model.dependencies)
-    {
-        contract_bail!("versions disagree about their dependency packages");
-    }
     let mut files = GeneratedFiles::new(HEADER);
-    if !first.model.dependencies.is_empty() {
+    if !dependencies.is_empty() {
         files.insert(
             "witforge_deps.rs",
-            emit_dependency_glue(&first.model.dependencies, plain_root, proto_root)?,
+            emit_dependency_glue(dependencies, plain_root, proto_root)?,
         )?;
     }
     let mut majors = Vec::new();
@@ -185,7 +180,19 @@ fn emit_dependency_glue(
     writeln!(out, "// source: wit/deps")?;
     writeln!(out)?;
     writeln!(out, "pub use super::GlueError;")?;
+    let mut modules = BTreeMap::new();
     for dependency in dependencies {
+        let module =
+            dependency_module_name(&dependency.package.namespace, &dependency.package.name)?;
+        if let Some(previous) = modules.insert(module.clone(), dependency.package.clone()) {
+            contract_bail!(
+                "dependency packages `{}:{}` and `{}:{}` both map to glue module `{module}`",
+                previous.namespace,
+                previous.name,
+                dependency.package.namespace,
+                dependency.package.name
+            );
+        }
         let model = Model {
             package: dependency.package.clone(),
             interfaces: dependency.interfaces.clone(),
@@ -204,11 +211,7 @@ fn emit_dependency_glue(
         lock.reconcile(&members)?;
         let emitter = Emitter::new_dependency(&model, &lock, plain_root, proto_root, dependency)?;
         let body = emitter.emit_body()?;
-        writeln!(
-            out,
-            "pub mod {} {{",
-            dependency_module_name(&dependency.package.namespace, &dependency.package.name)?
-        )?;
+        writeln!(out, "pub mod {module} {{")?;
         for line in body.lines() {
             if line.is_empty() {
                 writeln!(out)?;

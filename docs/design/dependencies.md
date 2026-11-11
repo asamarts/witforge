@@ -48,7 +48,8 @@ world plugin {
 The model stores the interface name and the dependency package metadata separately; its
 qualified name is `example:shared/types`. The dependency version is not part of a lockfile key
 or canonical type: the dependency pin is the versioned `use` path plus the content under
-`deps/`, and a dependency version bump must not renumber a local contract.
+`deps/`, and a dependency version bump does not renumber local members. The cross-version rule
+below still refuses that bump inside one generated WIT root.
 
 ## Generated references
 
@@ -71,10 +72,12 @@ rather than to a non-existent alias message. A foreign enum field keeps the same
 presence as a local enum field.
 
 Dependency packages are generated on a best-effort basis: supported types and functions are
-included, and unsupported unused items are skipped. If the root references an item that could
-not be represented, the emitter reports a missing dependency type instead of silently emitting a
-broken binding. `deps/` is one level deep, as `wit-parser` defines; a repository-level
-multi-package workspace and a dependency-generation command remain separate later work.
+included, and unsupported unused items are skipped. A local `use` makes the referenced type
+required; importing or exporting a dependency interface from a root world makes every item in
+that interface required. Required unsupported items are refused by the subset checker before
+generation instead of being omitted. `deps/` is one level deep, as `wit-parser` defines; a
+repository-level multi-package workspace and a dependency-generation command remain separate
+later work.
 
 Glue uses the same package-qualified references. It emits a shared `witforge_deps.rs` module
 with conversion functions for each dependency type and interface function; the root glue file
@@ -90,6 +93,29 @@ A root or dependency schema refers to a foreign definition with a relative file 
 resolve dependency values by keeping the generated schema files together. The version adapters
 in `convert.rs` copy a value whose type is the same pinned dependency type in both versions; a
 changed dependency type is not a local conversion and must be handled by a new contract type.
+
+## Cross-version invariant
+
+Every version directory in one generated WIT root MUST resolve the identical pinned dependency
+graph. Identity covers the package namespace, name, and version; interface, type, and function
+inventories and source order; shapes and signatures; stability metadata; and docs. The emitters
+write one shared dependency binding surface, so allowing any of those inputs to vary would make
+the generated result depend on which contract version happened to supply it.
+
+`rust`, `proto`, `schema`, and `glue` compare every version with the first and refuse the first
+changed package, version, interface, type, or function. `diff` applies the same comparison and
+refuses mismatched graphs instead of reporting a local contract as compatible. A dependency pin
+change therefore requires a separate WIT root and generated binding surface.
+
+`witforge check` accepts one version directory. It proves that directory loads, stays in the
+supported subset, has a current lockfile, and—when `--against` is supplied—continues the prior
+lockfile. It cannot prove cross-version dependency identity. CI MUST also run a generator
+`--check` over the WIT root, and SHOULD run `diff` for a reviewed version pair.
+
+Only dependencies reached by the root are included in this graph. Unsupported items elsewhere
+in an otherwise unused package remain irrelevant; a world import or export reaches the complete
+dependency interface.
+
 
 ## Lockfiles and release freezes
 
@@ -111,10 +137,14 @@ are explicitly later work, not part of this compatibility rule.
   dependencies.
 - A world may import or export a named interface from a standard `deps/` package. Interfaces
   from a nested package outside `deps/` remain refused.
-- Dependency packages must use the supported subset for any item the root actually references;
-  unsupported unused items are skipped.
+- Dependency packages must use the supported subset for any item the root actually references.
+  A world import or export references the dependency interface's complete API; unsupported
+  items elsewhere in an otherwise unused dependency remain skippable.
+- Every emitter refuses package or module names that normalize to the same generated name.
+  These contract failures use exit `1`, including cross-version dependency disagreement.
 - Tests cover a local package importing a pinned dependency, a missing dependency, two
   dependencies declaring the same package name, aliases, lists, options, results, variants,
   cross-dependency references, hyphenated package names, unused unsupported dependency items,
-  foreign world imports and exports, generated Rust/protobuf/glue compilation and round-trips,
-  and version conversion with foreign values.
+  rejected unsupported items in a world-exposed dependency interface, dependency generated-name
+  collisions, foreign world imports and exports, generated Rust/protobuf/glue compilation and
+  round-trips, and version conversion with foreign values.

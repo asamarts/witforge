@@ -47,6 +47,10 @@ archive and run `witforge.exe`.
 The action is published from this repository. It installs the release matching the action tag
 by default:
 
+The JavaScript entry point uses GitHub's Node 24 Action runtime and has no npm dependencies. CI
+executes the checked-out action with `uses: ./`; running `action/test.js` alone does not exercise
+the runtime declared in `action.yml`.
+
 ```yaml
 - uses: asamarts/witforge@v0.4.1 # pinned: installs witforge 0.4.1
   with:

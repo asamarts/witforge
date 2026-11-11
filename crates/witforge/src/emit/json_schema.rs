@@ -9,9 +9,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::rust::version_module_name;
-use crate::emit::versions::{Version, load_versions};
+use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::model::{Dependency, Interface, Model, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
 
 /// The first line of every generated schema.
@@ -31,6 +32,7 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 
 /// Plan JSON Schema output for validated `versions`.
 pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
+    let dependencies = shared_dependencies(versions)?;
     let mut files = GeneratedFiles::new(HEADER);
     for version in versions {
         let module = version_module_name(&version.model);
@@ -38,24 +40,13 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("{module}.schema.json"), generated)?;
     }
-    let first = versions
-        .first()
-        .context("no version directories found under WIT root")?;
-    if versions
-        .iter()
-        .any(|version| version.model.dependencies != first.model.dependencies)
-    {
-        bail!("versions disagree about their dependency packages");
-    }
     let mut dependency_files = std::collections::BTreeSet::new();
-    for dependency in &first.model.dependencies {
+    for dependency in dependencies {
         let model = Model {
             package: dependency.package.clone(),
             interfaces: dependency.interfaces.clone(),
             worlds: Vec::new(),
-            dependencies: first
-                .model
-                .dependencies
+            dependencies: dependencies
                 .iter()
                 .filter(|other| {
                     other.package.namespace != dependency.package.namespace
@@ -68,7 +59,9 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
             .with_context(|| format!("dependency {}", dependency.package.name))?;
         let filename = dependency_schema_filename(dependency);
         if !dependency_files.insert(filename.clone()) {
-            bail!("dependency packages both generate `{filename}`");
+            bail!(ContractError::new(format!(
+                "dependency packages both generate `{filename}`"
+            )));
         }
         files.insert(filename, generated)?;
     }

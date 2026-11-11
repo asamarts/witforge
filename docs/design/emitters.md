@@ -75,6 +75,9 @@ wit/
 - Versions are processed in ascending semver order.
 - The generator validates the subset and the lockfile for every version before writing
   anything. A stale or invalid version fails the whole generation.
+- Every version MUST resolve the identical pinned dependency graph, including package versions,
+  inventories, order, shapes, signatures, stability, and docs. All generators use one shared
+  comparison and report the first changed package, interface, type, or function.
 - Within each major, every minor's lockfile MUST continue the previous minor's: every previous
   entry is kept with the same number, kind, and canonical type, and a reserved entry stays
   reserved (the continuity `check --against` verifies; see
@@ -83,8 +86,9 @@ wit/
 - Rust output is one module per version: `v<major>_<minor>`.
 - Proto output is one file per major version: `v<major>.proto`, generated from the highest
   minor of that major. A new minor updates the same file; a new major adds a new file/package.
-- `check` and `lock` operate on a single version directory; only the `rust`, `proto`, and
-  `glue` commands take the root.
+- `check` and `lock` operate on a single version directory; `check` cannot establish the
+  cross-version dependency invariant. The `rust`, `proto`, `schema`, and `glue` commands take
+  the root and enforce it.
 
 ## 3. Rust emitter
 
@@ -307,8 +311,9 @@ foreign-type references use `super::super::witforge_deps::...`; references betwe
 packages use `super::super::...`.
 
 Unsupported dependency items that the root does not use are skipped rather than failing the
-root. If the root uses an item that could not be represented, the emitter reports a missing
-dependency type. See [`dependencies.md`](dependencies.md).
+root. A local `use` requires its referenced type, and a root world import or export requires the
+dependency interface's complete API; unsupported required items fail subset validation before
+generation. See [`dependencies.md`](dependencies.md).
 
 ## 4. Protobuf emitter
 
@@ -752,8 +757,10 @@ the shared dependency glue module.
   one-sided results, payload-less variants, flags, and reserved members.
 - Dependency tests: a local package importing pinned dependency types, aliases, lists, options,
   results, enums, variants, cross-dependency references, and hyphenated package names; generated
-  Rust and protobuf compile; a dependency's unused unsupported item does not break the root; and
-  version conversion copies a pinned foreign value.
+  Rust and protobuf compile; an unused unsupported item remains skippable; a required
+  unsupported item and normalized-name collision are refused; all generators and `diff` refuse
+  added, removed, version-bumped, shape-changed, and docs-only graph changes; and version
+  conversion copies a pinned foreign value.
 - Determinism tests: two runs produce byte-identical output; LF only; no timestamps.
 - `--check` tests: missing, changed, extra generated, and unrelated files, including files that
   are not UTF-8 text, and an expected path that is a symlink, a directory, a FIFO, or a file

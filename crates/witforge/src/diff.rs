@@ -18,8 +18,9 @@
 //! definition of one) are marked `defaulted`: the generated old-to-new conversion can fill them,
 //! but the source and generated API still change.
 //!
-//! Docs and stability attributes are not compared. They do not affect wire identity, generated
-//! code, or the component type.
+//! Root-package docs and stability attributes are not compared. They do not affect wire identity,
+//! generated code, or the component type. Dependency metadata is part of the exact pinned graph;
+//! a graph mismatch is refused before local declarations are compared.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -27,6 +28,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::emit::versions::ensure_same_dependency_graph;
 use crate::lock::{PackageName, WireLock};
 use crate::model::{
     Interface, Member, Model, TypeDef, TypeDefKind, TypeExpr, Version, WorldInterface,
@@ -156,13 +158,14 @@ pub struct DiffReport {
 ///
 /// A path containing `wire.lock` is a version directory. Any other path is a WIT root, and
 /// the WIT-root loader selects its highest version. Both endpoints must declare the same
-/// `namespace:name`.
+/// `namespace:name` and resolve the identical pinned dependency graph.
 ///
 /// # Errors
 ///
 /// Returns an error for an unreadable path, an invalid WIT package or lockfile, a version
-/// directory that does not match its package version, a stale or unlocked live member, or two
-/// different package names. Contract violations carry [`ContractError`].
+/// directory that does not match its package version, a stale or unlocked live member, two
+/// different package names, or mismatched dependency graphs. Contract violations carry
+/// [`ContractError`].
 pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
     let old = load_endpoint(old)
         .with_context(|| format!("failed to read the old contract {}", old.display()))?;
@@ -174,6 +177,7 @@ pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
             old.endpoint.package, new.endpoint.package
         )));
     }
+    ensure_same_dependency_graph(&old.model.dependencies, &new.model.dependencies)?;
     let mut builder = Builder {
         old: &old,
         new: &new,
