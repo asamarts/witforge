@@ -11,6 +11,12 @@ does not change the library API, wire numbers, or generated output for a valid c
 by 0.4.2. A contract that exposes an unsupported dependency type is now refused instead of
 producing incomplete generated output.
 
+Release commit `386cf1a` (tag `v0.4.3`), exact-commit main CI run 42964347193, release run
+42964949155. Both crates are published; `cargo install witforge-cli --version 0.4.3 --locked`
+reports `witforge 0.4.3`, docs.rs built the library, and the release carries four platform
+archives with checksums. The tagged Action passed `check` and all four configured generator
+checks on every release target.
+
 ### Fixed
 
 - Dependency types reached transitively through root types, aliases, functions, and worlds are

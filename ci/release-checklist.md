@@ -200,3 +200,17 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
       built the library documentation.
 - [x] The release workflow invoked the published `asamarts/witforge@v0.4.2` Action on a hosted
       runner, ran `check`, and verified all four configured generators with `--check`.
+
+## 0.4.3 record
+
+- [x] Release commit `386cf1a`, annotated tag `v0.4.3`; both pushed to `main`.
+- [x] Exact-commit main CI run 42964347193 passed on Linux, macOS 15, Windows, MSRV 1.88,
+      security, semver compatibility, benchmark, packaging, generated output, release freeze,
+      workflows, the four-target pinned 0.4.2 Action matrix, and the plan gate.
+- [x] Release run 42964949155 required that exact `ci ok`, checked the 0.4.1 API baseline and
+      historical protobuf generators, published both crates through trusted publishing, created
+      the GitHub release, and uploaded four platform archives with checksums.
+- [x] `cargo install witforge-cli --version 0.4.3 --locked` downloaded both 0.4.3 crates and
+      reported `witforge 0.4.3`; docs.rs built the library documentation.
+- [x] The tagged Action passed `check` and all four configured generator checks on Linux x86_64,
+      macOS arm64, macOS Intel, and Windows x86_64.
