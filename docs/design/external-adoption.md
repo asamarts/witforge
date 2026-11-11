@@ -20,7 +20,7 @@ The upstream sources and channels below were reviewed on 2026-11-11. Every candi
 
 ### Source requirements
 
-A report must cite primary evidence for every material claim:
+A report must cite the applicable primary evidence for every material claim. Evidence can take one or more of these forms:
 
 1. upstream source, generated files, protocol definitions, tests, release notes, architecture decisions, or maintained documentation at a pinned commit or release;
 2. a public maintainer statement in the project's canonical channel;
@@ -45,11 +45,11 @@ An inference remains a hypothesis even when it appears likely. Silence is not co
 | Current use case | Maintained code or a shipped/currently supported contract exercises the path. A future plan alone is insufficient. |
 | Duplicated contract source | At least two separately edited definitions represent the same semantic values or operations, with concrete adapters, code generation, or synchronization work between them. Multiple generated views of one source are not duplication. |
 | Compatibility problem | A documented compatibility obligation, historical fixture, migration rule, drift defect, frozen protocol, or reproducible cross-version failure exists. The mere presence of version numbers is insufficient. |
-| Wire or schema need | A maintained consumer depends on stable field/method identity, machine-readable value schemas, or a second transport. “Protobuf may be useful” is insufficient. |
+| Wire, schema, or projection need | A maintained consumer depends on stable field/method identity, machine-readable value schemas, or a generated Rust/protobuf/Serde projection. “Protobuf may be useful” is insufficient. |
 | Adoption blocker | The smallest useful slice fails a pinned witforge check or emitter exercise, or a required semantic capability is absent from witforge's documented contract. The report names the exact construct and affected production path. |
 | Migration cost | The report inventories definitions, adapters, generated artifacts, tests, release policy, and compatibility commitments that would change; line count or intuition alone is insufficient. |
 | Maintainer interest | A public response from a maintainer or authorized project representative confirms the stated problem or welcomes a bounded experiment. A reaction, view count, or third-party comment is insufficient. |
-| Successful independent adoption | An independently governed project accepts and uses a supported witforge release on a maintained mainline or release path, with generated-output/staleness checks and consumer-visible tests recorded. |
+| Successful independent adoption | An independently governed project accepts and uses a supported witforge release on a maintained mainline or release path, with the exact commands/APIs and projections it uses, appropriate deterministic CI checks, and consumer-visible behavior evidence recorded. |
 
 ### Capability classification
 
@@ -69,7 +69,7 @@ All four gates must pass before maintainer outreach.
 
 | Gate | Pass condition | Failure result |
 |---|---|---|
-| G1 — current problem | Primary evidence shows a maintained current use case plus duplicated maintenance, compatibility pressure, or a real wire/schema need. | `no-contact`, or `defer` when a dated upstream trigger could make the use case real. |
+| G1 — current problem | Primary evidence shows a maintained current use case plus duplicated maintenance, compatibility pressure, or a required wire/schema/code projection. | `no-contact`, or `defer` when a dated upstream trigger could make the use case real. |
 | G2 — relevant capability | Witforge solves a material part now, or one bounded mission-compatible gap blocks it. | `no-contact` when the work is only upstream redesign, runtime machinery, or speculative parity. |
 | G3 — useful slice | A smallest production-relevant contract, execution path, generated output, and success check can be named without a wholesale rewrite. | `no-contact` when only a platform rewrite creates value; `defer` when a planned seam is not implemented yet. |
 | G4 — ownership boundary | The project retains domain semantics and runtime policy; witforge remains a deterministic contract compiler. | `no-contact` when value depends on witforge owning execution, lifecycle, security policy, or distribution. |
@@ -84,7 +84,7 @@ All four gates must pass before maintainer outreach.
 
 ## Common fit matrix
 
-Complete this matrix only after the eligibility gates. Ratings support comparison; they do not add up to a score.
+Complete the gates first, then complete this matrix for every candidate, including failed or deferred candidates. Ratings support comparison; they do not add up to a score and cannot override a failed gate.
 
 | Dimension | `strong` | `mixed` | `weak` | `unknown` |
 |---|---|---|---|---|
@@ -178,7 +178,7 @@ These entries cover the eleven independently governed candidates scheduled by `W
 | [Pact plugins](https://github.com/pact-foundation/pact-plugins) | Comment on [Wasm-plugin Discussion #85](https://github.com/pact-foundation/pact-plugins/discussions/85), unless closed or superseded. | Discussion #85 is the maintainer-created channel for the draft Wasm proposal; its maintainer reply also suggests an RFC may supersede it. | Recheck proposal status and ownership before commenting; open a new Discussion only if the existing thread is no longer canonical. |
 | [Conduit](https://github.com/ConduitIO/conduit) | Search and open a GitHub Discussion for design discovery. | The [contribution guide](https://github.com/ConduitIO/conduit/blob/main/CONTRIBUTING.md) directs questions to Discussions and feature requests to Issues. | Use a Discussion for the initial falsifiable questions; create an issue or implementation only when maintainers direct it. Recheck the current Component Model ADR status. |
 | [dprint](https://github.com/dprint/dprint) | Search and open a focused GitHub issue only after a bounded current need passes the gates. | Repository [metadata](https://api.github.com/repos/dprint/dprint) shows Issues enabled and Discussions disabled; its [community profile](https://api.github.com/repos/dprint/dprint/community/profile) exposes no contribution guide. | Acknowledge the mature custom protocols; do not pitch replacement absent a maintained next-version need. |
-| [Zed](https://github.com/zed-industries/zed) | GitHub Discussion, never an unsolicited issue or PR for this proposal. | Zed's [contribution guide](https://github.com/zed-industries/zed/blob/main/CONTRIBUTING.md) requires prior Discussion for Extension API changes and rejects autonomous-agent communication. | The human owner writes the message independently; research supplies facts and questions only. Explicitly allow a no-current-benefit conclusion. |
+| [Zed](https://github.com/zed-industries/zed) | GitHub Discussion, never an unsolicited issue or PR for this proposal. | Zed's [contribution guide](https://github.com/zed-industries/zed/blob/main/CONTRIBUTING.md) requires prior Discussion for Extension API changes, does not accept autonomous-agent contributions, and asks authors not to rely on LLMs for maintainer communication. | The human owner writes the message independently; research supplies facts and questions only. Explicitly allow a no-current-benefit conclusion. |
 | [Zellij](https://github.com/zellij-org/zellij) | Ask first in the public [Discord](https://discord.gg/MHV3n76PDq) or [Matrix](https://matrix.to/#/#zellij_general:matrix.org) general channel. | Zellij's [contribution guide](https://github.com/zellij-org/zellij/blob/main/CONTRIBUTING.md) asks contributors to check large work with maintainers and to avoid LLM-generated issue or PR descriptions. | The human owner writes the outreach. Open a durable plugin-system issue only if maintainers request one. |
 | [Nushell](https://github.com/nushell/nushell) | Prefer a searched GitHub Discussion for durable design discovery; follow maintainer direction to Discord or an issue. | Nushell's [contribution guide](https://github.com/nushell/nushell/blob/main/CONTRIBUTING.md) invites Discord, GitHub Discussions, or draft PRs for early help and requires core-team discussion before major changes. | Do not propose implementation before core-team interest; keep the question to bounded message or compatibility needs. |
 | [Lix](https://github.com/opral/lix) | Ask first in the public [Lix Discord](https://discord.gg/gdMPPWy57R). | The [project site](https://lix.dev/) identifies Discord as its community/help channel; GitHub Discussions are disabled, and the [contribution guide](https://github.com/opral/lix/blob/main/CONTRIBUTING.md) covers code submission but not design outreach. | Distinguish lessons for witforge from benefits to Lix. Open a GitHub issue only if maintainers request durable tracking. |
@@ -189,8 +189,9 @@ A candidate counts toward `W10-001` only when all of the following are true:
 
 - governance and acceptance are independent of witforge's maintainer;
 - a maintained upstream mainline or release path consumes a supported witforge release;
-- the exact WIT contract, generated outputs, witforge version, and stale-output check are recorded;
-- upstream tests exercise consumer-visible semantics rather than merely compiling generated files;
+- the exact WIT contract, witforge version, commands or APIs, and generated projections actually used are recorded;
+- deterministic upstream CI checks the claimed integration, including stale generated output when generated files are committed;
+- upstream tests or CI exercise the claimed consumer-visible behavior rather than only proving that generated files compile;
 - the independent maintainer accepts the integration and keeps it in a supported path.
 
 The following never count by themselves:
