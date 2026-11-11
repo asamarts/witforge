@@ -104,9 +104,10 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
   minted through trusted publishing for that job. Nothing to publish skips the token request.
 - **github-release**: creates the GitHub release from the changelog section, unless it exists.
 - **binaries**: builds and uploads the four platform archives and SHA-256 checksum files.
-- **published Action smoke**: after all release archives are uploaded, invokes the pinned
-  `asamarts/witforge@v0.4.2` Action on a hosted runner, runs `check`, materializes all configured
-  outputs, then invokes the Action again to verify all four generators with `--check`.
+- **published Action smoke**: after all release archives are uploaded, invokes the Action from
+  the checked-out release tag on a hosted runner, installs that tag's version, runs `check`,
+  materializes all configured outputs, then invokes the Action again to verify all four
+  generators with `--check`.
 
 A manual run (`gh workflow run release.yml`, from a branch or a tag) runs only **verify**:
 **publish** and **github-release** require a tag push (`github.event_name == 'push'`), not just

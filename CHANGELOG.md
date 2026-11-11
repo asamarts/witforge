@@ -10,6 +10,12 @@ All notable changes to this project are documented here. The format follows
 dependency and release validation. It does not change the library API, wire numbers, or generated
 output for a contract accepted by 0.4.1.
 
+Release commit `1773519` (tag `v0.4.2`), exact-commit main CI run 42957300924, release run
+42957872794. Both crates are published; `cargo install witforge-cli --version 0.4.2 --locked`
+reports `witforge 0.4.2`, docs.rs built the library, and the release carries four platform
+archives with checksums. The published Action passed `check` and all four configured generator
+checks on a hosted runner.
+
 ### Fixed
 
 - The JavaScript Action now declares Node 24, and CI executes the checked-out Action through

@@ -113,8 +113,8 @@ explicit release-owner action.
       release, reruns semver and historical-generator protobuf compatibility, publishes each
       crate whose version is not on crates.io yet, library first, through trusted publishing,
       creates the GitHub release from the changelog section, builds and uploads the Linux,
-      macOS, and Windows archives with `.sha256` checksums, then runs the pinned published Action
-      through `check` and all four configured generator checks. A failed run is re-run and skips
+      macOS, and Windows archives with `.sha256` checksums, then runs the tagged Action through
+      `check` and all four configured generator checks. A failed run is re-run and skips
       what is already published; `gh release upload --clobber` repairs a partial asset upload.
 - [ ] Verify `cargo install witforge-cli --version X.Y.Z --locked` reports `witforge X.Y.Z`,
       the GitHub release exists, and docs.rs built the library.
@@ -184,3 +184,17 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] `cargo install witforge-cli --version 0.4.1 --locked` reported `witforge 0.4.1`.
 - [x] The alint consumer checked its committed generated output against witforge 0.4.1 and
       matched.
+
+## 0.4.2 record
+
+- [x] Release commit `1773519`, annotated tag `v0.4.2`; both pushed to `main`.
+- [x] Exact-commit main CI run 42957300924 passed on Linux, macOS 15, Windows, MSRV 1.88,
+      security, semver compatibility, benchmark, packaging, generated output, release freeze,
+      workflows (including `uses: ./` under Node 24), and the plan gate.
+- [x] Release run 42957872794 required that exact `ci ok`, checked the 0.4.1 API baseline and
+      historical protobuf generators, published both crates through trusted publishing, created
+      the GitHub release, and uploaded four platform archives with checksums.
+- [x] `cargo install witforge-cli --version 0.4.2 --locked` reported `witforge 0.4.2`; docs.rs
+      built the library documentation.
+- [x] The release workflow invoked the published `asamarts/witforge@v0.4.2` Action on a hosted
+      runner, ran `check`, and verified all four configured generators with `--check`.

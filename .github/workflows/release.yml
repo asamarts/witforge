@@ -243,10 +243,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Install 0.4.2 and check a version
-        uses: asamarts/witforge@v0.4.2
+      - name: Install the tagged release and check a version
+        uses: ./
         with:
-          version: 0.4.2
+          version: ${{ needs.verify.outputs.version }}
           check: examples/evolved/wit/v0.2
           generators: ""
           github-token: ${{ github.token }}
@@ -257,10 +257,10 @@ jobs:
           witforge proto --config examples/evolved/witforge.toml
           witforge schema --config examples/evolved/witforge.toml
           witforge glue --config examples/evolved/witforge.toml
-      - name: Check configured output through the published Action
-        uses: asamarts/witforge@v0.4.2
+      - name: Check configured output through the tagged Action
+        uses: ./
         with:
-          version: 0.4.2
+          version: ${{ needs.verify.outputs.version }}
           check: examples/evolved/wit/v0.2
           config: examples/evolved/witforge.toml
           project: tasks
