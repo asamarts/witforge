@@ -115,10 +115,10 @@ jobs:
           persist-credentials: false
       # A remote pinned ref proves tag resolution and each published platform archive. The local
       # Action smoke above remains the pre-publication proof for changes to action.yml/action/.
-      - name: Smoke the published 0.4.3 Action
-        uses: asamarts/witforge@v0.4.3
+      - name: Smoke the published 0.4.4 Action
+        uses: asamarts/witforge@v0.4.4
         with:
-          version: 0.4.3
+          version: 0.4.4
           check: crates/witforge/tests/fixtures/versions/wit/v0.2
           generators: ""
           github-token: ${{ github.token }}

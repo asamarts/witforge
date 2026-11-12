@@ -12,6 +12,12 @@ valid contract accepted by 0.4.3. Generated Rust glue changes to avoid redundant
 work, and generated version adapters gain `# Errors` documentation; consumers that commit those
 Rust outputs should regenerate when upgrading.
 
+Release commit `07472e5` (tag `v0.4.4`), exact-commit main CI run 43143822291, release run
+43144304257. Both crates are published; `cargo install witforge-cli --version 0.4.4 --locked`
+reports `witforge 0.4.4`, docs.rs built the library, and the release carries four platform
+archives with checksums. The tagged Action passed `check` and all four configured generator
+checks on every release target.
+
 ### Changed
 
 - The runnable examples now commit all generated Rust, protobuf, JSON Schema, and glue files.
