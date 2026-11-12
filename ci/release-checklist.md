@@ -231,5 +231,6 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] `cargo install witforge-cli --version 0.4.4 --locked` downloaded both 0.4.4 crates and
       reported `witforge 0.4.4`; docs.rs built the library documentation and the installed
       binary reproduced the committed single example output with all four generators.
-- [ ] Main CI invokes the pinned published `asamarts/witforge@v0.4.4` Action against all four
-      release targets.
+- [x] Main CI run 43145516331 invoked the pinned published `asamarts/witforge@v0.4.4`
+      Action against all four release targets; every target downloaded its matching archive and
+      passed a real contract check.
