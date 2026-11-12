@@ -14,6 +14,7 @@ pub fn run_cargo_program(root: &Path, dependencies: &str, label: &str) {
         .arg(&manifest_path)
         .env("CARGO_TARGET_DIR", target)
         .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
         .output()
         .unwrap();
     assert!(
