@@ -17,6 +17,7 @@ All notable changes to this project are documented here. The format follows
   value.
 - Removed the extra blank line at the end of generated `convert.rs`, and added a whole-tree CI
   whitespace check so committed output cannot preserve the same defect.
+- Kept wide documentation tables inside the mobile viewport with local horizontal scrolling.
 
 ## [0.4.4] - 2026-11-12
 
