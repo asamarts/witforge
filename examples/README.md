@@ -1,11 +1,11 @@
 # witforge examples
 
-Two runnable examples:
+Two runnable examples with committed generated output:
 
 - [`single/`](single/) is one contract version and exercises Rust, protobuf, JSON Schema, glue,
-  and `witforge.toml`.
+  `witforge.toml`, and all four generators' `--check` mode.
 - [`evolved/`](evolved/) has released `v0.1` and draft `v0.2`; it demonstrates `lock --against`,
-  continuity, release freezing, and generated old-to-new conversions.
+  continuity, release freezing, and generated old-to-new and new-to-old conversions.
 
 Run from this repository with the local CLI:
 
@@ -27,6 +27,7 @@ cd examples/evolved
 cargo run --manifest-path ../../Cargo.toml -p witforge-cli -- rust --config witforge.toml
 ```
 
-Generated output is ignored by each example's `.gitignore`. `v0.1` in the evolved example is
-released, so do not edit its WIT, lockfile, or generated Rust module; add `v0.3` for the next
-change.
+Generated output is committed under each example's `generated/` directory. Run a generator
+without `--check` to refresh it, review the diff, and rerun with `--check`. `v0.1` in the evolved
+example is released, so do not edit its WIT, lockfile, or generated Rust module; add `v0.3` for
+the next contract change.

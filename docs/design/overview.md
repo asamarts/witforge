@@ -383,6 +383,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-11 | A general Wasm plugin framework is declined as witforge scope; direct Wasmtime is the alint pilot baseline, and any reusable WIT-first multi-host kit stays separate until real applications demonstrate repeated runtime or protocol mechanics | this document |
 | 2026-11-11 | Independent candidates must demonstrate an evidence-backed problem, capability fit, bounded slice, and preserved ownership before outreach; defer, no-contact, and no-response outcomes do not weaken the external-adoption requirement | [`W10-001`](../../aplan/tasks/W10-001.md) |
 | 2026-11-11 | wit-bindgen remains the guest Canonical ABI generator and Wasmtime owns host bindings; witforge remains runtime-independent, prefers guest type remapping where proven, and declines a generic bridge without adopter measurements | section 1 |
+| 2026-11-12 | CI and the generated `AGENTS.md` block use the same published aplan 0.6.0 build; the pin advances with a regenerated block so `APLAN041` cannot leave `main` red after otherwise valid plan work | [`ci/README.md`](../../ci/README.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

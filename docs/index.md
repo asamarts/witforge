@@ -20,8 +20,9 @@ It is a contract compiler, not a Wasm runtime, RPC framework, or replacement for
 2. Follow the [quickstart](quickstart.html).
 3. Learn the [contract layout and supported WIT](guide/contract-authoring.html).
 4. Configure [generation](guide/generation.html).
-5. Add [CI checks](guide/ci.html).
-6. Review [contract evolution](guide/evolution.html).
+5. Inspect [real generated output](guide/generated-output.html).
+6. Add [CI checks](guide/ci.html).
+7. Review [contract evolution](guide/evolution.html).
 
 ## Important boundaries
 

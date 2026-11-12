@@ -101,6 +101,62 @@ witforge glue wit --out generated/glue \
 
 Every generator supports `--check`, which writes nothing and fails when committed output differs.
 
+## What gets generated
+
+For the WIT above, the generated Rust module contains ordinary owned values and a trait:
+
+```rust
+pub mod api {
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Request {
+        pub text: ::std::string::String,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Diagnostic {
+        pub start: u32,
+        pub end: u32,
+        pub message: ::std::string::String,
+    }
+
+    pub trait Api {
+        fn check(&self, input: Request) -> ::std::vec::Vec<Diagnostic>;
+    }
+}
+```
+
+The same contract becomes protobuf messages and a locked method ID:
+
+```proto
+message ApiRequest {
+  optional string text = 1;
+}
+
+message ApiDiagnostic {
+  optional uint32 start = 1;
+  optional uint32 end = 2;
+  optional string message = 3;
+}
+
+message ApiCheckRequest {
+  ApiRequest input = 1;
+}
+
+message ApiCheckResponse {
+  repeated ApiDiagnostic result = 1;
+}
+
+enum ApiMethod {
+  API_METHOD_UNSPECIFIED = 0;
+  API_METHOD_CHECK = 1;
+}
+```
+
+These are excerpts of current emitter output, not hand-designed target APIs. The
+[generated-output guide](https://asamarts.github.io/witforge/guide/generated-output.html) shows
+complete Rust, protobuf, JSON Schema, glue, and version-adapter examples with links to committed
+generated files.
+
 For configuration, dependencies, evolution, and complete command sequences, continue with the
 [documentation](https://asamarts.github.io/witforge/) or the
 [repository quickstart](docs/quickstart.md).

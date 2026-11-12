@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The runnable examples now commit all generated Rust, protobuf, JSON Schema, and glue files.
+  CI runs every emitter with `--check` against both examples, and the public guide shows exact
+  generated-output excerpts with links to the full files.
+- Generated Rust version adapters now carry `# Errors` documentation on fallible public
+  conversion functions.
+
+### Fixed
+
+- Generated glue copies `Copy` primitives directly, clones borrowed owned values only when the
+  protobuf target must own them, and moves owned identity lists and options during decode instead
+  of rebuilding them through an iterator and a second allocation.
+- CI installs the same published aplan 0.6.0 build that generated the repository's `AGENTS.md`
+  block, eliminating the `APLAN041` plan-gate failure.
+
 ## [0.4.3] - 2026-11-11
 
 0.4.3 closes dependency-validation and release-proof gaps found in the post-0.4.2 audit. It

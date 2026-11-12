@@ -13,7 +13,7 @@ pub mod types {
 
         pub fn to_proto(value: &crate::plain::v0_4::types::Small) -> crate::proto::v0::TypesSmall {
             crate::proto::v0::TypesSmall {
-                value: ::core::option::Option::Some((*&value.value).clone()),
+                value: ::core::option::Option::Some(::core::clone::Clone::clone(&value.value)),
             }
         }
 
@@ -29,15 +29,15 @@ pub mod types {
 
         pub fn to_proto(value: &crate::plain::v0_4::types::Numbers) -> crate::proto::v0::TypesNumbers {
             crate::proto::v0::TypesNumbers {
-                u8_value: ::core::option::Option::Some(u32::from(*&value.u8_value)),
-                u16_value: ::core::option::Option::Some(u32::from(*&value.u16_value)),
-                u32_value: ::core::option::Option::Some((*&value.u32_value).clone()),
-                u64_value: ::core::option::Option::Some((*&value.u64_value).clone()),
-                s8_value: ::core::option::Option::Some(i32::from(*&value.s8_value)),
-                s16_value: ::core::option::Option::Some(i32::from(*&value.s16_value)),
-                s64_value: ::core::option::Option::Some((*&value.s64_value).clone()),
-                f32_value: ::core::option::Option::Some((*&value.f32_value).clone()),
-                f64_value: ::core::option::Option::Some((*&value.f64_value).clone()),
+                u8_value: ::core::option::Option::Some(u32::from(value.u8_value)),
+                u16_value: ::core::option::Option::Some(u32::from(value.u16_value)),
+                u32_value: ::core::option::Option::Some(value.u32_value),
+                u64_value: ::core::option::Option::Some(value.u64_value),
+                s8_value: ::core::option::Option::Some(i32::from(value.s8_value)),
+                s16_value: ::core::option::Option::Some(i32::from(value.s16_value)),
+                s64_value: ::core::option::Option::Some(value.s64_value),
+                f32_value: ::core::option::Option::Some(value.f32_value),
+                f64_value: ::core::option::Option::Some(value.f64_value),
             }
         }
 
@@ -142,11 +142,11 @@ pub mod types {
         use super::GlueError;
 
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeString) -> ::core::option::Option<::std::string::String> {
-            value.as_ref().map(|value| (*value).clone())
+            ::core::clone::Clone::clone(value)
         }
 
         pub fn from_proto(value: ::core::option::Option<::std::string::String>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeString, GlueError> {
-            ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok(value)).transpose()?)
+            ::core::result::Result::Ok(value)
         }
     }
 
@@ -176,7 +176,7 @@ pub mod types {
             match value {
                 ::core::option::Option::Some(value) => ::core::option::Option::Some(crate::proto::v0::TypesMaybeMaybe {
                     value: ::core::option::Option::Some(match value {
-                        ::core::option::Option::Some(value) => crate::proto::v0::types_maybe_maybe::Value::Some((*value).clone()),
+                        ::core::option::Option::Some(value) => crate::proto::v0::types_maybe_maybe::Value::Some(::core::clone::Clone::clone(value)),
                         ::core::option::Option::None => crate::proto::v0::types_maybe_maybe::Value::None(crate::proto::v0::Empty {}),
                     }),
                 }),
@@ -199,7 +199,7 @@ pub mod types {
         pub fn to_proto(value: &crate::plain::v0_4::types::Outcome) -> crate::proto::v0::TypesOutcome {
             match value {
                 ::core::result::Result::Ok(value) => crate::proto::v0::TypesOutcome { value: ::core::option::Option::Some(crate::proto::v0::types_outcome::Value::Ok(super::super::types::small::to_proto(value))) },
-                ::core::result::Result::Err(value) => crate::proto::v0::TypesOutcome { value: ::core::option::Option::Some(crate::proto::v0::types_outcome::Value::Err((*value).clone())) },
+                ::core::result::Result::Err(value) => crate::proto::v0::TypesOutcome { value: ::core::option::Option::Some(crate::proto::v0::types_outcome::Value::Err(::core::clone::Clone::clone(value))) },
             }
         }
 
@@ -237,7 +237,7 @@ pub mod types {
         pub fn to_proto(value: &crate::plain::v0_4::types::OnlyErr) -> crate::proto::v0::TypesOnlyErr {
             match value {
                 ::core::result::Result::Ok(_) => crate::proto::v0::TypesOnlyErr { value: ::core::option::Option::Some(crate::proto::v0::types_only_err::Value::Ok(crate::proto::v0::Empty {})) },
-                ::core::result::Result::Err(value) => crate::proto::v0::TypesOnlyErr { value: ::core::option::Option::Some(crate::proto::v0::types_only_err::Value::Err((*value).clone())) },
+                ::core::result::Result::Err(value) => crate::proto::v0::TypesOnlyErr { value: ::core::option::Option::Some(crate::proto::v0::types_only_err::Value::Err(::core::clone::Clone::clone(value))) },
             }
         }
 
@@ -254,7 +254,7 @@ pub mod types {
         use super::GlueError;
 
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeBytes) -> ::core::option::Option<::std::vec::Vec<u8>> {
-            value.as_ref().map(|value| (*value).clone())
+            value.as_ref().map(|value| ::core::clone::Clone::clone(value))
         }
 
         pub fn from_proto(value: ::core::option::Option<::std::vec::Vec<u8>>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeBytes, GlueError> {
@@ -355,8 +355,8 @@ pub mod types {
                 status: ::core::option::Option::Some(super::super::types::status::to_proto(&value.status)),
                 choice: ::core::option::Option::Some(super::super::types::choice::to_proto(&value.choice)),
                 flags: ::core::option::Option::Some(super::super::types::caps::to_proto(&value.flags)),
-                bytes: ::core::option::Option::Some((*&value.bytes).clone()),
-                items: (&value.items).iter().map(|item| super::super::types::small::to_proto(item)).collect(),
+                bytes: ::core::option::Option::Some(::core::clone::Clone::clone(&value.bytes)),
+                items: value.items.iter().map(|item| super::super::types::small::to_proto(item)).collect(),
                 maybe: super::super::types::maybe_string::to_proto(&value.maybe),
                 maybe_small: super::super::types::maybe_small::to_proto(&value.maybe_small),
                 maybe_list: super::super::types::maybe_list::to_proto(&value.maybe_list),
@@ -369,9 +369,9 @@ pub mod types {
                 maybe_choice: super::super::types::maybe_choice::to_proto(&value.maybe_choice),
                 maybe_caps: super::super::types::maybe_caps::to_proto(&value.maybe_caps),
                 maybe_outcome: super::super::types::maybe_outcome::to_proto(&value.maybe_outcome),
-                nested: (&value.nested).iter().map(|item| match item { ::core::option::Option::Some(value) => crate::proto::v0::WitforgeOptionOfResultOfU8AndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_option_of_result_of_u8_and_string::Value::Some(match value {
+                nested: value.nested.iter().map(|item| match item { ::core::option::Option::Some(value) => crate::proto::v0::WitforgeOptionOfResultOfU8AndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_option_of_result_of_u8_and_string::Value::Some(match value {
 ::core::result::Result::Ok(value) => crate::proto::v0::WitforgeResultOfU8AndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_result_of_u8_and_string::Value::Ok(u32::from(*value))) },
-::core::result::Result::Err(value) => crate::proto::v0::WitforgeResultOfU8AndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_result_of_u8_and_string::Value::Err((*value).clone())) },
+::core::result::Result::Err(value) => crate::proto::v0::WitforgeResultOfU8AndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_result_of_u8_and_string::Value::Err(::core::clone::Clone::clone(value))) },
 })) }, ::core::option::Option::None => crate::proto::v0::WitforgeOptionOfResultOfU8AndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_option_of_result_of_u8_and_string::Value::None(crate::proto::v0::Empty {})) } }).collect(),
                 alias_small: ::core::option::Option::Some(super::super::types::small::to_proto(&value.alias_small)),
                 alias_list: super::super::types::small_list::to_proto(&value.alias_list),
@@ -549,7 +549,7 @@ pub mod service {
 
             pub fn to_response(value: &::std::string::String) -> crate::proto::v0::ServicePingResponse {
                 crate::proto::v0::ServicePingResponse {
-                    result: ::core::option::Option::Some((*value).clone()),
+                    result: ::core::option::Option::Some(::core::clone::Clone::clone(value)),
                 }
             }
 
@@ -566,7 +566,7 @@ pub mod service {
 
             pub fn to_request(value: &::std::string::String) -> crate::proto::v0::ServiceEchoRequest {
                 crate::proto::v0::ServiceEchoRequest {
-                    value: ::core::option::Option::Some((*value).clone()),
+                    value: ::core::option::Option::Some(::core::clone::Clone::clone(value)),
                 }
             }
 
@@ -576,7 +576,7 @@ pub mod service {
 
             pub fn to_response(value: &::std::string::String) -> crate::proto::v0::ServiceEchoResponse {
                 crate::proto::v0::ServiceEchoResponse {
-                    result: ::core::option::Option::Some((*value).clone()),
+                    result: ::core::option::Option::Some(::core::clone::Clone::clone(value)),
                 }
             }
 
@@ -595,8 +595,8 @@ pub mod service {
                 crate::proto::v0::ServiceManyRequest {
                     item: ::core::option::Option::Some(super::super::super::types::small::to_proto(item)),
                     maybe: super::super::super::types::maybe_string::to_proto(maybe),
-                    items: (items).iter().map(|item| super::super::super::types::small::to_proto(item)).collect(),
-                    flag: ::core::option::Option::Some((*flag).clone()),
+                    items: items.iter().map(|item| super::super::super::types::small::to_proto(item)).collect(),
+                    flag: ::core::option::Option::Some(*flag),
                 }
             }
 
@@ -608,7 +608,7 @@ pub mod service {
                 crate::proto::v0::ServiceManyResponse {
                     result: ::core::option::Option::Some(match value {
 ::core::result::Result::Ok(value) => crate::proto::v0::WitforgeResultOfListOfTypesSmallAndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_result_of_list_of_types_small_and_string::Value::Ok(crate::proto::v0::WitforgeListOfTypesSmall { values: value.iter().map(|item| super::super::super::types::small::to_proto(item)).collect() })) },
-::core::result::Result::Err(value) => crate::proto::v0::WitforgeResultOfListOfTypesSmallAndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_result_of_list_of_types_small_and_string::Value::Err((*value).clone())) },
+::core::result::Result::Err(value) => crate::proto::v0::WitforgeResultOfListOfTypesSmallAndString { value: ::core::option::Option::Some(crate::proto::v0::witforge_result_of_list_of_types_small_and_string::Value::Err(::core::clone::Clone::clone(value))) },
 }),
                 }
             }
@@ -691,7 +691,7 @@ pub mod service {
 
             pub fn to_response(value: &::std::vec::Vec<crate::plain::v0_4::service::Small>) -> crate::proto::v0::ServiceListResultResponse {
                 crate::proto::v0::ServiceListResultResponse {
-                    result: (value).iter().map(|item| super::super::super::types::small::to_proto(item)).collect(),
+                    result: value.iter().map(|item| super::super::super::types::small::to_proto(item)).collect(),
                 }
             }
 
@@ -708,7 +708,7 @@ pub mod service {
 
             pub fn to_request(self_: &u32) -> crate::proto::v0::ServiceTypeRequest {
                 crate::proto::v0::ServiceTypeRequest {
-                    self_: ::core::option::Option::Some((*self_).clone()),
+                    self_: ::core::option::Option::Some(*self_),
                 }
             }
 
@@ -718,7 +718,7 @@ pub mod service {
 
             pub fn to_response(value: &u32) -> crate::proto::v0::ServiceTypeResponse {
                 crate::proto::v0::ServiceTypeResponse {
-                    result: ::core::option::Option::Some((*value).clone()),
+                    result: ::core::option::Option::Some(*value),
                 }
             }
 

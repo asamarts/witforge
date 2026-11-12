@@ -10,6 +10,7 @@ title: Guide
 | [Choosing witforge](choosing-witforge.html) | High-fit projects, non-goals, and alternatives |
 | [Contract authoring](contract-authoring.html) | Version directories, WIT subset, lockfiles, dependencies |
 | [Generation](generation.html) | Rust, protobuf, schema, glue, config, and output ownership |
+| [Generated output](generated-output.html) | Actual Rust, protobuf, JSON Schema, glue, and adapter output |
 | [Evolution](evolution.html) | New versions, diff, adapters, and released contracts |
 | [CI](ci.html) | Stale output, compatibility, release freeze, and the GitHub Action |
 | [JSON projections](json-projections.html) | Rust Serde versus WIT-shaped JSON Schema |

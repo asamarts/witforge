@@ -708,13 +708,13 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
   the per-major `v<major>.proto`, and the per-major glue module are shared across versions and may
   change when a new minor is added; their released members are protected by the lockfile,
   `--check`, and proto compatibility checks. `--check` is the tool-side verification.
-- witforge's CI runs `ci/check-generated.sh` for every emitter (it generates the fixtures
-  into a scratch directory and checks that output with `--check`, so it covers witforge itself; a
-  consumer runs each generator's `--check` against its own committed output) and
-  `ci/check-release-freeze.sh` for released directories and manifest entries. The aplan plan is
-  checked in CI by the `plan` job with pinned published aplan 0.5.2.
-  `ci/check-buf.sh` is an optional extra `buf breaking` check for consumers that use it; the
-  lockfile remains the normative wire gate.
+- witforge's CI runs `ci/check-generated.sh` for every emitter. It generates the versions
+  fixture into a scratch directory, checks that output with `--check`, and checks the committed
+  runnable-example output for drift. A consumer runs each generator's `--check` against its own
+  committed output. CI also runs `ci/check-release-freeze.sh` for released directories and
+  manifest entries. The aplan plan is checked by the `plan` job with pinned published aplan
+  0.6.0. `ci/check-buf.sh` is an optional extra `buf breaking` check for consumers that use it;
+  the lockfile remains the normative wire gate.
 - Exit codes: `0` success; `1` contract, lockfile, or output drift; `2` usage, IO, parse,
   released-directory refusal, or internal error. Every command follows this scheme. For `rust`,
   `proto`, `schema`, and `glue`, a version that fails validation (subset violations, a version or package
@@ -993,6 +993,10 @@ pub mod span {
   - an invalid option wrapper state is `InvalidState`;
   - list elements and option payloads recurse through the same rules;
   - `flags` bools, `list<u8>` bytes, and nested wrappers follow section 4.3.
+  - encoding copies `Copy` primitives directly and clones strings, byte vectors, lists, and
+    options only when converting a borrowed plain value into an owned protobuf value; decoding
+    moves owned identity lists and options directly instead of allocating and collecting a
+    replacement;
 - The glue conversion is the only place that applies these rules; the proto schema itself does
   not encode them.
 

@@ -5,7 +5,7 @@ title: Examples
 
 # Examples
 
-The repository contains two runnable examples.
+The repository contains two runnable examples with committed generated output.
 
 ## Single version
 
@@ -14,7 +14,7 @@ The repository contains two runnable examples.
 - one contract version;
 - `witforge.toml`;
 - Rust, protobuf, JSON Schema, and glue generation;
-- every generator's `--check` mode.
+- committed output checked by every generator's `--check` mode.
 
 ```sh
 git clone https://github.com/asamarts/witforge.git
@@ -25,6 +25,10 @@ witforge proto --config witforge.toml
 witforge schema --config witforge.toml
 witforge glue --config witforge.toml
 ```
+
+The exact generated files are under
+[`examples/single/generated`](https://github.com/asamarts/witforge/tree/main/examples/single/generated).
+The [generated-output guide](generated-output.html) walks through representative sections.
 
 ## Evolved contract
 
@@ -41,4 +45,5 @@ The example adds defaultable fields. Version-adapter generation accepts them, bu
 still reports a source/generated-API break. Use plain `diff` to review the example; add `--check`
 when project policy forbids those changes.
 
-Generated output is ignored in the examples so the commands can be run repeatedly in a scratch checkout.
+Generated output is committed for review and checked for drift in CI. Run any generator without
+`--check` to update it, review the diff, then run the same command with `--check`.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Generate every emitter into a temporary tree and verify that --check reproduces it: generation
-# must succeed and be deterministic. The golden tests, not this script, pin what it generates.
+# Generate every emitter into a temporary tree, verify that `--check` reproduces it, and check
+# the committed runnable-example outputs. Generation must succeed and remain deterministic.
 #
 # Usage: [WITFORGE=path/to/witforge] ci/check-generated.sh [WIT_ROOT]
 set -euo pipefail
@@ -28,4 +28,12 @@ fi
 "${RUN[@]}" glue "${WIT_ROOT}" --out "${TMP}/glue" \
     --plain-root crate::plain --proto-root crate::proto --check
 
+for example in single evolved; do
+    config="${ROOT}/examples/${example}/witforge.toml"
+    for emitter in rust proto schema glue; do
+        "${RUN[@]}" "${emitter}" --config "${config}" --check
+    done
+done
+
+echo "committed example output check passed"
 echo "generated output check passed for ${WIT_ROOT}"

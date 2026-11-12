@@ -26,7 +26,7 @@ hand, because crates.io cannot trust a repository for a crate that does not exis
       2026-10-31, on GitHub-hosted runners, with the tests on Linux, macOS, and Windows)
 - [x] `aplan check && aplan verify && aplan export-agents-md --check AGENTS.md && aplan check-docs`
       (run at `546cec1`, 2026-10-31, before the public aplan release existed; the commands now run
-      in the CI `plan` job pinned to aplan 0.5.2)
+      in the CI `plan` job pinned to aplan 0.6.0)
 - [x] README status, `CHANGELOG.md` (with the publish date), and the workspace version say
       0.1.0.
 - [x] Generation succeeds and reproduces itself for the versions fixture (the generated-output

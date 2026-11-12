@@ -196,6 +196,16 @@ enum Direction {
     Reverse,
 }
 
+fn copied(expression: &str) -> String {
+    expression
+        .strip_prefix('&')
+        .map_or_else(|| format!("*{expression}"), str::to_owned)
+}
+
+fn borrowed(expression: &str) -> &str {
+    expression.strip_prefix('&').unwrap_or(expression)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_function(
     out: &mut String,
@@ -217,6 +227,13 @@ fn emit_function(
         source_def.name,
         source.model.package.version,
         target.model.package.version
+    )?;
+    writeln!(out, "        ///")?;
+    writeln!(out, "        /// # Errors")?;
+    writeln!(out, "        ///")?;
+    writeln!(
+        out,
+        "        /// Returns an error when the source value cannot be represented by the target version."
     )?;
     writeln!(
         out,
@@ -627,11 +644,12 @@ fn convert_expr(
         | (TypeExpr::S32, TypeExpr::S32)
         | (TypeExpr::S64, TypeExpr::S64)
         | (TypeExpr::F32, TypeExpr::F32)
-        | (TypeExpr::F64, TypeExpr::F64) => {
-            Ok(format!("::core::result::Result::Ok(*({expression}))"))
-        }
+        | (TypeExpr::F64, TypeExpr::F64) => Ok(format!(
+            "::core::result::Result::Ok({})",
+            copied(expression)
+        )),
         (TypeExpr::String, TypeExpr::String) => Ok(format!(
-            "::core::result::Result::Ok(({expression}).clone())"
+            "::core::result::Result::Ok(::core::clone::Clone::clone({expression}))"
         )),
         (TypeExpr::Named(source_name), TypeExpr::Named(target_name))
             if source_name == target_name =>
@@ -649,7 +667,7 @@ fn convert_expr(
                 // Dependency packages are pinned and frozen with the version directory; the
                 // same package-qualified name is the same value across these versions.
                 return Ok(format!(
-                    "::core::result::Result::Ok(({expression}).clone())"
+                    "::core::result::Result::Ok(::core::clone::Clone::clone({expression}))"
                 ));
             }
             let interface_module =
@@ -672,7 +690,8 @@ fn convert_expr(
                 path,
             )?;
             Ok(format!(
-                "({expression}).iter().map(|item| {inner}).collect::<::core::result::Result<::std::vec::Vec<{target_element_type}>, {ERROR}>>()"
+                "{}.iter().map(|item| {inner}).collect::<::core::result::Result<::std::vec::Vec<{target_element_type}>, {ERROR}>>()",
+                borrowed(expression)
             ))
         }
         (TypeExpr::Option(source_payload), TypeExpr::Option(target_payload)) => {

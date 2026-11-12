@@ -56,3 +56,9 @@ witforge glue --config witforge.toml
 Each emitter needs its own output directory. witforge only overwrites or removes files with that emitter's generated header. It refuses symlinks, directories, and unowned files at expected output paths.
 
 Every generator supports `--check`, which writes nothing and fails on missing, changed, or extra generated files.
+
+## Inspect the result
+
+The [generated-output guide](generated-output.html) shows current Rust, protobuf, JSON Schema,
+glue, and version-adapter output from the committed runnable examples. The full files are checked
+with `--check` in this repository's CI.

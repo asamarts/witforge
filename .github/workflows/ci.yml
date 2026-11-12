@@ -248,8 +248,8 @@ jobs:
         with:
           toolchain: stable
       # Pin the published release; no aplan binary is committed to this repository.
-      - name: Install aplan 0.5.2
-        run: cargo install --locked aplan --version 0.5.2 --root "$RUNNER_TEMP/aplan"
+      - name: Install aplan 0.6.0
+        run: cargo install --locked aplan --version 0.6.0 --root "$RUNNER_TEMP/aplan"
       - name: Run the four plan gates
         shell: bash
         run: |

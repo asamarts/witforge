@@ -1279,6 +1279,12 @@ enum Form {
     Option,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Identity {
+    Copy,
+    Clone,
+}
+
 fn is_u8(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::U8)
 }
@@ -1356,6 +1362,24 @@ fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
 }
 
 impl Emitter<'_> {
+    fn identity(&self, ty: &TypeExpr) -> Result<Option<Identity>> {
+        match ty {
+            TypeExpr::Bool
+            | TypeExpr::U32
+            | TypeExpr::U64
+            | TypeExpr::S32
+            | TypeExpr::S64
+            | TypeExpr::F32
+            | TypeExpr::F64 => Ok(Some(Identity::Copy)),
+            TypeExpr::String => Ok(Some(Identity::Clone)),
+            TypeExpr::Named(name) if !name.is_foreign() => match &self.named(name)?.kind {
+                TypeDefKind::Alias(target) => self.identity(target),
+                _ => Ok(None),
+            },
+            _ => Ok(None),
+        }
+    }
+
     fn emit_type(&self, out: &mut String, interface: &Interface, def: &TypeDef) -> Result<()> {
         let name = rust_ident(&pascal_case(&def.name), "type")?;
         let plain = self.plain_named(&QualifiedName {
@@ -1654,8 +1678,8 @@ impl Emitter<'_> {
             out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
         )?;
-        if is_u8(element) {
-            writeln!(out, "            value.clone()")?;
+        if is_u8(element) || self.identity(element)?.is_some() {
+            writeln!(out, "            ::core::clone::Clone::clone(value)")?;
         } else {
             writeln!(
                 out,
@@ -1669,7 +1693,7 @@ impl Emitter<'_> {
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
         )?;
-        if is_u8(element) {
+        if is_u8(element) || self.identity(element)?.is_some() {
             writeln!(out, "            ::core::result::Result::Ok(value)")?;
         } else {
             writeln!(
@@ -1715,11 +1739,14 @@ impl Emitter<'_> {
                     out,
                     "                ::core::option::Option::Some(value) => ::core::option::Option::Some({wrapper} {{"
                 )?;
-                writeln!(
-                    out,
-                    "                    values: value.iter().map(|item| {}).collect(),",
-                    self.encode_singular("item", &element)?
-                )?;
+                let values = match self.identity(&element)? {
+                    Some(_) => "::core::clone::Clone::clone(value)".to_string(),
+                    None => format!(
+                        "value.iter().map(|item| {}).collect()",
+                        self.encode_singular("item", &element)?
+                    ),
+                };
+                writeln!(out, "                    values: {values},")?;
                 writeln!(out, "                }}),")?;
                 writeln!(
                     out,
@@ -1761,11 +1788,17 @@ impl Emitter<'_> {
                 writeln!(out, "            }}")?;
             }
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
-                writeln!(
-                    out,
-                    "            value.as_ref().map(|value| {})",
-                    self.encode_singular("value", payload)?
-                )?;
+                match self.identity(payload)? {
+                    Some(Identity::Copy) => writeln!(out, "            *value")?,
+                    Some(Identity::Clone) => {
+                        writeln!(out, "            ::core::clone::Clone::clone(value)")?;
+                    }
+                    None => writeln!(
+                        out,
+                        "            value.as_ref().map(|value| {})",
+                        self.encode_singular("value", payload)?
+                    )?,
+                }
             }
         }
         writeln!(out, "        }}")?;
@@ -1777,16 +1810,23 @@ impl Emitter<'_> {
         match form {
             Form::List => {
                 let element = self.list_element(payload)?;
-                writeln!(
-                    out,
-                    "            ::core::result::Result::Ok(value.map(|value| {{"
-                )?;
-                writeln!(
-                    out,
-                    "                value.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()",
-                    self.decode_singular("item", &element, &label)?
-                )?;
-                writeln!(out, "            }}).transpose()?)")?;
+                if self.identity(&element)?.is_some() {
+                    writeln!(
+                        out,
+                        "            ::core::result::Result::Ok(value.map(|value| value.values))"
+                    )?;
+                } else {
+                    writeln!(
+                        out,
+                        "            ::core::result::Result::Ok(value.map(|value| {{"
+                    )?;
+                    writeln!(
+                        out,
+                        "                value.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()",
+                        self.decode_singular("item", &element, &label)?
+                    )?;
+                    writeln!(out, "            }}).transpose()?)")?;
+                }
             }
             Form::Option => {
                 let inner = self.option_payload(payload)?;
@@ -1814,11 +1854,15 @@ impl Emitter<'_> {
                 writeln!(out, "            }}).transpose()?)")?;
             }
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
-                writeln!(
-                    out,
-                    "            ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok({})).transpose()?)",
-                    self.decode_singular("value", payload, &label)?
-                )?;
+                if self.identity(payload)?.is_some() {
+                    writeln!(out, "            ::core::result::Result::Ok(value)")?;
+                } else {
+                    writeln!(
+                        out,
+                        "            ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok({})).transpose()?)",
+                        self.decode_singular("value", payload, &label)?
+                    )?;
+                }
             }
         }
         writeln!(out, "        }}")?;
@@ -2075,6 +2119,21 @@ impl Emitter<'_> {
         Ok(())
     }
 
+    fn copied(expr: &str) -> String {
+        expr.strip_prefix('&')
+            .map_or_else(|| format!("*{expr}"), str::to_owned)
+    }
+
+    fn widened(expr: &str, target: &str) -> String {
+        expr.strip_prefix('&').map_or_else(
+            || format!("{target}::from(*{expr})"),
+            |expr| format!("{target}::from({expr})"),
+        )
+    }
+    fn borrowed(expr: &str) -> &str {
+        expr.strip_prefix('&').unwrap_or(expr)
+    }
+
     fn encode_field(&self, expr: &str, ty: &TypeExpr) -> Result<String> {
         match self.form(ty)? {
             Form::List | Form::Option => self.encode_value(expr, ty),
@@ -2093,19 +2152,30 @@ impl Emitter<'_> {
             | TypeExpr::S32
             | TypeExpr::S64
             | TypeExpr::F32
-            | TypeExpr::F64
-            | TypeExpr::String => Ok(format!("(*{expr}).clone()")),
-            TypeExpr::U8 | TypeExpr::U16 => Ok(format!("u32::from(*{expr})")),
-            TypeExpr::S8 | TypeExpr::S16 => Ok(format!("i32::from(*{expr})")),
-            TypeExpr::List(element) if is_u8(element) => Ok(format!("(*{expr}).clone()")),
-            TypeExpr::List(element) => Ok(format!(
-                "({expr}).iter().map(|item| {}).collect()",
-                self.encode_singular("item", element)?
-            )),
-            TypeExpr::Option(payload) => Ok(format!(
-                "({expr}).as_ref().map(|value| {})",
-                self.encode_singular("value", payload)?
-            )),
+            | TypeExpr::F64 => Ok(Self::copied(expr)),
+            TypeExpr::String => Ok(format!("::core::clone::Clone::clone({expr})")),
+            TypeExpr::U8 | TypeExpr::U16 => Ok(Self::widened(expr, "u32")),
+            TypeExpr::S8 | TypeExpr::S16 => Ok(Self::widened(expr, "i32")),
+            TypeExpr::List(element) if is_u8(element) => {
+                Ok(format!("::core::clone::Clone::clone({expr})"))
+            }
+            TypeExpr::List(element) => match self.identity(element)? {
+                Some(_) => Ok(format!("::core::clone::Clone::clone({expr})")),
+                None => Ok(format!(
+                    "{}.iter().map(|item| {}).collect()",
+                    Self::borrowed(expr),
+                    self.encode_singular("item", element)?
+                )),
+            },
+            TypeExpr::Option(payload) => match self.identity(payload)? {
+                Some(Identity::Copy) => Ok(Self::copied(expr)),
+                Some(Identity::Clone) => Ok(format!("::core::clone::Clone::clone({expr})")),
+                None => Ok(format!(
+                    "{}.as_ref().map(|value| {})",
+                    Self::borrowed(expr),
+                    self.encode_singular("value", payload)?
+                )),
+            },
             TypeExpr::Result(result) => Ok(self.encode_inline_result(expr, result)?),
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
@@ -2139,17 +2209,23 @@ impl Emitter<'_> {
             | TypeExpr::S32
             | TypeExpr::S64
             | TypeExpr::F32
-            | TypeExpr::F64
-            | TypeExpr::String => Ok(format!("(*{expr}).clone()")),
-            TypeExpr::U8 | TypeExpr::U16 => Ok(format!("u32::from(*{expr})")),
-            TypeExpr::S8 | TypeExpr::S16 => Ok(format!("i32::from(*{expr})")),
-            TypeExpr::List(element) if is_u8(element) => Ok(format!("(*{expr}).clone()")),
+            | TypeExpr::F64 => Ok(Self::copied(expr)),
+            TypeExpr::String => Ok(format!("::core::clone::Clone::clone({expr})")),
+            TypeExpr::U8 | TypeExpr::U16 => Ok(Self::widened(expr, "u32")),
+            TypeExpr::S8 | TypeExpr::S16 => Ok(Self::widened(expr, "i32")),
+            TypeExpr::List(element) if is_u8(element) => {
+                Ok(format!("::core::clone::Clone::clone({expr})"))
+            }
             TypeExpr::List(element) => {
                 let wrapper = self.proto_singular_type(ty)?;
-                Ok(format!(
-                    "{wrapper} {{ values: {expr}.iter().map(|item| {}).collect() }}",
-                    self.encode_singular("item", element)?
-                ))
+                let values = match self.identity(element)? {
+                    Some(_) => format!("::core::clone::Clone::clone({expr})"),
+                    None => format!(
+                        "{expr}.iter().map(|item| {}).collect()",
+                        self.encode_singular("item", element)?
+                    ),
+                };
+                Ok(format!("{wrapper} {{ values: {values} }}"))
             }
             TypeExpr::Option(payload) => {
                 let wrapper = self.proto_singular_type(ty)?;
@@ -2262,14 +2338,20 @@ impl Emitter<'_> {
             | TypeExpr::S8
             | TypeExpr::S16 => Self::decode_primitive(expr, ty, identity),
             TypeExpr::List(element) if is_u8(element) => Ok(expr.to_string()),
-            TypeExpr::List(element) => Ok(format!(
-                "{expr}.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
-                self.decode_singular("item", element, identity)?
-            )),
-            TypeExpr::Option(payload) => Ok(format!(
-                "{expr}.map(|value| ::core::result::Result::Ok({})).transpose()?",
-                self.decode_singular("value", payload, identity)?
-            )),
+            TypeExpr::List(element) => match self.identity(element)? {
+                Some(_) => Ok(expr.to_string()),
+                None => Ok(format!(
+                    "{expr}.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
+                    self.decode_singular("item", element, identity)?
+                )),
+            },
+            TypeExpr::Option(payload) => match self.identity(payload)? {
+                Some(_) => Ok(expr.to_string()),
+                None => Ok(format!(
+                    "{expr}.map(|value| ::core::result::Result::Ok({})).transpose()?",
+                    self.decode_singular("value", payload, identity)?
+                )),
+            },
             TypeExpr::Result(result) => self.decode_inline_result(expr, result, identity),
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
@@ -2310,10 +2392,13 @@ impl Emitter<'_> {
             | TypeExpr::S8
             | TypeExpr::S16 => Self::decode_primitive(expr, ty, identity),
             TypeExpr::List(element) if is_u8(element) => Ok(expr.to_string()),
-            TypeExpr::List(element) => Ok(format!(
-                "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
-                self.decode_singular("item", element, identity)?
-            )),
+            TypeExpr::List(element) => match self.identity(element)? {
+                Some(_) => Ok(format!("{expr}.values")),
+                None => Ok(format!(
+                    "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
+                    self.decode_singular("item", element, identity)?
+                )),
+            },
             TypeExpr::Option(payload) => {
                 let wrapper = self.proto_singular_type(ty)?;
                 let wrapper_name = wrapper.rsplit("::").next().unwrap_or_default();
@@ -2374,10 +2459,13 @@ impl Emitter<'_> {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::from_proto({expr})?"))
                     }
-                    TypeDefKind::List(element) => Ok(format!(
-                        "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
-                        self.decode_singular("item", element, identity)?
-                    )),
+                    TypeDefKind::List(element) => match self.identity(element)? {
+                        Some(_) => Ok(format!("{expr}.values")),
+                        None => Ok(format!(
+                            "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
+                            self.decode_singular("item", element, identity)?
+                        )),
+                    },
                     TypeDefKind::Option(payload) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         let wrapper = self.proto_singular_type(ty)?;

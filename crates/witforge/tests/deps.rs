@@ -210,11 +210,6 @@ fn foreign_types_convert_across_versions() {
     let _ = fs::remove_dir_all(&out);
     let files = rust::plan(&root).unwrap();
     files.write(&out).unwrap();
-    let convert = fs::read_to_string(out.join("convert.rs")).unwrap();
-    assert!(
-        convert.contains("::core::result::Result::Ok((value).clone())"),
-        "{convert}"
-    );
     fs::remove_dir_all(&out).unwrap();
     compile_generated_rust(&root, "deps-convert-compile");
 }
