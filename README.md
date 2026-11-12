@@ -12,7 +12,7 @@ witforge checks a deliberately portable WIT subset, locks protobuf field and met
 generates stable Rust, protobuf, JSON Schema, glue, compatibility reports, and adapters between
 contract versions.
 
-Current release: **0.4.3**. The 1.0 release remains intentionally gated on successful independent
+Current release: **0.4.4**. The 1.0 release remains intentionally gated on successful independent
 consumer validation.
 
 ## Outputs
@@ -48,7 +48,7 @@ their normal language toolchain.
 ## Install
 
 ```sh
-cargo install witforge-cli --version 0.4.3 --locked
+cargo install witforge-cli --version 0.4.4 --locked
 witforge --version
 ```
 
@@ -184,7 +184,7 @@ example intentionally adds defaultable fields, so its adapters can convert old v
 Pin the Action to the same release used locally:
 
 ```yaml
-- uses: asamarts/witforge@v0.4.3
+- uses: asamarts/witforge@v0.4.4
   with:
     check: wit/v0.2
     diff-old: wit/v0.1

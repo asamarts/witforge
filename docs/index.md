@@ -39,4 +39,4 @@ It is a contract compiler, not a Wasm runtime, RPC framework, or replacement for
 - [GitHub Action](https://github.com/asamarts/witforge/blob/main/docs/design/action.md)
 - [Public API policy](https://github.com/asamarts/witforge/blob/main/docs/design/public-api.md)
 
-Current release: **0.4.3**. Rust MSRV: **1.88**. The 1.0 release remains gated on successful independent-consumer validation.
+Current release: **0.4.4**. Rust MSRV: **1.88**. The 1.0 release remains gated on successful independent-consumer validation.

@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.4] - 2026-11-12
+
+0.4.4 publishes the generated-output, documentation, and CI hardening completed after 0.4.3. It
+does not change the public library API, wire numbers, protobuf output, or JSON Schema output for a
+valid contract accepted by 0.4.3. Generated Rust glue changes to avoid redundant clone and decode
+work, and generated version adapters gain `# Errors` documentation; consumers that commit those
+Rust outputs should regenerate when upgrading.
 
 ### Changed
 

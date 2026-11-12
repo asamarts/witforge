@@ -10,7 +10,7 @@ title: Continuous integration
 Pin the Action to the same release used for local generation:
 
 ```yaml
-- uses: asamarts/witforge@v0.4.3
+- uses: asamarts/witforge@v0.4.4
   with:
     check: wit/v0.2
     diff-old: wit/v0.1
