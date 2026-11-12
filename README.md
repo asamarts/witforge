@@ -3,6 +3,7 @@
 [![CI](https://github.com/asamarts/witforge/actions/workflows/ci.yml/badge.svg)](https://github.com/asamarts/witforge/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/witforge-cli.svg)](https://crates.io/crates/witforge-cli)
 [![docs](https://img.shields.io/badge/docs-guide-blue.svg)](https://asamarts.github.io/witforge/)
+[![API docs](https://docs.rs/witforge/badge.svg)](https://docs.rs/witforge/latest/witforge/)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-brightgreen.svg)](Cargo.toml)
 
 **Compile one hand-written WIT contract into the runtime-independent artifacts its consumers
@@ -202,12 +203,13 @@ Rust Serde and JSON Schema project the same WIT values, but they do not define o
 wire format. Rust fields are snake_case; JSON Schema preserves WIT spelling, normally kebab-case.
 WIT `option<T>` permits `null` but does not make a schema property omittable.
 
-Read [JSON Schema and Rust Serde](https://asamarts.github.io/witforge/guide/json-projections.html)
-before applying both outputs to an existing JSON protocol.
+Read [JSON projections](https://asamarts.github.io/witforge/guide/json-projections.html) before
+choosing a JSON boundary.
 
 ## Documentation and examples
 
 - [Documentation site](https://asamarts.github.io/witforge/)
+- [API documentation](https://docs.rs/witforge/latest/witforge/)
 - [Quickstart](docs/quickstart.md)
 - [Single-version example](examples/single)
 - [Evolved-contract example](examples/evolved)

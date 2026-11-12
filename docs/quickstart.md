@@ -45,7 +45,6 @@ my-contract/
   wit/
     v0.1/
       contract.wit
-      wire.lock
 ```
 
 Start minimal:
@@ -62,15 +61,18 @@ world greeter {
 }
 ```
 
-Validate the contract and assign wire numbers:
+At this point, `contract.wit` is the only file in `v0.1`. Do not create `wire.lock` by hand.
+
+Create the lockfile, assign wire numbers, and validate the contract:
 
 ```sh
-witforge lock  my-contract/wit/v0.1 --first
+witforge lock my-contract/wit/v0.1 --first
 witforge check my-contract/wit/v0.1
 ```
 
-Commit `contract.wit` and `wire.lock`. The lockfile is append-only: generated protobuf field
-numbers and method ids must never change.
+`witforge lock --first` creates `my-contract/wit/v0.1/wire.lock`. Commit `contract.wit` and the
+generated `wire.lock` together. The lockfile is append-only: generated protobuf field numbers and
+method ids must never change.
 
 Generate each projection:
 

@@ -18,6 +18,8 @@ All notable changes to this project are documented here. The format follows
 - Removed the extra blank line at the end of generated `convert.rs`, and added a whole-tree CI
   whitespace check so committed output cannot preserve the same defect.
 - Kept wide documentation tables inside the mobile viewport with local horizontal scrolling.
+- Added direct guide and API-documentation links to the repository surface, and clarified that
+  `witforge lock --first` creates the first version's `wire.lock`.
 
 ## [0.4.4] - 2026-11-12
 
