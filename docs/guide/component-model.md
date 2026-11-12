@@ -17,7 +17,27 @@ witforge does not generate guest export shims or load components.
 
 ## Guest type reuse
 
-For compatible owned value types, Rust `wit_bindgen::generate!` can use `with` mappings to reuse witforge-generated types directly. This may avoid a second application conversion. It still performs required Canonical ABI memory work and couples the integration to wit-bindgen's generated API.
+Rust `wit_bindgen::generate!` can remap selected WIT types with `with`, but a Rust path match is
+not enough: the remapped type must provide every API wit-bindgen's generated Canonical ABI code
+uses. Verified with wit-bindgen 0.63.0:
+
+- owned records and payload variants can reuse witforge types when their complete reachable type
+  graph contains compatible primitives, strings, lists, options, records, and variants;
+- witforge enums cannot be remapped because wit-bindgen calls a generated hidden `_lift`
+  constructor;
+- witforge flags cannot be remapped because wit-bindgen expects the `bitflags` API: `empty`,
+  `from_bits_retain`, and `bits`;
+- a remapped record or variant containing one of those incompatible enum or flags types also
+  fails, even if the nested type itself is left generated.
+
+Keep enums, flags, and aggregates that contain them wit-bindgen-generated, then convert at the
+application boundary. Do not add wit-bindgen-specific hidden helpers or a `bitflags`-shaped API to
+witforge's runtime-independent types. If an adopter needs direct reuse, the cleaner change belongs
+upstream in wit-bindgen. Re-run a compile check when upgrading wit-bindgen because `with` is tied
+to its generated API.
+
+Type reuse avoids an application-level conversion for compatible values. It does not avoid the
+Canonical ABI's required lift/lower memory work.
 
 ## Host adapters
 

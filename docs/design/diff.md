@@ -147,3 +147,8 @@ stability. Generated output changes caused by an existing contract (for example 
 convention) are detected by each emitter's `--check`, not by `diff`. A future
 memberless-inventory or semantic-diff rule would extend this document rather than inferring from
 generated files.
+
+`diff` also does not currently report whether a generated new-to-old version conversion is
+guaranteed to fail for every value. Removing a non-defaultable field from a newer record causes
+that record's down-converter to return `ConversionError::MissingMember`; review the generated
+`convert.rs` until conversion-impact notes are added to the human, JSON, and diagnostic reports.

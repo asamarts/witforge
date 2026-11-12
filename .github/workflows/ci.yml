@@ -43,6 +43,11 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Reject whitespace errors in tracked files
+        shell: bash
+        run: |
+          empty_tree="$(git hash-object -t tree /dev/null)"
+          git diff --check "$empty_tree" HEAD
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo doc --workspace --no-deps

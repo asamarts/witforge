@@ -1,48 +1,79 @@
 ---
 layout: default
-title: JSON Schema and Rust Serde
+title: JSON projections
 ---
 
-# JSON Schema and Rust Serde
+# JSON projections
 
-witforge's Rust Serde and JSON Schema outputs project the same WIT values, but they do not define one identical JSON wire format.
-
-## Naming
+witforge can participate in three different JSON shapes. They project the same WIT values but do
+not define one interchangeable JSON wire format.
 
 For this WIT:
 
 ```wit
 record diagnostic {
   start-byte: u32,
+  id: u64,
+  note: option<string>,
 }
 ```
 
-Generated Rust uses `start_byte`, and derived Serde serializes:
+the default shapes are:
 
-```json
-{"start_byte": 4}
-```
+| Projection | Representative value |
+|---|---|
+| generated Rust with `--serde` | `{"start_byte":4,"id":9,"note":null}` |
+| generated Draft 7 JSON Schema | `{"start-byte":4,"id":9,"note":null}` |
+| emitted protobuf through proto3-JSON | `{"startByte":4,"id":"9"}` |
 
-The JSON Schema preserves the WIT property name:
+## Plain Rust Serde
 
-```json
-{"start-byte": 4}
-```
+WIT names become Rust identifiers, so `start-byte` becomes `start_byte`. Derived Serde uses that
+Rust spelling. `Option<T>` accepts an omitted field as `None` and serializes `None` as `null`.
+Rust integer types serialize as JSON numbers, including `u64` and `s64`.
 
-## Optional values
+## Draft 7 JSON Schema
 
-A WIT `option<T>` means the value may be null. The generated schema still requires the record property. Derived Rust `Option<T>` accepts an omitted field as `None` and serializes `None` as `null`.
+The schema preserves the WIT member spelling, including `start-byte`. Every record property is
+required and records set `additionalProperties: false`. `option<T>` permits `null` as the
+property's value; it does not make the property omittable. Integer schemas use the WIT type's
+numeric minimum and maximum.
 
-## Defaults
+The schema describes a WIT-shaped JSON value. It does not describe Serde's Rust-identifier shape
+or protobuf's JSON mapping.
 
-WIT does not define application defaults such as "missing severity means warning." Keep those defaults in an explicit application adapter and test them with fixtures.
+## Proto3-JSON
 
-## Existing JSON protocols
+The emitted `.proto` determines this projection. Its standard JSON mapping uses:
 
-Before adopting generated types for an existing protocol:
+- lowerCamelCase output names, so protobuf `start_byte` becomes `startByte`; parsers also accept
+  the original protobuf spelling `start_byte`;
+- decimal strings for `u64` and `s64`;
+- base64 strings for bytes and strings for non-finite floats;
+- enum names rather than integer values in normal output;
+- omitted fields for absent optional values. A WIT `option<T>` containing `None` is therefore
+  normally absent rather than the explicit `null` emitted by Rust Serde.
 
-1. test full and minimal payloads against generated Serde;
-2. decide whether `null` is accepted;
-3. compare property names with generated JSON Schema;
-4. keep a custom wire schema if naming or presence differs;
-5. do not claim the WIT-shaped schema validates a different application JSON profile.
+Parsing valid proto3-JSON does not enforce all WIT semantics. Required presence, narrow integer
+ranges, closed enums, and selected variant/result cases still need the checks described in
+[Non-Rust implementations](non-rust.html) or the generated Rust glue.
+
+## Application defaults
+
+WIT does not define defaults such as "missing severity means warning." Keep application defaults
+in an explicit adapter and test them with fixtures.
+
+## Choosing a JSON boundary
+
+Before adopting generated output for an existing protocol:
+
+1. choose exactly one authoritative JSON profile;
+2. test full and minimal payloads, naming, `null`, omission, 64-bit integers, enums, and bytes;
+3. keep a custom wire schema or adapter when the existing protocol differs;
+4. do not validate one projection with another projection's schema;
+5. do not describe a custom application profile as generated unless its actual names and
+   presence rules match.
+
+An opt-in naming mode could align future Serde output with WIT names, or a future schema mode could
+describe Serde names. Either changes the JSON behavior of generated per-version types and must not
+be applied retroactively to a frozen version.

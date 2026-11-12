@@ -42,8 +42,8 @@ directly when you only need guest and host Component Model bindings.
 
 witforge does not load components, generate protobuf services, own process framing, or define
 callbacks, retries, capabilities, resource limits, discovery, or failure policy. Direct Go source
-generation is not available yet; non-Rust consumers currently use the emitted protobuf schema and
-their normal language toolchain.
+generation is not available yet; non-Rust consumers use the emitted protobuf schema, their normal
+language toolchain, and the documented [WIT decode profile](docs/guide/non-rust.md).
 
 ## Install
 

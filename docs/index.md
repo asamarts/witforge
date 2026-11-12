@@ -26,7 +26,8 @@ It is a contract compiler, not a Wasm runtime, RPC framework, or replacement for
 
 ## Important boundaries
 
-- [JSON Schema and Rust Serde](guide/json-projections.html)
+- [JSON projections](guide/json-projections.html)
+- [Non-Rust implementation rules](guide/non-rust.html)
 - [wit-bindgen, Wasmtime, and witforge](guide/component-model.html)
 - [Runnable examples](guide/examples.html)
 

@@ -40,6 +40,9 @@ Both scripts need podman and the `gh` CLI logged in to the account that owns the
 
 The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 
+- **tracked whitespace**: the lint job runs `git diff --check` from Git's empty tree to `HEAD`, so
+  trailing whitespace and blank lines at end-of-file are rejected even when they entered in an
+  earlier commit rather than the current diff.
 - **workflows and scripts**: pinned, checksum-verified actionlint and shellcheck (the runner
   image's shellcheck changes version, and with it findings and codes) over both workflows, with
   shellcheck's masked-return check enabled for every `run:` script (a `$(...)` whose failure

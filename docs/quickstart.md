@@ -198,15 +198,22 @@ the [Action specification](https://github.com/asamarts/witforge/blob/main/docs/d
 
 ## Non-Rust consumers
 
-Use the protobuf output with the normal generators for your language:
+Use the protobuf output with the normal generator for the target language:
 
-- Go: `protoc-gen-go` / `prost`-equivalent tooling;
+- Go: `protoc-gen-go`;
 - TypeScript: `ts-proto` or another protobuf generator;
-- Python: `protoc`/`grpcio-tools` or another protobuf generator;
+- Python: `protoc`, `grpcio-tools`, or another protobuf generator;
 - Java, Kotlin, C#, C++, Swift, and others: their standard protobuf generators.
 
-witforge intentionally does not duplicate `wit-bindgen`'s runtime WIT bindings. The stable
-protobuf numbers and JSON Schema are the cross-language contract surface.
+The generated language type is only the protobuf projection. Proto3 cannot express every WIT
+decode rule: narrow integers need range checks, required `optional` and message fields need
+presence checks, enums are closed, and variant/result `oneof` values must select a known case.
+Implement those rules in the non-Rust adapter and test invalid as well as valid values. The
+[Non-Rust implementation guide](guide/non-rust.html) specifies the complete profile.
+
+witforge intentionally does not duplicate `wit-bindgen`'s runtime WIT bindings or own transport
+framing. The stable protobuf numbers and JSON Schema are cross-language contract artifacts, not a
+complete application protocol.
 
 ## Supported WIT subset
 

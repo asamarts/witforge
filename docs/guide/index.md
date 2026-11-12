@@ -11,6 +11,7 @@ title: Guide
 | [Contract authoring](contract-authoring.html) | Version directories, WIT subset, lockfiles, dependencies |
 | [Generation](generation.html) | Rust, protobuf, schema, glue, config, and output ownership |
 | [Generated output](generated-output.html) | Actual Rust, protobuf, JSON Schema, glue, and adapter output |
+| [Non-Rust implementations](non-rust.html) | Protobuf code generation, WIT decode rules, and conformance tests |
 | [Evolution](evolution.html) | New versions, diff, adapters, and released contracts |
 | [CI](ci.html) | Stale output, compatibility, release freeze, and the GitHub Action |
 | [JSON projections](json-projections.html) | Rust Serde versus WIT-shaped JSON Schema |

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Corrected the Component Model guide: wit-bindgen type remapping works for compatible records
+  and variants, but not witforge enums, flags, or aggregates containing them with wit-bindgen
+  0.63.0.
+- Published the semantic decode rules non-Rust protobuf implementations must enforce, and
+  documented the distinct plain-Rust Serde, WIT-shaped JSON Schema, and proto3-JSON projections.
+- Documented that `diff` does not yet identify a new-to-old converter that must fail for every
+  value.
+- Removed the extra blank line at the end of generated `convert.rs`, and added a whole-tree CI
+  whitespace check so committed output cannot preserve the same defect.
+
 ## [0.4.4] - 2026-11-12
 
 0.4.4 publishes the generated-output, documentation, and CI hardening completed after 0.4.3. It

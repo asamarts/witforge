@@ -40,9 +40,13 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
     writeln!(out, "// source: {}:{}", package.namespace, package.name)?;
     writeln!(out)?;
     write_error(&mut out)?;
-    for (old, new) in pairs {
+    for (index, &(old, new)) in pairs.iter().enumerate() {
         emit_pair(&mut out, old, new, Direction::Forward)?;
+        writeln!(out)?;
         emit_pair(&mut out, new, old, Direction::Reverse)?;
+        if index + 1 != pairs.len() {
+            writeln!(out)?;
+        }
     }
     Ok(Some(out))
 }
@@ -157,7 +161,6 @@ fn emit_pair(
         writeln!(out)?;
     }
     writeln!(out, "}}")?;
-    writeln!(out)?;
     Ok(())
 }
 
