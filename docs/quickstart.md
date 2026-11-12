@@ -270,25 +270,20 @@ serde = true
 The default generated output is unchanged; enabling Serde requires the consumer's `serde` crate
 with the `derive` feature. `--serde` and `--no-serde` override the configuration.
 
-## JSON Schema and Rust Serde
+## JSON projections
 
-These outputs project the same WIT value model, but they do not define one identical JSON wire
-format:
+Plain Rust Serde, Draft 7 JSON Schema, and proto3-JSON project the same WIT values differently:
 
-- generated Rust Serde uses Rust identifiers, so a WIT field such as `start-byte` is serialized
-  as `start_byte`;
-- JSON Schema preserves the WIT member name, so the corresponding property is `start-byte`;
-- every record property is required in the schema; `option<T>` permits `null` as the property's
-  value rather than making the property omittable;
-- derived Rust `Option<T>` accepts a missing field as `None` and serializes `None` as `null`;
-- neither projection supplies application-specific defaults such as “missing severity means
-  warning.”
+- generated Rust Serde uses Rust identifiers, so `start-byte` becomes `start_byte`;
+- JSON Schema preserves the WIT name `start-byte`, requires every record property, and permits
+  `null` for `option<T>`;
+- proto3-JSON uses lowerCamelCase (`startByte`), decimal strings for 64-bit integers, and normally
+  omits an absent optional value;
+- none of the projections supplies application defaults such as "missing severity means warning."
 
-Use the schema for the WIT-shaped JSON value it describes. If an existing JSON protocol has
-snake_case names, omitted fields, numeric enum conventions, or defaults, exercise the generated
-Serde types against committed fixtures and keep those semantics in an explicit application
-adapter. Do not claim that the generated JSON Schema validates that protocol unless its names and
-presence rules actually match.
+Choose one authoritative JSON profile. Keep an explicit application adapter when an existing
+protocol differs, and do not validate one projection with another projection's schema. See
+[JSON projections](guide/json-projections.html) for the full comparison.
 
 ## Examples
 
