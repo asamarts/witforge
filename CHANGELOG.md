@@ -20,6 +20,8 @@ All notable changes to this project are documented here. The format follows
 - Kept wide documentation tables inside the mobile viewport with local horizontal scrolling.
 - Added direct guide and API-documentation links to the repository surface, and clarified that
   `witforge lock --first` creates the first version's `wire.lock`.
+- Replaced generated-glue test rlib scanning with isolated Cargo compile/run harnesses, so clean
+  hosted macOS jobs no longer depend on another test having compiled `prost` first.
 
 ## [0.4.4] - 2026-11-12
 

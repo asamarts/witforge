@@ -2,27 +2,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use witforge::emit::{glue, proto, rust};
 use witforge::load;
 use witforge::model;
 
+mod support;
+use support::run_cargo_program;
+
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-world/wit")
-}
-
-fn rlibs(deps: &Path, prefix: &str) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(deps)
-        .unwrap()
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let name = path.file_name()?.to_string_lossy();
-            (name.starts_with(&format!("lib{prefix}-")) && name.ends_with(".rlib")).then_some(path)
-        })
-        .collect();
-    paths.sort();
-    paths
 }
 
 fn generated_file(dir: &Path, name: &str) -> PathBuf {
@@ -142,44 +131,6 @@ fn main() {
     );
     fs::write(out.join("main.rs"), main).unwrap();
 
-    let deps = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let executable = out.join(format!("deps-glue-run{}", std::env::consts::EXE_SUFFIX));
-    let mut last_error = None;
-    for prost in rlibs(&deps, "prost") {
-        let output = Command::new("rustc")
-            .args([
-                "--edition=2024",
-                "--crate-type=bin",
-                "-L",
-                &format!("dependency={}", deps.display()),
-                "--extern",
-                &format!("prost={}", prost.display()),
-                "-o",
-            ])
-            .arg(&executable)
-            .arg(out.join("main.rs"))
-            .output()
-            .unwrap();
-        if output.status.success() {
-            let run = Command::new(&executable).output().unwrap();
-            assert!(
-                run.status.success(),
-                "dependency glue program failed:\n{}",
-                String::from_utf8_lossy(&run.stderr)
-            );
-            fs::remove_dir_all(&out).unwrap();
-            return;
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("E0514") {
-            last_error = Some(stderr.into_owned());
-            continue;
-        }
-        panic!("dependency glue did not compile:\n{stderr}");
-    }
-    panic!("no usable prost rlib combination: {last_error:?}");
+    run_cargo_program(&out, "prost = \"0.14\"\n", "dependency glue compile/run");
+    fs::remove_dir_all(&out).unwrap();
 }

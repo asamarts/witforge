@@ -2,13 +2,15 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use prost::Message as _;
 use witforge::emit::{glue, proto, rust};
 use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model;
+
+mod support;
+use support::run_cargo_program;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -187,80 +189,12 @@ fn conversions_compile_and_run_against_generated_types() {
     main.push_str(&fs::read_to_string(root.join("main.rs")).unwrap());
     fs::write(out.join("main.rs"), main).unwrap();
 
-    let executable = out.join(format!("glue-run{}", std::env::consts::EXE_SUFFIX));
-    let deps = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let candidates = |prefix: &str| {
-        let mut paths: Vec<PathBuf> = fs::read_dir(&deps)
-            .unwrap()
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                let name = path.file_name()?.to_string_lossy();
-                (name.starts_with(&format!("lib{prefix}-")) && name.ends_with(".rlib"))
-                    .then_some(path)
-            })
-            .collect();
-        paths.sort();
-        paths
-    };
-    let prosts = candidates("prost");
-    let pbjsons = candidates("pbjson");
-    let serdes = candidates("serde");
-    let serde_jsons = candidates("serde_json");
-    let mut last_error = None;
-    for prost in &prosts {
-        for pbjson in &pbjsons {
-            for serde in &serdes {
-                for serde_json in &serde_jsons {
-                    let output = Command::new("rustc")
-                        .args([
-                            "--edition=2024",
-                            "--crate-type=bin",
-                            "-L",
-                            &format!("dependency={}", deps.display()),
-                            "--extern",
-                            &format!("prost={}", prost.display()),
-                            "--extern",
-                            &format!("pbjson={}", pbjson.display()),
-                            "--extern",
-                            &format!("serde={}", serde.display()),
-                            "--extern",
-                            &format!("serde_json={}", serde_json.display()),
-                            "-o",
-                        ])
-                        .arg(&executable)
-                        .arg(out.join("main.rs"))
-                        .output()
-                        .unwrap();
-                    if output.status.success() {
-                        let run = Command::new(&executable).output().unwrap();
-                        assert!(
-                            run.status.success(),
-                            "generated glue program failed:\n{}",
-                            String::from_utf8_lossy(&run.stderr)
-                        );
-                        fs::remove_dir_all(&out).unwrap();
-                        return;
-                    }
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("E0514")
-                        || stderr.contains("multiple different versions of crate `serde_core`")
-                    {
-                        // The test directory also contains rlibs from earlier Cargo builds
-                        // with different feature sets. Try the remaining combinations before
-                        // treating the generated glue as broken.
-                        last_error = Some(stderr.into_owned());
-                        continue;
-                    }
-                    panic!("generated glue did not compile:\n{stderr}");
-                }
-            }
-        }
-    }
-    panic!("no usable prost/pbjson/serde rlib combination found: {last_error:?}");
+    run_cargo_program(
+        &out,
+        "prost = \"0.14\"\npbjson = \"0.9\"\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n",
+        "generated glue compile/run",
+    );
+    fs::remove_dir_all(&out).unwrap();
 }
 
 #[test]

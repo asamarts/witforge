@@ -1,10 +1,13 @@
 //! End-to-end coverage for the representative alint plugin contract.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use prost::Message as _;
+
+mod support;
+use support::run_cargo_program;
 
 fn witforge() -> Command {
     Command::new(env!("CARGO_BIN_EXE_witforge"))
@@ -21,19 +24,6 @@ fn copy_tree(source: &Path, destination: &Path) {
             fs::copy(entry.path(), target).unwrap();
         }
     }
-}
-
-fn rlibs(deps: &Path, prefix: &str) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(deps)
-        .unwrap()
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let name = path.file_name()?.to_string_lossy();
-            (name.starts_with(&format!("lib{prefix}-")) && name.ends_with(".rlib")).then_some(path)
-        })
-        .collect();
-    paths.sort();
-    paths
 }
 
 #[allow(clippy::too_many_lines)]
@@ -221,61 +211,10 @@ fn alint_contract_generates_compiles_and_roundtrips() {
     );
     fs::write(crate_root.join("main.rs"), main).unwrap();
 
-    let deps = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let executable = temp.join(format!("alint-e2e{}", std::env::consts::EXE_SUFFIX));
-    let mut last_error = None;
-    for prost in rlibs(&deps, "prost") {
-        for pbjson in rlibs(&deps, "pbjson") {
-            for serde in rlibs(&deps, "serde") {
-                for serde_json in rlibs(&deps, "serde_json") {
-                    let output = Command::new("rustc")
-                        .args([
-                            "--edition=2024",
-                            "--crate-type=bin",
-                            "-L",
-                            &format!("dependency={}", deps.display()),
-                            "--extern",
-                            &format!("prost={}", prost.display()),
-                            "--extern",
-                            &format!("pbjson={}", pbjson.display()),
-                            "--extern",
-                            &format!("serde={}", serde.display()),
-                            "--extern",
-                            &format!("serde_json={}", serde_json.display()),
-                            "-o",
-                        ])
-                        .arg(&executable)
-                        .arg(crate_root.join("main.rs"))
-                        .output()
-                        .unwrap();
-                    if output.status.success() {
-                        let run = Command::new(&executable).output().unwrap();
-                        assert!(
-                            run.status.success(),
-                            "alint e2e failed:\n{}",
-                            String::from_utf8_lossy(&run.stderr)
-                        );
-                        fs::remove_dir_all(&temp).unwrap();
-                        return;
-                    }
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("E0514")
-                        || stderr.contains("multiple different versions of crate `serde_core`")
-                    {
-                        // The test directory also contains rlibs from earlier Cargo builds
-                        // with different feature sets. Try the remaining combinations before
-                        // treating the generated glue as broken.
-                        last_error = Some(stderr.into_owned());
-                        continue;
-                    }
-                    panic!("alint glue did not compile:\n{stderr}");
-                }
-            }
-        }
-    }
-    panic!("no usable prost/pbjson/serde rlib combination: {last_error:?}");
+    run_cargo_program(
+        &crate_root,
+        "prost = \"0.14\"\npbjson = \"0.9\"\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n",
+        "alint generated glue compile/run",
+    );
+    fs::remove_dir_all(&temp).unwrap();
 }
