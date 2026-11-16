@@ -208,8 +208,7 @@ pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
 ///
 /// The notes do not change any compatibility verdict or count. They name a shared record type
 /// whose older version requires a member the newer version removed, when that member's type has
-/// no default, so the generated newer-to-older converter returns `MissingMember` for every
-/// input.
+/// no default, so a newer-to-older conversion returns `MissingMember` for every input.
 ///
 /// # Errors
 ///
