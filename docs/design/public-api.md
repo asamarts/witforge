@@ -25,9 +25,12 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::json_schema` | `HEADER`, `plan`, `generate`, `check`, `emit_version` |
 | `emit::glue` | `HEADER`, `plan`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
 | `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `absolute` |
-| `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `compare` |
+| `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `DiffAnalysis`, `compare`, `compare_with_impacts` |
 | `diagnostic` | `Diagnostic`, `Position`, `Severity` |
 | `subset` | `Violation`, `check` |
+
+`diff::compare_with_impacts` returns the same `DiffReport` as `diff::compare` plus informational
+`ConversionImpact` notes. The notes do not change compatibility counts or `--check` behavior.
 
 `Contract` is opaque: its `wit-parser` fields are crate-private and cannot be constructed or
 mutated by downstream code.

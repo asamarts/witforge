@@ -22,12 +22,13 @@
 //! generated code, or the component type. Dependency metadata is part of the exact pinned graph;
 //! a graph mismatch is refused before local declarations are compared.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::emit::defaults::default_expr;
 use crate::emit::versions::ensure_same_dependency_graph;
 use crate::lock::{PackageName, WireLock};
 use crate::model::{
@@ -154,11 +155,39 @@ pub struct DiffReport {
     pub summary: Summary,
 }
 
+/// One record type whose new-to-old conversion is guaranteed to fail.
+///
+/// A newer-to-older conversion returns `ConversionError::MissingMember` for every input when the
+/// older record requires a member the newer version removed and that member's type has no
+/// default. For adjacent versions this is the generated `convert.rs` adapter; for other pairs it
+/// is the same contract-level consequence. This is stronger than a removed variant or enum case,
+/// which fails only for values that use the removed case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionImpact {
+    /// The record type's WIT path, such as `types/task`.
+    pub type_path: String,
+    /// The newer source version the conversion starts from.
+    pub from_version: Version,
+    /// The older target version the conversion cannot produce.
+    pub to_version: Version,
+    /// The older record member the newer version cannot supply.
+    pub missing_member: String,
+    /// The canonical WIT member path, such as `types/task.required`.
+    pub missing_path: String,
+}
+
+/// A complete comparison plus its guaranteed conversion-impact notes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffAnalysis {
+    /// The compatibility report.
+    pub report: DiffReport,
+    /// Guaranteed new-to-old conversion failures, in deterministic type-path order.
+    pub conversion_impacts: Vec<ConversionImpact>,
+}
+
 /// Compare two version directories, or the highest version under two WIT roots.
 ///
-/// A path containing `wire.lock` is a version directory. Any other path is a WIT root, and
-/// the WIT-root loader selects its highest version. Both endpoints must declare the same
-/// `namespace:name` and resolve the identical pinned dependency graph.
+/// This is [`compare_with_impacts`] without the conversion-impact notes.
 ///
 /// # Errors
 ///
@@ -167,6 +196,25 @@ pub struct DiffReport {
 /// different package names, or mismatched dependency graphs. Contract violations carry
 /// [`ContractError`].
 pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
+    compare_with_impacts(old, new).map(|analysis| analysis.report)
+}
+
+/// Compare two version directories, or the highest version under two WIT roots, and report
+/// guaranteed new-to-old conversion failures.
+///
+/// A path containing `wire.lock` is a version directory. Any other path is a WIT root, and
+/// the WIT-root loader selects its highest version. Both endpoints must declare the same
+/// `namespace:name` and resolve the identical pinned dependency graph.
+///
+/// The notes do not change any compatibility verdict or count. They name a shared record type
+/// whose older version requires a member the newer version removed, when that member's type has
+/// no default, so the generated newer-to-older converter returns `MissingMember` for every
+/// input.
+///
+/// # Errors
+///
+/// Returns the same errors as [`compare`].
+pub fn compare_with_impacts(old: &Path, new: &Path) -> Result<DiffAnalysis> {
     let old = load_endpoint(old)
         .with_context(|| format!("failed to read the old contract {}", old.display()))?;
     let new = load_endpoint(new)
@@ -193,12 +241,68 @@ pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
             .then_with(|| left.element.cmp(&right.element))
     });
     let summary = summarize(&changes);
-    Ok(DiffReport {
-        old: old.endpoint,
-        new: new.endpoint,
-        changes,
-        summary,
+    let conversion_impacts = conversion_impacts(&old, &new)?;
+    Ok(DiffAnalysis {
+        report: DiffReport {
+            old: old.endpoint,
+            new: new.endpoint,
+            changes,
+            summary,
+        },
+        conversion_impacts,
     })
+}
+
+fn conversion_impacts(old: &Loaded, new: &Loaded) -> Result<Vec<ConversionImpact>> {
+    let mut impacts = Vec::new();
+    for old_interface in &old.model.interfaces {
+        let Some(new_interface) = new.model.interface(&old_interface.name) else {
+            continue;
+        };
+        for old_type in &old_interface.types {
+            let Some(new_type) = new_interface
+                .types
+                .iter()
+                .find(|new_type| new_type.name == old_type.name)
+            else {
+                continue;
+            };
+            let (TypeDefKind::Record(old_fields), TypeDefKind::Record(new_fields)) =
+                (&old_type.kind, &new_type.kind)
+            else {
+                continue;
+            };
+            let mut missing = None;
+            for old_field in old_fields {
+                if new_fields
+                    .iter()
+                    .any(|new_field| new_field.name == old_field.name)
+                {
+                    continue;
+                }
+                if default_expr(&old.model, &old_field.ty)?.is_none() {
+                    missing = Some(old_field);
+                    break;
+                }
+            }
+            if let Some(field) = missing {
+                let type_path = format!("{}/{}", old_interface.name, old_type.name);
+                impacts.push(ConversionImpact {
+                    type_path: type_path.clone(),
+                    from_version: new.model.package.version,
+                    to_version: old.model.package.version,
+                    missing_member: field.name.clone(),
+                    missing_path: format!("{type_path}.{}", field.name),
+                });
+            }
+        }
+    }
+    impacts.sort_by(|left, right| {
+        left.type_path
+            .cmp(&right.type_path)
+            .then_with(|| left.missing_member.cmp(&right.missing_member))
+    });
+    Ok(impacts)
 }
 
 fn summarize(changes: &[Change]) -> Summary {
@@ -619,11 +723,12 @@ impl Builder<'_> {
         let parent = format!("{}/{}", interface.name, old.name);
         let old_names: Vec<String> = old_fields.iter().map(|field| field.name.clone()).collect();
         let new_names: Vec<String> = new_fields.iter().map(|field| field.name.clone()).collect();
-        let defaulted: BTreeSet<String> = new_fields
-            .iter()
-            .filter(|field| defaultable(&self.new.model, &field.ty))
-            .map(|field| field.name.clone())
-            .collect();
+        let mut defaulted = BTreeSet::new();
+        for field in new_fields {
+            if default_expr(&self.new.model, &field.ty)?.is_some() {
+                defaulted.insert(field.name.clone());
+            }
+        }
         self.compare_members(
             &member_pairs(self.old, &parent, &old_names)?,
             &member_pairs(self.new, &parent, &new_names)?,
@@ -1051,41 +1156,5 @@ fn source_type(ty: &TypeExpr) -> String {
                 .as_deref()
                 .map_or_else(|| "_".to_string(), source_type),
         ),
-    }
-}
-
-fn defaultable(model: &Model, ty: &TypeExpr) -> bool {
-    defaultable_inner(model, ty, &mut HashSet::new())
-}
-
-fn defaultable_inner(model: &Model, ty: &TypeExpr, visiting: &mut HashSet<String>) -> bool {
-    match ty {
-        TypeExpr::Option(_) | TypeExpr::List(_) => true,
-        TypeExpr::Named(name) => {
-            let key = name.to_string();
-            if !visiting.insert(key.clone()) {
-                return false;
-            }
-            let found = model.type_def(name).is_some_and(|def| match &def.kind {
-                TypeDefKind::Option(_) | TypeDefKind::List(_) => true,
-                TypeDefKind::Alias(target) => defaultable_inner(model, target, visiting),
-                _ => false,
-            });
-            visiting.remove(&key);
-            found
-        }
-        TypeExpr::Bool
-        | TypeExpr::U8
-        | TypeExpr::U16
-        | TypeExpr::U32
-        | TypeExpr::U64
-        | TypeExpr::S8
-        | TypeExpr::S16
-        | TypeExpr::S32
-        | TypeExpr::S64
-        | TypeExpr::F32
-        | TypeExpr::F64
-        | TypeExpr::String
-        | TypeExpr::Result(_) => false,
     }
 }

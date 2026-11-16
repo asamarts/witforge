@@ -6,16 +6,15 @@
 //! deliberately explicit and fallible: evolution can remove a field or a case, and a conversion
 //! must report that it cannot reconstruct it instead of inventing a value.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail};
 
+use crate::emit::defaults::default_expr;
 use crate::emit::rust::{HEADER, pascal_case, rust_ident, snake_case, version_module_name};
 use crate::emit::versions::Version;
-use crate::model::{
-    Case, Field, Interface, Model, QualifiedName, ResultExpr, TypeDef, TypeDefKind, TypeExpr,
-};
+use crate::model::{Case, Field, Interface, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
 
 /// The shared error type generated in `convert.rs`.
 const ERROR: &str = "super::super::ConversionError";
@@ -860,43 +859,6 @@ fn rust_type_expr(version: &Version, ty: &TypeExpr, version_alias: &str) -> Resu
             };
             Ok(format!("::core::result::Result<{ok}, {err}>"))
         }
-    }
-}
-
-/// The default value for a defaultable target field, or `None` if the type has no default.
-fn default_expr(model: &Model, ty: &TypeExpr) -> Result<Option<&'static str>> {
-    default_expr_inner(model, ty, &mut HashSet::new())
-}
-
-fn default_expr_inner(
-    model: &Model,
-    ty: &TypeExpr,
-    visiting: &mut HashSet<QualifiedName>,
-) -> Result<Option<&'static str>> {
-    match ty {
-        TypeExpr::Option(_) => Ok(Some("::core::option::Option::None")),
-        TypeExpr::List(_) => Ok(Some("::std::vec::Vec::new()")),
-        TypeExpr::Named(name) => {
-            let Some(def) = model.type_def(name) else {
-                bail!("type `{name}` is not in the model");
-            };
-            if !visiting.insert(name.clone()) {
-                return Ok(None);
-            }
-            let result = match &def.kind {
-                TypeDefKind::Option(_) | TypeDefKind::Alias(TypeExpr::Option(_)) => {
-                    Ok(Some("::core::option::Option::None"))
-                }
-                TypeDefKind::List(_) | TypeDefKind::Alias(TypeExpr::List(_)) => {
-                    Ok(Some("::std::vec::Vec::new()"))
-                }
-                TypeDefKind::Alias(target) => default_expr_inner(model, target, visiting),
-                _ => Ok(None),
-            };
-            visiting.remove(name);
-            result
-        }
-        _ => Ok(None),
     }
 }
 

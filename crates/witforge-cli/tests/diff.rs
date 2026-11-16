@@ -34,6 +34,20 @@ fn lock(root: &Path, version: &str) {
     );
 }
 
+fn lock_against(root: &Path, version: &str, previous: &str) {
+    let output = run(&[
+        "lock",
+        &root.join(version).display().to_string(),
+        "--against",
+        &root.join(previous).join("wire.lock").display().to_string(),
+    ]);
+    assert!(
+        output.status.success(),
+        "lock {version} --against {previous}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn diff(old: &Path, new: &Path, extra: &[&str]) -> Output {
     let mut command = witforge();
     command.arg("diff").arg(old).arg(new).args(extra);
@@ -656,6 +670,161 @@ interface types { record task { id: u8 } }
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("stale"), "{stderr}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_reports_guaranteed_down_conversion_failures() {
+    let root = workspace("conversion-impact");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types {
+    record task { id: u64, required: string, optional: option<string>, listed: list<u8> }
+    record second { id: u64, also-required: u32 }
+}
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types {
+    record task { id: u64 }
+    record second { id: u64 }
+}
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    lock_against(&root, "new/v0.2", "old/v0.1");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let impacts = report["conversion_impacts"].as_array().unwrap();
+    assert_eq!(impacts.len(), 2, "{report}");
+    let task = impacts
+        .iter()
+        .find(|impact| impact["type_path"] == "types/task")
+        .expect("task impact");
+    assert_eq!(task["from_version"], "0.2.0");
+    assert_eq!(task["to_version"], "0.1.0");
+    assert_eq!(task["missing_member"], "required");
+    assert_eq!(task["missing_path"], "types/task.required");
+    let second = impacts
+        .iter()
+        .find(|impact| impact["type_path"] == "types/second")
+        .expect("second impact");
+    assert_eq!(second["missing_member"], "also-required");
+    assert_eq!(second["missing_path"], "types/second.also-required");
+    // Defaultable removals (`optional` and `listed`) are reconstructed, so they have no note.
+    assert!(impacts.iter().all(|impact| {
+        impact["missing_member"] != "optional" && impact["missing_member"] != "listed"
+    }));
+    // The notes are not changes: every removal is still one change and one breaking verdict.
+    assert_eq!(report["summary"]["changes"], 4);
+    assert_eq!(report["summary"]["breaking"], 4);
+    assert_eq!(report["summary"]["wire_breaking"], 0);
+
+    let human = diff(&old, &new, &[]);
+    assert!(human.status.success(), "{human:?}");
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains("note: new-to-old conversion for `types/task`"),
+        "{text}"
+    );
+    assert!(text.contains("types/task.required"), "{text}");
+    assert!(text.contains("0.2.0 -> 0.1.0"), "{text}");
+
+    let diagnostics = diff(&old, &new, &["--format", "json"]);
+    assert!(diagnostics.status.success(), "{diagnostics:?}");
+    let envelope: serde_json::Value = serde_json::from_slice(&diagnostics.stdout).unwrap();
+    let note = envelope["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| {
+            diagnostic["code"] == "WF3003" && diagnostic["path"] == "types/task.required"
+        })
+        .expect("WF3003 diagnostic");
+    assert_eq!(note["severity"], "note");
+
+    let sarif = diff(&old, &new, &["--format", "sarif"]);
+    assert!(sarif.status.success(), "{sarif:?}");
+    let sarif: serde_json::Value = serde_json::from_slice(&sarif.stdout).unwrap();
+    assert!(
+        sarif["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|result| result["ruleId"] == "WF3003" && result["level"] == "note")
+    );
+
+    let checked = diff(&old, &new, &["--check"]);
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    assert!(
+        String::from_utf8_lossy(&checked.stderr).contains("4 breaking change(s)"),
+        "{checked:?}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_reports_a_rename_as_a_missing_old_member_only() {
+    let root = workspace("conversion-impact-rename");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types {
+    record item { old-name: string, optional: option<string> }
+    variant event { kept, removed }
+}
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types {
+    record item { new-name: string }
+    variant event { kept }
+}
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    lock_against(&root, "new/v0.2", "old/v0.1");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let impacts = report["conversion_impacts"].as_array().unwrap();
+    assert_eq!(impacts.len(), 1, "{report}");
+    assert_eq!(impacts[0]["type_path"], "types/item");
+    assert_eq!(impacts[0]["missing_member"], "old-name");
+    assert_eq!(impacts[0]["missing_path"], "types/item.old-name");
+    // The defaultable `optional` removal and the value-dependent variant case removal are not
+    // guaranteed failures.
+    assert!(
+        report["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["path"] == "types/event.removed")
+    );
 
     fs::remove_dir_all(&root).unwrap();
 }

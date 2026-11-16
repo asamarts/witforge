@@ -715,17 +715,18 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
 }
 
 fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCode> {
-    let report = diff::compare(&options.old, &options.new)?;
+    let analysis = diff::compare_with_impacts(&options.old, &options.new)?;
+    let report = &analysis.report;
     if options.json {
         // `--json` is the diff report; it takes precedence over the diagnostic envelope.
         reporter.suppress();
         println!(
             "{}",
-            serde_json::to_string_pretty(&diff_json(&report))
+            serde_json::to_string_pretty(&diff_json(&analysis))
                 .context("failed to render the diff as JSON")?
         );
     } else if reporter.human() {
-        println!("{}", render_diff(&report));
+        println!("{}", render_diff(report));
     } else {
         for change in &report.changes {
             let (code, severity) = if change.is_breaking() {
@@ -744,6 +745,21 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             reporter.push(Diagnostic::new(code, severity, message).with_path(change.path.clone()));
         }
     }
+    if !options.json {
+        for impact in &analysis.conversion_impacts {
+            let human = format!(
+                "note: new-to-old conversion for `{}` ({} -> {}) always fails: missing required \
+                 member `{}`",
+                impact.type_path, impact.from_version, impact.to_version, impact.missing_path
+            );
+            let message = format!(
+                "guaranteed new-to-old conversion failure for `{}` ({} -> {}): missing required \
+                 member `{}`",
+                impact.type_path, impact.from_version, impact.to_version, impact.missing_path
+            );
+            reporter.note("WF3003", &human, message, impact.missing_path.clone());
+        }
+    }
     if options.check && report.summary.breaking > 0 {
         if reporter.human() {
             eprintln!(
@@ -756,7 +772,8 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-fn diff_json(report: &DiffReport) -> Value {
+fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
+    let report = &analysis.report;
     let endpoint = |endpoint: &diff::Endpoint| {
         json!({
             "path": endpoint.path.display().to_string(),
@@ -765,6 +782,19 @@ fn diff_json(report: &DiffReport) -> Value {
         })
     };
     let changes: Vec<Value> = report.changes.iter().map(change_json).collect();
+    let conversion_impacts: Vec<Value> = analysis
+        .conversion_impacts
+        .iter()
+        .map(|impact| {
+            json!({
+                "type_path": &impact.type_path,
+                "from_version": impact.from_version.to_string(),
+                "to_version": impact.to_version.to_string(),
+                "missing_member": &impact.missing_member,
+                "missing_path": &impact.missing_path,
+            })
+        })
+        .collect();
     json!({
         "old": endpoint(&report.old),
         "new": endpoint(&report.new),
@@ -776,6 +806,7 @@ fn diff_json(report: &DiffReport) -> Value {
             "source_breaking": report.summary.source_breaking,
             "api_breaking": report.summary.api_breaking,
         },
+        "conversion_impacts": conversion_impacts,
     })
 }
 

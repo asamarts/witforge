@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-11-11 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-11-16 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
@@ -310,8 +310,8 @@ witforge into a test crate, which checks the plain types, the `.proto` schema, a
 against alint's hand-written host types (alint PRs #409, #412, #414, and #415); the repository went
 public for 0.1.0.
 
-alint consumes only published releases. Its CI installs the release it pins (0.4.1 since
-2026-11-06) from crates.io, checks the contract, and regenerates the committed output with
+alint consumes only published releases. Its CI installs the release it pins (0.4.3 since
+2026-11-11, alint PR #493) from crates.io, checks the contract, and regenerates the committed output with
 `--check`, so witforge's `main` can change without breaking alint, and alint sees a change only
 when it moves the pin. A change to generated output or to what `check` accepts therefore reaches
 alint as a pull request there that bumps the pin and commits the regenerated files, and it needs
@@ -386,7 +386,8 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-12 | CI and the generated `AGENTS.md` block use the same published aplan 0.6.0 build; the pin advances with a regenerated block so `APLAN041` cannot leave `main` red after otherwise valid plan work | [`ci/README.md`](../../ci/README.md) |
 | 2026-11-12 | wit-bindgen 0.63 type remapping is used only for transitively compatible records and variants; its enum `_lift` and flags `bitflags` APIs are not added to witforge types, and an upstream change waits for adopter demand | [`component-model.md`](../guide/component-model.md), [`W10-016`](../../aplan/tasks/W10-016.md) |
 | 2026-11-12 | Documentation now defines the non-Rust protobuf decode profile and all three JSON projections; generated conformance assets, Protovalidate annotations, and aligned Serde/schema naming remain opt-in candidates gated by independent adopter evidence | [`non-rust.md`](../guide/non-rust.md), [`json-projections.md`](../guide/json-projections.md), [`W11-034`](../../aplan/tasks/W11-034.md), [`W11-035`](../../aplan/tasks/W11-035.md) |
-| 2026-11-12 | Guaranteed new-to-old conversion failures remain outside current `diff` reports; after external validation, W11-036 will add conversion-impact notes without changing compatibility counts or exit codes | [`diff.md`](diff.md), [`W11-036`](../../aplan/tasks/W11-036.md) |
+| 2026-11-12 | Guaranteed new-to-old conversion failures are reported as `diff` notes by W11-036; the notes do not change compatibility counts or exit codes | [`diff.md`](diff.md), [`W11-036`](../../aplan/tasks/W11-036.md) |
+| 2026-11-16 | External validation and proactive outreach are parked in `W10-001`; bounded implementation work, including `W11-036`, may proceed before 1.0, and the independent-adoption gate is unchanged | [`W10-001`](../../aplan/tasks/W10-001.md), [`ROADMAP.md`](../../ROADMAP.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
