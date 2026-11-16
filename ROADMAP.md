@@ -111,7 +111,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Fuzzing, benchmarks, and dependency/security gates.
 - [x] Release 0.3.0.
 
-## 0.4.0: WIT dependencies, foreign interfaces, and Rust Serde
+## 0.4.0: WIT dependencies, foreign interfaces, and Rust Serde (done)
 
 - [x] Standard `wit/deps` package dependencies with explicit package identity (`W9-001`).
 - [x] Generated dependency Rust and protobuf bindings (`W9-004`).
