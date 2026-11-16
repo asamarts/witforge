@@ -121,6 +121,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 
 ## 1.0 and beyond
 
-- [ ] Validate 1.0 with additional external consumers, then release 1.0.0.
-- [ ] Evaluate plugin ABI, LSP, and registry/playground after 1.0; do not build them
-      speculatively.
+- [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
+      paused; the independent-adoption gate remains unchanged (`W10-001`, `W10-002`).
+- [ ] Continue bounded implementation work that does not speculate about consumer demand. The
+      first ready product task is conversion-impact reporting in `diff` (`W11-036`).
+- [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
+      JSON work behind their existing evidence or 1.0 triggers.
