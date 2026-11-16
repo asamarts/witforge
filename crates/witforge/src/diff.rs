@@ -231,9 +231,10 @@ impl Loaded {
         };
         lock.check_package(&package_name)
             .map_err(|error| ContractError::from_error(&error))?;
-        let members: BTreeMap<String, Member> = model
-            .members()?
-            .into_iter()
+        let member_list = model.members()?;
+        let members: BTreeMap<String, Member> = member_list
+            .iter()
+            .cloned()
             .map(|member| (member.key(), member))
             .collect();
         let entries: BTreeMap<String, (u32, bool)> = lock
@@ -244,15 +245,32 @@ impl Loaded {
             .iter()
             .map(|(key, (number, _))| (key.clone(), *number))
             .collect();
-        for key in members.keys() {
-            let Some((_, reserved)) = entries.get(key) else {
+        for member in &member_list {
+            let key = member.key();
+            let Some(entry) = lock.get(&key) else {
                 bail!(ContractError::new(format!(
                     "live member `{key}` has no wire number; run `witforge lock`"
                 )));
             };
-            if *reserved {
+            if entry.reserved {
                 bail!(ContractError::new(format!(
                     "live member `{key}` is reserved in the lockfile; run `witforge lock`"
+                )));
+            }
+            if entry.kind != member.kind || entry.ty != member.ty {
+                bail!(ContractError::new(format!(
+                    "live member `{key}` has a stale kind or canonical type; run `witforge lock`"
+                )));
+            }
+        }
+        // A draft entry that no longer belongs to the contract is stale too. Removed released
+        // members stay valid when they are reserved; an unreserved entry with no live member is
+        // the draft form `witforge lock` would drop. Header declaration order is deliberately
+        // not validated here: a reorder is a source change `diff` reports, not a stale lockfile.
+        for (key, entry) in lock.entries() {
+            if !members.contains_key(&key.key()) && !entry.reserved {
+                bail!(ContractError::new(format!(
+                    "lockfile entry `{key}` is stale; run `witforge lock`"
                 )));
             }
         }

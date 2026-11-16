@@ -13,6 +13,8 @@ All notable changes to this project are documented here. The format follows
   0.63.0.
 - Published the semantic decode rules non-Rust protobuf implementations must enforce, and
   documented the distinct plain-Rust Serde, WIT-shaped JSON Schema, and proto3-JSON projections.
+- `diff` now refuses a stale lockfile on a direct version-directory endpoint instead of
+  comparing stale entries and potentially reporting a compatible result.
 - Documented that `diff` does not yet identify a new-to-old converter that must fail for every
   value.
 - Removed the extra blank line at the end of generated `convert.rs`, and added a whole-tree CI

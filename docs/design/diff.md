@@ -28,7 +28,10 @@ Each argument is one of:
 
 Both endpoints must declare the same `namespace:name`. The selected version directories must
 have valid WIT, a current lockfile, and a wire number for every live member; otherwise the
-command fails rather than guessing.
+command fails rather than guessing. A direct version-directory endpoint applies the same
+lockfile drift rules the generators use: a stale kind, canonical type, draft entry, or removed
+member that is not reserved is refused with exit `1` instead of being compared. WIT-root
+endpoints and direct endpoints therefore agree about a stale tree.
 
 Both endpoints must resolve the identical pinned dependency graph: package identities and
 versions, interface/type/function inventories and order, shapes and signatures, stability, and

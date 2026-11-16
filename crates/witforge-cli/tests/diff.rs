@@ -577,6 +577,90 @@ world w { import j; export i; }
 }
 
 #[test]
+fn diff_refuses_stale_lockfiles_for_direct_version_endpoints() {
+    let root = workspace("stale-lock");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u8 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { id: u8 } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    lock(&root, "new/v0.2");
+
+    // The model says `u8`; the lockfile now claims `u64`. `check` rejects this, so `diff` must
+    // reject it too instead of comparing the model and reporting a compatible result.
+    let path = old.join("wire.lock");
+    let text = fs::read_to_string(&path).unwrap();
+    let stale = text.replace("= 1 field u8", "= 1 field u64");
+    assert_ne!(text, stale, "fixture lockfile shape changed");
+    fs::write(&path, stale).unwrap();
+
+    let old_root = root.join("old");
+    let new_root = root.join("new");
+    for (label, old, new) in [
+        ("version directories", old.as_path(), new.as_path()),
+        ("WIT roots", old_root.as_path(), new_root.as_path()),
+    ] {
+        let output = diff(old, new, &[]);
+        assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("changed kind or type") || stderr.contains("stale"),
+            "{label}: {stderr}"
+        );
+    }
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_refuses_stale_draft_entries_in_direct_version_endpoints() {
+    let root = workspace("stale-draft");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u8, legacy: u8 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { id: u8 } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    // Copy the old lockfile without reconciling: `legacy` is no longer a live member and was not
+    // reserved, which is exactly the draft drift `witforge lock` would drop.
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+
+    let output = diff(&old, &new, &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("stale"), "{stderr}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn diff_refuses_different_package_names() {
     let root = workspace("packages");
     contract(
