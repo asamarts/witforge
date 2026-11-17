@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-17
+
+0.5.0 publishes the `diff` review improvements and the post-0.4.4 output and documentation
+alignment. It adds an additive public `diff` API and new `diff` output; it does not change wire
+numbers, protobuf output, JSON Schema output, or the generated Rust type and trait surface.
+Generated `convert.rs` no longer ends with an extra blank line, so consumers that commit it
+should regenerate when upgrading.
 
 ### Added
 
