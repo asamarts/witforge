@@ -12,6 +12,12 @@ numbers, protobuf output, JSON Schema output, or the generated Rust type and tra
 Generated `convert.rs` no longer ends with an extra blank line, so consumers that commit it
 should regenerate when upgrading.
 
+Release commit `c5007a0` (tag `v0.5.0`), exact-commit main CI run 44034805107, release run
+44035490910. Both crates are published; `cargo install witforge-cli --version 0.5.0 --locked`
+reports `witforge 0.5.0`, docs.rs built the library, and the release carries four platform
+archives with checksums. The tagged Action passed `check` and all four configured generator
+checks on every release target.
+
 ### Added
 
 - `diff` reports a guaranteed new-to-old conversion failure as an informational note when a

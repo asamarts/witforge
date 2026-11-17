@@ -234,3 +234,19 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] Main CI run 43145516331 invoked the pinned published `asamarts/witforge@v0.4.4`
       Action against all four release targets; every target downloaded its matching archive and
       passed a real contract check.
+
+## 0.5.0 record
+
+- [x] Release commit `c5007a0`, annotated tag `v0.5.0`; both pushed to `main`.
+- [x] Exact-commit main CI run 44034805107 passed on Linux, macOS 15, Windows, MSRV 1.88,
+      security, semver compatibility, benchmark, packaging, generated output, release freeze,
+      workflows, the four-target pinned 0.4.4 Action matrix, and the plan gate.
+- [x] Release run 44035490910 required that exact `ci ok`, checked the 0.4.1 API baseline and
+      historical protobuf generators, published both crates through trusted publishing, created
+      the GitHub release, uploaded four platform archives with checksums, and passed the tagged
+      Action smoke on all four release targets.
+- [x] `cargo install witforge-cli --version 0.5.0 --locked` downloaded both 0.5.0 crates and
+      reported `witforge 0.5.0`; docs.rs built the library documentation and the installed
+      binary reproduced the committed single example output with `rust --check`.
+- [ ] Main CI after this record invokes the pinned published `asamarts/witforge@v0.5.0` Action
+      against all four release targets.
