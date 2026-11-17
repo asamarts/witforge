@@ -28,7 +28,10 @@ Each argument is one of:
 
 Both endpoints must declare the same `namespace:name`. The selected version directories must
 have valid WIT, a current lockfile, and a wire number for every live member; otherwise the
-command fails rather than guessing.
+command fails rather than guessing. A direct version-directory endpoint applies the same
+lockfile drift rules the generators use: a stale kind, canonical type, draft entry, or removed
+member that is not reserved is refused with exit `1` instead of being compared. WIT-root
+endpoints and direct endpoints therefore agree about a stale tree.
 
 Both endpoints must resolve the identical pinned dependency graph: package identities and
 versions, interface/type/function inventories and order, shapes and signatures, stability, and
@@ -126,7 +129,8 @@ result: BREAKING
     "wire_breaking": 1,
     "source_breaking": 1,
     "api_breaking": 1
-  }
+  },
+  "conversion_impacts": []
 }
 ```
 
@@ -139,16 +143,49 @@ number when the change concerns a numbered member, or the old number for a remov
 normal `witforge` exit conventions: `1` for contract/lockfile violations and `2` for usage,
 I/O, and parse failures.
 
+## Conversion impact notes
+
+A shared record type can change so that the older version requires a member the newer version
+removed. When that member's type has no default, a newer-to-older conversion cannot reconstruct
+it and returns `ConversionError::MissingMember` for every input; for adjacent versions this is
+the generated `convert.rs` adapter. `diff` reports one informational note per affected record
+type, naming the newer-to-older direction and the first missing member in the older type's
+declaration order, which is the member the conversion reports first.
+
+```text
+note: new-to-old conversion for `types/task` (0.2.0 -> 0.1.0) always fails: missing required member `types/task.old`
+```
+
+`--json` carries the notes in a separate array, and `--format json|sarif` emits each one as a
+`WF3003` note:
+
+```json
+"conversion_impacts": [
+  {
+    "type_path": "types/task",
+    "from_version": "0.2.0",
+    "to_version": "0.1.0",
+    "missing_member": "old",
+    "missing_path": "types/task.old"
+  }
+]
+```
+
+Notes are not changes: they do not affect `changes`, `summary`, compatibility verdicts, or exit
+codes. A removed variant or enum case is not a guaranteed failure because only values that use
+the removed case fail; that remains a value-dependent `UnknownCase` path. Defaultable removals
+(`option<T>`, `list<T>`, or a named alias or structural type of one) are reconstructed and have
+no note.
+
 ## Limits
 
 `diff` compares root-contract structure, not root docs, root stability attributes, or generated
 file bytes. It does validate exact dependency-graph identity, including dependency docs and
 stability. Generated output changes caused by an existing contract (for example a new emitter
-convention) are detected by each emitter's `--check`, not by `diff`. A future
+convention) are detected by each emitter's `--check`, not by `diff`.
+
+`diff` reports guaranteed new-to-old conversion failures as notes, but it does not run `rustc`
+or inspect generated file bytes. It does not report value-dependent failures such as a removed
+variant or enum case, whose converter fails only for values that use that case. A future
 memberless-inventory or semantic-diff rule would extend this document rather than inferring from
 generated files.
-
-`diff` also does not currently report whether a generated new-to-old version conversion is
-guaranteed to fail for every value. Removing a non-defaultable field from a newer record causes
-that record's down-converter to return `ConversionError::MissingMember`; review the generated
-`convert.rs` until conversion-impact notes are added to the human, JSON, and diagnostic reports.

@@ -30,8 +30,9 @@ aplan why W1-001               # what is blocking it
 aplan roadmap                  # cut rollups and critical path
 aplan summary                  # effort/readiness by phase
 aplan export-agents-md --check AGENTS.md
+aplan check-docs               # documents name only existing tasks
 ```
 
 CI runs `aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
-`aplan check-docs` in the `plan` job, using the pinned published aplan release (0.5.2). Run the
+`aplan check-docs` in the `plan` job, using the pinned published aplan release (0.6.0). Run the
 same commands locally before committing plan changes.

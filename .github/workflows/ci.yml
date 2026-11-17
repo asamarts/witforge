@@ -100,7 +100,7 @@ jobs:
       - name: Smoke the local Action
         uses: ./
         with:
-          version: 0.4.1
+          version: 0.4.4
           check: crates/witforge/tests/fixtures/versions/wit/v0.2
           github-token: ${{ github.token }}
 

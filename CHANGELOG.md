@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `diff` reports a guaranteed new-to-old conversion failure as an informational note when a
+  shared record type's older version requires a member the newer version removed and that
+  member's type has no default. Human, `--json`, `--format json`, and SARIF output carry the
+  notes; they do not change compatibility counts or exit codes.
+
 ### Fixed
 
 - Corrected the Component Model guide: wit-bindgen type remapping works for compatible records
@@ -13,8 +20,8 @@ All notable changes to this project are documented here. The format follows
   0.63.0.
 - Published the semantic decode rules non-Rust protobuf implementations must enforce, and
   documented the distinct plain-Rust Serde, WIT-shaped JSON Schema, and proto3-JSON projections.
-- Documented that `diff` does not yet identify a new-to-old converter that must fail for every
-  value.
+- `diff` now refuses a stale lockfile on a direct version-directory endpoint instead of
+  comparing stale entries and potentially reporting a compatible result.
 - Removed the extra blank line at the end of generated `convert.rs`, and added a whole-tree CI
   whitespace check so committed output cannot preserve the same defect.
 - Kept wide documentation tables inside the mobile viewport with local horizontal scrolling.

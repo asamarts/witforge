@@ -191,8 +191,11 @@ witforge diff wit/v0.1 wit/v0.2 --json
 ```
 
 `--check` fails on wire-, source-, or generated-API-breaking changes. `--json` is the complete
-diff report. To make any command's diagnostics machine-readable, add `--format json` or
-`--format sarif`; the catalogue is in the [diagnostics specification](https://github.com/asamarts/witforge/blob/main/docs/design/diagnostics.md).
+diff report. `diff` also reports a note when a shared record type's generated new-to-old converter
+is guaranteed to fail because the older version requires a member the newer version removed; the
+notes do not change the change counts or `--check` result. To make any command's diagnostics
+machine-readable, add `--format json` or `--format sarif`; the catalogue is in the
+[diagnostics specification](https://github.com/asamarts/witforge/blob/main/docs/design/diagnostics.md).
 
 For CI, [`asamarts/witforge`](https://github.com/asamarts/witforge) publishes an Action that
 installs the matching release and can run the same checks; see

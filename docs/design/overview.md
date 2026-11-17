@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-11-11 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-11-16 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
@@ -310,8 +310,8 @@ witforge into a test crate, which checks the plain types, the `.proto` schema, a
 against alint's hand-written host types (alint PRs #409, #412, #414, and #415); the repository went
 public for 0.1.0.
 
-alint consumes only published releases. Its CI installs the release it pins (0.4.1 since
-2026-11-06) from crates.io, checks the contract, and regenerates the committed output with
+alint consumes only published releases. Its CI installs the release it pins (0.4.3 since
+2026-11-11, alint PR #493) from crates.io, checks the contract, and regenerates the committed output with
 `--check`, so witforge's `main` can change without breaking alint, and alint sees a change only
 when it moves the pin. A change to generated output or to what `check` accepts therefore reaches
 alint as a pull request there that bumps the pin and commits the regenerated files, and it needs
@@ -365,9 +365,6 @@ process protocol's framing and session, and the version adapters.
 | 2026-10-31 | Releases publish from a `v*` tag through crates.io trusted publishing; a new crate's first version is published by hand with a scoped token | [`ci/README.md`](../../ci/README.md) |
 | 2026-11-01 | Version directories are never symlinks: every command, the released manifest, and the freeze check refuse one, instead of following it; for `lock`, the manifests beside the version directory and the lockfile always apply and `--released` adds to them | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `check` requires the canonical lockfile rendering; a nested package is refused. Standard `deps/` dependency packages are supported as package-qualified foreign type references; multi-package workspaces/registries remain later work | [`dependencies.md`](dependencies.md), [`lockfile.md`](lockfile.md) |
-| 2026-11-06 | Worlds may import and export dependency interfaces; dependency glue is generated under a shared `witforge_deps` module | [`dependencies.md`](dependencies.md), [`emitters.md`](emitters.md) |
-| 2026-11-06 | 0.4.0 released with `deps/` types, foreign world interfaces, dependency glue, and opt-in Serde. Post-release hardening covers nested foreign structural glue; 1.0 validation owns the remaining consumer and conformance work | `ROADMAP.md`, [`dependencies.md`](dependencies.md), [`release-1.0.md`](release-1.0.md) |
-| 2026-11-06 | JSON Schema dependency files are emitted and referenced relatively; the leaner-glue Option C is declined for 1.0. The 1.0 conformance suite now checks dependency and Serde fixtures through every emitter | [`dependencies.md`](dependencies.md), [`emitters.md`](emitters.md), [`conformance.md`](conformance.md) |
 | 2026-11-01 | `check` reads CRLF as LF and requires the canonical lockfile only for an unreleased version, which `lock` can rewrite; a released lockfile is kept as released by the freeze check (supersedes that part of the previous entry). A directory named `v<major>.<minor>` holds that version for every command, and `glue` refuses what `proto` refuses | [`lockfile.md`](lockfile.md) |
 | 2026-11-01 | `rust` emits `convert.rs` for every adjacent version pair, in both directions; conversions default `option`/`list` additions, report removed required members and unknown cases, and refuse retypes and kind changes | section 5.3, [`emitters.md`](emitters.md) section 9 |
 | 2026-11-01 | The lockfile gains an additive per-parent declaration-order fingerprint section; `--against` refuses reorders of common type members and parameters, ignoring additions and removals, and old v2 lockfiles migrate on the next `lock` | [`lockfile.md`](lockfile.md) section 16 |
@@ -380,13 +377,17 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | 1.0 keeps `anyhow::Error` at the boundary with the `ContractError` classification; the public API, conformance matrix, release criteria, and deprecation runways are published | [`public-api.md`](public-api.md), [`conformance.md`](conformance.md), [`release-1.0.md`](release-1.0.md) |
 | 2026-11-04 | The plan gate is CI-run again with pinned published aplan 0.5.2; no aplan binary is committed and the four plan commands are part of `ci ok` | [`ci/README.md`](../../ci/README.md) |
 | 2026-11-04 | 0.2.0 is a focused release of the current compiler; 0.3 follows with diff/diagnostics/Action, 0.4 with `wit/deps` packages and opt-in Serde, and 1.0 waits for further consumer validation. Plugin/LSP/registry stay post-1.0 | `ROADMAP.md`, `aplan/` |
+| 2026-11-06 | Worlds may import and export dependency interfaces; dependency glue is generated under a shared `witforge_deps` module | [`dependencies.md`](dependencies.md), [`emitters.md`](emitters.md) |
+| 2026-11-06 | 0.4.0 released with `deps/` types, foreign world interfaces, dependency glue, and opt-in Serde. Post-release hardening covers nested foreign structural glue; 1.0 validation owns the remaining consumer and conformance work | `ROADMAP.md`, [`dependencies.md`](dependencies.md), [`release-1.0.md`](release-1.0.md) |
+| 2026-11-06 | JSON Schema dependency files are emitted and referenced relatively; the leaner-glue Option C is declined for 1.0. The 1.0 conformance suite now checks dependency and Serde fixtures through every emitter | [`dependencies.md`](dependencies.md), [`emitters.md`](emitters.md), [`conformance.md`](conformance.md) |
 | 2026-11-11 | A general Wasm plugin framework is declined as witforge scope; direct Wasmtime is the alint pilot baseline, and any reusable WIT-first multi-host kit stays separate until real applications demonstrate repeated runtime or protocol mechanics | this document |
 | 2026-11-11 | Independent candidates must demonstrate an evidence-backed problem, capability fit, bounded slice, and preserved ownership before outreach; defer, no-contact, and no-response outcomes do not weaken the external-adoption requirement | [`W10-001`](../../aplan/tasks/W10-001.md) |
 | 2026-11-11 | wit-bindgen remains the guest Canonical ABI generator and Wasmtime owns host bindings; witforge remains runtime-independent, prefers guest type remapping where proven, and declines a generic bridge without adopter measurements | section 1 |
 | 2026-11-12 | CI and the generated `AGENTS.md` block use the same published aplan 0.6.0 build; the pin advances with a regenerated block so `APLAN041` cannot leave `main` red after otherwise valid plan work | [`ci/README.md`](../../ci/README.md) |
 | 2026-11-12 | wit-bindgen 0.63 type remapping is used only for transitively compatible records and variants; its enum `_lift` and flags `bitflags` APIs are not added to witforge types, and an upstream change waits for adopter demand | [`component-model.md`](../guide/component-model.md), [`W10-016`](../../aplan/tasks/W10-016.md) |
 | 2026-11-12 | Documentation now defines the non-Rust protobuf decode profile and all three JSON projections; generated conformance assets, Protovalidate annotations, and aligned Serde/schema naming remain opt-in candidates gated by independent adopter evidence | [`non-rust.md`](../guide/non-rust.md), [`json-projections.md`](../guide/json-projections.md), [`W11-034`](../../aplan/tasks/W11-034.md), [`W11-035`](../../aplan/tasks/W11-035.md) |
-| 2026-11-12 | Guaranteed new-to-old conversion failures remain outside current `diff` reports; after external validation, W11-036 will add conversion-impact notes without changing compatibility counts or exit codes | [`diff.md`](diff.md), [`W11-036`](../../aplan/tasks/W11-036.md) |
+| 2026-11-12 | Guaranteed new-to-old conversion failures are reported as `diff` notes by W11-036; the notes do not change compatibility counts or exit codes | [`diff.md`](diff.md), [`W11-036`](../../aplan/tasks/W11-036.md) |
+| 2026-11-16 | External validation and proactive outreach are parked in `W10-001`; bounded implementation work, including `W11-036`, may proceed before 1.0, and the independent-adoption gate is unchanged | [`W10-001`](../../aplan/tasks/W10-001.md), [`ROADMAP.md`](../../ROADMAP.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
