@@ -248,5 +248,6 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] `cargo install witforge-cli --version 0.5.0 --locked` downloaded both 0.5.0 crates and
       reported `witforge 0.5.0`; docs.rs built the library documentation and the installed
       binary reproduced the committed single example output with `rust --check`.
-- [ ] Main CI after this record invokes the pinned published `asamarts/witforge@v0.5.0` Action
-      against all four release targets.
+- [x] Main CI run 44038055709 invoked the pinned published `asamarts/witforge@v0.5.0` Action
+      against all four release targets; every target downloaded its matching 0.5.0 archive and
+      passed a real contract check.
