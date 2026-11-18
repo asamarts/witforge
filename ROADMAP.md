@@ -137,6 +137,6 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
       paused; the independent-adoption gate remains unchanged (`W10-001`, `W10-002`).
 - [ ] Continue bounded implementation work that does not speculate about consumer demand. Finish
-      the remaining assurance work (`W10-037`) and the diff/conversion benchmark (`W10-033`).
+      the diff/conversion benchmark (`W10-033`).
 - [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
       JSON work behind their existing evidence or 1.0 triggers.
