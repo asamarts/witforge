@@ -33,6 +33,9 @@ lockfile drift rules the generators use: a stale kind, canonical type, draft ent
 member that is not reserved is refused with exit `1` instead of being compared. WIT-root
 endpoints and direct endpoints therefore agree about a stale tree.
 
+`diff` does not require the canonical lockfile rendering; `check` is the canonical-form gate.
+`diff` requires current entries, not a particular byte layout or comment set.
+
 Both endpoints must resolve the identical pinned dependency graph: package identities and
 versions, interface/type/function inventories and order, shapes and signatures, stability, and
 docs. `diff` refuses the first mismatch as a contract violation instead of describing it as a

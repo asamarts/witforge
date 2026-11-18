@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-11-16 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-11-17 are logged in section
 9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
 normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
 [`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
@@ -310,8 +310,8 @@ witforge into a test crate, which checks the plain types, the `.proto` schema, a
 against alint's hand-written host types (alint PRs #409, #412, #414, and #415); the repository went
 public for 0.1.0.
 
-alint consumes only published releases. Its CI installs the release it pins (0.4.3 since
-2026-11-11, alint PR #493) from crates.io, checks the contract, and regenerates the committed output with
+alint consumes only published releases. Its CI installs the release it pins (0.5.0 since
+2026-11-17, alint PR #555) from crates.io, checks the contract, and regenerates the committed output with
 `--check`, so witforge's `main` can change without breaking alint, and alint sees a change only
 when it moves the pin. A change to generated output or to what `check` accepts therefore reaches
 alint as a pull request there that bumps the pin and commits the regenerated files, and it needs
@@ -388,6 +388,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-12 | Documentation now defines the non-Rust protobuf decode profile and all three JSON projections; generated conformance assets, Protovalidate annotations, and aligned Serde/schema naming remain opt-in candidates gated by independent adopter evidence | [`non-rust.md`](../guide/non-rust.md), [`json-projections.md`](../guide/json-projections.md), [`W11-034`](../../aplan/tasks/W11-034.md), [`W11-035`](../../aplan/tasks/W11-035.md) |
 | 2026-11-12 | Guaranteed new-to-old conversion failures are reported as `diff` notes by W11-036; the notes do not change compatibility counts or exit codes | [`diff.md`](diff.md), [`W11-036`](../../aplan/tasks/W11-036.md) |
 | 2026-11-16 | External validation and proactive outreach are parked in `W10-001`; bounded implementation work, including `W11-036`, may proceed before 1.0, and the independent-adoption gate is unchanged | [`W10-001`](../../aplan/tasks/W10-001.md), [`ROADMAP.md`](../../ROADMAP.md) |
+| 2026-11-17 | 0.5.0 publishes the stale-lockfile fix, conversion-impact notes and additive `diff` API, and the post-0.4.4 output/documentation alignment. Wire numbers, protobuf/JSON Schema output, and generated Rust types/traits are unchanged; alint moves to 0.5.0. 1.0 remains gated on independent adoption | [`CHANGELOG.md`](../../CHANGELOG.md), [`W10-020`](../../aplan/tasks/W10-020.md) |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
