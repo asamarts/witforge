@@ -29,8 +29,9 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
   `mod.rs` uses the package name without a version; per-version Rust files and per-major proto
   files use the source package version that produced them. JSON Schema uses the first-line
   `$comment` form specified in section 10.1.
-- Generated files are owned by witforge. Generation overwrites expected files and deletes stale
-  files in the output root that carry the generated header. `--check` reports missing, changed,
+- Generated files are owned by witforge. Generation replaces each expected file atomically
+  through a temporary sibling and deletes stale files in the output root that carry the
+  generated header only after all expected writes succeed. `--check` reports missing, changed,
   or extra generated files and writes nothing. Files without the header are never touched.
 - The generators use distinct ownership headers, so each MUST have its own output root: in a
   shared root, each generator treats the others' files as its own stale output and removes or
@@ -694,8 +695,9 @@ witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <p
   reads only the start of each file, as bytes, so a file that is not UTF-8 text (a `.DS_Store`,
   an image) is ignored like any other file without the header.
 - Generation removes stale generated files in the output root and never touches files without
-  the header. It validates every version before writing the first file; a failed run may leave a
-  partial set, and rerunning after fixing the input completes it.
+  the header. It validates every version before writing the first file, and writes each expected
+  file through a temporary sibling and rename. A failed run may leave a mix of old and new files,
+  but never a truncated file; rerunning after fixing the input completes it.
 - Generation never replaces a symlink, writes through one at an expected file's path, or
   overwrites a file it does not own. Before anything is written or removed, every expected path
   that already exists must be a regular file that starts with the header; a symlink, a directory
@@ -772,6 +774,8 @@ the shared dependency glue module.
 - Output-root tests: the WIT root and anything inside it are refused, also when reached through
   `..` components or symlinks; an expected path that is a symlink, a directory, or a file without
   the header is refused before anything changes.
+- Atomic-write tests: an unwritable output root leaves previous files unchanged and no temporary
+  file behind; a failed replacement leaves its target intact and removes the temporary sibling.
 - Version-directory tests: a symlinked version directory is refused by every command, with
   nothing written even when the output root is that link, and a name with a sign or leading zeros
   is refused.

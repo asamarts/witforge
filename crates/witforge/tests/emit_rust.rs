@@ -589,3 +589,36 @@ fn version_directories_refuse_symlinks_and_non_canonical_names() {
     }
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn generation_leaves_previous_output_when_a_write_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture("versions/wit");
+    let base = std::env::temp_dir().join(format!("witforge-write-failure-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let out = base.join("out");
+    rust::generate(&root, &out).unwrap();
+    let before = fs::read(out.join("mod.rs")).unwrap();
+
+    let mut permissions = fs::metadata(&out).unwrap().permissions();
+    permissions.set_mode(0o555);
+    fs::set_permissions(&out, permissions.clone()).unwrap();
+    let result = rust::generate(&root, &out);
+    permissions.set_mode(0o755);
+    fs::set_permissions(&out, permissions).unwrap();
+
+    assert!(
+        result.is_err(),
+        "a read-only output root must fail generation"
+    );
+    assert_eq!(fs::read(out.join("mod.rs")).unwrap(), before);
+    let temporaries = fs::read_dir(&out)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(temporaries, 0);
+    fs::remove_dir_all(&base).unwrap();
+}

@@ -1,9 +1,10 @@
-//! Generated-output ownership: expected files, atomic-free writes, and `--check` drift.
+//! Generated-output ownership: expected files, atomic replacement, and `--check` drift.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 
@@ -13,6 +14,8 @@ pub struct GeneratedFiles {
     header: String,
     files: BTreeMap<String, String>,
 }
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl GeneratedFiles {
     /// Create a set using `header` as the generated-file ownership marker.
@@ -96,6 +99,7 @@ impl GeneratedFiles {
         }
         let expected: std::collections::BTreeSet<&str> =
             self.files.keys().map(String::as_str).collect();
+        let mut stale = Vec::new();
         for entry in fs::read_dir(out)
             .with_context(|| format!("failed to read output root {}", out.display()))?
         {
@@ -106,14 +110,15 @@ impl GeneratedFiles {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
             if !expected.contains(name.as_str()) && self.is_generated(&path)? {
-                fs::remove_file(&path)
-                    .with_context(|| format!("failed to remove stale {}", path.display()))?;
+                stale.push(path);
             }
         }
         for (name, contents) in &self.files {
-            let path = out.join(name);
-            fs::write(&path, contents)
-                .with_context(|| format!("failed to write {}", path.display()))?;
+            write_atomic(&out.join(name), contents.as_bytes())?;
+        }
+        for path in stale {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove stale {}", path.display()))?;
         }
         Ok(())
     }
@@ -210,6 +215,45 @@ impl GeneratedFiles {
     }
 }
 
+/// Replace `path` with `contents` through a temporary file in the same directory.
+///
+/// A failed write leaves the previous file untouched and removes the temporary file. The
+/// temporary name is hidden and unique per process/call.
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .with_context(|| format!("output path `{}` has no file name", path.display()))?;
+    let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        sequence
+    ));
+    let result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .with_context(|| format!("failed to create {}", temporary.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("failed to write {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temporary.display()))?;
+        fs::rename(&temporary, path)
+            .with_context(|| format!("failed to replace {}", path.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// Refuse an output root that is the WIT root or inside it.
 ///
 /// Both paths are resolved before they are compared: the WIT root is canonicalised, and so is the
@@ -267,4 +311,37 @@ fn resolve(path: &Path) -> Result<PathBuf> {
 #[must_use]
 pub fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_atomic_replaces_files_and_cleans_up_a_failed_replacement() {
+        let root =
+            std::env::temp_dir().join(format!("witforge-output-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let target = root.join("file.rs");
+        fs::write(&target, b"old").unwrap();
+        write_atomic(&target, b"new").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+
+        // Renaming a file over a directory fails after the temporary file is written; the
+        // directory must remain and the temporary file must be removed.
+        let directory = root.join("directory");
+        fs::create_dir(&directory).unwrap();
+        assert!(write_atomic(&directory, b"new").is_err());
+        assert!(directory.is_dir());
+        let temporaries = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(temporaries, 0);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
