@@ -129,6 +129,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       conversion, output, and diagnostic coverage is expanded.
 - [x] Documentation snippets and current-version references are checked in CI; shared emitter
       helpers remove duplicated naming and type rendering without changing generated output.
+- [x] Diff and version-conversion benchmark budgets cover a generated two-version fixture.
 - [x] Release 0.5.0 (2026-11-17), with alint moved to the release and its generated output
       regenerated.
 
@@ -136,7 +137,8 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
       paused; the independent-adoption gate remains unchanged (`W10-001`, `W10-002`).
-- [ ] Continue bounded implementation work that does not speculate about consumer demand. Finish
-      the diff/conversion benchmark (`W10-033`).
+- [ ] Continue bounded implementation work that does not speculate about consumer demand. The
+      0.5.0 audit remediation and diff/conversion benchmark are complete; remaining product work
+      is gated on independent-adoption evidence or the 1.0 gate.
 - [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
       JSON work behind their existing evidence or 1.0 triggers.
