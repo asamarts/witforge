@@ -22,6 +22,7 @@ allow = [
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "Unicode-3.0",
+  # libfuzzer-sys, the fuzz workspace dependency.
   "NCSA",
   "Unlicense",
   "Zlib",
