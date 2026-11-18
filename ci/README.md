@@ -81,6 +81,30 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   It is the one check the repository's `main` ruleset requires before a pull request merges,
   so adding or renaming a job never leaves the rule waiting on a check that no longer runs.
 
+## Fuzzing
+
+[`fuzz/`](../fuzz/) is a separate `cargo-fuzz` workspace because fuzzing runs under a nightly
+toolchain with sanitizers. It is not part of the stable CI gate; run it manually before a
+release, after a parser or emitter change, or when investigating a crash.
+
+```sh
+cargo install cargo-fuzz --version 0.13.2
+rustup toolchain install nightly-2026-09-11 --component rust-src
+cargo +nightly-2026-09-11 fuzz run wit_package \
+  --target x86_64-unknown-linux-gnu -- -runs=100
+cargo +nightly-2026-09-11 fuzz run lockfile \
+  --target x86_64-unknown-linux-gnu -- -runs=100
+```
+
+Use the GNU target on Linux: cargo-fuzz's default musl target is incompatible with the address
+sanitizer unless static linking is disabled.
+
+`wit_package` writes the input as a temporary `v0.1/contract.wit`, runs `load`, the subset
+checker, model construction, lockfile reconciliation, and all four emitters. `lockfile` parses
+arbitrary lockfile text and re-renders anything that parses. A discovered crash should become a
+committed regression fixture under the relevant test suite, not only an artifact in
+`fuzz/artifacts/`.
+
 ## Repository settings
 
 - **Rulesets.** `main` cannot be deleted or force-pushed, and a pull request into it needs
