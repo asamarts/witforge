@@ -4,11 +4,13 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  REQUEST_TIMEOUT_MS,
   archiveName,
   assetTarget,
   buildCommands,
   normalizeVersion,
   parseChecksum,
+  request,
   resolveVersion,
   splitLines,
 } = require('./index');
@@ -73,4 +75,34 @@ test('incomplete or unknown inputs are refused', () => {
     diffCheck: 'false',
   });
   assert.deepEqual(noCheck, [['witforge', 'diff', 'v0.1', 'v0.2']]);
+});
+
+test('requests carry a bounded abort signal and authorization', async () => {
+  let requestInit;
+  const response = { ok: true, status: 200 };
+  const returned = await request('https://example.test/release', 'secret', {
+    timeoutMs: 50,
+    fetch: async (_url, init) => {
+      requestInit = init;
+      return response;
+    },
+  });
+  assert.equal(returned, response);
+  assert.equal(requestInit.headers.Authorization, 'Bearer secret');
+  assert.ok(requestInit.signal instanceof AbortSignal);
+  assert.equal(requestInit.signal.aborted, false);
+  assert.equal(REQUEST_TIMEOUT_MS, 30_000);
+});
+
+test('requests abort when the timeout expires', async () => {
+  await assert.rejects(
+    request('https://example.test/slow', '', {
+      timeoutMs: 10,
+      fetch: (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new Error('request aborted')));
+        }),
+    }),
+    /timed out after 10ms/,
+  );
 });

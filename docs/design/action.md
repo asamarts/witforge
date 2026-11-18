@@ -45,7 +45,8 @@ archive and run `witforge.exe`.
 ## Action usage
 
 The action is published from this repository. It installs the release matching the action tag
-by default:
+by default. Every GitHub API and release-asset request has a 30-second abort timeout, so a
+stalled network fails the step instead of hanging until the job timeout.
 
 The JavaScript entry point uses GitHub's Node 24 Action runtime and has no npm dependencies. CI
 executes the checked-out action with `uses: ./` so changes to `action.yml` are covered before

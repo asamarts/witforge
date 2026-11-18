@@ -9,6 +9,7 @@ const { execFileSync } = require('node:child_process');
 
 const REPOSITORY = 'asamarts/witforge';
 const GENERATORS = new Set(['rust', 'proto', 'schema', 'glue']);
+const REQUEST_TIMEOUT_MS = 30_000;
 
 function input(name) {
   const key = `INPUT_${name.replaceAll('-', '_').toUpperCase()}`;
@@ -107,10 +108,21 @@ function buildCommands(binary, options) {
   return commands;
 }
 
-async function request(url, token) {
+async function request(url, token, options = {}) {
   const headers = { 'User-Agent': 'witforge-action' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(url, { headers });
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const fetchImpl = options.fetch ?? fetch;
+  const signal = AbortSignal.timeout(timeoutMs);
+  let response;
+  try {
+    response = await fetchImpl(url, { headers, signal });
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error(`GET ${url} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
   if (!response.ok) {
     throw new Error(`GET ${url} failed with HTTP ${response.status}`);
   }
@@ -186,11 +198,13 @@ async function main() {
 }
 
 module.exports = {
+  REQUEST_TIMEOUT_MS,
   archiveName,
   assetTarget,
   buildCommands,
   normalizeVersion,
   parseChecksum,
+  request,
   resolveVersion,
   splitLines,
   splitList,

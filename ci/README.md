@@ -114,6 +114,20 @@ arbitrary lockfile text and re-renders anything that parses. A discovered crash 
 committed regression fixture under the relevant test suite, not only an artifact in
 `fuzz/artifacts/`.
 
+## Local test scratch
+
+Repository tests and shell helpers create scratch files through `std::env::temp_dir()` or
+`${TMPDIR:-/tmp}`. On a shared host `/tmp` may be a small tmpfs, so point local runs at a
+disk-backed directory:
+
+```sh
+mkdir -p "$HOME/.tmp"
+TMPDIR="$HOME/.tmp" cargo test --workspace --locked
+```
+
+`ci/test-release-version.sh` already uses `$HOME/.tmp`; the Action's own temporary directory is
+inside the disposable GitHub runner, not the shared host.
+
 ## Repository settings
 
 - **Rulesets.** `main` cannot be deleted or force-pushed, and a pull request into it needs
