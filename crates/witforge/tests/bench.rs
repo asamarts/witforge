@@ -110,7 +110,7 @@ fn two_version_diff_and_conversion_stay_within_budget() {
     let diff_started = Instant::now();
     let analysis = diff::compare_with_impacts(&root.join("v0.1"), &root.join("v0.2")).unwrap();
     let diff_elapsed = diff_started.elapsed();
-    assert!(!analysis.report.changes.is_empty());
+    assert_ne!(analysis.report.changes.len(), 0);
     println!("two-version diff: {diff_elapsed:?}");
 
     let plan_started = Instant::now();
