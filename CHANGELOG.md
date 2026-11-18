@@ -11,12 +11,16 @@ All notable changes to this project are documented here. The format follows
 - `diff` reports a non-defaulted required record field addition as a conversion-generation
   blocker in human, `--json`, JSON diagnostics (`WF3004`), and SARIF output. The note is
   informational; compatibility counts and exit codes are unchanged.
+- CI checks generated-output documentation snippets and README/docs/Action current-version
+  references.
 
 ### Changed
 
 - `diff::compare` no longer collects conversion-impact notes it discards, and the new `diff`
   report types are documented as fixed for 1.0. `emit::proto::emit_major` now reports an
   inconsistent public model instead of panicking.
+- Emitter naming and type-rendering helpers now share one implementation; generated output is
+  unchanged.
 
 ### Fixed
 

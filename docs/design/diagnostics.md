@@ -1,6 +1,7 @@
 # Structured diagnostics and SARIF
 
-Status: implemented 2026-11-05 (`W8-002`).
+Status: implemented 2026-11-05 (`W8-002`); `WF3003` conversion-impact notes 2026-11-17
+(`W11-036`); `WF3004` required-addition blockers 2026-11-18 (`W10-036`).
 
 Every command keeps its human output as the default. `--format json` and `--format sarif` replace
 the diagnostic stream with a stable machine-readable form. Command-specific reports are

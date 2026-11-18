@@ -119,11 +119,24 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Opt-in per-project Serde generation (`W9-002`).
 - [x] Release 0.4.0 (`W9-003`).
 
+## 0.5.0: diff review and assurance (released)
+
+- [x] `diff` reports guaranteed down-conversion failures and required-addition generation
+      blockers, rejects reversed endpoints, and gives actionable missing-lock and stale-lock
+      guidance.
+- [x] Generated writes are atomic; released version directories reject symlinks; the fuzz
+      workspace is integrated with CI, Dependabot, and the security gate; dependency-graph,
+      conversion, output, and diagnostic coverage is expanded.
+- [x] Documentation snippets and current-version references are checked in CI; shared emitter
+      helpers remove duplicated naming and type rendering without changing generated output.
+- [x] Release 0.5.0 (2026-11-17), with alint moved to the release and its generated output
+      regenerated.
+
 ## 1.0 and beyond
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
       paused; the independent-adoption gate remains unchanged (`W10-001`, `W10-002`).
-- [ ] Continue bounded implementation work that does not speculate about consumer demand. The
-      first ready product task is conversion-impact reporting in `diff` (`W11-036`).
+- [ ] Continue bounded implementation work that does not speculate about consumer demand. Finish
+      the remaining assurance work (`W10-037`) and the diff/conversion benchmark (`W10-033`).
 - [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
       JSON work behind their existing evidence or 1.0 triggers.

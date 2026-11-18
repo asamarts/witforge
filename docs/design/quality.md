@@ -1,6 +1,7 @@
 # Quality and supply-chain gates
 
-Status: implemented 2026-11-05 (`W8-004`); fuzz and CI integration 2026-11-18 (`W10-030`).
+Status: implemented 2026-11-05 (`W8-004`); expanded property coverage 2026-11-18 (`W10-022`);
+fuzz workspace and CI integration 2026-11-18 (`W10-030`).
 
 witforge's correctness gates are layered so a golden-file test does not have to carry the whole
 burden.

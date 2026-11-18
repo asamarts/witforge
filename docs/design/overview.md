@@ -294,9 +294,14 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 - Lockfile property tests with `proptest`: reconcile is idempotent, never renumbers, and the
   append-only/draft rules hold across random sequences of member additions, removals, renames,
   and type changes. The cases are listed in [`lockfile.md`](lockfile.md#14-testing-requirements).
-- CLI integration tests that run the built binary with `std::process::Command` in directories
-  under `std::env::temp_dir()`, for `check`, `lock`, `--against`, `--first`, `--released`,
-  `rust`, `proto`, `glue`, and `--check`.
+- CLI integration tests that run the built binary with `std::process::Command`, for `check`,
+  `lock`, `--against`, `--first`, `--released`, `rust`, `proto`, `schema`, `glue`, `diff`,
+  `--check`, `--format`, and `witforge.toml` configuration and flag precedence.
+- Diff and diagnostics tests: human, `--json`, and `--format json|sarif` output, stable
+  diagnostic codes, and compatibility verdicts for every change category.
+- Fuzzing: `cargo-fuzz` targets for arbitrary WIT packages and lockfiles, with stable CI
+  formatting/checking and advisory/license scanning of the fuzz workspace; the campaign remains
+  a manual nightly run (`fuzz/README.md`, `ci/README.md`).
 - Subset tests: every refused construct has a fixture (`tests/fixtures/refused/<construct>/`)
   with the exact violations it must produce.
 - CI: MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings denied; Linux, macOS,
