@@ -224,6 +224,13 @@ pub fn compare_with_impacts(old: &Path, new: &Path) -> Result<DiffAnalysis> {
             old.endpoint.package, new.endpoint.package
         )));
     }
+    if new.endpoint.version < old.endpoint.version {
+        bail!(
+            "cannot diff version {} against older version {}; pass the older contract first",
+            new.endpoint.version,
+            old.endpoint.version
+        );
+    }
     ensure_same_dependency_graph(&old.model.dependencies, &new.model.dependencies)?;
     let mut builder = Builder {
         old: &old,
@@ -441,6 +448,16 @@ fn load_endpoint(path: &Path) -> Result<Loaded> {
     if path.join("wire.lock").is_file() {
         return load_version(path);
     }
+    if looks_like_version_directory(path) {
+        bail!(
+            "version directory `{}` has no `wire.lock`; run `witforge lock {} --first` for a \
+             first version, or copy the previous minor's lockfile and run `witforge lock {} \
+             --against <previous minor's wire.lock>`",
+            path.display(),
+            path.display(),
+            path.display()
+        );
+    }
     let mut versions = crate::emit::versions::load_versions(path)?;
     let version = versions.pop().with_context(|| {
         format!(
@@ -449,6 +466,34 @@ fn load_endpoint(path: &Path) -> Result<Loaded> {
         )
     })?;
     Loaded::new(&version.directory, version.model, &version.lock)
+}
+
+/// Whether `path` is a version directory whose lockfile is missing, rather than a WIT root.
+///
+/// A root contains `v<major>.<minor>/` directories. A version directory contains WIT source
+/// (normally `contract.wit`), a `deps/` tree, or is itself named `v<major>.<minor>`. Without this
+/// distinction a forgotten `wire.lock` would be reported as “no version directories”.
+fn looks_like_version_directory(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    if path.join("contract.wit").is_file() || path.join("deps").is_dir() {
+        return true;
+    }
+    if let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str)
+        && matches!(crate::parse_version_directory(name), Ok(Some(_)))
+    {
+        return true;
+    }
+    fs::read_dir(path).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("wit"))
+        })
+    })
 }
 
 fn load_version(path: &Path) -> Result<Loaded> {

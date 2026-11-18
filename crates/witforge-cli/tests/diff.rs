@@ -200,6 +200,15 @@ interface types {
     let checked = diff(&old, &new, &["--check"]);
     assert_eq!(checked.status.code(), Some(1));
 
+    // Root endpoints use the generator-grade loader, which refuses the stale order fingerprint
+    // that the direct endpoint deliberately accepts in order to report the reorder.
+    let roots = diff(&root.join("old"), &root.join("new"), &[]);
+    assert_eq!(roots.status.code(), Some(1), "{roots:?}");
+    assert!(
+        String::from_utf8_lossy(&roots.stderr).contains("declaration order"),
+        "{roots:?}"
+    );
+
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -984,6 +993,113 @@ interface types { record task { id: u64 } }
     assert!(output.status.success(), "{output:?}");
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("result: COMPATIBLE"),
+        "{output:?}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_refuses_a_reversed_version_order() {
+    let root = workspace("reversed");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u64 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { id: u64, note: option<string> } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    lock_against(&root, "new/v0.2", "old/v0.1");
+
+    let old_root = root.join("old");
+    let new_root = root.join("new");
+    for (label, old, new) in [
+        ("version directories", new.as_path(), old.as_path()),
+        ("WIT roots", new_root.as_path(), old_root.as_path()),
+    ] {
+        let output = diff(old, new, &[]);
+        assert_eq!(output.status.code(), Some(2), "{label}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("older contract first"), "{label}: {stderr}");
+    }
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_reports_a_missing_lockfile_on_a_direct_endpoint() {
+    let root = workspace("missing-lock");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u64 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { id: u64 } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "new/v0.2");
+
+    let output = diff(&old, &new, &[]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("has no `wire.lock`"), "{stderr}");
+    assert!(stderr.contains("--first"), "{stderr}");
+    assert!(stderr.contains("--against"), "{stderr}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_allows_equal_versions() {
+    let root = workspace("equal");
+    contract(
+        &root,
+        "left/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u64 } }
+",
+    );
+    contract(
+        &root,
+        "right/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u64 } }
+",
+    );
+    let left = root.join("left/v0.1");
+    let right = root.join("right/v0.1");
+    lock(&root, "left/v0.1");
+    lock(&root, "right/v0.1");
+
+    let output = diff(&left, &right, &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("no contract changes"),
         "{output:?}"
     );
 

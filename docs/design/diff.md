@@ -1,6 +1,7 @@
 # Contract diff and breaking-change reporting
 
-Status: implemented 2026-11-05 (`W8-001`).
+Status: implemented 2026-11-05 (`W8-001`); endpoint ordering, missing-lock, and root/direct
+declaration-order boundaries 2026-11-18 (`W10-026`).
 
 `witforge diff <old> <new>` compares two contract versions and reports what changed in three
 independent compatibility views:
@@ -26,12 +27,24 @@ Each argument is one of:
 - a WIT root containing `v<major>.<minor>/` directories, in which case the highest version under
   the root is compared.
 
-Both endpoints must declare the same `namespace:name`. The selected version directories must
-have valid WIT, a current lockfile, and a wire number for every live member; otherwise the
-command fails rather than guessing. A direct version-directory endpoint applies the same
-lockfile drift rules the generators use: a stale kind, canonical type, draft entry, or removed
-member that is not reserved is refused with exit `1` instead of being compared. WIT-root
-endpoints and direct endpoints therefore agree about a stale tree.
+Both endpoints must declare the same `namespace:name`, and the older version must be passed
+first. `diff` refuses a second endpoint whose package version is older than the first with exit
+`2`; equal versions remain comparable. The selected version directories must have valid WIT, a
+current lockfile, and a wire number for every live member; otherwise the command fails rather
+than guessing.
+
+A directory with WIT source, a `deps/` tree, or a `v<major>.<minor>` name but no `wire.lock` is
+reported as a missing lockfile with `lock --first`/`--against` guidance (exit `2`), not treated
+as a WIT root.
+
+A direct version-directory endpoint applies the member-level lockfile freshness rules the
+generators use: a stale kind, canonical type, draft entry, or removed member that is not
+reserved is refused with exit `1` instead of being compared. A WIT-root endpoint additionally
+loads every version through the generator-grade loader, which requires declaration-order
+fingerprints to be current; a root with a stale order fingerprint is refused before comparison.
+Direct endpoints deliberately accept that stale order so a reorder can be reported. The two
+forms therefore agree about stale members, but a reorder recorded only in the order section is
+reported by a direct endpoint and refused by root loading.
 
 `diff` does not require the canonical lockfile rendering; `check` is the canonical-form gate.
 `diff` requires current entries, not a particular byte layout or comment set.

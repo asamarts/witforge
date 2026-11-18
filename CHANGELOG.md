@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- `diff` rejects a reversed old/new argument order and reports a missing `wire.lock` on a direct
+  version-directory endpoint with the same actionable guidance as `check`.
+
 ## [0.5.0] - 2026-11-17
 
 0.5.0 publishes the `diff` review improvements and the post-0.4.4 output and documentation
