@@ -61,14 +61,17 @@ impl GeneratedFiles {
 
     /// Write all expected files and remove stale generated files in `out`.
     ///
-    /// Files without the ownership header are never touched. Before anything is written or
-    /// removed, every expected path that already exists must be a regular file (not a symlink)
-    /// that starts with the header; otherwise nothing is changed and an error names the path.
+    /// Each expected file is replaced atomically through a temporary sibling. Stale generated
+    /// files are removed only after all expected writes succeed. Files without the ownership
+    /// header are never touched. Before anything is written or removed, every expected path that
+    /// already exists must be a regular file (not a symlink) that starts with the header;
+    /// otherwise nothing is changed and an error names the path.
     ///
     /// # Errors
     ///
     /// Returns an error when an expected path is a symlink, is not a regular file, or is a file
-    /// without the header, and an I/O error from creating, reading, removing, or writing files.
+    /// without the header, and an I/O error from creating, syncing, renaming, reading, removing,
+    /// or writing files.
     pub fn write(&self, out: &Path) -> Result<()> {
         fs::create_dir_all(out)
             .with_context(|| format!("failed to create output root {}", out.display()))?;
