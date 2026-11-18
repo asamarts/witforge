@@ -296,3 +296,25 @@ fn check_treats_convert_as_shared_generated_output() {
     );
     fs::remove_dir_all(out.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn a_recursive_alias_is_refused_before_conversion_generation() {
+    let root = temp("cycle");
+    let version = root.join("v0.1");
+    fs::create_dir_all(&version).unwrap();
+    fs::write(
+        version.join("contract.wit"),
+        "package example:cycle@0.1.0;\n\ninterface types {\n    type loop = loop;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        version.join("wire.lock"),
+        witforge::lock::WireLock::default().render(),
+    )
+    .unwrap();
+
+    let error = rust::plan(&root).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("depends on itself"), "{message}");
+    fs::remove_dir_all(&root).unwrap();
+}

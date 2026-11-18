@@ -102,3 +102,22 @@ impl Diagnostic {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warning_and_position_are_preserved() {
+        let position = Position {
+            line: 3,
+            column: 5,
+            end_line: 3,
+            end_column: 9,
+        };
+        let diagnostic =
+            Diagnostic::new("WF0001", Severity::Warning, "suspicious").with_position(position);
+        assert_eq!(diagnostic.severity, Severity::Warning);
+        assert_eq!(diagnostic.position, Some(position));
+    }
+}

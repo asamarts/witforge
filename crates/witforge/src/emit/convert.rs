@@ -905,3 +905,160 @@ fn render_type(ty: &TypeExpr) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::emit::versions::Version;
+    use crate::lock::WireLock;
+    use crate::model::{
+        Interface, Model, Package, QualifiedName, ResultExpr, Stability, TypeDef, TypeDefKind,
+        TypeExpr,
+    };
+
+    fn package(minor: u64) -> Package {
+        Package {
+            namespace: "example".to_string(),
+            name: "convert".to_string(),
+            version: crate::model::Version {
+                major: 0,
+                minor,
+                patch: 0,
+            },
+            docs: String::new(),
+        }
+    }
+
+    fn type_def(name: &str, kind: TypeDefKind) -> TypeDef {
+        TypeDef {
+            name: name.to_string(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            kind,
+        }
+    }
+
+    fn version(minor: u64, types: Vec<TypeDef>) -> Version {
+        Version {
+            major: 0,
+            directory: PathBuf::from(format!("v0.{minor}")),
+            model: Model {
+                package: package(minor),
+                interfaces: vec![Interface {
+                    name: "types".to_string(),
+                    docs: String::new(),
+                    stability: Stability::Unknown,
+                    types,
+                    functions: Vec::new(),
+                }],
+                worlds: Vec::new(),
+                dependencies: Vec::new(),
+            },
+            lock: WireLock::default(),
+        }
+    }
+
+    fn one_type(minor: u64, kind: TypeDefKind) -> Version {
+        version(minor, vec![type_def("thing", kind)])
+    }
+
+    #[test]
+    fn conversion_refuses_a_kind_change() {
+        let error = plan(&[
+            one_type(1, TypeDefKind::List(TypeExpr::U8)),
+            one_type(2, TypeDefKind::Option(TypeExpr::U8)),
+        ])
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("changes kind from list to option"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn conversion_refuses_a_result_shape_change() {
+        let error = plan(&[
+            one_type(
+                1,
+                TypeDefKind::Result(ResultExpr {
+                    ok: Some(Box::new(TypeExpr::U8)),
+                    err: Some(Box::new(TypeExpr::String)),
+                }),
+            ),
+            one_type(
+                2,
+                TypeDefKind::Result(ResultExpr {
+                    ok: Some(Box::new(TypeExpr::U8)),
+                    err: None,
+                }),
+            ),
+        ])
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("changes its result error shape"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn conversion_refuses_missing_named_types() {
+        let missing = QualifiedName {
+            interface: "types".to_string(),
+            name: "missing".to_string(),
+        };
+        let error = plan(&[
+            one_type(1, TypeDefKind::Alias(TypeExpr::Named(missing.clone()))),
+            one_type(2, TypeDefKind::Alias(TypeExpr::Named(missing))),
+        ])
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("not in the source model"), "{message}");
+
+        let leaf = QualifiedName {
+            interface: "types".to_string(),
+            name: "leaf".to_string(),
+        };
+        let error = plan(&[
+            version(
+                1,
+                vec![
+                    type_def("thing", TypeDefKind::Alias(TypeExpr::Named(leaf.clone()))),
+                    type_def("leaf", TypeDefKind::Alias(TypeExpr::U8)),
+                ],
+            ),
+            version(
+                2,
+                vec![type_def("thing", TypeDefKind::Alias(TypeExpr::Named(leaf)))],
+            ),
+        ])
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("missing from the target version"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn conversion_refuses_a_retyped_shared_field() {
+        let field = |ty| Field {
+            name: "value".to_string(),
+            docs: String::new(),
+            ty,
+        };
+        let error = plan(&[
+            one_type(1, TypeDefKind::Record(vec![field(TypeExpr::U8)])),
+            one_type(2, TypeDefKind::Record(vec![field(TypeExpr::U64)])),
+        ])
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("changes type from `u8` to `u64`"),
+            "{message}"
+        );
+    }
+}

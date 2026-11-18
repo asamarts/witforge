@@ -373,3 +373,229 @@ fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
     }
     Ok(versions)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Field, Function, Package, Stability, TypeExpr, Version as ModelVersion};
+
+    fn package(name: &str) -> Package {
+        Package {
+            namespace: "example".to_string(),
+            name: name.to_string(),
+            version: ModelVersion {
+                major: 0,
+                minor: 1,
+                patch: 0,
+            },
+            docs: String::new(),
+        }
+    }
+
+    fn field(name: &str, ty: TypeExpr) -> Field {
+        Field {
+            name: name.to_string(),
+            docs: String::new(),
+            ty,
+        }
+    }
+
+    fn thing() -> TypeDef {
+        TypeDef {
+            name: "thing".to_string(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            kind: TypeDefKind::Record(vec![field("value", TypeExpr::String)]),
+        }
+    }
+
+    fn extra_type() -> TypeDef {
+        TypeDef {
+            name: "extra".to_string(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            kind: TypeDefKind::Record(vec![field("value", TypeExpr::String)]),
+        }
+    }
+
+    fn ping() -> Function {
+        Function {
+            name: "ping".to_string(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            params: Vec::new(),
+            result: None,
+        }
+    }
+
+    fn pong() -> Function {
+        Function {
+            name: "pong".to_string(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            params: Vec::new(),
+            result: None,
+        }
+    }
+
+    fn extra_interface() -> Interface {
+        Interface {
+            name: "other".to_string(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            types: Vec::new(),
+            functions: Vec::new(),
+        }
+    }
+
+    fn dependency(name: &str) -> Dependency {
+        Dependency {
+            package: package(name),
+            interfaces: vec![Interface {
+                name: "types".to_string(),
+                docs: String::new(),
+                stability: Stability::Unknown,
+                types: vec![thing()],
+                functions: vec![ping()],
+            }],
+        }
+    }
+
+    fn assert_change(old: &[Dependency], new: &[Dependency], expected: &str) {
+        let change = dependency_graph_change(old, new).expect("expected a dependency change");
+        assert!(change.contains(expected), "{change}");
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn dependency_graph_change_covers_api_and_order_branches() {
+        let base = vec![dependency("shared")];
+
+        let mut changed = base.clone();
+        changed[0].package.docs = "changed".to_string();
+        assert_change(&base, &changed, "package `example:shared` docs change");
+
+        let mut other = dependency("other");
+        other.interfaces.clear();
+        assert_change(
+            &[dependency("shared"), other.clone()],
+            &[other, dependency("shared")],
+            "dependency package order changes",
+        );
+
+        let mut removed = base.clone();
+        removed[0].interfaces.clear();
+        assert_change(
+            &base,
+            &removed,
+            "interface `example:shared/types` was removed",
+        );
+
+        let mut added = base.clone();
+        added[0].interfaces.push(extra_interface());
+        assert_change(&base, &added, "interface `example:shared/other` was added");
+
+        let mut metadata = base.clone();
+        metadata[0].interfaces[0].docs = "changed".to_string();
+        assert_change(
+            &base,
+            &metadata,
+            "interface `example:shared/types` metadata changes",
+        );
+
+        let mut interface_order = base.clone();
+        interface_order[0].interfaces.push(extra_interface());
+        let mut reversed = interface_order.clone();
+        reversed[0].interfaces.reverse();
+        assert_change(
+            &interface_order,
+            &reversed,
+            "interface order in `example:shared` changes",
+        );
+
+        let mut type_removed = base.clone();
+        type_removed[0].interfaces[0].types.push(extra_type());
+        assert_change(
+            &type_removed,
+            &base,
+            "type `example:shared/types/extra` was removed",
+        );
+        assert_change(
+            &base,
+            &type_removed,
+            "type `example:shared/types/extra` was added",
+        );
+
+        let mut type_order = type_removed.clone();
+        type_order[0].interfaces[0].types.reverse();
+        assert_change(
+            &type_removed,
+            &type_order,
+            "type order in `example:shared/types` changes",
+        );
+
+        let mut shape = base.clone();
+        shape[0].interfaces[0].types[0].kind =
+            TypeDefKind::Record(vec![field("value", TypeExpr::U64)]);
+        assert_change(
+            &base,
+            &shape,
+            "type `example:shared/types/thing` shape changes",
+        );
+
+        let mut member_metadata = base.clone();
+        if let TypeDefKind::Record(fields) = &mut member_metadata[0].interfaces[0].types[0].kind {
+            fields[0].docs = "changed".to_string();
+        }
+        assert_change(
+            &base,
+            &member_metadata,
+            "type `example:shared/types/thing` member metadata changes",
+        );
+
+        let mut type_metadata = base.clone();
+        type_metadata[0].interfaces[0].types[0].docs = "changed".to_string();
+        assert_change(
+            &base,
+            &type_metadata,
+            "type `example:shared/types/thing` metadata changes",
+        );
+
+        let mut function_removed = base.clone();
+        function_removed[0].interfaces[0].functions.push(pong());
+        assert_change(
+            &function_removed,
+            &base,
+            "function `example:shared/types#pong` was removed",
+        );
+        assert_change(
+            &base,
+            &function_removed,
+            "function `example:shared/types#pong` was added",
+        );
+
+        let mut function_order = function_removed.clone();
+        function_order[0].interfaces[0].functions.reverse();
+        assert_change(
+            &function_removed,
+            &function_order,
+            "function order in `example:shared/types` changes",
+        );
+
+        let mut signature = base.clone();
+        signature[0].interfaces[0].functions[0].result = Some(TypeExpr::U64);
+        assert_change(
+            &base,
+            &signature,
+            "function `example:shared/types#ping` signature changes",
+        );
+
+        let mut function_metadata = base.clone();
+        function_metadata[0].interfaces[0].functions[0].docs = "changed".to_string();
+        assert_change(
+            &base,
+            &function_metadata,
+            "function `example:shared/types#ping` metadata changes",
+        );
+    }
+}
