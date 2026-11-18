@@ -84,13 +84,16 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 ## Fuzzing
 
 [`fuzz/`](../fuzz/) is a separate `cargo-fuzz` workspace because fuzzing runs under a nightly
-toolchain with sanitizers. It is not part of the stable CI gate; run it manually before a
-release, after a parser or emitter change, or when investigating a crash.
+toolchain with sanitizers. The campaign is not part of the stable CI gate; run it manually before
+a release, after a parser or emitter change, or when investigating a crash. Stable CI does run
+`cargo fmt --manifest-path fuzz/Cargo.toml --check` and
+`cargo check --manifest-path fuzz/Cargo.toml --locked`, and the security job audits
+`fuzz/Cargo.lock` and runs the dependency policy against the fuzz workspace.
 
 ```sh
 cargo install cargo-fuzz --version 0.13.2
 rustup toolchain install nightly-2026-09-11 --component rust-src
-cargo +nightly-2026-09-11 fuzz run wit_package \
+cargo +nightly-2026-09-11 fuzz run wit-package \
   --target x86_64-unknown-linux-gnu -- -runs=100
 cargo +nightly-2026-09-11 fuzz run lockfile \
   --target x86_64-unknown-linux-gnu -- -runs=100
@@ -99,7 +102,7 @@ cargo +nightly-2026-09-11 fuzz run lockfile \
 Use the GNU target on Linux: cargo-fuzz's default musl target is incompatible with the address
 sanitizer unless static linking is disabled.
 
-`wit_package` writes the input as a temporary `v0.1/contract.wit`, runs `load`, the subset
+`wit-package` writes the input as a temporary `v0.1/contract.wit`, runs `load`, the subset
 checker, model construction, lockfile reconciliation, and all four emitters. `lockfile` parses
 arbitrary lockfile text and re-renders anything that parses. A discovered crash should become a
 committed regression fixture under the relevant test suite, not only an artifact in

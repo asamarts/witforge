@@ -7,3 +7,10 @@ cd "$root"
 
 cargo audit
 cargo deny check --config ci/deny.toml advisories bans licenses sources
+
+# The fuzz workspace has its own lockfile and path dependency on the library.
+cargo audit --file fuzz/Cargo.lock
+(
+    cd fuzz
+    cargo deny check --config ../ci/deny.toml advisories bans licenses sources
+)

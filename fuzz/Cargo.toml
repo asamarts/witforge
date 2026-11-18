@@ -2,6 +2,7 @@
 name = "witforge-fuzz"
 version = "0.0.0"
 edition = "2024"
+license = "Apache-2.0 OR MIT"
 publish = false
 
 [package.metadata]
@@ -9,10 +10,10 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-witforge = { path = "../crates/witforge" }
+witforge = { path = "../crates/witforge", version = "0" }
 
 [[bin]]
-name = "wit_package"
+name = "wit-package"
 path = "fuzz_targets/wit_package.rs"
 test = false
 doc = false
