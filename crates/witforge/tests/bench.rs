@@ -7,18 +7,21 @@ use std::time::{Duration, Instant};
 
 use witforge::emit::{glue, json_schema, proto, rust};
 use witforge::lock::WireLock;
-use witforge::{load, model};
+use witforge::{diff, load, model};
 
-fn contract(root: &Path, interfaces: usize, fields: usize) {
-    let dir = root.join("v0.1");
+fn write_contract(root: &Path, minor: u64, interfaces: usize, fields: usize, evolve: bool) {
+    let dir = root.join(format!("v0.{minor}"));
     fs::create_dir_all(&dir).unwrap();
-    let mut source = String::from("package example:bench@0.1.0;\n");
+    let mut source = format!("package example:bench@0.{minor}.0;\n");
     for interface in 0..interfaces {
         let _ = writeln!(source, "interface i{interface} {{");
         for type_index in 0..4 {
             let _ = writeln!(source, "    record t{type_index} {{");
             for field in 0..fields {
                 let _ = writeln!(source, "        f{field}: u64,");
+            }
+            if evolve {
+                source.push_str("        added: option<u64>,\n");
             }
             source.push_str("    }\n");
             let _ = writeln!(source, "    enum e{interface}x{type_index} {{ a, b, c }}");
@@ -35,6 +38,20 @@ fn contract(root: &Path, interfaces: usize, fields: usize) {
         source.push_str("}\n");
     }
     fs::write(dir.join("contract.wit"), source).unwrap();
+}
+
+fn contract(root: &Path, interfaces: usize, fields: usize) {
+    write_contract(root, 1, interfaces, fields, false);
+}
+
+fn write_lock(root: &Path, minor: u64, previous: Option<&WireLock>) {
+    let dir = root.join(format!("v0.{minor}"));
+    let contract = load(&dir).unwrap();
+    let model = model::build(&contract).unwrap();
+    let members = model.members().unwrap();
+    let mut lock = previous.cloned().unwrap_or_default();
+    lock.reconcile(&members).unwrap();
+    fs::write(dir.join("wire.lock"), lock.render()).unwrap();
 }
 
 fn measure(root: &Path) -> Duration {
@@ -78,4 +95,34 @@ fn small_and_large_contracts_stay_within_benchmark_budget() {
 
     fs::remove_dir_all(&small).unwrap();
     fs::remove_dir_all(&large).unwrap();
+}
+
+#[test]
+fn two_version_diff_and_conversion_stay_within_budget() {
+    let root = workspace("two-version");
+    write_contract(&root, 1, 24, 8, false);
+    write_lock(&root, 1, None);
+    write_contract(&root, 2, 24, 8, true);
+    let v1_lock =
+        WireLock::parse(&fs::read_to_string(root.join("v0.1/wire.lock")).unwrap()).unwrap();
+    write_lock(&root, 2, Some(&v1_lock));
+
+    let diff_started = Instant::now();
+    let analysis = diff::compare_with_impacts(&root.join("v0.1"), &root.join("v0.2")).unwrap();
+    let diff_elapsed = diff_started.elapsed();
+    assert!(!analysis.report.changes.is_empty());
+    println!("two-version diff: {diff_elapsed:?}");
+
+    let plan_started = Instant::now();
+    let files = rust::plan(&root).unwrap();
+    let plan_elapsed = plan_started.elapsed();
+    assert!(files.files().keys().any(|name| name == "convert.rs"));
+    println!("two-version conversion plan: {plan_elapsed:?}");
+
+    // Catastrophic-regression ceilings; the large diff is normally measured in tens of
+    // milliseconds, and conversion planning covers both generated versions and the adapters.
+    assert!(diff_elapsed < Duration::from_secs(5), "{diff_elapsed:?}");
+    assert!(plan_elapsed < Duration::from_secs(5), "{plan_elapsed:?}");
+
+    fs::remove_dir_all(&root).unwrap();
 }

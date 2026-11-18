@@ -31,12 +31,15 @@ job audits the fuzz lockfile and runs the dependency policy against it. See
 
 ## Benchmark budget
 
-[`crates/witforge/tests/bench.rs`](../../crates/witforge/tests/bench.rs) measures representative small and large contracts through loading, modeling, lockfile
-reconciliation, and all four emitters; the generated contracts include records, enums, variants,
-flags, and functions. The CI benchmark job runs it in release mode. The budgets are deliberately
-catastrophic-regression ceilings rather than microbenchmark claims: 5 seconds for the small
-contract and 15 seconds for the large one on a shared GitHub-hosted runner. The printed timings
-make a regression visible in the job log.
+[`crates/witforge/tests/bench.rs`](../../crates/witforge/tests/bench.rs) measures representative
+small and large single-version contracts through loading, modeling, lockfile reconciliation, and
+all four emitters; the generated contracts include records, enums, variants, flags, and functions.
+It also measures `diff::compare_with_impacts` and Rust conversion planning across a generated
+two-version contract. The CI benchmark job runs both tests in release mode. The budgets are
+deliberately catastrophic-regression ceilings rather than microbenchmark claims: 5 seconds for
+the small contract, 15 seconds for the large one, and 5 seconds each for the two-version diff and
+conversion plan on a shared GitHub-hosted runner. The printed timings make a regression visible
+in the job log.
 
 ## Dependency and advisory gates
 
