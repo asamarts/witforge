@@ -159,9 +159,9 @@ pub struct DiffReport {
 ///
 /// A newer-to-older conversion returns `ConversionError::MissingMember` for every input when the
 /// older record requires a member the newer version removed and that member's type has no
-/// default. For adjacent versions this is the generated `convert.rs` adapter; for other pairs it
-/// is the same contract-level consequence. This is stronger than a removed variant or enum case,
-/// which fails only for values that use the removed case.
+/// default. For adjacent versions this is the generated `convert.rs` adapter when the emitter can
+/// generate the pair; for other pairs it is the same contract-level consequence. This is stronger
+/// than a removed variant or enum case, which fails only for values that use the removed case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionImpact {
     /// The record type's WIT path, such as `types/task`.

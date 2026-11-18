@@ -1107,6 +1107,96 @@ interface types { record task { id: u64 } }
 }
 
 #[test]
+fn diff_reports_required_additions_that_block_conversion_generation() {
+    let root = workspace("required-addition");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u64 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { id: u64, required: string, note: option<string> } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    lock_against(&root, "new/v0.2", "old/v0.1");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["conversion_impacts"],
+        serde_json::json!([]),
+        "{report}"
+    );
+    let blockers = report["conversion_blockers"].as_array().unwrap();
+    assert_eq!(blockers.len(), 1, "{report}");
+    assert_eq!(blockers[0]["kind"], "required-addition");
+    assert_eq!(blockers[0]["path"], "types/task.required");
+    assert!(report["changes"].as_array().unwrap().iter().any(|change| {
+        change["kind"] == "added"
+            && change["path"] == "types/task.required"
+            && change["defaulted"] == false
+    }));
+    assert!(report["changes"].as_array().unwrap().iter().any(|change| {
+        change["kind"] == "added"
+            && change["path"] == "types/task.note"
+            && change["defaulted"] == true
+    }));
+    assert_eq!(report["summary"]["changes"], 2);
+    assert_eq!(report["summary"]["breaking"], 2);
+
+    let human = diff(&old, &new, &[]);
+    assert!(human.status.success(), "{human:?}");
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("conversion generation refuses"), "{text}");
+    assert!(text.contains("types/task.required"), "{text}");
+
+    let diagnostics = diff(&old, &new, &["--format", "json"]);
+    assert!(diagnostics.status.success(), "{diagnostics:?}");
+    let envelope: serde_json::Value = serde_json::from_slice(&diagnostics.stdout).unwrap();
+    let blocker = envelope["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| {
+            diagnostic["code"] == "WF3004" && diagnostic["path"] == "types/task.required"
+        })
+        .expect("WF3004 diagnostic");
+    assert_eq!(blocker["severity"], "note");
+
+    let sarif = diff(&old, &new, &["--format", "sarif"]);
+    assert!(sarif.status.success(), "{sarif:?}");
+    let sarif: serde_json::Value = serde_json::from_slice(&sarif.stdout).unwrap();
+    assert!(
+        sarif["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|result| result["ruleId"] == "WF3004" && result["level"] == "note")
+    );
+
+    let checked = diff(&old, &new, &["--check"]);
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    assert!(
+        String::from_utf8_lossy(&checked.stderr).contains("2 breaking change(s)"),
+        "{checked:?}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn diff_refuses_different_package_names() {
     let root = workspace("packages");
     contract(

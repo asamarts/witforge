@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `diff` reports a non-defaulted required record field addition as a conversion-generation
+  blocker in human, `--json`, JSON diagnostics (`WF3004`), and SARIF output. The note is
+  informational; compatibility counts and exit codes are unchanged.
+
 ### Fixed
 
 - `diff` rejects a reversed old/new argument order and reports a missing `wire.lock` on a direct

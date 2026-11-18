@@ -146,7 +146,8 @@ result: BREAKING
     "source_breaking": 1,
     "api_breaking": 1
   },
-  "conversion_impacts": []
+  "conversion_impacts": [],
+  "conversion_blockers": []
 }
 ```
 
@@ -164,9 +165,10 @@ I/O, and parse failures.
 A shared record type can change so that the older version requires a member the newer version
 removed. When that member's type has no default, a newer-to-older conversion cannot reconstruct
 it and returns `ConversionError::MissingMember` for every input; for adjacent versions this is
-the generated `convert.rs` adapter. `diff` reports one informational note per affected record
-type, naming the newer-to-older direction and the first missing member in the older type's
-declaration order, which is the member the conversion reports first.
+the generated `convert.rs` adapter when the emitter can generate the pair. `diff` reports one
+informational note per affected record type, naming the newer-to-older direction and the first
+missing member in the older type's declaration order, which is the member the conversion reports
+first.
 
 ```text
 note: new-to-old conversion for `types/task` (0.2.0 -> 0.1.0) always fails: missing required member `types/task.old`
@@ -192,6 +194,27 @@ codes. A removed variant or enum case is not a guaranteed failure because only v
 the removed case fail; that remains a value-dependent `UnknownCase` path. Defaultable removals
 (`option<T>`, `list<T>`, or a named alias or structural type of one) are reconstructed and have
 no note.
+
+An added record field without a default has the opposite generation consequence: the newer
+version requires a value the older version cannot supply, so `convert.rs` generation refuses the
+pair. `diff` reports one `conversion_blockers` note per such field, as `WF3004` in diagnostics:
+
+```text
+note: conversion generation refuses `types/task.required`: a required record field was added without a default; use option<T>, list<T>, or a new member
+```
+
+```json
+"conversion_blockers": [
+  {
+    "kind": "required-addition",
+    "path": "types/task.required"
+  }
+]
+```
+
+Defaultable additions (`option<T>`, `list<T>`, or a named alias or structural type of one) do not
+block generation and have no blocker note. The blocker notes are informational too: the added
+field is still a source/API-breaking change, and `--check` exits `1` for it.
 
 ## Limits
 

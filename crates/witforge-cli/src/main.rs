@@ -759,6 +759,19 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             );
             reporter.note("WF3003", &human, message, impact.missing_path.clone());
         }
+        for blocker in required_addition_blockers(report) {
+            let human = format!(
+                "note: conversion generation refuses `{}`: a required record field was added \
+                 without a default; use option<T>, list<T>, or a new member",
+                blocker.path
+            );
+            let message = format!(
+                "conversion generation refuses `{}`: a required record field was added without a \
+                 default",
+                blocker.path
+            );
+            reporter.note("WF3004", &human, message, blocker.path.clone());
+        }
     }
     if options.check && report.summary.breaking > 0 {
         if reporter.human() {
@@ -770,6 +783,13 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn required_addition_blockers(report: &DiffReport) -> impl Iterator<Item = &diff::Change> {
+    report.changes.iter().filter(|change| {
+        change.element == "record field"
+            && matches!(change.kind, ChangeKind::Added { defaulted: false })
+    })
 }
 
 fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
@@ -795,6 +815,14 @@ fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
             })
         })
         .collect();
+    let conversion_blockers: Vec<Value> = required_addition_blockers(report)
+        .map(|change| {
+            json!({
+                "kind": "required-addition",
+                "path": &change.path,
+            })
+        })
+        .collect();
     json!({
         "old": endpoint(&report.old),
         "new": endpoint(&report.new),
@@ -807,6 +835,7 @@ fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
             "api_breaking": report.summary.api_breaking,
         },
         "conversion_impacts": conversion_impacts,
+        "conversion_blockers": conversion_blockers,
     })
 }
 

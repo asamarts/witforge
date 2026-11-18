@@ -70,6 +70,7 @@ Codes are never reused for a different meaning.
 | `WF3001` | error | `diff` found a wire-, source-, or generated-API-breaking change. |
 | `WF3002` | note | `diff` found a compatible change. |
 | `WF3003` | note | `diff` found a record whose generated new-to-old conversion is guaranteed to fail. The path is the missing member. |
+| `WF3004` | note | `diff` found a non-defaulted required record field addition that makes conversion generation refuse. The path is the added field. |
 | `WF9000` | error | A usage, I/O, parse, released-directory, or internal command error without a more specific code. |
 
 ## Source positions
@@ -90,7 +91,8 @@ codes do not depend on the format: `0` success, `1` contract/lockfile/output or 
 failure, and `2` usage, I/O, parse, or internal failure.
 
 `diff --format json|sarif` emits each diff change as a diagnostic (`WF3001` for breaking,
-`WF3002` for compatible) and each guaranteed conversion-impact note as `WF3003`; it suppresses
-the human diff report. `diff --json` remains the full
+`WF3002` for compatible), each guaranteed conversion-impact note as `WF3003`, and each
+required-addition generation blocker as `WF3004`; it suppresses the human diff report.
+`diff --json` remains the full
 diff report described in [`diff.md`](diff.md); when both `--json` and a non-human `--format`
 are given, the report wins and the diagnostic envelope is suppressed.
