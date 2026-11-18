@@ -830,6 +830,167 @@ interface types {
 }
 
 #[test]
+fn diff_does_not_note_named_defaultable_removals() {
+    let root = workspace("defaultable-named");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types {
+    type maybe = option<string>;
+    type items = list<u8>;
+    record task { id: u64, alias-removed: maybe, list-removed: items }
+}
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { id: u64 } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    lock_against(&root, "new/v0.2", "old/v0.1");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["conversion_impacts"],
+        serde_json::json!([]),
+        "{report}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_notes_the_first_missing_required_member() {
+    let root = workspace("conversion-impact-first");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { keep: u64, first: string, second: u32 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { keep: u64 } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    lock_against(&root, "new/v0.2", "old/v0.1");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let impacts = report["conversion_impacts"].as_array().unwrap();
+    assert_eq!(impacts.len(), 1, "{report}");
+    assert_eq!(impacts[0]["missing_member"], "first");
+    assert_eq!(impacts[0]["missing_path"], "types/task.first");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_notes_contract_level_failures_for_non_adjacent_versions() {
+    let root = workspace("conversion-impact-non-adjacent");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u64, required: string } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.3",
+        r"
+package example:tasks@0.3.0;
+interface types { record task { id: u64 } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.3");
+    lock(&root, "old/v0.1");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    lock_against(&root, "new/v0.3", "old/v0.1");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let impacts = report["conversion_impacts"].as_array().unwrap();
+    assert_eq!(impacts.len(), 1, "{report}");
+    assert_eq!(impacts[0]["from_version"], "0.3.0");
+    assert_eq!(impacts[0]["to_version"], "0.1.0");
+    assert_eq!(impacts[0]["missing_path"], "types/task.required");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_accepts_a_non_canonical_but_current_lockfile() {
+    let root = workspace("non-canonical");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { record task { id: u64 } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { record task { id: u64 } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    lock(&root, "new/v0.2");
+
+    // `check` is the canonical-form gate; `diff` accepts a current lockfile that a hand edit
+    // made non-canonical.
+    let path = old.join("wire.lock");
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("# hand-written comment\n");
+    fs::write(&path, text).unwrap();
+    let checked = run(&["check", &old.display().to_string()]);
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    assert!(
+        String::from_utf8_lossy(&checked.stderr).contains("not in the form"),
+        "{checked:?}"
+    );
+
+    let output = diff(&old, &new, &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("result: COMPATIBLE"),
+        "{output:?}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn diff_refuses_different_package_names() {
     let root = workspace("packages");
     contract(

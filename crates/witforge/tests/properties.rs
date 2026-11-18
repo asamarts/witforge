@@ -1,12 +1,15 @@
-//! Property tests for lockfile parsing and emitter inputs.
+//! Property tests for lockfile parsing, model shapes, and emitters.
+
+use std::path::Path;
 
 use proptest::prelude::*;
 
+use witforge::diff;
 use witforge::emit::{glue, json_schema, proto, rust};
 use witforge::lock::WireLock;
 use witforge::model::{
-    Field, Function, Interface, Model, Package, Param, ResultExpr, Stability, TypeDef, TypeDefKind,
-    TypeExpr, Version,
+    Case, Field, Flag, Function, Interface, Model, Package, Param, QualifiedName, ResultExpr,
+    Stability, TypeDef, TypeDefKind, TypeExpr, Version, World, WorldInterface,
 };
 
 fn primitive(seed: u8) -> TypeExpr {
@@ -41,24 +44,149 @@ fn type_expr(seed: u8, depth: u8) -> TypeExpr {
     }
 }
 
+fn named(interface: &str, name: &str) -> TypeExpr {
+    TypeExpr::Named(QualifiedName {
+        interface: interface.to_string(),
+        name: name.to_string(),
+    })
+}
+
+fn case(name: &str, payload: Option<TypeExpr>) -> Case {
+    Case {
+        name: name.to_string(),
+        docs: String::new(),
+        payload,
+    }
+}
+
+fn field(name: &str, ty: TypeExpr) -> Field {
+    Field {
+        name: name.to_string(),
+        docs: String::new(),
+        ty,
+    }
+}
+
+/// Build a model containing every supported type definition kind, every [`TypeExpr`], a world,
+/// a function, and named aliases and structural types.
+#[allow(clippy::too_many_lines)]
 fn model(fields: &[u8], params: &[u8], result: u8) -> Model {
-    let fields = fields
-        .iter()
-        .enumerate()
-        .map(|(index, seed)| Field {
-            name: format!("f{index}"),
-            docs: String::new(),
-            ty: type_expr(*seed, 0),
-        })
-        .collect();
-    let params = params
-        .iter()
-        .enumerate()
-        .map(|(index, seed)| Param {
-            name: format!("p{index}"),
-            ty: type_expr(*seed, 0),
-        })
-        .collect();
+    let record0 = TypeDef {
+        name: "record0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Record(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(index, seed)| field(&format!("f{index}"), type_expr(*seed, 0)))
+                .collect(),
+        ),
+    };
+    let record1 = TypeDef {
+        name: "record1".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Record(vec![
+            field("named", named("types", "record0")),
+            field(
+                "nested-list",
+                TypeExpr::List(Box::new(named("types", "list0"))),
+            ),
+            field(
+                "nested-option",
+                TypeExpr::Option(Box::new(named("types", "option0"))),
+            ),
+        ]),
+    };
+    let variant = TypeDef {
+        name: "variant0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Variant(vec![
+            case("empty", None),
+            case("payload", Some(type_expr(fields[0], 0))),
+            case(
+                "listed",
+                Some(TypeExpr::List(Box::new(type_expr(result, 0)))),
+            ),
+        ]),
+    };
+    let enumeration = TypeDef {
+        name: "enum0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Enum(vec![case("a", None), case("b", None), case("c", None)]),
+    };
+    let flags = TypeDef {
+        name: "flags0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Flags(vec![
+            Flag {
+                name: "a".to_string(),
+                docs: String::new(),
+            },
+            Flag {
+                name: "b".to_string(),
+                docs: String::new(),
+            },
+        ]),
+    };
+    let alias = TypeDef {
+        name: "alias0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Alias(named("types", "record0")),
+    };
+    let list = TypeDef {
+        name: "list0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::List(type_expr(result, 0)),
+    };
+    let option = TypeDef {
+        name: "option0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Option(type_expr(result, 1)),
+    };
+    let result_type = TypeDef {
+        name: "result0".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Result(ResultExpr {
+            ok: Some(Box::new(type_expr(result, 0))),
+            err: Some(Box::new(type_expr(result / 2, 0))),
+        }),
+    };
+    let one_sided_result = TypeDef {
+        name: "result1".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        kind: TypeDefKind::Result(ResultExpr {
+            ok: Some(Box::new(named("types", "record0"))),
+            err: None,
+        }),
+    };
+    let function = Function {
+        name: "call".to_string(),
+        docs: String::new(),
+        stability: Stability::Unknown,
+        params: params
+            .iter()
+            .enumerate()
+            .map(|(index, seed)| Param {
+                name: format!("p{index}"),
+                ty: type_expr(*seed, 0),
+            })
+            .chain(std::iter::once(Param {
+                name: "named".to_string(),
+                ty: named("types", "record0"),
+            }))
+            .collect(),
+        result: Some(type_expr(result, 0)),
+    };
     Model {
         package: Package {
             namespace: "example".to_string(),
@@ -74,21 +202,37 @@ fn model(fields: &[u8], params: &[u8], result: u8) -> Model {
             name: "types".to_string(),
             docs: String::new(),
             stability: Stability::Unknown,
-            types: vec![TypeDef {
-                name: "record".to_string(),
+            types: vec![
+                record0,
+                record1,
+                variant,
+                enumeration,
+                flags,
+                alias,
+                list,
+                option,
+                result_type,
+                one_sided_result,
+            ],
+            functions: vec![function],
+        }],
+        worlds: vec![World {
+            name: "world0".to_string(),
+            docs: String::new(),
+            stability: Stability::Unknown,
+            imports: vec![WorldInterface {
+                interface: "types".to_string(),
+                package: None,
                 docs: String::new(),
                 stability: Stability::Unknown,
-                kind: TypeDefKind::Record(fields),
             }],
-            functions: vec![Function {
-                name: "call".to_string(),
+            exports: vec![WorldInterface {
+                interface: "types".to_string(),
+                package: None,
                 docs: String::new(),
                 stability: Stability::Unknown,
-                params,
-                result: Some(type_expr(result, 0)),
             }],
         }],
-        worlds: Vec::new(),
         dependencies: Vec::new(),
     }
 }
@@ -131,4 +275,23 @@ proptest! {
         let glue = glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap();
         prop_assert!(!glue.is_empty());
     }
+}
+
+#[test]
+fn two_version_fixture_plans_conversions_and_diffs() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/versions/wit");
+    let files = rust::plan(&root).unwrap();
+    assert!(
+        files.files().keys().any(|name| name == "convert.rs"),
+        "the two-version fixture must emit convert.rs"
+    );
+    let analysis = diff::compare_with_impacts(&root.join("v0.1"), &root.join("v0.2")).unwrap();
+    assert!(
+        analysis
+            .report
+            .changes
+            .iter()
+            .any(|change| change.path == "types/user.old-field"),
+        "the fixture must expose its documented removal"
+    );
 }
