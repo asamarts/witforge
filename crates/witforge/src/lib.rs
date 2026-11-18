@@ -162,11 +162,13 @@ impl ReleasedManifest {
     /// (`^[A-Za-z0-9][A-Za-z0-9._-]*$`). That excludes `.`, `..`, hidden names, whitespace,
     /// separators, and absolute paths. Leading and trailing ASCII whitespace (space, tab, CR,
     /// VT, FF) is trimmed; blank lines and `#` comments are ignored. Invalid, duplicate,
-    /// missing, symlinked, and lockfile-less directories are errors.
+    /// missing, symlinked, and lockfile-less directories are errors, as is any symlink inside a
+    /// listed directory.
     ///
     /// # Errors
     ///
-    /// Returns an error for an unreadable manifest or any invalid entry.
+    /// Returns an error for an unreadable manifest, any invalid entry, or a symlinked directory
+    /// or directory content.
     pub fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read released manifest {}", path.display()))?;
