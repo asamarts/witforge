@@ -59,3 +59,144 @@ fn release_asset_script_packages_the_binary_and_writes_a_checksum() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+fn fenced_blocks(markdown: &str, language: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+    for line in markdown.lines() {
+        if let Some(info) = line.strip_prefix("```") {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            } else if info.trim() == language {
+                current = Some(String::new());
+            }
+            continue;
+        }
+        if let Some(block) = &mut current {
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    blocks
+}
+
+fn assert_excerpt(label: &str, path: &Path, snippet: &str) {
+    assert!(!snippet.trim().is_empty(), "{label}: empty snippet");
+    let source = fs::read_to_string(path).unwrap();
+    let source_lines: Vec<&str> = source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut next = 0;
+    for line in snippet
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Some(offset) = source_lines[next..]
+            .iter()
+            .position(|candidate| *candidate == line)
+        else {
+            panic!("{label}: `{line}` is not in {}", path.display());
+        };
+        next += offset + 1;
+    }
+}
+
+fn run(command: &mut Command) {
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{command:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn generated_output_guide_snippets_are_current() {
+    let repository = repository();
+    let guide = fs::read_to_string(repository.join("docs/guide/generated-output.md")).unwrap();
+
+    let rust = fenced_blocks(&guide, "rust");
+    assert_eq!(rust.len(), 4, "unexpected Rust snippet count");
+    assert_excerpt(
+        "plain Rust",
+        &repository.join("examples/single/generated/rust/v0_1.rs"),
+        &rust[0],
+    );
+    assert_excerpt(
+        "glue conversion",
+        &repository.join("examples/single/generated/glue/v0.rs"),
+        &rust[1],
+    );
+    assert_excerpt(
+        "glue function helper",
+        &repository.join("examples/single/generated/glue/v0.rs"),
+        &rust[2],
+    );
+    assert_excerpt(
+        "version adapter",
+        &repository.join("examples/evolved/generated/rust/convert.rs"),
+        &rust[3],
+    );
+
+    let proto = fenced_blocks(&guide, "proto");
+    assert_eq!(proto.len(), 1, "unexpected protobuf snippet count");
+    assert_excerpt(
+        "protobuf",
+        &repository.join("examples/single/generated/proto/v0.proto"),
+        &proto[0],
+    );
+
+    let json = fenced_blocks(&guide, "json");
+    assert_eq!(json.len(), 1, "unexpected JSON snippet count");
+    assert_excerpt(
+        "JSON Schema",
+        &repository.join("examples/single/generated/schema/v0_1.schema.json"),
+        &json[0],
+    );
+}
+
+#[test]
+fn readme_output_snippets_are_current() {
+    let repository = repository();
+    let readme = fs::read_to_string(repository.join("README.md")).unwrap();
+    let wit = fenced_blocks(&readme, "wit");
+    assert_eq!(wit.len(), 1, "unexpected README WIT snippet count");
+
+    let base =
+        std::env::temp_dir().join(format!("witforge-readme-snippets-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let out = base.join("generated");
+    let version = wit_root.join("v0.1");
+    fs::create_dir_all(&version).unwrap();
+    fs::write(version.join("contract.wit"), &wit[0]).unwrap();
+
+    let binary = env!("CARGO_BIN_EXE_witforge");
+    run(Command::new(binary)
+        .arg("lock")
+        .arg(&version)
+        .arg("--first"));
+    run(Command::new(binary)
+        .arg("rust")
+        .arg(&wit_root)
+        .arg("--out")
+        .arg(out.join("rust")));
+    run(Command::new(binary)
+        .arg("proto")
+        .arg(&wit_root)
+        .arg("--out")
+        .arg(out.join("proto")));
+
+    let rust = fenced_blocks(&readme, "rust");
+    assert_eq!(rust.len(), 1, "unexpected README Rust snippet count");
+    assert_excerpt("README Rust", &out.join("rust/v0_1.rs"), &rust[0]);
+
+    let proto = fenced_blocks(&readme, "proto");
+    assert_eq!(proto.len(), 1, "unexpected README protobuf snippet count");
+    assert_excerpt("README protobuf", &out.join("proto/v0.proto"), &proto[0]);
+
+    fs::remove_dir_all(&base).unwrap();
+}

@@ -153,10 +153,10 @@ enum ApiMethod {
 }
 ```
 
-These are excerpts of current emitter output, not hand-designed target APIs. The
-[generated-output guide](https://asamarts.github.io/witforge/guide/generated-output.html) shows
-complete Rust, protobuf, JSON Schema, glue, and version-adapter examples with links to committed
-generated files.
+These excerpts are checked against current emitter output by the test suite, not hand-designed
+target APIs. The [generated-output guide](https://asamarts.github.io/witforge/guide/generated-output.html)
+shows complete Rust, protobuf, JSON Schema, glue, and version-adapter examples with links to
+committed generated files.
 
 For configuration, dependencies, evolution, and complete command sequences, continue with the
 [documentation](https://asamarts.github.io/witforge/) or the

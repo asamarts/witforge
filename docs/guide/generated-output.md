@@ -19,7 +19,9 @@ witforge glue --config examples/single/witforge.toml
 
 The source WIT defines an `item` record, an enum, flags, a variant, and one interface function.
 Its [`wire.lock`](https://github.com/asamarts/witforge/blob/main/examples/single/wit/v0.1/wire.lock)
-assigns the field, case, parameter, and method numbers shown below.
+assigns the field, case, parameter, and method numbers shown below. Every fenced generated-output
+excerpt is checked line-for-line against the linked committed file; generated comments,
+unrelated definitions, and surrounding module context may be omitted.
 
 ## Plain Rust
 
@@ -146,9 +148,10 @@ pub fn from_proto(value: crate::generated::proto::v0::TypesItem) -> ::core::resu
 }
 ```
 
-This is an exact excerpt. Emitted Rust is deterministic but intentionally not passed through
-`rustfmt`. Full files: [`v0.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/glue/v0.rs)
-and [`mod.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/glue/mod.rs).
+Every line in this excerpt is copied from the generated file. Emitted Rust is deterministic but
+intentionally not passed through `rustfmt`. Full files:
+[`v0.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/glue/v0.rs) and
+[`mod.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/glue/mod.rs).
 
 Function helpers in the same module map WIT calls to protobuf request and response messages and
 expose the locked method ID:

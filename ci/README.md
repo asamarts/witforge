@@ -47,7 +47,8 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   image's shellcheck changes version, and with it findings and codes) over both workflows, with
   shellcheck's masked-return check enabled for every `run:` script (a `$(...)` whose failure
   would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`. It also runs
-  `ci/test-release-asset.sh` for release archive/checksum generation and `node --test
+  `ci/test-release-asset.sh` for release archive/checksum generation,
+  `ci/test-release-version.sh` for current-version reference checking, and `node --test
   action/test.js` for the Action's asset selection and command plan.
 - **published Action**: invokes the pinned remote release ref on Linux x86_64, macOS arm64,
   macOS Intel, and Windows x86_64. Each job downloads its platform archive, verifies its checksum,
@@ -60,7 +61,12 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   the full history of `released`, merges included, so an entry once committed can never be
   removed and a released directory can never differ from any commit that listed it, whatever
   the push or pull request. `ci/test-release-freeze.sh` tests that script; the test jobs run it
-  on Linux and, with the stock bash 3.2, on macOS.
+  on Linux and, with the stock bash 3.2, on macOS. `ci/check-release.sh` also runs here without
+  a tag, so README/docs/Action current-version references and the changelog section are checked
+  on every main/PR run, not only during a release.
+- **documented output**: the CLI distribution tests compare the README and generated-output guide
+  excerpts with committed examples (and with output freshly generated from the README's WIT
+  block), so a docs snippet cannot drift from the emitter.
 - **security**: installs pinned `cargo-audit` and `cargo-deny`, then runs
   `ci/check-security.sh`: RustSec advisories, the `ci/deny.toml` advisory/ban/license/source
   policy, and the public [`SECURITY.md`](../SECURITY.md) policy.

@@ -98,6 +98,7 @@ jobs:
           SHELLCHECK_OPTS: --enable=check-extra-masked-returns
       - run: shellcheck ci/*.sh ci/runner/*.sh
       - run: bash ci/test-release-asset.sh
+      - run: bash ci/test-release-version.sh
       - run: node --test action/test.js
       # Execute the checked-out action through GitHub's JavaScript-action runtime. Unit tests
       # call index.js directly and therefore cannot catch a retired `runs.using` value.
@@ -287,6 +288,9 @@ jobs:
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
       - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit
+      # The release script's version-reference check runs here so drift in README/docs/Action
+      # references fails a normal main/PR run, not only a tag release.
+      - run: ci/check-release.sh
 
   buf:
     name: optional historical buf breaking

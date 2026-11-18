@@ -32,6 +32,11 @@ requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependenc
 [[ "${requirement}" == "^${version}" || "${requirement}" == "=${version}" ]] \
     || fail "witforge-cli requires witforge ${requirement}; require the released version ${version}"
 
+# Keep documentation and Action references on the same version as the crates. The checker's
+# output goes to stderr because this script's stdout is the version consumed by the release
+# workflow.
+bash "${ROOT}/ci/check-version-references.sh" "${ROOT}" "${version}" >&2
+
 escaped="${version//./\\.}"
 heading="$(grep -E "^## \[${escaped}\]" CHANGELOG.md || true)"
 [[ -n "${heading}" ]] || fail "CHANGELOG.md has no section for ${version}"
