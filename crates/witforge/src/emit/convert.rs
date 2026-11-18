@@ -12,8 +12,11 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result, bail};
 
 use crate::emit::defaults::default_expr;
-use crate::emit::rust::{HEADER, pascal_case, rust_ident, snake_case, version_module_name};
+use crate::emit::rust::{HEADER, version_module_name};
 use crate::emit::versions::Version;
+use crate::emit::{
+    TypeRenderStyle, pascal_case, render_type, rust_ident, snake_case, type_kind_name,
+};
 use crate::model::{Case, Field, Interface, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
 
 /// The shared error type generated in `convert.rs`.
@@ -344,8 +347,8 @@ fn conversion_body(
             "{}/{} changes kind from {} to {}; evolution requires a new type",
             source_interface.name,
             source_def.name,
-            kind_name(&source_def.kind),
-            kind_name(&target_def.kind)
+            type_kind_name(&source_def.kind),
+            type_kind_name(&target_def.kind)
         ),
     }
 }
@@ -727,8 +730,8 @@ fn convert_expr(
         _ => contract_bail!(
             "{} changes type from `{}` to `{}`; evolution requires a new member",
             path,
-            render_type(source_type),
-            render_type(target_type)
+            render_type(source_type, TypeRenderStyle::Spaced),
+            render_type(target_type, TypeRenderStyle::Spaced)
         ),
     }
 }
@@ -858,50 +861,6 @@ fn rust_type_expr(version: &Version, ty: &TypeExpr, version_alias: &str) -> Resu
                 None => "()".to_string(),
             };
             Ok(format!("::core::result::Result<{ok}, {err}>"))
-        }
-    }
-}
-
-fn kind_name(kind: &TypeDefKind) -> &'static str {
-    match kind {
-        TypeDefKind::Record(_) => "record",
-        TypeDefKind::Variant(_) => "variant",
-        TypeDefKind::Enum(_) => "enum",
-        TypeDefKind::Flags(_) => "flags",
-        TypeDefKind::Alias(_) => "alias",
-        TypeDefKind::List(_) => "list",
-        TypeDefKind::Option(_) => "option",
-        TypeDefKind::Result(_) => "result",
-    }
-}
-
-fn render_type(ty: &TypeExpr) -> String {
-    match ty {
-        TypeExpr::Bool => "bool".to_string(),
-        TypeExpr::U8 => "u8".to_string(),
-        TypeExpr::U16 => "u16".to_string(),
-        TypeExpr::U32 => "u32".to_string(),
-        TypeExpr::U64 => "u64".to_string(),
-        TypeExpr::S8 => "s8".to_string(),
-        TypeExpr::S16 => "s16".to_string(),
-        TypeExpr::S32 => "s32".to_string(),
-        TypeExpr::S64 => "s64".to_string(),
-        TypeExpr::F32 => "f32".to_string(),
-        TypeExpr::F64 => "f64".to_string(),
-        TypeExpr::String => "string".to_string(),
-        TypeExpr::Named(name) => name.to_string(),
-        TypeExpr::List(element) => format!("list<{}>", render_type(element)),
-        TypeExpr::Option(payload) => format!("option<{}>", render_type(payload)),
-        TypeExpr::Result(result) => {
-            let ok = result
-                .ok
-                .as_ref()
-                .map_or_else(|| "_".to_string(), |ty| render_type(ty));
-            let err = result
-                .err
-                .as_ref()
-                .map_or_else(|| "_".to_string(), |ty| render_type(ty));
-            format!("result<{ok}, {err}>")
         }
     }
 }

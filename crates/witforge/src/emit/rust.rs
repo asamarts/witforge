@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
+use crate::emit::{pascal_case, rust_ident, snake_case};
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
 /// The ownership header on every generated Rust file.
@@ -703,44 +704,4 @@ fn insert_name(
         );
     }
     Ok(())
-}
-
-pub(crate) fn snake_case(name: &str) -> String {
-    name.replace('-', "_")
-}
-
-pub(crate) fn pascal_case(name: &str) -> String {
-    let mut out = String::new();
-    for part in name.split('-') {
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            out.push(first.to_ascii_uppercase());
-            out.extend(chars);
-        }
-    }
-    out
-}
-
-pub(crate) fn rust_ident(name: &str, what: &str) -> Result<String> {
-    if name.is_empty() || name == "_" {
-        contract_bail!("{what} has no Rust-compatible name");
-    }
-    if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-        contract_bail!("{what} `{name}` starts with a digit");
-    }
-    let suffix = ["crate", "self", "super", "Self"];
-    let raw = [
-        "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
-        "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move",
-        "mut", "pub", "ref", "return", "static", "struct", "trait", "true", "type", "unsafe",
-        "use", "where", "while", "abstract", "become", "box", "do", "final", "macro", "override",
-        "priv", "try", "typeof", "union", "unsized", "virtual", "yield",
-    ];
-    if suffix.contains(&name) {
-        Ok(format!("{name}_"))
-    } else if raw.contains(&name) {
-        Ok(format!("r#{name}"))
-    } else {
-        Ok(name.to_string())
-    }
 }

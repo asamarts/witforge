@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
+use crate::emit::{pascal_case, snake_case};
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
     Case, Dependency, Field, Function, MemberKind, Model, QualifiedName, ResultExpr, TypeDef,
@@ -1723,22 +1724,6 @@ const PROTO_KEYWORDS: &[&str] = &[
     "true",
     "false",
 ];
-
-fn pascal_case(name: &str) -> String {
-    let mut out = String::new();
-    for part in name.split('-') {
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            out.push(first.to_ascii_uppercase());
-            out.extend(chars);
-        }
-    }
-    out
-}
-
-fn snake_case(name: &str) -> String {
-    name.replace('-', "_")
-}
 
 fn upper_snake(name: &str) -> String {
     let mut out = String::new();

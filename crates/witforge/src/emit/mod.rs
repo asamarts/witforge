@@ -20,6 +20,144 @@ pub mod proto;
 pub mod rust;
 pub(crate) mod versions;
 
+use crate::model::{TypeDefKind, TypeExpr};
+
+/// The Rust keyword list shared by the Rust and glue emitters.
+pub(crate) const RUST_KEYWORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
+    "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "try", "typeof", "union", "unsized", "virtual", "yield",
+];
+
+/// Convert a WIT name to its Rust module or member spelling.
+pub(crate) fn snake_case(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+/// Convert a WIT name to its Rust type or trait spelling.
+pub(crate) fn pascal_case(name: &str) -> String {
+    let mut out = String::new();
+    for part in name.split('-') {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            out.extend(chars);
+        }
+    }
+    out
+}
+
+/// Escape a Rust identifier, rejecting names that cannot be represented.
+pub(crate) fn rust_ident(name: &str, what: &str) -> anyhow::Result<String> {
+    if name.is_empty() || name == "_" {
+        contract_bail!("{what} has no Rust-compatible name");
+    }
+    if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+        contract_bail!("{what} `{name}` starts with a digit");
+    }
+    let suffix = ["crate", "self", "super", "Self"];
+    if suffix.contains(&name) {
+        Ok(format!("{name}_"))
+    } else if RUST_KEYWORDS.contains(&name) {
+        Ok(format!("r#{name}"))
+    } else {
+        Ok(name.to_string())
+    }
+}
+
+/// How a type expression is rendered in diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeRenderStyle {
+    /// No space after result commas, for stable diff shapes.
+    Compact,
+    /// A space after result commas, for conversion diagnostics.
+    Spaced,
+}
+
+/// The WIT spelling of a type-definition kind.
+pub(crate) fn type_kind_name(kind: &TypeDefKind) -> &'static str {
+    match kind {
+        TypeDefKind::Record(_) => "record",
+        TypeDefKind::Variant(_) => "variant",
+        TypeDefKind::Enum(_) => "enum",
+        TypeDefKind::Flags(_) => "flags",
+        TypeDefKind::Alias(_) => "alias",
+        TypeDefKind::List(_) => "list",
+        TypeDefKind::Option(_) => "option",
+        TypeDefKind::Result(_) => "result",
+    }
+}
+
+/// Render a type definition's shape in the requested diagnostic style.
+pub(crate) fn type_shape(kind: &TypeDefKind, style: TypeRenderStyle) -> String {
+    match kind {
+        TypeDefKind::Alias(target) => render_type(target, style),
+        TypeDefKind::List(element) => format!("list<{}>", render_type(element, style)),
+        TypeDefKind::Option(payload) => format!("option<{}>", render_type(payload, style)),
+        TypeDefKind::Result(result) => {
+            let separator = match style {
+                TypeRenderStyle::Compact => ",",
+                TypeRenderStyle::Spaced => ", ",
+            };
+            format!(
+                "result<{}{separator}{}>",
+                result
+                    .ok
+                    .as_deref()
+                    .map_or_else(|| "_".to_string(), |ty| render_type(ty, style)),
+                result
+                    .err
+                    .as_deref()
+                    .map_or_else(|| "_".to_string(), |ty| render_type(ty, style)),
+            )
+        }
+        TypeDefKind::Record(_)
+        | TypeDefKind::Variant(_)
+        | TypeDefKind::Enum(_)
+        | TypeDefKind::Flags(_) => type_kind_name(kind).to_string(),
+    }
+}
+
+/// Render a type expression in the requested diagnostic style.
+pub(crate) fn render_type(ty: &TypeExpr, style: TypeRenderStyle) -> String {
+    match ty {
+        TypeExpr::Bool => "bool".to_string(),
+        TypeExpr::U8 => "u8".to_string(),
+        TypeExpr::U16 => "u16".to_string(),
+        TypeExpr::U32 => "u32".to_string(),
+        TypeExpr::U64 => "u64".to_string(),
+        TypeExpr::S8 => "s8".to_string(),
+        TypeExpr::S16 => "s16".to_string(),
+        TypeExpr::S32 => "s32".to_string(),
+        TypeExpr::S64 => "s64".to_string(),
+        TypeExpr::F32 => "f32".to_string(),
+        TypeExpr::F64 => "f64".to_string(),
+        TypeExpr::String => "string".to_string(),
+        TypeExpr::Named(name) => name.to_string(),
+        TypeExpr::List(element) => format!("list<{}>", render_type(element, style)),
+        TypeExpr::Option(payload) => format!("option<{}>", render_type(payload, style)),
+        TypeExpr::Result(result) => {
+            let separator = match style {
+                TypeRenderStyle::Compact => ",",
+                TypeRenderStyle::Spaced => ", ",
+            };
+            format!(
+                "result<{}{separator}{}>",
+                result
+                    .ok
+                    .as_deref()
+                    .map_or_else(|| "_".to_string(), |ty| render_type(ty, style)),
+                result
+                    .err
+                    .as_deref()
+                    .map_or_else(|| "_".to_string(), |ty| render_type(ty, style)),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

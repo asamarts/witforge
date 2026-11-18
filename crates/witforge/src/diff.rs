@@ -30,10 +30,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::emit::defaults::default_expr;
 use crate::emit::versions::ensure_same_dependency_graph;
+use crate::emit::{TypeRenderStyle, type_kind_name, type_shape};
 use crate::lock::{PackageName, WireLock};
-use crate::model::{
-    Interface, Member, Model, TypeDef, TypeDefKind, TypeExpr, Version, WorldInterface,
-};
+use crate::model::{Interface, Member, Model, TypeDef, TypeDefKind, Version, WorldInterface};
 use crate::{ContractError, ensure_directory_version, ensure_version_directory, load, subset};
 
 /// One endpoint of a diff: the selected version directory and its identity.
@@ -754,8 +753,8 @@ impl Builder<'_> {
                 )
             }
             _ => {
-                let old_shape = type_shape(&old.kind);
-                let new_shape = type_shape(&new.kind);
+                let old_shape = type_shape(&old.kind, TypeRenderStyle::Compact);
+                let new_shape = type_shape(&new.kind, TypeRenderStyle::Compact);
                 if old_shape != new_shape {
                     self.push(
                         ChangeKind::Retyped {
@@ -1151,71 +1150,4 @@ fn member_pairs(loaded: &Loaded, parent: &str, names: &[String]) -> Result<Vec<(
         .iter()
         .map(|name| Ok((name.clone(), loaded.member_type(parent, name)?)))
         .collect()
-}
-
-fn type_kind_name(kind: &TypeDefKind) -> &'static str {
-    match kind {
-        TypeDefKind::Record(_) => "record",
-        TypeDefKind::Variant(_) => "variant",
-        TypeDefKind::Enum(_) => "enum",
-        TypeDefKind::Flags(_) => "flags",
-        TypeDefKind::Alias(_) => "alias",
-        TypeDefKind::List(_) => "list",
-        TypeDefKind::Option(_) => "option",
-        TypeDefKind::Result(_) => "result",
-    }
-}
-
-fn type_shape(kind: &TypeDefKind) -> String {
-    match kind {
-        TypeDefKind::Alias(target) => source_type(target),
-        TypeDefKind::List(element) => format!("list<{}>", source_type(element)),
-        TypeDefKind::Option(payload) => format!("option<{}>", source_type(payload)),
-        TypeDefKind::Result(result) => format!(
-            "result<{},{}>",
-            result
-                .ok
-                .as_deref()
-                .map_or_else(|| "_".to_string(), source_type),
-            result
-                .err
-                .as_deref()
-                .map_or_else(|| "_".to_string(), source_type),
-        ),
-        TypeDefKind::Record(_)
-        | TypeDefKind::Variant(_)
-        | TypeDefKind::Enum(_)
-        | TypeDefKind::Flags(_) => type_kind_name(kind).to_string(),
-    }
-}
-
-fn source_type(ty: &TypeExpr) -> String {
-    match ty {
-        TypeExpr::Bool => "bool".to_string(),
-        TypeExpr::U8 => "u8".to_string(),
-        TypeExpr::U16 => "u16".to_string(),
-        TypeExpr::U32 => "u32".to_string(),
-        TypeExpr::U64 => "u64".to_string(),
-        TypeExpr::S8 => "s8".to_string(),
-        TypeExpr::S16 => "s16".to_string(),
-        TypeExpr::S32 => "s32".to_string(),
-        TypeExpr::S64 => "s64".to_string(),
-        TypeExpr::F32 => "f32".to_string(),
-        TypeExpr::F64 => "f64".to_string(),
-        TypeExpr::String => "string".to_string(),
-        TypeExpr::Named(name) => name.to_string(),
-        TypeExpr::List(element) => format!("list<{}>", source_type(element)),
-        TypeExpr::Option(payload) => format!("option<{}>", source_type(payload)),
-        TypeExpr::Result(result) => format!(
-            "result<{},{}>",
-            result
-                .ok
-                .as_deref()
-                .map_or_else(|| "_".to_string(), source_type),
-            result
-                .err
-                .as_deref()
-                .map_or_else(|| "_".to_string(), source_type),
-        ),
-    }
 }

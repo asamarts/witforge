@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
+use crate::emit::{RUST_KEYWORDS, pascal_case, rust_ident, snake_case};
 use crate::lock::WireLock;
 use crate::model::{
     Case, Dependency, Field, Flag, Interface, Model, QualifiedName, ResultExpr, TypeDef,
@@ -337,14 +338,6 @@ fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
         _ => ty.clone(),
     }
 }
-
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
-    "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
-    "override", "priv", "try", "typeof", "union", "unsized", "virtual", "yield",
-];
 
 /// Emit the glue root module containing the generated `GlueError` and the major modules.
 ///
@@ -1289,22 +1282,6 @@ fn is_u8(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::U8)
 }
 
-fn snake_case(name: &str) -> String {
-    name.replace('-', "_")
-}
-
-fn pascal_case(name: &str) -> String {
-    let mut out = String::new();
-    for part in name.split('-') {
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            out.push(first.to_ascii_uppercase());
-            out.extend(chars);
-        }
-    }
-    out
-}
-
 fn pascal_to_snake(name: &str) -> String {
     let mut out = String::new();
     let mut previous_lower = false;
@@ -1324,30 +1301,6 @@ fn pascal_to_snake(name: &str) -> String {
         }
     }
     out
-}
-
-fn rust_ident(name: &str, what: &str) -> Result<String> {
-    if name.is_empty() || name == "_" {
-        contract_bail!("{what} has no Rust-compatible name");
-    }
-    if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-        contract_bail!("{what} `{name}` starts with a digit");
-    }
-    let suffix = ["crate", "self", "super", "Self"];
-    let raw = [
-        "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
-        "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move",
-        "mut", "pub", "ref", "return", "static", "struct", "trait", "true", "type", "unsafe",
-        "use", "where", "while", "abstract", "become", "box", "do", "final", "macro", "override",
-        "priv", "try", "typeof", "union", "unsized", "virtual", "yield",
-    ];
-    if suffix.contains(&name) {
-        Ok(format!("{name}_"))
-    } else if raw.contains(&name) {
-        Ok(format!("r#{name}"))
-    } else {
-        Ok(name.to_string())
-    }
 }
 
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
