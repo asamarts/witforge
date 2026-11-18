@@ -203,6 +203,7 @@ impl ReleasedManifest {
             if !directory.join("wire.lock").is_file() {
                 bail!("line {line_no}: released directory `{line}` has no wire.lock");
             }
+            ensure_no_symlinks(&directory, line)?;
             directories.push(line.to_string());
         }
         Ok(Self { directories })
@@ -229,6 +230,34 @@ fn plain_directory_name(name: &str) -> bool {
         .next()
         .is_some_and(|first| first.is_ascii_alphanumeric())
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Refuse any symlink inside a released version directory.
+///
+/// The freeze script checks the tracked history; this check also covers a working tree that was
+/// modified after checkout. A released directory's contract, lockfile, and dependency files must
+/// be the released bytes, not a link whose target can change outside the manifest's view.
+fn ensure_no_symlinks(directory: &Path, entry: &str) -> Result<()> {
+    for child in fs::read_dir(directory)
+        .with_context(|| format!("failed to read released directory `{entry}`"))?
+    {
+        let child =
+            child.with_context(|| format!("failed to read released directory `{entry}`"))?;
+        let file_type = child
+            .file_type()
+            .with_context(|| format!("failed to inspect `{}`", child.path().display()))?;
+        if file_type.is_symlink() {
+            bail!(
+                "released directory `{entry}` contains symlink `{}`; a released version must \
+                 contain regular files and directories",
+                child.path().display()
+            );
+        }
+        if file_type.is_dir() {
+            ensure_no_symlinks(&child.path(), entry)?;
+        }
+    }
+    Ok(())
 }
 
 /// The default manifest path for a version directory: `<wit-dir>/../released`.

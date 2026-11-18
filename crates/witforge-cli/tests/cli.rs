@@ -999,6 +999,41 @@ fn released_refusal_resolves_the_version_directory() {
 
 #[cfg(unix)]
 #[test]
+fn check_refuses_a_symlink_inside_a_released_directory() {
+    let root = versions("released-lock-symlink");
+    let released = root.join("wit/v0.1");
+    let store = root.join("store");
+    fs::create_dir_all(&store).unwrap();
+    fs::copy(released.join("wire.lock"), store.join("wire.lock")).unwrap();
+    fs::remove_file(released.join("wire.lock")).unwrap();
+    std::os::unix::fs::symlink(store.join("wire.lock"), released.join("wire.lock")).unwrap();
+
+    let output = witforge()
+        .args(["check", &released.display().to_string()])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("contains symlink"), "{stderr}");
+
+    // The walk is recursive: a symlinked dependency package is caught too.
+    fs::remove_file(released.join("wire.lock")).unwrap();
+    fs::copy(store.join("wire.lock"), released.join("wire.lock")).unwrap();
+    fs::create_dir_all(released.join("deps")).unwrap();
+    std::os::unix::fs::symlink(&store, released.join("deps/shared")).unwrap();
+    let output = witforge()
+        .args(["check", &released.display().to_string()])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("deps/shared"), "{stderr}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn lock_and_check_refuse_a_symlink_to_a_version_directory() {
     let root = versions("released-symlink");
     let v01 = root.join("wit/v0.1");

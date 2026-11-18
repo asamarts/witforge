@@ -38,6 +38,10 @@ frozen as a whole, which covers the remaining source-level cases.
   the operating system resolved, the link's target, and cannot tell that it was reached through
   a link, so it reads (and `lock` writes) the target as an unlinked directory. The freeze check
   still refuses a released directory that is a symlink.
+- A directory listed in `wit/released` MUST NOT contain a symlink in any file or subdirectory.
+  The released-manifest loader and every command that reads it refuse one with exit `2`: a
+  symlinked `contract.wit`, `wire.lock`, or `deps/` entry could change outside the manifest's
+  view. The freeze script independently checks the tracked history and working tree.
 - Each version directory has its own `wire.lock`.
 - Rust module: `v<major>_<minor>`.
 - Protobuf package/file: `v<major>` and `v<major>.proto`.
