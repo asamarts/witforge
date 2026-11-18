@@ -31,6 +31,8 @@ The public surface is the modules and items below. Within 1.x:
 
 `diff::compare_with_impacts` returns the same `DiffReport` as `diff::compare` plus informational
 `ConversionImpact` notes. The notes do not change compatibility counts or `--check` behavior.
+`ConversionImpact` and `DiffAnalysis` are fixed value types for 1.0: adding a field is a new type
+or a major-version change, not an additive minor change.
 
 `Contract` is opaque: its `wit-parser` fields are crate-private and cannot be constructed or
 mutated by downstream code.

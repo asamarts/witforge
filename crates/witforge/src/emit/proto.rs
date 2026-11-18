@@ -509,7 +509,10 @@ impl<'a> Emitter<'a> {
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
         let mut numbers = BTreeSet::new();
-        for function in &self.model.interface(interface).unwrap().functions {
+        let Some(interface_def) = self.model.interface(interface) else {
+            bail!("interface `{interface}` is missing from the model");
+        };
+        for function in &interface_def.functions {
             let value = upper_snake(&function.name);
             if value == "UNSPECIFIED" || reserved_names.contains(&value) {
                 contract_bail!(
@@ -1767,4 +1770,37 @@ fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
         writeln!(out, "{prefix}// {line}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Model, Package, Version};
+
+    #[test]
+    fn method_enum_reports_a_missing_interface() {
+        let model = Model {
+            package: Package {
+                namespace: "example".to_string(),
+                name: "model".to_string(),
+                version: Version {
+                    major: 0,
+                    minor: 1,
+                    patch: 0,
+                },
+                docs: String::new(),
+            },
+            interfaces: Vec::new(),
+            worlds: Vec::new(),
+            dependencies: Vec::new(),
+        };
+        let lock = WireLock::default();
+        let mut emitter = Emitter::new(&model, &lock).unwrap();
+        let mut out = String::new();
+        let error = emitter.emit_method_enum(&mut out, "missing").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("missing from the model"),
+            "{error:#}"
+        );
+    }
 }

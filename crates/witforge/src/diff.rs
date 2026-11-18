@@ -187,7 +187,7 @@ pub struct DiffAnalysis {
 
 /// Compare two version directories, or the highest version under two WIT roots.
 ///
-/// This is [`compare_with_impacts`] without the conversion-impact notes.
+/// This is [`compare_with_impacts`] without collecting the conversion-impact notes.
 ///
 /// # Errors
 ///
@@ -196,7 +196,7 @@ pub struct DiffAnalysis {
 /// different package names, or mismatched dependency graphs. Contract violations carry
 /// [`ContractError`].
 pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
-    compare_with_impacts(old, new).map(|analysis| analysis.report)
+    compare_report(old, new, false).map(|(report, _)| report)
 }
 
 /// Compare two version directories, or the highest version under two WIT roots, and report
@@ -214,6 +214,19 @@ pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
 ///
 /// Returns the same errors as [`compare`].
 pub fn compare_with_impacts(old: &Path, new: &Path) -> Result<DiffAnalysis> {
+    let (report, conversion_impacts) = compare_report(old, new, true)?;
+    Ok(DiffAnalysis {
+        report,
+        conversion_impacts,
+    })
+}
+
+/// Build the report, optionally collecting conversion-impact notes.
+fn compare_report(
+    old: &Path,
+    new: &Path,
+    collect_impacts: bool,
+) -> Result<(DiffReport, Vec<ConversionImpact>)> {
     let old = load_endpoint(old)
         .with_context(|| format!("failed to read the old contract {}", old.display()))?;
     let new = load_endpoint(new)
@@ -247,16 +260,20 @@ pub fn compare_with_impacts(old: &Path, new: &Path) -> Result<DiffAnalysis> {
             .then_with(|| left.element.cmp(&right.element))
     });
     let summary = summarize(&changes);
-    let conversion_impacts = conversion_impacts(&old, &new)?;
-    Ok(DiffAnalysis {
-        report: DiffReport {
+    let conversion_impacts = if collect_impacts {
+        conversion_impacts(&old, &new)?
+    } else {
+        Vec::new()
+    };
+    Ok((
+        DiffReport {
             old: old.endpoint,
             new: new.endpoint,
             changes,
             summary,
         },
         conversion_impacts,
-    })
+    ))
 }
 
 fn conversion_impacts(old: &Loaded, new: &Loaded) -> Result<Vec<ConversionImpact>> {
