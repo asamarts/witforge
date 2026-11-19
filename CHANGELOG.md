@@ -17,7 +17,7 @@ have it.
 - CI checks generated-output documentation snippets and README/docs/Action current-version
   references.
 - The test suite runs the command sequences of the README, the quickstart, and the evolution
-  guide as written.
+  guide as written, and `cargo test` runs the release-script cases and the Action's unit tests.
 
 ### Changed
 
@@ -37,8 +37,9 @@ have it.
   stalled network fails the step instead of waiting for the job timeout.
 - The release gates compare the library API with the newest published release and the protobuf
   output of every fixture with every published release. Both gates previously named 0.4.1.
-- The JSON Schema test dependency moved to `jsonschema` 0.61 and the CLI configuration
-  dependency to `toml` 1.2.1; both are internal dependency updates with no runtime API change.
+- The JSON Schema test dependency moved to `jsonschema` 0.61, and the locked version of the
+  CLI's `toml` dependency moved to 1.2.1; both are internal dependency updates with no runtime
+  API change.
 
 ### Fixed
 
@@ -46,7 +47,12 @@ have it.
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and
   never ran `witforge diff`, and latest-release lookups were anonymous. Workflows pinned to an
-  earlier Action release should run `witforge diff … --check` as a separate step.
+  earlier Action release should run `witforge diff` as a separate step. A workflow that already
+  passes `diff-old` and `diff-new` starts running `witforge diff … --check` when its pin moves
+  to the release with this fix, and then fails on any wire-, source-, or generated-API-breaking
+  change, which includes an added record field; set `diff-check: "false"` to print the diff
+  without failing. The token is sent only to the latest-release query, not with the asset
+  downloads.
 - The quickstart's first contract declared an interface and a world with one name, which WIT
   refuses, so its first command failed. The quickstart, README, and evolution guide now include
   the steps their evolution sequences omitted: creating the new version directory, copying the

@@ -121,7 +121,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 
 ## 0.5.0: diff review (released)
 
-Tag `v0.5.0` contains exactly this; the changelog's 0.5.0 section is the full list.
+This is a summary of what tag `v0.5.0` contains; the changelog's 0.5.0 section is the full list.
 
 - [x] `diff` reports guaranteed down-conversion failures as notes and refuses a stale lockfile
       on a direct version-directory endpoint.

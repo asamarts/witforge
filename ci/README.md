@@ -52,7 +52,11 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   action/test.js` for the Action's inputs, asset selection, and command plan. The reference
   check requires documentation to name the workspace version; `ci.yml` itself may name that
   version or the release before it, so that the commit preparing a release still runs a
-  published Action and binary.
+  published Action and binary. Once the version's tag is on an earlier commit, the release is
+  published and `ci.yml` must name it; the check sees that only in a checkout with its tags
+  (the `generated` job fetches them). `cargo test` runs the reference-check cases and the
+  Action's unit tests too (`crates/witforge-cli/tests/tooling.rs`), which gives both suites a
+  test name that a plan task can cite.
 - **published Action**: invokes the pinned remote release ref on Linux x86_64, macOS arm64,
   macOS Intel, and Windows x86_64. Each job downloads its platform archive, verifies its checksum,
   extracts it, adds it to `PATH`, and runs a real contract check. The workflows job separately
@@ -87,7 +91,10 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   The old schema is generated from each release tag by that tag's published witforge binary;
   the candidate binary generates only the new schema. Every fixture WIT root is checked against
   every release tag at which it exists, so a new release or fixture joins the comparison without
-  an edit. The job installs pinned buf 1.74 and fails if any tool cannot run.
+  an edit. Each release is installed with `cargo install`, so a release that cannot be
+  installed (yanked, or tagged and never published) fails the run until it is listed, with its
+  reason, in `ci/buf-history-skip`. The job installs pinned buf 1.74 and fails if any tool
+  cannot run.
 
 - **ci ok**: passes only when every job above passed (the optional buf job may be skipped).
   It is the one check the repository's `main` ruleset requires before a pull request merges,

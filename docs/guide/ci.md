@@ -7,24 +7,8 @@ title: Continuous integration
 
 ## GitHub Action
 
-Pin the Action to the same release used for local generation:
-
-```yaml
-- uses: asamarts/witforge@v0.5.0
-  with:
-    check: wit/v0.2
-    diff-old: wit/v0.1
-    diff-new: wit/v0.2
-    config: witforge.toml
-    generators: rust,proto,schema,glue
-```
-
-The Action installs a checksum-verified release binary and runs configured generators with `--check`.
-
-**Action releases up to and including v0.5.0 ignore `diff-old`, `diff-new`, `diff-check`, and
-`github-token`.** They read those inputs under the wrong environment names, so the snippet above
-runs `check` and the generators and never runs `diff`. The fix is in the next release. Until then,
-run the gate as its own step; the Action leaves `witforge` on `PATH`:
+Pin the Action to the same release used for local generation, and run the contract diff as its
+own step. The Action leaves `witforge` on `PATH`:
 
 ```yaml
 - uses: asamarts/witforge@v0.5.0
@@ -32,8 +16,32 @@ run the gate as its own step; the Action leaves `witforge` on `PATH`:
     check: wit/v0.2
     config: witforge.toml
     generators: rust,proto,schema,glue
-- run: witforge diff wit/v0.1 wit/v0.2 --check
+- run: witforge diff wit/v0.1 wit/v0.2
 ```
+
+The Action installs a checksum-verified release binary and runs configured generators with
+`--check`. The `diff` step prints what changed between the two versions.
+
+Add `--check` to the `diff` step to fail the job on any wire-, source-, or generated-API-breaking
+change. An added record field is source-breaking even when its type is defaultable, so this gate
+fails for most minors; use it where a minor must not break the code of the contract's consumers.
+
+### The Action's diff inputs
+
+The Action can run the diff itself through `diff-old`, `diff-new`, and `diff-check`.
+
+**Action releases up to and including v0.5.0 ignore these three inputs and `github-token`.** They
+read them under the wrong environment names, so a workflow that passes `diff-old` and `diff-new`
+runs `check` and the generators and never runs `diff`. The fix is in the next release. From that
+release on:
+
+- `diff-old` and `diff-new` run `witforge diff <old> <new> --check`, because `diff-check`
+  defaults to `true`;
+- `diff-check: "false"` prints the diff without failing the job.
+
+A workflow that already passes `diff-old` and `diff-new` therefore starts gating when its pin
+moves past v0.5.0. Set `diff-check: "false"` before moving the pin if the job should keep
+passing on source-breaking changes.
 
 ## Direct commands
 

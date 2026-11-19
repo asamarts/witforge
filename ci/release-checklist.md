@@ -105,7 +105,9 @@ explicit release-owner action.
       `.github/workflows/ci.yml` on the previous release: its `asamarts/witforge@v…` reference
       and Action `version` inputs install a published release, and no `vX.Y.Z` tag or asset
       exists before the release workflow has run. The check accepts the workspace version or
-      the release before it there, and requires one release throughout the file.
+      the release before it there, and requires one release throughout the file. It stops
+      accepting the release before it once `vX.Y.Z` is tagged on an earlier commit, which is
+      what makes the last step of this list mandatory.
 - [ ] Run the gates of [Before publishing](#before-publishing), then
       `cargo semver-checks check-release -p witforge --release-type minor`,
       `ci/check-release.sh`, `ci/publish.sh --dry-run`, `BUF_REQUIRED=1 ci/check-buf-history.sh`,
@@ -129,7 +131,9 @@ explicit release-owner action.
       changelog section.
 - [ ] Update CI's pinned published-Action ref and every Action `version` input in
       `.github/workflows/ci.yml` to X.Y.Z in one commit, push the release record, and require
-      all four hosted target jobs to pass.
+      all four hosted target jobs to pass. Do this directly after publishing: from the first
+      commit after the tag, `ci/check-release.sh` fails while `ci.yml` still names the
+      previous release.
 
 A new crate in the workspace needs its first version published by hand, as for 0.1.0 above. If
 trusted publishing itself fails (for example a changed workflow or environment name that no

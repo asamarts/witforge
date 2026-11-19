@@ -180,8 +180,8 @@ cp my-contract/wit/v0.1/contract.wit my-contract/wit/v0.1/wire.lock my-contract/
 ```
 
 Edit `my-contract/wit/v0.2/contract.wit`. Change the package version to `0.2.0` first: until it
-matches the directory name, `lock` and `check` refuse the directory. Then make the change. Add new members
-with defaultable types when possible:
+matches the directory name, every command refuses the directory. Then make the change. Add new
+members with defaultable types when possible:
 
 ```wit
 package example:hello@0.2.0;
@@ -224,8 +224,11 @@ the older version does not have. Missing required older members are reported as
 `ConversionError::UnknownCase`. A required, non-defaultable addition is refused by conversion
 generation.
 
-Do not edit a released version's WIT, lockfile, or generated Rust module. The release-freeze
-check and `--check` enforce that rule.
+Do not edit a released version's WIT, lockfile, or generated Rust module. `witforge lock` refuses
+a released directory, and `check` and the generators fail when a released WIT file no longer
+matches its lockfile. No `witforge` command notices a released WIT file and its lockfile edited
+together: that needs a history check in CI, such as this repository's
+[`ci/check-release-freeze.sh`](https://github.com/asamarts/witforge/blob/main/ci/check-release-freeze.sh).
 
 ## Review a change
 

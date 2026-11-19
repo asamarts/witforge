@@ -75,7 +75,8 @@ published release. A `version` input overrides either default:
 ```
 
 Pass `${{ github.token }}` as `github-token` when querying the latest release to avoid anonymous
-GitHub API rate limits; pinned versions do not query the API.
+GitHub API rate limits; pinned versions do not query the API. The token is sent only to that API
+query. The release archive and its checksum are public and are downloaded without credentials.
 
 The runner exports an input as `INPUT_<NAME>` with the name upper-cased and spaces replaced by
 underscores; a hyphen stays a hyphen, so `diff-old` is `INPUT_DIFF-OLD`. Action releases through
@@ -97,7 +98,13 @@ CI runs the checked-out Action twice on a breaking fixture pair: once reporting
 | `config` | empty | `witforge.toml` used for generate/check runs. |
 | `project` | empty | Project name passed to each generator. |
 | `generators` | `rust` | Comma- or whitespace-separated `rust`, `proto`, `schema`, `glue`; each runs with `--config` and `--check`. Empty skips generation. |
-| `github-token` | empty | Token for the latest-release lookup. |
+| `github-token` | empty | Token for the latest-release lookup; not sent with asset downloads. |
+
+With `diff-old` and `diff-new` set and `diff-check` left at its default, the step fails on any
+wire-, source-, or generated-API-breaking change. That includes an added record field, so a
+workflow that only wants the report sets `diff-check: "false"`. Because releases through v0.5.0
+ignored these inputs, a workflow that already passes them starts gating when its pin moves to
+the first release with the fix.
 
 The action leaves `witforge` on `PATH` and exports `WITFORGE_BIN` for later steps. It runs, in
 order:

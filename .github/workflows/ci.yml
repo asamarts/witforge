@@ -105,6 +105,10 @@ jobs:
       # input the runner exports under another name than the action reads. The fixture pair has
       # breaking changes: the first step reports them (`diff-check: false`), the second must
       # fail on them, so together they prove `diff-old`, `diff-new`, and `diff-check` arrive.
+      # The second step's outcome cannot tell a failed gate from a failed install. The first
+      # step has just installed the same release on this runner, so an input regression, which
+      # fails every run, is not hidden by a transient download failure in one of them. `W10-086`
+      # replaces this with an assertion on the command that failed.
       - name: Smoke the local Action
         uses: ./
         with:
