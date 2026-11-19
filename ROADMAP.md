@@ -138,7 +138,10 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
       paused; the independent-adoption gate remains unchanged (`W10-001`, `W10-002`).
 - [ ] Continue bounded implementation work that does not speculate about consumer demand. The
-      0.5.0 audit remediation and diff/conversion benchmark are complete; remaining product work
-      is gated on independent-adoption evidence or the 1.0 gate.
+      first 0.5.0 audit's remediation and the diff/conversion benchmark are complete.
+- [ ] Close the [second audit](docs/design/audit-2026-11-18-second.md): wire-identity,
+      generated-code, tool, and release defects that the suite did not see. Its tasks (`W10-038`
+      to `W10-098`) come before 1.0 and ship from 0.6.0 (`W10-069`) on. `aplan ready` lists what
+      can start.
 - [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
       JSON work behind their existing evidence or 1.0 triggers.
