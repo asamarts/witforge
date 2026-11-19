@@ -283,4 +283,7 @@ boundary, but internal conversion errors SHOULD name the item and the unsupporte
 - Deprecation attributes and doc examples.
 - Stability-aware generation/gating; the current 0.x line treats stability as metadata.
 - World role metadata in generated code (see the pre-golive world task).
-- A stable public model API and typed errors before 1.0.
+- A stable public model API before 1.0; its surface is fixed in
+  [`public-api.md`](public-api.md). Typed errors are not promised for 1.0: the boundary error
+  stays `anyhow::Error` with the `ContractError` classification (the same document's Errors
+  section).

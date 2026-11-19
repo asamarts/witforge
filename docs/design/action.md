@@ -46,7 +46,8 @@ archive and run `witforge.exe`.
 
 The action is published from this repository. It installs the release matching the action tag
 by default. Every GitHub API and release-asset request has a 30-second abort timeout, so a
-stalled network fails the step instead of hanging until the job timeout.
+stalled network fails the step instead of hanging until the job timeout. The timeout is not in
+the `v0.5.0` Action: it is on `main` and unreleased.
 
 The JavaScript entry point uses GitHub's Node 24 Action runtime and has no npm dependencies. CI
 executes the checked-out action with `uses: ./` so changes to `action.yml` are covered before

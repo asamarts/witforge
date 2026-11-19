@@ -119,20 +119,36 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Opt-in per-project Serde generation (`W9-002`).
 - [x] Release 0.4.0 (`W9-003`).
 
-## 0.5.0: diff review and assurance (released)
+## 0.5.0: diff review (released)
 
-- [x] `diff` reports guaranteed down-conversion failures and required-addition generation
-      blockers, rejects reversed endpoints, and gives actionable missing-lock and stale-lock
-      guidance.
-- [x] Generated writes are atomic; released version directories reject symlinks; the fuzz
-      workspace is integrated with CI, Dependabot, and the security gate; dependency-graph,
-      conversion, output, and diagnostic coverage is expanded.
-- [x] Generated-output excerpts in the README and the output guide, and current-version
-      references, are checked in CI; shared emitter
-      helpers remove duplicated naming and type rendering without changing generated output.
-- [x] Diff and version-conversion benchmark budgets cover a generated two-version fixture.
+Tag `v0.5.0` contains exactly this; the changelog's 0.5.0 section is the full list.
+
+- [x] `diff` reports guaranteed down-conversion failures as notes and refuses a stale lockfile
+      on a direct version-directory endpoint.
+- [x] The Component Model guide is corrected; the semantic decode rules for non-Rust protobuf
+      implementations and the three JSON projections are documented; generated `convert.rs`
+      no longer ends with an extra blank line.
 - [x] Release 0.5.0 (2026-11-17), with alint moved to the release and its generated output
       regenerated.
+
+## 0.6.0: assurance and audit remediation (unreleased)
+
+The checked items are merged to `main` and are not in any release: `cargo install` and the
+`v0.5.0` Action do not have them. They ship with 0.6.0 (`W10-069`); the changelog's
+`[Unreleased]` section is the full list.
+
+- [x] `diff` reports required-addition generation blockers, rejects reversed endpoints, and
+      gives actionable missing-lock guidance.
+- [x] Generated writes are atomic; released version directories reject symlinks inside them;
+      the Action bounds its network requests; the fuzz workspace is integrated with CI,
+      Dependabot, and the security gate; dependency-graph, conversion, output, and diagnostic
+      coverage is expanded.
+- [x] Generated-output excerpts in the README and the output guide, the documented command
+      sequences, and current-version references are checked in CI; shared emitter helpers
+      remove duplicated naming and type rendering without changing generated output.
+- [x] Diff and version-conversion benchmark budgets cover a generated two-version fixture.
+- [ ] The [second audit](docs/design/audit-2026-11-18-second.md)'s release blockers and release
+      0.6.0 (`W10-069`; `aplan why W10-069` lists what it waits on).
 
 ## 1.0 and beyond
 

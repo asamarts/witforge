@@ -1,9 +1,12 @@
 # witforge design overview
 
 Status: living design document (2026-10-14; decisions through 2026-11-17 are logged in section
-9). The internal model, lockfile format, and Rust/protobuf/glue emitter conventions are specified
-normatively in [`model.md`](model.md), [`lockfile.md`](lockfile.md), and
-[`emitters.md`](emitters.md). The decision to build witforge, and its role in alint's plugin
+9). The internal model, lockfile format, and the Rust, protobuf, glue, conversion, and JSON
+Schema emitter conventions are specified normatively in [`model.md`](model.md),
+[`lockfile.md`](lockfile.md), and [`emitters.md`](emitters.md). `diff`, diagnostics,
+dependencies, and the Action are specified in [`diff.md`](diff.md),
+[`diagnostics.md`](diagnostics.md), [`dependencies.md`](dependencies.md), and
+[`action.md`](action.md). The decision to build witforge, and its role in alint's plugin
 architecture, are recorded in
 alint's
 [ADR-0019](https://github.com/asamarts/alint/blob/main/docs/adr/0019-general-linter-program-and-plugin-architecture.md)
@@ -179,9 +182,11 @@ The rules in this section describe the implemented format.
   projection cannot see (`u8` to `u16` are both `uint32`, and a payload-less variant can become
   an enum without changing names);
 - a new member gets the next free number (maximum existing number plus one, skipping protobuf's
-  reserved 19000 to 19999 range); numbers are never reused;
-- a removed member is emitted as `reserved` (number and name) with its kind and type retained,
-  and its number is never reused;
+  reserved 19000 to 19999 range); a number that a released version assigned is never reused;
+- a removed released member is emitted as `reserved` (number and name) with its kind and type
+  retained, and its number is never reused. A member that only an unreleased draft added leaves
+  no reservation when it is dropped, and its number may be given to a later new member
+  ([`lockfile.md`](lockfile.md) section 6);
 - a member that comes back under a removed released member's name is refused (`check` fails and
   `lock` writes nothing), because the emitted schema reserves the name as well as the number;
   a removed draft leaves no reservation and may return;

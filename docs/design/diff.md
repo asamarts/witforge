@@ -2,7 +2,9 @@
 
 Status: implemented 2026-11-05 (`W8-001`); endpoint ordering, missing-lock, and root/direct
 declaration-order boundaries 2026-11-18 (`W10-026`); conversion-impact notes 2026-11-17
-(`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`).
+(`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`). The
+2026-11-18 items are not in 0.5.0: reversed-endpoint rejection, missing-lock guidance, and
+`conversion_blockers` are on `main` and unreleased.
 
 `witforge diff <old> <new>` compares two contract versions and reports what changed in three
 independent compatibility views:

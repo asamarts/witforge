@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Everything in this section is on `main` and in no release: 0.5.0 and the `v0.5.0` Action do not
+have it.
+
 ### Added
 
 - `diff` reports a non-defaulted required record field addition as a conversion-generation
@@ -23,6 +26,19 @@ All notable changes to this project are documented here. The format follows
   inconsistent public model instead of panicking.
 - Emitter naming and type-rendering helpers now share one implementation; generated output is
   unchanged.
+- Generation replaces each generated file atomically: it writes a temporary file beside the
+  target and renames it into place, and it removes stale generated files only after every
+  expected file has been written. A failed or interrupted run no longer leaves a truncated
+  generated file.
+- Every command that reads `wit/released` refuses a symlink anywhere inside a listed version
+  directory (a symlinked `contract.wit`, `wire.lock`, or `deps/` entry) with exit `2`. Releases
+  through 0.5.0 refused only a listed directory that was itself a symlink.
+- The GitHub Action aborts every GitHub API and release-asset request after 30 seconds, so a
+  stalled network fails the step instead of waiting for the job timeout.
+- The release gates compare the library API with the newest published release and the protobuf
+  output of every fixture with every published release. Both gates previously named 0.4.1.
+- The JSON Schema test dependency moved to `jsonschema` 0.61 and the CLI configuration
+  dependency to `toml` 1.2.1; both are internal dependency updates with no runtime API change.
 
 ### Fixed
 
