@@ -826,7 +826,9 @@ impl<'a> Emitter<'a> {
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
             | TypeDefKind::Result(_) => self.type_ref(dependency, name),
-            TypeDefKind::List(element) if is_u8(element) => Ok(optional("bytes", required)),
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(dependency, element) => {
+                Ok(optional("bytes", required))
+            }
             TypeDefKind::List(element) => Ok(format!(
                 "repeated {}",
                 self.foreign_singular_ty(dependency, element)?
@@ -850,7 +852,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::F32 => Ok(optional("float", required)),
             TypeExpr::F64 => Ok(optional("double", required)),
             TypeExpr::String => Ok(optional("string", required)),
-            TypeExpr::List(element) if is_u8(element) => Ok(optional("bytes", required)),
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok(optional("bytes", required))
+            }
             TypeExpr::List(element) => Ok(format!(
                 "repeated {}",
                 self.foreign_singular_ty(context, element)?
@@ -882,7 +886,9 @@ impl<'a> Emitter<'a> {
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
             | TypeDefKind::Result(_) => self.type_ref(dependency, name),
-            TypeDefKind::List(element) if is_u8(element) => Ok("bytes".to_string()),
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(dependency, element) => {
+                Ok("bytes".to_string())
+            }
             TypeDefKind::List(element) => self.foreign_list_wrapper_ty(dependency, element),
             TypeDefKind::Option(payload) => self.foreign_option_wrapper_ty(dependency, payload),
         }
@@ -902,7 +908,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::F32 => Ok("float".to_string()),
             TypeExpr::F64 => Ok("double".to_string()),
             TypeExpr::String => Ok("string".to_string()),
-            TypeExpr::List(element) if is_u8(element) => Ok("bytes".to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok("bytes".to_string())
+            }
             TypeExpr::List(element) => self.foreign_list_wrapper_ty(context, element),
             TypeExpr::Option(payload) => self.foreign_option_wrapper_ty(context, payload),
             TypeExpr::Result(result) => self.foreign_result_wrapper_ty(context, result),
@@ -926,7 +934,9 @@ impl<'a> Emitter<'a> {
         match kind {
             TypeDefKind::Alias(target) => self.foreign_shape_ty(context, target),
             TypeDefKind::Enum(_) => Ok(Shape::Scalar),
-            TypeDefKind::List(element) if is_u8(element) => Ok(Shape::Bytes),
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok(Shape::Bytes)
+            }
             TypeDefKind::List(_) => Ok(Shape::List),
             TypeDefKind::Option(_) => Ok(Shape::Option),
             TypeDefKind::Record(_)
@@ -950,7 +960,9 @@ impl<'a> Emitter<'a> {
             | TypeExpr::F32
             | TypeExpr::F64
             | TypeExpr::String => Ok(Shape::Scalar),
-            TypeExpr::List(element) if is_u8(element) => Ok(Shape::Bytes),
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok(Shape::Bytes)
+            }
             TypeExpr::List(_) => Ok(Shape::List),
             TypeExpr::Option(_) => Ok(Shape::Option),
             TypeExpr::Result(_) => Ok(Shape::Message),
@@ -1158,7 +1170,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::F32 => Ok(optional("float", required)),
             TypeExpr::F64 => Ok(optional("double", required)),
             TypeExpr::String => Ok(optional("string", required)),
-            TypeExpr::List(element) if is_u8(element) => Ok(optional("bytes", required)),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
+                Ok(optional("bytes", required))
+            }
             TypeExpr::List(element) => Ok(format!("repeated {}", self.singular(element)?)),
             TypeExpr::Option(payload) => self.direct_option(payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
@@ -1177,7 +1191,9 @@ impl<'a> Emitter<'a> {
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Result(_) => self.singular(ty),
-                    TypeDefKind::List(element) if is_u8(element) => Ok(optional("bytes", required)),
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                        Ok(optional("bytes", required))
+                    }
                     TypeDefKind::List(element) => {
                         Ok(format!("repeated {}", self.singular(element)?))
                     }
@@ -1197,7 +1213,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::F32 => Ok("float".to_string()),
             TypeExpr::F64 => Ok("double".to_string()),
             TypeExpr::String => Ok("string".to_string()),
-            TypeExpr::List(element) if is_u8(element) => Ok("bytes".to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
+                Ok("bytes".to_string())
+            }
             TypeExpr::List(element) => self.list_wrapper(element),
             TypeExpr::Option(payload) => self.option_wrapper(None, payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
@@ -1213,7 +1231,9 @@ impl<'a> Emitter<'a> {
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Result(_) => self.user_name(&name.interface, &name.name),
-                    TypeDefKind::List(element) if is_u8(element) => Ok("bytes".to_string()),
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                        Ok("bytes".to_string())
+                    }
                     TypeDefKind::List(element) => self.list_wrapper(element),
                     TypeDefKind::Option(payload) => self.option_wrapper(Some(name), payload),
                 }
@@ -1408,7 +1428,7 @@ impl<'a> Emitter<'a> {
             | TypeExpr::F32
             | TypeExpr::F64
             | TypeExpr::String => Ok(Shape::Scalar),
-            TypeExpr::List(element) if is_u8(element) => Ok(Shape::Bytes),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(Shape::Bytes),
             TypeExpr::List(_) => Ok(Shape::List),
             TypeExpr::Option(_) => Ok(Shape::Option),
             TypeExpr::Result(_) => Ok(Shape::Message),
@@ -1420,7 +1440,9 @@ impl<'a> Emitter<'a> {
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.shape(target),
                     TypeDefKind::Enum(_) => Ok(Shape::Scalar),
-                    TypeDefKind::List(element) if is_u8(element) => Ok(Shape::Bytes),
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                        Ok(Shape::Bytes)
+                    }
                     TypeDefKind::List(_) => Ok(Shape::List),
                     TypeDefKind::Option(_) => Ok(Shape::Option),
                     TypeDefKind::Record(_)
@@ -1671,10 +1693,6 @@ fn optional(ty: &str, required: bool) -> String {
     } else {
         ty.to_string()
     }
-}
-
-fn is_u8(ty: &TypeExpr) -> bool {
-    matches!(ty, TypeExpr::U8)
 }
 
 fn field_name(name: &str) -> Result<String> {

@@ -266,7 +266,9 @@ Canonicalization rules:
 - `result` always has both slots. `result<T, _>`, `result<_, E>`, and bare `result` are written
   as `result<T,_>`, `result<_,E>`, and `result<_,_>`. There is no space after the comma.
 - `list<u8>` stays `list<u8>` in the lockfile; the protobuf `bytes` projection is an emitter
-  concern, not a wire-identity concern.
+  concern, not a wire-identity concern. A list spelled with an alias whose resolved element is
+  `u8` canonicalizes to the same `list<u8>` token, so the lockfile cannot distinguish the two
+  spellings and every emitter must project both the same way.
 - Named list/option/result definitions have no locked members of their own; expanding them at
   use sites is what makes an inner type change visible.
 - A named type is always qualified (`types/reserved`, `types/field`), so the bare token

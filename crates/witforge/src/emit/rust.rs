@@ -393,6 +393,7 @@ fn emit_record(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn emit_type_def(
     out: &mut String,
     model: &Model,
@@ -477,8 +478,12 @@ fn emit_type_def(
             writeln!(out, "    pub type {name} = {ty};")?;
         }
         TypeDefKind::List(element) => {
-            let ty = map_type(model, &interface.name, element, foreign_base)?;
-            writeln!(out, "    pub type {name} = ::std::vec::Vec<{ty}>;")?;
+            if model.resolves_to_u8(element) {
+                writeln!(out, "    pub type {name} = ::std::vec::Vec<u8>;")?;
+            } else {
+                let ty = map_type(model, &interface.name, element, foreign_base)?;
+                writeln!(out, "    pub type {name} = ::std::vec::Vec<{ty}>;")?;
+            }
         }
         TypeDefKind::Option(payload) => {
             let ty = map_type(model, &interface.name, payload, foreign_base)?;
@@ -594,10 +599,16 @@ fn map_type(
                 Ok(format!("super::{module}::{type_name}"))
             }
         }
-        TypeExpr::List(element) => Ok(format!(
-            "::std::vec::Vec<{}>",
-            map_type(model, current_interface, element, foreign_base)?
-        )),
+        TypeExpr::List(element) => {
+            if model.resolves_to_u8(element) {
+                Ok("::std::vec::Vec<u8>".to_string())
+            } else {
+                Ok(format!(
+                    "::std::vec::Vec<{}>",
+                    map_type(model, current_interface, element, foreign_base)?
+                ))
+            }
+        }
         TypeExpr::Option(payload) => Ok(format!(
             "::std::option::Option<{}>",
             map_type(model, current_interface, payload, foreign_base)?

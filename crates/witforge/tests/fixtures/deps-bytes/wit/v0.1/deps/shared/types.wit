@@ -1,0 +1,8 @@
+package example:shared@0.1.0;
+
+interface types {
+    type dep-byte = u8;
+    type dep-byte-alias = dep-byte;
+    type dep-bytes = list<dep-byte-alias>;
+    type dep-nested = list<list<dep-byte-alias>>;
+}

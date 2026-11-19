@@ -238,6 +238,10 @@ compile and JSON round-trip test.
 | flags | `pub struct` of `pub bool` fields |
 | `type a = b` | `pub type A = B;` |
 | `use ... as ...` alias | `pub type Alias = DefiningType;` in the using interface module |
+
+A list whose resolved element type is `u8` uses the `list<u8>` row even when the element is
+spelled through one or more aliases, including a `use ... as ...` alias of a dependency type.
+The alias itself keeps its `pub type` item; only the list's element projection is resolved.
 | named `list`/`option`/`result` | `pub type` alias |
 
 Examples:
@@ -424,6 +428,14 @@ See Presence below for the required/optional distinction.
 | flags | message of `bool` fields |
 | `type a = b` | inlined |
 | named `list`/`option`/`result` | structural projection; named message when required (section 4.4) |
+
+Every byte-list row above is decided by the **resolved** element type, not its spelling. A list
+whose element is `u8`, an alias of `u8`, a chain of aliases, a `use ... as ...` alias, or an
+alias declared in a dependency is `bytes` in every position. `list<u8>` and `list<byte>` with
+`type byte = u8` therefore have the same lockfile entry and the same protobuf, Rust, JSON Schema,
+and glue projection; respelling is not a wire change. The sole exception is nested lists, where
+`list<list<u8>>` is `repeated bytes` as a normal field and a wrapper containing `repeated bytes`
+as a `oneof` payload, as described below.
 
 #### Presence
 
@@ -624,7 +636,7 @@ reserved "old_field", "older_field";
 - Request parameters of a live function reserve their request field numbers and snake_case names.
 - A type that changed kind reserves every old entry, whatever its old kind, using the name the
   old projection gave it: an old enum case keeps its `<TYPE>_<CASE>` enum name, and an old
-  field, flag, variant case, or parameter keeps its snake_case message name. The lockfile
+  field, flag, or variant case keeps its snake_case message name. The lockfile
   refuses the kind mix itself (see [`lockfile.md`](lockfile.md) section 6), so a command refuses
   the contract before generation; the reservation rule keeps a lockfile written before that
   refusal, and any library caller that emits from one, from reusing an old number or name.
@@ -1306,8 +1318,11 @@ The rest of the document is conventional JSON:
 | named `list`/`option`/`result` | the corresponding wrapper schema, stored under its definition |
 | alias and `use` alias | the target schema; a named target is a `$ref` |
 
-Record fields are always required, even when their type is `option<T>`; an optional field is
-present with `null` rather than absent. A record, result object, and flags object reject unknown
+A list whose resolved element type is `u8` is an array of the `u8` integer schema, whatever the
+element's spelling; JSON Schema has no byte-string form, so `list<u8>`, `list<byte>`, and their
+alias spellings produce the same schema. Record fields are always required, even when their type
+is `option<T>`; an optional field is present with `null` rather than absent. A record, result
+object, and flags object reject unknown
 properties. A variant/result case object rejects the other case and unknown properties, so
 `oneOf` enforces exactly one case. A result side with no payload has no property.
 

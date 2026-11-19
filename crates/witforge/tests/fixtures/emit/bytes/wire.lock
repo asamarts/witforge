@@ -1,0 +1,28 @@
+# witforge wire lockfile v2
+example:byte-lists/types#get.input = 1 param list<u8>
+example:byte-lists/types#nested.input = 1 param list<list<u8>>
+example:byte-lists/types.get = 1 method list<u8>
+example:byte-lists/types.nested = 2 method list<list<list<u8>>>
+example:byte-lists/types/all.aliased = 2 field list<u8>
+example:byte-lists/types/all.chained = 3 field list<u8>
+example:byte-lists/types/all.choice = 11 field types/choice
+example:byte-lists/types/all.direct = 1 field list<u8>
+example:byte-lists/types/all.element = 10 field list<list<u8>>
+example:byte-lists/types/all.named = 4 field list<u8>
+example:byte-lists/types/all.named-alias = 5 field list<u8>
+example:byte-lists/types/all.named-option = 6 field option<list<u8>>
+example:byte-lists/types/all.named-result = 7 field result<list<u8>,string>
+example:byte-lists/types/all.nested-aliased = 9 field list<list<list<u8>>>
+example:byte-lists/types/all.nested-direct = 8 field list<list<list<u8>>>
+example:byte-lists/types/all.outcome = 12 field result<list<u8>,string>
+example:byte-lists/types/choice.aliased = 2 variant-case list<u8>
+example:byte-lists/types/choice.chained = 3 variant-case list<u8>
+example:byte-lists/types/choice.direct = 1 variant-case list<u8>
+example:byte-lists/types/choice.named = 4 variant-case list<u8>
+example:byte-lists/types/choice.nested = 5 variant-case list<list<list<u8>>>
+# witforge order v1
+# order example:byte-lists/types 6c2a8535c834e26e = get nested
+# order example:byte-lists/types#get 499ff892a465dca1 = input
+# order example:byte-lists/types#nested 499ff892a465dca1 = input
+# order example:byte-lists/types/all da38d083338056f9 = direct aliased chained named named-alias named-option named-result nested-direct nested-aliased element choice outcome
+# order example:byte-lists/types/choice 692620732ecdf0f5 = direct aliased chained named nested

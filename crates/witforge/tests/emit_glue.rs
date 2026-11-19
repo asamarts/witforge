@@ -197,6 +197,106 @@ fn conversions_compile_and_run_against_generated_types() {
     fs::remove_dir_all(&out).unwrap();
 }
 
+#[allow(clippy::too_many_lines)]
+#[test]
+fn byte_list_aliases_compile_and_roundtrip() {
+    let root = fixture("emit/bytes");
+    let (model, lock) = setup_contract(&root);
+    let version = format!(
+        "v{}_{}",
+        model.package.version.major, model.package.version.minor
+    );
+    let major = model.package.version.major;
+    let out = std::env::temp_dir().join(format!("witforge-glue-bytes-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    fs::create_dir_all(out.join("plain")).unwrap();
+    fs::create_dir_all(out.join("proto")).unwrap();
+    fs::create_dir_all(out.join("glue")).unwrap();
+    fs::create_dir_all(out.join("proto-work")).unwrap();
+
+    fs::write(out.join("plain/mod.rs"), format!("pub mod {version};\n")).unwrap();
+    fs::write(
+        out.join(format!("plain/{version}.rs")),
+        rust::emit_version(&model).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        out.join("proto/mod.rs"),
+        format!("pub mod v{major} {{ include!(\"v{major}.rs\"); }}\n"),
+    )
+    .unwrap();
+    let schema = proto::emit_major(&model, &lock).unwrap();
+    let proto_path = out.join("proto-work/schema.proto");
+    fs::write(&proto_path, schema).unwrap();
+    let descriptors = protox::compile([&proto_path], [out.join("proto-work")]).unwrap();
+    let prost_out = out.join("proto-work/out");
+    fs::create_dir_all(&prost_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .compile_fds(descriptors)
+        .unwrap();
+    let generated = fs::read_dir(&prost_out)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .expect("prost generated a Rust file");
+    fs::copy(generated, out.join(format!("proto/v{major}.rs"))).unwrap();
+
+    fs::write(
+        out.join("glue/mod.rs"),
+        glue::emit_root(&model, &[major]).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        out.join(format!("glue/v{major}.rs")),
+        glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        out.join("main.rs"),
+        r"
+mod glue;
+mod plain;
+mod proto;
+
+fn main() {
+    use plain::v0_1::types::{All, Choice};
+
+    let value = All {
+        direct: vec![1, 2],
+        aliased: vec![3],
+        chained: vec![4],
+        named: vec![5],
+        named_alias: vec![6],
+        named_option: Some(vec![7]),
+        named_result: Ok(vec![8]),
+        nested_direct: vec![vec![vec![9]]],
+        nested_aliased: vec![vec![vec![10]]],
+        element: vec![vec![11]],
+        choice: Choice::Aliased(vec![12]),
+        outcome: Ok(vec![13]),
+    };
+    let encoded = glue::v0::types::all::to_proto(&value);
+    let decoded = glue::v0::types::all::from_proto(encoded).unwrap();
+    assert_eq!(value, decoded);
+
+    let request = glue::v0::types::functions::get::to_request(&vec![14, 15]);
+    let round = glue::v0::types::functions::get::from_request(request).unwrap();
+    assert_eq!(round, vec![14, 15]);
+
+    let nested = vec![vec![16], vec![17, 18]];
+    let response = glue::v0::types::functions::nested::to_response(&vec![nested.clone()]);
+    let round = glue::v0::types::functions::nested::from_response(response).unwrap();
+    assert_eq!(round, vec![nested]);
+}
+",
+    )
+    .unwrap();
+
+    run_cargo_program(&out, "prost = \"0.14\"\n", "byte-list glue compile/run");
+    fs::remove_dir_all(&out).unwrap();
+}
+
 #[test]
 fn functions_module_and_empty_roots_are_refused() {
     let dir = std::env::temp_dir().join(format!("witforge-glue-functions-{}", std::process::id()));

@@ -204,6 +204,39 @@ fn plan_generates_one_schema_per_version_and_checks_drift() {
 }
 
 #[test]
+fn byte_list_alias_spellings_have_one_schema() {
+    let model = model::build(&load(&fixture("emit/bytes")).unwrap()).unwrap();
+    let schema = json_schema::emit_version(&model).unwrap();
+
+    let bytes = "\"type\":\"array\",\"items\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":255}";
+    for field in ["direct", "aliased", "chained"] {
+        assert!(
+            schema.contains(&format!("\"{field}\":{{{bytes}}}")),
+            "missing bytes schema for `{field}`:\n{schema}"
+        );
+    }
+    let nested = format!("\"type\":\"array\",\"items\":{{{bytes}}}");
+    let deeper = format!("\"type\":\"array\",\"items\":{{{nested}}}");
+    for field in ["nested-direct", "nested-aliased"] {
+        assert!(
+            schema.contains(&format!("\"{field}\":{{{deeper}}}")),
+            "missing nested bytes schema for `{field}`:\n{schema}"
+        );
+    }
+    assert!(
+        schema.contains(&format!("\"element\":{{{nested}}}")),
+        "missing list-element bytes schema:\n{schema}"
+    );
+    assert!(
+        schema.contains(&format!(
+            "\"types/blob\": {{\"description\":\"Named structural byte lists.\",{bytes}}}"
+        )),
+        "{schema}"
+    );
+    assert!(!schema.contains("u32"), "{schema}");
+}
+
+#[test]
 fn a_trailing_space_or_crlf_is_not_canonical() {
     let root = fixture("versions/convert");
     let out = temp("canonical").join("out");

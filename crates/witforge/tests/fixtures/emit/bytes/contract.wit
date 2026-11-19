@@ -1,0 +1,44 @@
+/// Byte lists spelled through aliases, named lists, and nesting.
+package example:byte-lists@0.1.0;
+
+interface types {
+    /// The direct spelling and a chain of aliases to it.
+    type byte = u8;
+    type byte-alias = byte;
+    /// Named structural byte lists.
+    type blob = list<byte>;
+    type blob-alias = blob;
+    type maybe-blob = option<blob>;
+    type blob-outcome = result<blob, string>;
+
+    /// A variant whose payloads are byte lists in several spellings.
+    variant choice {
+        direct(list<u8>),
+        aliased(list<byte>),
+        chained(list<byte-alias>),
+        named(blob),
+        nested(list<list<list<byte>>>),
+    }
+
+    /// Every position a byte list can take.
+    record all {
+        direct: list<u8>,
+        aliased: list<byte>,
+        chained: list<byte-alias>,
+        named: blob,
+        named-alias: blob-alias,
+        named-option: maybe-blob,
+        named-result: blob-outcome,
+        nested-direct: list<list<list<u8>>>,
+        nested-aliased: list<list<list<byte>>>,
+        element: list<list<byte>>,
+        choice: choice,
+        outcome: result<list<byte>, string>,
+    }
+
+    /// A parameter and a result using byte lists.
+    get: func(input: list<byte>) -> list<u8>;
+
+    /// A nested parameter and result.
+    nested: func(input: list<list<byte>>) -> list<list<list<byte>>>;
+}

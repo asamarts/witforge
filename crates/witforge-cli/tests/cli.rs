@@ -104,6 +104,97 @@ fn kind_entry(kind: &str, name: &str, index: usize, number: u32, reserved: bool)
 }
 
 #[test]
+fn respelling_a_byte_list_does_not_change_the_wire() {
+    let root = std::env::temp_dir().join(format!("witforge-byte-respell-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let old = root.join("v0.1");
+    let new = root.join("v0.2");
+    fs::create_dir_all(&old).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    fs::write(
+        old.join("contract.wit"),
+        "package example:respelling@0.1.0;\n\
+interface api {\n\
+  type byte = u8;\n\
+  record box { value: list<byte> }\n\
+  get: func(input: list<byte>) -> list<u8>;\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        new.join("contract.wit"),
+        "package example:respelling@0.2.0;\n\
+interface api {\n\
+  record box { value: list<u8> }\n\
+  get: func(input: list<u8>) -> list<u8>;\n\
+}\n",
+    )
+    .unwrap();
+
+    let lock = witforge()
+        .arg("lock")
+        .arg(&old)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(
+        lock.status.success(),
+        "first lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    let before = fs::read(new.join("wire.lock")).unwrap();
+    let against = witforge()
+        .arg("lock")
+        .arg(&new)
+        .arg("--against")
+        .arg(old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(
+        against.status.success(),
+        "respelling changed the lockfile: {}",
+        String::from_utf8_lossy(&against.stderr)
+    );
+    assert_eq!(fs::read(new.join("wire.lock")).unwrap(), before);
+
+    let check = witforge()
+        .arg("check")
+        .arg(&new)
+        .arg("--against")
+        .arg(old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "check rejected a respelling: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let out =
+        std::env::temp_dir().join(format!("witforge-byte-respell-out-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    let proto = witforge()
+        .arg("proto")
+        .arg(&root)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        proto.status.success(),
+        "proto failed: {}",
+        String::from_utf8_lossy(&proto.stderr)
+    );
+    let schema = fs::read_to_string(out.join("v0.proto")).unwrap();
+    assert!(schema.contains("optional bytes value = 1;"), "{schema}");
+    assert!(schema.contains("optional bytes input = 1;"), "{schema}");
+    assert!(!schema.contains("repeated uint32"), "{schema}");
+    fs::remove_dir_all(&out).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn every_ordered_kind_change_is_refused_by_lock_check_and_every_generator() {
     let base = std::env::temp_dir().join(format!("witforge-kind-pairs-{}", std::process::id()));

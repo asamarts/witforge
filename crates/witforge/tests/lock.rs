@@ -774,6 +774,16 @@ a:b/i/t.new = 2 field u64\n"
     let mut lock = mixed.clone();
     assert!(lock.reconcile(&members).is_err());
     assert_eq!(lock, mixed, "a refused reconciliation must not mutate");
+
+    // Removing a type in one version and adding another kind under the same name in a later
+    // version leaves only reserved entries, but they still mix and are still refused.
+    let all_reserved = WireLock::parse(&format!(
+        "{HEADER}\n\
+a:b/i/t.old = 1 enum-case reserved\n\
+a:b/i/t.older = 2 field u64 reserved\n"
+    ))
+    .unwrap();
+    assert!(all_reserved.drift(&[]).is_err());
 }
 
 #[test]

@@ -56,6 +56,16 @@ have it.
   draft that already mixes kinds recovers by renaming the type in a new version (or by
   recreating the draft with `lock --first`, which drops its draft entries); a released
   directory in that state cannot be generated again and needs a new type name.
+- A list whose resolved element type is `u8` now projects as protobuf `bytes`, Rust
+  `Vec<u8>`, and a JSON Schema array of 8-bit integers in every spelling: `list<u8>`,
+  `list<byte>` with `type byte = u8`, an alias chain, a `use ... as ...` alias, or an alias
+  declared in a dependency. Previously `list<byte>` was `repeated uint32` in protobuf and glue
+  while `list<u8>` was `bytes`, although both lock as `list<u8>`; respelling changed the wire
+  encoding under an unchanged lockfile. Regenerate proto, glue, plain Rust, and JSON Schema
+  output. A consumer detects an affected contract by a field that changes from `repeated
+  uint32` to `bytes` (or, in Rust, from `Vec<Byte>` to `Vec<u8>`); mixed deployments read the
+  same bytes when every value is below 128 and different bytes above it, because both
+  encodings are length-delimited.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

@@ -237,6 +237,76 @@ example:plugin/analyzer#analyze.removed = 9 param string reserved\n",
 }
 
 #[test]
+fn byte_lists_use_the_resolved_element_type_in_every_spelling() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/emit/bytes");
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let lock = WireLock::parse(&fs::read_to_string(dir.join("wire.lock")).unwrap()).unwrap();
+    assert!(
+        lock.drift(&model.members().unwrap()).unwrap().is_empty(),
+        "bytes fixture lockfile is stale"
+    );
+    let schema = proto::emit_major(&model, &lock).unwrap();
+    let expected = fs::read_to_string(dir.join("contract.proto")).unwrap();
+    assert_eq!(schema, expected, "bytes schema drifted");
+    compile_proto(&dir.join("contract.proto"));
+
+    for fragment in [
+        "optional bytes direct = 1;",
+        "optional bytes aliased = 2;",
+        "optional bytes chained = 3;",
+        "optional bytes named = 4;",
+        "optional bytes named_alias = 5;",
+        "optional bytes named_option = 6;",
+        "repeated bytes element = 10;",
+        "repeated WitforgeListOfListOfU8 nested_direct = 8;",
+        "repeated WitforgeListOfListOfU8 nested_aliased = 9;",
+        "bytes ok = 1;",
+        "optional bytes input = 1;",
+        "optional bytes result = 1;",
+        "repeated bytes input = 1;",
+        "repeated WitforgeListOfListOfU8 result = 1;",
+    ] {
+        assert!(
+            schema.contains(fragment),
+            "missing `{fragment}` in:\n{schema}"
+        );
+    }
+    assert!(!schema.contains("repeated uint32"), "{schema}");
+}
+
+#[test]
+fn dependency_byte_list_aliases_map_to_bytes_and_compile() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-bytes/wit");
+    let files = proto::plan(&root).unwrap();
+    let app = &files.files()["v0.proto"];
+    for fragment in [
+        "optional bytes direct = 1;",
+        "repeated bytes element = 2;",
+        "optional bytes named = 3;",
+        "repeated bytes nested = 4;",
+        "repeated WitforgeListOfListOfU8 deep = 5;",
+        "optional bytes renamed = 6;",
+        "optional bytes renamed_named = 7;",
+        "optional bytes input = 1;",
+        "optional bytes result = 1;",
+    ] {
+        assert!(app.contains(fragment), "missing `{fragment}` in:\n{app}");
+    }
+    assert!(!app.contains("repeated uint32"), "{app}");
+
+    let out = std::env::temp_dir().join(format!("witforge-dep-bytes-proto-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    files.write(&out).unwrap();
+    let paths: Vec<PathBuf> = fs::read_dir(&out)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "proto"))
+        .collect();
+    protox::compile(paths, [&out]).unwrap();
+    fs::remove_dir_all(&out).unwrap();
+}
+
+#[test]
 fn a_kind_change_keeps_old_numbers_and_names_reserved() {
     let model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
     let mut lock = lock_for(&model);
@@ -265,6 +335,15 @@ example:plugin/gone.also-gone = 43 method reserved\n",
         schema.contains("reserved \"GONE_METHOD_ALSO_GONE\", \"GONE_METHOD_REMOVED\";"),
         "{schema}"
     );
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-kind-reserved-proto-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("contract.proto"), schema).unwrap();
+    compile_proto(&dir.join("contract.proto"));
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

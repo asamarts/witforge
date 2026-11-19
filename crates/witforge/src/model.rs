@@ -336,20 +336,96 @@ impl Model {
     /// Find a named type by its qualified name, including dependency types.
     #[must_use]
     pub fn type_def(&self, name: &QualifiedName) -> Option<&TypeDef> {
+        self.type_def_in(None, name).map(|(_, def)| def)
+    }
+
+    /// Resolve a named type, using `context` for a dependency-local name that has no package
+    /// prefix.
+    fn type_def_in<'a>(
+        &'a self,
+        context: Option<&'a Dependency>,
+        name: &QualifiedName,
+    ) -> Option<(Option<&'a Dependency>, &'a TypeDef)> {
         if let Some((namespace, package)) = name.package() {
-            return self
-                .dependency_package(namespace, package)?
+            let dependency = self.dependency_package(namespace, package)?;
+            let def = dependency
                 .interfaces
                 .iter()
                 .find(|interface| interface.name == name.interface_name())?
                 .types
                 .iter()
-                .find(|def| def.name == name.name);
+                .find(|def| def.name == name.name)?;
+            return Some((Some(dependency), def));
         }
-        self.interface(&name.interface)?
+        if let Some(dependency) = context {
+            let def = dependency
+                .interfaces
+                .iter()
+                .find(|interface| interface.name == name.interface)?
+                .types
+                .iter()
+                .find(|def| def.name == name.name)?;
+            return Some((Some(dependency), def));
+        }
+        let def = self
+            .interface(&name.interface)?
             .types
             .iter()
-            .find(|def| def.name == name.name)
+            .find(|def| def.name == name.name)?;
+        Some((None, def))
+    }
+
+    /// Whether `ty` resolves to `u8` after following aliases, including aliases declared in a
+    /// dependency package.
+    ///
+    /// This is the decision the byte-list projection uses: a list whose resolved element type is
+    /// `u8` is protobuf `bytes`, whatever spelling the contract used. A missing or cyclic alias
+    /// resolves to `false`; the emitter reports the dangling type or cycle when it renders it.
+    #[must_use]
+    pub(crate) fn resolves_to_u8(&self, ty: &TypeExpr) -> bool {
+        self.resolves_to_u8_in(None, ty)
+    }
+
+    /// Like [`Model::resolves_to_u8`], resolving an unqualified alias inside `context`'s
+    /// dependency package.
+    #[must_use]
+    pub(crate) fn resolves_to_u8_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> bool {
+        self.resolves_to_u8_inner(context, ty, &mut HashSet::new())
+    }
+
+    fn resolves_to_u8_inner(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        let TypeExpr::Named(name) = ty else {
+            return matches!(ty, TypeExpr::U8);
+        };
+        let Some((resolved, def)) = self.type_def_in(context, name) else {
+            return false;
+        };
+        let TypeDefKind::Alias(target) = &def.kind else {
+            return false;
+        };
+        let key = resolved.map_or_else(
+            || format!("{}/{}", name.interface, name.name),
+            |dependency| {
+                format!(
+                    "{}:{}/{}/{}",
+                    dependency.package.namespace,
+                    dependency.package.name,
+                    name.interface_name(),
+                    name.name
+                )
+            },
+        );
+        if !visiting.insert(key.clone()) {
+            return false;
+        }
+        let answer = self.resolves_to_u8_inner(resolved, target, visiting);
+        visiting.remove(&key);
+        answer
     }
 
     /// Render `ty` in the canonical wire form used by the lockfile.

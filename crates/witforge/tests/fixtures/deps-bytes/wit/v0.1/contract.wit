@@ -1,0 +1,23 @@
+package example:app@0.1.0;
+
+interface api {
+    use example:shared/types@0.1.0.{
+        dep-byte,
+        dep-bytes,
+        dep-nested,
+        dep-byte as renamed-byte,
+        dep-bytes as renamed-bytes,
+    };
+
+    record box {
+        direct: list<dep-byte>,
+        element: list<list<dep-byte>>,
+        named: dep-bytes,
+        nested: dep-nested,
+        deep: list<list<list<dep-byte>>>,
+        renamed: list<renamed-byte>,
+        renamed-named: renamed-bytes,
+    }
+
+    get: func(input: dep-bytes) -> list<dep-byte>;
+}

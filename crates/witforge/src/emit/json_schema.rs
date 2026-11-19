@@ -185,9 +185,14 @@ fn definition_schema(model: &Model, interface: &Interface, def: &TypeDef) -> Res
         }
         TypeDefKind::Alias(target) => type_schema(model, interface, target)?,
         TypeDefKind::List(element) => {
+            let item = if model.resolves_to_u8(element) {
+                TypeExpr::U8
+            } else {
+                element.clone()
+            };
             format!(
                 "{{\"type\":\"array\",\"items\":{}}}",
-                type_schema(model, interface, element)?
+                type_schema(model, interface, &item)?
             )
         }
         TypeDefKind::Option(payload) => option_schema(model, interface, payload)?,
@@ -247,10 +252,17 @@ fn type_schema(model: &Model, interface: &Interface, ty: &TypeExpr) -> Result<St
                 ))
             ))
         }
-        TypeExpr::List(element) => Ok(format!(
-            "{{\"type\":\"array\",\"items\":{}}}",
-            type_schema(model, interface, element)?
-        )),
+        TypeExpr::List(element) => {
+            let item = if model.resolves_to_u8(element) {
+                TypeExpr::U8
+            } else {
+                element.as_ref().clone()
+            };
+            Ok(format!(
+                "{{\"type\":\"array\",\"items\":{}}}",
+                type_schema(model, interface, &item)?
+            ))
+        }
         TypeExpr::Option(payload) => option_schema(model, interface, payload),
         TypeExpr::Result(result) => result_schema(model, interface, result),
     }

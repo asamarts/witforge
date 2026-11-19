@@ -591,7 +591,11 @@ impl<'a> Emitter<'a> {
             TypeExpr::String => Ok("::std::string::String".to_string()),
             TypeExpr::Named(name) => self.plain_named(name),
             TypeExpr::List(element) => {
-                Ok(format!("::std::vec::Vec<{}>", self.plain_type(element)?))
+                if self.model.resolves_to_u8(element) {
+                    Ok("::std::vec::Vec<u8>".to_string())
+                } else {
+                    Ok(format!("::std::vec::Vec<{}>", self.plain_type(element)?))
+                }
             }
             TypeExpr::Option(payload) => Ok(format!(
                 "::core::option::Option<{}>",
@@ -657,7 +661,9 @@ impl<'a> Emitter<'a> {
         match kind {
             TypeDefKind::Enum(_) => Ok("i32".to_string()),
             TypeDefKind::Alias(target) => self.foreign_proto_type_expr(context, target),
-            TypeDefKind::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok("::std::vec::Vec<u8>".to_string())
+            }
             TypeDefKind::List(element) => Ok(format!(
                 "::std::vec::Vec<{}>",
                 self.foreign_proto_singular_expr(context, element)?
@@ -692,7 +698,9 @@ impl<'a> Emitter<'a> {
                     self.foreign_proto_type_in(Some(dependency), name, &def.kind)
                 }
             }
-            TypeExpr::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok("::std::vec::Vec<u8>".to_string())
+            }
             TypeExpr::List(element) => Ok(format!(
                 "::std::vec::Vec<{}>",
                 self.foreign_proto_singular_expr(context, element)?
@@ -729,7 +737,9 @@ impl<'a> Emitter<'a> {
         match kind {
             TypeDefKind::Enum(_) => Ok("i32".to_string()),
             TypeDefKind::Alias(target) => self.foreign_proto_singular_expr(context, target),
-            TypeDefKind::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok("::std::vec::Vec<u8>".to_string())
+            }
             TypeDefKind::List(element) => {
                 let name = format!(
                     "WitforgeListOf{}",
@@ -770,7 +780,9 @@ impl<'a> Emitter<'a> {
                     self.foreign_proto_singular_in(Some(dependency), name, &def.kind)
                 }
             }
-            TypeExpr::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok("::std::vec::Vec<u8>".to_string())
+            }
             TypeExpr::List(element) => {
                 let name = format!(
                     "WitforgeListOf{}",
@@ -911,7 +923,9 @@ impl<'a> Emitter<'a> {
         match kind {
             TypeDefKind::Alias(target) => self.foreign_form_expr(context, target),
             TypeDefKind::Enum(_) => Ok(Form::Enum),
-            TypeDefKind::List(element) if is_u8(element) => Ok(Form::Bytes),
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok(Form::Bytes)
+            }
             TypeDefKind::List(_) => Ok(Form::List),
             TypeDefKind::Option(_) => Ok(Form::Option),
             TypeDefKind::Record(_)
@@ -933,7 +947,9 @@ impl<'a> Emitter<'a> {
                     self.foreign_form_kind(Some(dependency), &def.kind)
                 }
             }
-            TypeExpr::List(element) if is_u8(element) => Ok(Form::Bytes),
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+                Ok(Form::Bytes)
+            }
             TypeExpr::List(_) => Ok(Form::List),
             TypeExpr::Option(_) => Ok(Form::Option),
             TypeExpr::Result(_) => Ok(Form::Message),
@@ -1004,7 +1020,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
             TypeExpr::String => Ok("::std::string::String".to_string()),
-            TypeExpr::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
+                Ok("::std::vec::Vec<u8>".to_string())
+            }
             TypeExpr::List(element) => Ok(format!(
                 "::std::vec::Vec<{}>",
                 self.proto_singular_type(element)?
@@ -1026,7 +1044,7 @@ impl<'a> Emitter<'a> {
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Result(_) => self.proto_user_type(&name.interface, &name.name),
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
-                    TypeDefKind::List(element) if is_u8(element) => {
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         Ok("::std::vec::Vec<u8>".to_string())
                     }
                     TypeDefKind::List(element) => Ok(format!(
@@ -1056,7 +1074,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
             TypeExpr::String => Ok("::std::string::String".to_string()),
-            TypeExpr::List(element) if is_u8(element) => Ok("::std::vec::Vec<u8>".to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
+                Ok("::std::vec::Vec<u8>".to_string())
+            }
             TypeExpr::List(element) => {
                 let name = format!("WitforgeListOf{}", self.shape_name(element)?);
                 self.proto_user_type_path(&name)
@@ -1078,7 +1098,7 @@ impl<'a> Emitter<'a> {
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Result(_) => self.proto_user_type(&name.interface, &name.name),
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
-                    TypeDefKind::List(element) if is_u8(element) => {
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         Ok("::std::vec::Vec<u8>".to_string())
                     }
                     TypeDefKind::List(element) => {
@@ -1161,7 +1181,7 @@ impl<'a> Emitter<'a> {
             | TypeExpr::F32
             | TypeExpr::F64
             | TypeExpr::String => Ok(Form::Scalar),
-            TypeExpr::List(element) if is_u8(element) => Ok(Form::Bytes),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(Form::Bytes),
             TypeExpr::List(_) => Ok(Form::List),
             TypeExpr::Option(_) => Ok(Form::Option),
             TypeExpr::Result(_) => Ok(Form::Message),
@@ -1173,7 +1193,9 @@ impl<'a> Emitter<'a> {
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.form(target),
                     TypeDefKind::Enum(_) => Ok(Form::Enum),
-                    TypeDefKind::List(element) if is_u8(element) => Ok(Form::Bytes),
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                        Ok(Form::Bytes)
+                    }
                     TypeDefKind::List(_) => Ok(Form::List),
                     TypeDefKind::Option(_) => Ok(Form::Option),
                     TypeDefKind::Record(_)
@@ -1276,10 +1298,6 @@ enum Form {
 enum Identity {
     Copy,
     Clone,
-}
-
-fn is_u8(ty: &TypeExpr) -> bool {
-    matches!(ty, TypeExpr::U8)
 }
 
 fn pascal_to_snake(name: &str) -> String {
@@ -1631,7 +1649,7 @@ impl Emitter<'_> {
             out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
         )?;
-        if is_u8(element) || self.identity(element)?.is_some() {
+        if self.model.resolves_to_u8(element) || self.identity(element)?.is_some() {
             writeln!(out, "            ::core::clone::Clone::clone(value)")?;
         } else {
             writeln!(
@@ -1646,7 +1664,7 @@ impl Emitter<'_> {
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
         )?;
-        if is_u8(element) || self.identity(element)?.is_some() {
+        if self.model.resolves_to_u8(element) || self.identity(element)?.is_some() {
             writeln!(out, "            ::core::result::Result::Ok(value)")?;
         } else {
             writeln!(
@@ -2109,7 +2127,7 @@ impl Emitter<'_> {
             TypeExpr::String => Ok(format!("::core::clone::Clone::clone({expr})")),
             TypeExpr::U8 | TypeExpr::U16 => Ok(Self::widened(expr, "u32")),
             TypeExpr::S8 | TypeExpr::S16 => Ok(Self::widened(expr, "i32")),
-            TypeExpr::List(element) if is_u8(element) => {
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
                 Ok(format!("::core::clone::Clone::clone({expr})"))
             }
             TypeExpr::List(element) => match self.identity(element)? {
@@ -2166,7 +2184,7 @@ impl Emitter<'_> {
             TypeExpr::String => Ok(format!("::core::clone::Clone::clone({expr})")),
             TypeExpr::U8 | TypeExpr::U16 => Ok(Self::widened(expr, "u32")),
             TypeExpr::S8 | TypeExpr::S16 => Ok(Self::widened(expr, "i32")),
-            TypeExpr::List(element) if is_u8(element) => {
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
                 Ok(format!("::core::clone::Clone::clone({expr})"))
             }
             TypeExpr::List(element) => {
@@ -2239,7 +2257,7 @@ impl Emitter<'_> {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::to_proto({expr})"))
                     }
-                    TypeDefKind::List(element) if is_u8(element) => {
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::to_proto({expr})"))
                     }
@@ -2290,7 +2308,7 @@ impl Emitter<'_> {
             | TypeExpr::U16
             | TypeExpr::S8
             | TypeExpr::S16 => Self::decode_primitive(expr, ty, identity),
-            TypeExpr::List(element) if is_u8(element) => Ok(expr.to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(expr.to_string()),
             TypeExpr::List(element) => match self.identity(element)? {
                 Some(_) => Ok(expr.to_string()),
                 None => Ok(format!(
@@ -2344,7 +2362,7 @@ impl Emitter<'_> {
             | TypeExpr::U16
             | TypeExpr::S8
             | TypeExpr::S16 => Self::decode_primitive(expr, ty, identity),
-            TypeExpr::List(element) if is_u8(element) => Ok(expr.to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(expr.to_string()),
             TypeExpr::List(element) => match self.identity(element)? {
                 Some(_) => Ok(format!("{expr}.values")),
                 None => Ok(format!(
@@ -2408,7 +2426,7 @@ impl Emitter<'_> {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::from_proto({expr})?"))
                     }
-                    TypeDefKind::List(element) if is_u8(element) => {
+                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(format!("{module}::from_proto({expr})?"))
                     }

@@ -1,0 +1,14 @@
+# witforge wire lockfile v2
+example:app/api#get.input = 1 param example:shared/types/dep-bytes
+example:app/api.get = 1 method list<example:shared/types/dep-byte>
+example:app/api/box.deep = 5 field list<list<list<example:shared/types/dep-byte>>>
+example:app/api/box.direct = 1 field list<example:shared/types/dep-byte>
+example:app/api/box.element = 2 field list<list<example:shared/types/dep-byte>>
+example:app/api/box.named = 3 field example:shared/types/dep-bytes
+example:app/api/box.nested = 4 field example:shared/types/dep-nested
+example:app/api/box.renamed = 6 field list<example:shared/types/dep-byte>
+example:app/api/box.renamed-named = 7 field example:shared/types/dep-bytes
+# witforge order v1
+# order example:app/api 67285a71efad3eb5 = get
+# order example:app/api#get 499ff892a465dca1 = input
+# order example:app/api/box d68ae689c293fd82 = direct element named nested deep renamed renamed-named
