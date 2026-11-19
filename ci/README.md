@@ -79,12 +79,15 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   and `ci/test-publish.sh`, which checks that a repeated `ci/publish.sh --dry-run` verifies the
   CLI against the current library rather than a copy cargo cached for an earlier run.
 - **public API compatibility**: installs cargo-semver-checks 0.51.0 and compares the library
-  with the published 0.4.1 baseline using `--release-type minor`. The override deliberately
-  denies breaking changes for the 1.0 candidate instead of treating the major bump as permission.
-- **buf** (workflow dispatch only): optional `buf breaking`. The old schema is generated from
-  each released tag by that tag's published witforge binary; the candidate binary generates only
-  the new schema. The versions fixture is checked against every released major and the dependency
-  fixtures against 0.4.1. The job installs pinned buf 1.74 and fails if any tool cannot run.
+  with the newest release on crates.io that is not newer than the workspace version, using
+  `--release-type minor`. The baseline is not named in the workflow, so it advances with each
+  release. The override deliberately denies breaking changes for the 1.0 candidate instead of
+  treating the major bump as permission.
+- **buf** (workflow dispatch only): optional `buf breaking` through `ci/check-buf-history.sh`.
+  The old schema is generated from each release tag by that tag's published witforge binary;
+  the candidate binary generates only the new schema. Every fixture WIT root is checked against
+  every release tag at which it exists, so a new release or fixture joins the comparison without
+  an edit. The job installs pinned buf 1.74 and fails if any tool cannot run.
 
 - **ci ok**: passes only when every job above passed (the optional buf job may be skipped).
   It is the one check the repository's `main` ruleset requires before a pull request merges,
@@ -154,7 +157,8 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
   dependency on `witforge` to require that version, a dated `CHANGELOG.md` section with entries
   for it, and a tag that matches the version, points at the checked-out commit, and is on `main`.
   For a tag push, it also requires a successful `ci ok` job whose head SHA is that exact commit.
-  Then it runs the tests, the 0.4.1 semver baseline, historical-generator protobuf compatibility,
+  Then it runs the tests, the semver check against the previous release, historical-generator
+  protobuf compatibility against every earlier release,
   and `ci/publish.sh --dry-run`.
 - **publish** (environment `release`, which only `v*` tags may use): publishes, library first,
   each crate whose version is not on crates.io yet (`ci/publish.sh`), with a crates.io token

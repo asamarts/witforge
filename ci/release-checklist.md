@@ -107,10 +107,11 @@ explicit release-owner action.
       exists before the release workflow has run. The check accepts the workspace version or
       the release before it there, and requires one release throughout the file.
 - [ ] Run the gates of [Before publishing](#before-publishing), then
-      `cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type
-      minor`, `ci/check-release.sh`, `ci/publish.sh --dry-run`, the historical-generator
-      `ci/check-buf.sh` loops in [`release-1.0.md`](../docs/design/release-1.0.md), and the aplan
-      commands (also in CI).
+      `cargo semver-checks check-release -p witforge --release-type minor`,
+      `ci/check-release.sh`, `ci/publish.sh --dry-run`, `BUF_REQUIRED=1 ci/check-buf-history.sh`,
+      and the aplan commands (also in CI). Neither compatibility gate names a baseline: the
+      semver check compares with the newest published release, and the protobuf check walks
+      every release tag, so there is nothing to advance after a release.
 - [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass. Record the commit SHA
       and job URL; `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push
       --status success` must identify that run.

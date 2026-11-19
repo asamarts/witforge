@@ -9,12 +9,15 @@
 # Usage: [WITFORGE=path/to/candidate] [BASE_WITFORGE=path/to/historical]
 #        [BUF=path/to/buf] ci/check-buf.sh [WIT_ROOT] [BASE]
 #   WIT_ROOT  WIT root relative to the repository root (default: the versions fixture)
-#   BASE      released tag to compare against (default: v0.4.1)
+#   BASE      released tag to compare against (default: the newest release tag in HEAD's
+#             history)
+#
+# ci/check-buf-history.sh runs this for every fixture root against every published release.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WIT_ROOT="${1:-crates/witforge/tests/fixtures/versions/wit}"
-BASE="${2:-v0.4.1}"
+BASE="${2:-$(git -C "${ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*')}"
 BUF="${BUF:-buf}"
 
 if ! command -v "${BUF}" >/dev/null 2>&1; then

@@ -9,8 +9,10 @@ completeness alone is not enough.
 
 - [ ] the public API inventory in [`public-api.md`](public-api.md) is reviewed and documented;
       `cargo doc` and `missing_docs` are clean; `cargo semver-checks check-release -p witforge
-      --baseline-version 0.4.1 --release-type minor` reports no breaking change, including for
-      `WorldInterface` and `Model.dependencies`
+      --release-type minor` reports no breaking change against the newest published release,
+      including for `WorldInterface` and `Model.dependencies`. Releases 0.4.2 to 0.5.0 each
+      passed this check against 0.4.1, so comparing with the newest release keeps the surface
+      reviewed at 0.4.1 covered
 - [ ] the boundary error policy is published: `anyhow::Error` plus the stable `ContractError`
       classification, with no unclassified contract failure
 - [ ] the conformance matrix and `tests/conformance.rs` cover every supported WIT construct and
@@ -26,10 +28,9 @@ completeness alone is not enough.
       macOS Intel, and Windows x86_64; each platform installs and verifies its own release archive
 - [ ] the alint consumer pin and its CI are green against the 1.0 candidate
 - [ ] `CHANGELOG.md`, README status, workspace versions, and the release checklist agree
-- [ ] with `BUF_REQUIRED=1`, `ci/check-buf.sh` compares candidate output with each published
-      generator `v0.1.2`, `v0.2.0`, `v0.3.0`, and `v0.4.1` for the versions fixture and with
-      `v0.4.1` for every dependency fixture; JSON Schema dependency references resolve from the
-      generated files
+- [ ] with `BUF_REQUIRED=1`, `ci/check-buf-history.sh` compares candidate output with every
+      published generator, from `v0.1.0` on, for every fixture WIT root that existed at that
+      release; JSON Schema dependency references resolve from the generated files
 - [ ] aplan `check`, `verify`, `export-agents-md --check`, and `check-docs` pass
 - [ ] the tag commit has a successful `ci ok` job from the `push` event before the release
       workflow publishes; the release owner records that exact commit, CI run URL, and publish
@@ -38,18 +39,16 @@ completeness alone is not enough.
 ### Exact compatibility commands
 
 ```sh
-cargo semver-checks check-release -p witforge \
-  --baseline-version 0.4.1 --release-type minor
+cargo semver-checks check-release -p witforge --release-type minor
 
-for release in v0.1.2 v0.2.0 v0.3.0 v0.4.1; do
-  BUF_REQUIRED=1 ci/check-buf.sh \
-    crates/witforge/tests/fixtures/versions/wit "$release"
-done
-for fixture in deps deps-full deps-world deps-convert deps-unsupported; do
-  BUF_REQUIRED=1 ci/check-buf.sh \
-    "crates/witforge/tests/fixtures/${fixture}/wit" v0.4.1
-done
+BUF_REQUIRED=1 ci/check-buf-history.sh
 ```
+
+Neither command names a baseline. cargo-semver-checks compares with the newest release on
+crates.io that is not newer than the workspace version. `ci/check-buf-history.sh` runs
+`ci/check-buf.sh` for every `crates/witforge/tests/fixtures/*/wit` root against every `vX.Y.Z`
+tag except one that points at the commit being checked. Until 2026-11-18 both gates named
+0.4.1 and so did not cover 0.4.2 to 0.5.0.
 
 `ci/check-buf.sh` installs or accepts the historical release binary for the old side; the
 candidate binary generates only the new side. The tag release workflow runs these commands

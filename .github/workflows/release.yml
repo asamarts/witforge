@@ -82,8 +82,10 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Install cargo-semver-checks
         run: cargo install --locked cargo-semver-checks --version 0.51.0
-      - name: Deny library API breaks since 0.4.1
-        run: cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type minor
+      # No baseline is named: cargo-semver-checks compares with the newest release on crates.io
+      # that is not newer than the workspace version, which is the previous release here.
+      - name: Deny library API breaks since the previous release
+        run: cargo semver-checks check-release -p witforge --release-type minor
       - name: Install buf
         shell: bash
         env:
@@ -102,13 +104,9 @@ jobs:
           BUF: ${{ runner.temp }}/buf
           BUF_REQUIRED: "1"
           WITFORGE_BASE_CACHE: ${{ runner.temp }}/witforge-baselines
-        run: |
-          for release in v0.1.2 v0.2.0 v0.3.0 v0.4.1; do
-            ci/check-buf.sh crates/witforge/tests/fixtures/versions/wit "$release"
-          done
-          for fixture in deps deps-full deps-world deps-convert deps-unsupported; do
-            ci/check-buf.sh "crates/witforge/tests/fixtures/${fixture}/wit" v0.4.1
-          done
+        # Every fixture WIT root against every published release tag; the tag being released
+        # points at HEAD and is skipped.
+        run: ci/check-buf-history.sh
       - run: ci/publish.sh --dry-run
 
   publish:

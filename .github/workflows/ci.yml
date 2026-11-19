@@ -228,9 +228,12 @@ jobs:
         with:
           toolchain: stable
       - run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # Override the inferred 1.0 major release type: the declared 1.0 policy preserves the
-      # reviewed 0.4.1 library surface rather than permitting a last-minute breaking change.
-      - run: cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type minor
+      # Override the inferred release type: the declared 1.0 policy preserves the released
+      # library surface rather than permitting a last-minute breaking change. No baseline is
+      # named, so cargo-semver-checks compares with the newest release on crates.io that is not
+      # newer than the workspace version; a named baseline has to be advanced by hand and was
+      # still 0.4.1 when 0.5.0 shipped.
+      - run: cargo semver-checks check-release -p witforge --release-type minor
 
   benchmark:
     name: benchmark budget
@@ -348,13 +351,8 @@ jobs:
           BUF: ${{ runner.temp }}/buf
           BUF_REQUIRED: "1"
           WITFORGE_BASE_CACHE: ${{ runner.temp }}/witforge-baselines
-        run: |
-          for release in v0.1.2 v0.2.0 v0.3.0 v0.4.1; do
-            ci/check-buf.sh crates/witforge/tests/fixtures/versions/wit "$release"
-          done
-          for fixture in deps deps-full deps-world deps-convert deps-unsupported; do
-            ci/check-buf.sh "crates/witforge/tests/fixtures/${fixture}/wit" v0.4.1
-          done
+        # Every fixture WIT root against every published release tag.
+        run: ci/check-buf-history.sh
 
   # The one check branch protection requires: every job above passed, or, for the optional buf
   # job only, was skipped. Requiring this instead of each job keeps the rule valid when a job is
