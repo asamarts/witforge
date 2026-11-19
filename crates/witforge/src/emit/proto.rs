@@ -211,6 +211,12 @@ impl<'a> Emitter<'a> {
             }
             self.emit_method_enum(&mut out, &interface.name)?;
         }
+        // A removed interface keeps its method ids reserved because the per-major file is
+        // shared by every minor of that major. Its request and response messages are gone, but
+        // the method enum stays so the numbers and names are never reused.
+        for interface in self.removed_interface_methods() {
+            self.emit_method_enum(&mut out, &interface)?;
+        }
 
         for body in self.wrappers.values() {
             writeln!(out)?;
@@ -244,7 +250,7 @@ impl<'a> Emitter<'a> {
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
         writeln!(out, "message {name} {{")?;
-        let reserved = self.reserved_type(interface, &def.name, &[MemberKind::Field])?;
+        let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
         let mut field_names = BTreeSet::new();
@@ -291,7 +297,7 @@ impl<'a> Emitter<'a> {
         write_docs(out, 0, &def.docs)?;
         writeln!(out, "message {name} {{")?;
         writeln!(out, "  oneof {ONEOF_VALUE} {{")?;
-        let reserved = self.reserved_type(interface, &def.name, &[MemberKind::VariantCase])?;
+        let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
         let mut field_names = BTreeSet::new();
@@ -350,12 +356,13 @@ impl<'a> Emitter<'a> {
         writeln!(out, "enum {name} {{")?;
         self.register_enum_value(&format!("{prefix}_UNSPECIFIED"))?;
         writeln!(out, "  {prefix}_UNSPECIFIED = 0;")?;
-        let reserved = self.reserved_type(interface, &def.name, &[MemberKind::EnumCase])?;
+        let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
         for case in cases {
             let case_name = upper_snake(&case.name);
-            if reserved_names.contains(&case_name) {
+            let value = format!("{prefix}_{case_name}");
+            if reserved_names.contains(&value) {
                 contract_bail!(
                     "enum `{interface}/{}`: case `{case_name}` collides with a reserved name",
                     def.name
@@ -364,16 +371,11 @@ impl<'a> Emitter<'a> {
             if case_name == "UNSPECIFIED" {
                 contract_bail!("enum `{interface}/{}`: case maps to UNSPECIFIED", def.name);
             }
-            let value = format!("{prefix}_{case_name}");
             self.register_enum_value(&value)?;
             let number = self.number(interface, &def.name, &case.name)?;
             write_docs(out, 2, &case.docs)?;
             writeln!(out, "  {value} = {number};")?;
         }
-        let reserved: Vec<(u32, String)> = reserved
-            .into_iter()
-            .map(|(number, name)| (number, format!("{prefix}_{name}")))
-            .collect();
         Self::emit_reserved(out, 2, &reserved);
         writeln!(out, "}}")?;
         Ok(())
@@ -390,7 +392,7 @@ impl<'a> Emitter<'a> {
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
         writeln!(out, "message {name} {{")?;
-        let reserved = self.reserved_type(interface, &def.name, &[MemberKind::Flag])?;
+        let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
         let mut field_names = BTreeSet::new();
@@ -507,27 +509,29 @@ impl<'a> Emitter<'a> {
         self.register_enum_value(&format!("{enum_prefix}_UNSPECIFIED"))?;
         writeln!(out, "  {enum_prefix}_UNSPECIFIED = 0;")?;
         let reserved = self.reserved_methods(interface);
+        if self.model.interface(interface).is_none() && reserved.is_empty() {
+            bail!("interface `{interface}` is missing from the model");
+        }
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
         let mut numbers = BTreeSet::new();
-        let Some(interface_def) = self.model.interface(interface) else {
-            bail!("interface `{interface}` is missing from the model");
-        };
-        for function in &interface_def.functions {
-            let value = upper_snake(&function.name);
-            if value == "UNSPECIFIED" || reserved_names.contains(&value) {
-                contract_bail!(
-                    "function `{interface}.{}` maps to a reserved or UNSPECIFIED method value",
-                    function.name
-                );
+        if let Some(interface_def) = self.model.interface(interface) {
+            for function in &interface_def.functions {
+                let value = upper_snake(&function.name);
+                if value == "UNSPECIFIED" || reserved_names.contains(&value) {
+                    contract_bail!(
+                        "function `{interface}.{}` maps to a reserved or UNSPECIFIED method value",
+                        function.name
+                    );
+                }
+                let number = self.method_number(interface, &function.name)?;
+                if !numbers.insert(number) {
+                    contract_bail!("interface `{interface}`: duplicate method number {number}");
+                }
+                let value = format!("{prefix}_METHOD_{value}");
+                self.register_enum_value(&value)?;
+                writeln!(out, "  {value} = {number};")?;
             }
-            let number = self.method_number(interface, &function.name)?;
-            if !numbers.insert(number) {
-                contract_bail!("interface `{interface}`: duplicate method number {number}");
-            }
-            let value = format!("{prefix}_METHOD_{value}");
-            self.register_enum_value(&value)?;
-            writeln!(out, "  {value} = {number};")?;
         }
         let reserved: Vec<(u32, String)> = reserved
             .into_iter()
@@ -608,9 +612,10 @@ impl<'a> Emitter<'a> {
         &self,
         interface: &str,
         type_name: &str,
-        kinds: &[MemberKind],
+        type_proto_name: &str,
     ) -> Result<Vec<(u32, String)>> {
         let mut reserved = Vec::new();
+        let enum_prefix = upper_snake(type_proto_name);
         for (key, entry) in self.lock.entries() {
             if !entry.reserved {
                 continue;
@@ -624,14 +629,18 @@ impl<'a> Emitter<'a> {
             else {
                 continue;
             };
-            if key_interface != interface || key_type != type_name || !kinds.contains(&entry.kind) {
+            if key_interface != interface || key_type != type_name {
                 continue;
             }
             if self.live_keys.contains(&key.key()) {
                 bail!("reserved member `{key}` is live in the model");
             }
+            // Reserve the name the member had in its old projection, not the name the new kind
+            // would give it. An enum case was prefixed with the type's enum prefix; a field,
+            // variant case, or flag used its message field name. A kind change therefore keeps
+            // both the old number and the old name reserved in the new message or enum.
             let name = if entry.kind == MemberKind::EnumCase {
-                upper_snake(member)
+                format!("{enum_prefix}_{}", upper_snake(member))
             } else {
                 field_name(member)?
             };
@@ -667,6 +676,24 @@ impl<'a> Emitter<'a> {
                     ..
                 } if entry.reserved && i == interface => {
                     Some((entry.number, upper_snake(function)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Interfaces that no longer exist in the model but still have a reserved method id.
+    ///
+    /// Their request and response messages are gone with the interface; the method enum, which
+    /// lives in the shared per-major file, stays so the ids are never reused.
+    fn removed_interface_methods(&self) -> BTreeSet<String> {
+        self.lock
+            .entries()
+            .filter_map(|(key, entry)| match key {
+                MemberKey::Method { interface, .. }
+                    if entry.reserved && self.model.interface(interface).is_none() =>
+                {
+                    Some(interface.clone())
                 }
                 _ => None,
             })

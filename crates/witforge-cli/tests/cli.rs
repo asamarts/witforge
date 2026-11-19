@@ -66,6 +66,192 @@ fn versions(name: &str) -> PathBuf {
     destination
 }
 
+/// The lockfile kind token a WIT type kind produces.
+fn member_kind(kind: &str) -> &'static str {
+    match kind {
+        "record" => "field",
+        "variant" => "variant-case",
+        "enum" => "enum-case",
+        "flags" => "flag",
+        other => panic!("not a type kind: {other}"),
+    }
+}
+
+/// A one-type contract whose members are `<prefix>one` and `<prefix>two`.
+fn kind_contract(version: &str, kind: &str, prefix: &str) -> String {
+    let body = match kind {
+        "record" => format!("record thing {{ {prefix}one: u32, {prefix}two: string }}"),
+        "variant" => format!("variant thing {{ {prefix}one, {prefix}two }}"),
+        "enum" => format!("enum thing {{ {prefix}one, {prefix}two }}"),
+        "flags" => format!("flags thing {{ {prefix}one, {prefix}two }}"),
+        other => panic!("not a type kind: {other}"),
+    };
+    format!("package ex:t@{version};\ninterface types {{\n  {body}\n}}\n")
+}
+
+/// One lockfile line for `kind`'s member at `index` (which fixes a record field's type).
+fn kind_entry(kind: &str, name: &str, index: usize, number: u32, reserved: bool) -> String {
+    let token = member_kind(kind);
+    let ty = if token == "field" {
+        if index == 0 { " u32" } else { " string" }
+    } else {
+        ""
+    };
+    format!(
+        "ex:t/types/thing.{name} = {number} {token}{ty}{}\n",
+        if reserved { " reserved" } else { "" }
+    )
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn every_ordered_kind_change_is_refused_by_lock_check_and_every_generator() {
+    let base = std::env::temp_dir().join(format!("witforge-kind-pairs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    let kinds = ["record", "variant", "enum", "flags"];
+    for from in kinds {
+        for to in kinds {
+            if from == to {
+                continue;
+            }
+            let pair = format!("{from}-to-{to}");
+            let root = base.join(&pair);
+            let old = root.join("v0.1");
+            let new = root.join("v0.2");
+            fs::create_dir_all(&old).unwrap();
+            fs::create_dir_all(&new).unwrap();
+            fs::write(old.join("contract.wit"), kind_contract("0.1.0", from, "")).unwrap();
+            fs::write(
+                new.join("contract.wit"),
+                kind_contract("0.2.0", to, "fresh-"),
+            )
+            .unwrap();
+
+            let lock = witforge()
+                .arg("lock")
+                .arg(&old)
+                .arg("--first")
+                .output()
+                .unwrap();
+            assert!(
+                lock.status.success(),
+                "{pair}: first lock failed: {}",
+                String::from_utf8_lossy(&lock.stderr)
+            );
+            fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+            let before = fs::read(new.join("wire.lock")).unwrap();
+
+            let from_token = member_kind(from);
+            let to_token = member_kind(to);
+            let failed_lock = witforge()
+                .arg("lock")
+                .arg(&new)
+                .arg("--against")
+                .arg(old.join("wire.lock"))
+                .output()
+                .unwrap();
+            assert_eq!(
+                failed_lock.status.code(),
+                Some(1),
+                "{pair}: lock --against: {failed_lock:?}"
+            );
+            let stderr = String::from_utf8_lossy(&failed_lock.stderr);
+            assert!(stderr.contains("mixes member kinds"), "{pair}: {stderr}");
+            assert!(stderr.contains("ex:t/types/thing"), "{pair}: {stderr}");
+            assert!(
+                stderr.contains(from_token) && stderr.contains(to_token),
+                "{pair}: {stderr}"
+            );
+            assert_eq!(
+                fs::read(new.join("wire.lock")).unwrap(),
+                before,
+                "{pair}: a refused lock wrote its lockfile"
+            );
+
+            // The lockfile a pre-0.6.0 `lock --against` left behind: both kinds under one
+            // parent, with the old members reserved and the new members numbered after them.
+            let mut mixed = format!("{HEADER}\n");
+            mixed.push_str(&kind_entry(from, "one", 0, 1, true));
+            mixed.push_str(&kind_entry(from, "two", 1, 2, true));
+            mixed.push_str(&kind_entry(to, "fresh-one", 0, 3, false));
+            mixed.push_str(&kind_entry(to, "fresh-two", 1, 4, false));
+            fs::write(new.join("wire.lock"), mixed).unwrap();
+
+            let out = base.join(format!("out-{pair}"));
+            let commands: Vec<(&str, Command)> = vec![
+                ("check", {
+                    let mut command = witforge();
+                    command.arg("check").arg(&new);
+                    command
+                }),
+                ("check --against", {
+                    let mut command = witforge();
+                    command
+                        .arg("check")
+                        .arg(&new)
+                        .arg("--against")
+                        .arg(old.join("wire.lock"));
+                    command
+                }),
+                ("rust", {
+                    let mut command = witforge();
+                    command
+                        .arg("rust")
+                        .arg(&root)
+                        .arg("--out")
+                        .arg(out.join("rust"));
+                    command
+                }),
+                ("proto", {
+                    let mut command = witforge();
+                    command
+                        .arg("proto")
+                        .arg(&root)
+                        .arg("--out")
+                        .arg(out.join("proto"));
+                    command
+                }),
+                ("schema", {
+                    let mut command = witforge();
+                    command
+                        .arg("schema")
+                        .arg(&root)
+                        .arg("--out")
+                        .arg(out.join("schema"));
+                    command
+                }),
+                ("glue", {
+                    let mut command = witforge();
+                    command
+                        .arg("glue")
+                        .arg(&root)
+                        .arg("--out")
+                        .arg(out.join("glue"))
+                        .args(["--plain-root", "crate::plain"])
+                        .args(["--proto-root", "crate::proto"]);
+                    command
+                }),
+            ];
+            for (name, mut command) in commands {
+                let output = command.output().unwrap();
+                assert_eq!(output.status.code(), Some(1), "{pair}: {name}: {output:?}");
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    stderr.contains("mixes member kinds"),
+                    "{pair}: {name}: {stderr}"
+                );
+                assert!(
+                    stderr.contains("ex:t/types/thing"),
+                    "{pair}: {name}: {stderr}"
+                );
+            }
+        }
+    }
+    fs::remove_dir_all(&base).unwrap();
+}
+
 #[test]
 fn help_version_and_subcommand_help() {
     let version = witforge().arg("--version").output().unwrap();

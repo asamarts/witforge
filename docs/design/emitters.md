@@ -622,8 +622,15 @@ reserved "old_field", "older_field";
 - Enum cases reserve their enum numbers and UPPER_SNAKE names.
 - Method ids reserve their enum numbers and UPPER_SNAKE names.
 - Request parameters of a live function reserve their request field numbers and snake_case names.
-- Request/response messages of a removed function are no longer emitted; proto has no
-  message-name reservation, and the reserved method id prevents wire reuse.
+- A type that changed kind reserves every old entry, whatever its old kind, using the name the
+  old projection gave it: an old enum case keeps its `<TYPE>_<CASE>` enum name, and an old
+  field, flag, variant case, or parameter keeps its snake_case message name. The lockfile
+  refuses the kind mix itself (see [`lockfile.md`](lockfile.md) section 6), so this output is
+  for a version whose lockfile was written before that refusal, or for a report of one.
+- An interface removed as a whole keeps its method-id enum, containing `UNSPECIFIED` and every
+  reserved id and name, because the per-major proto file is shared by every minor of the major.
+- Request/response messages of a removed function or interface are no longer emitted; proto has
+  no message-name reservation, and the reserved method id prevents wire reuse.
 - If a new WIT member would map to a reserved proto name, generation fails; the contract must
   use a new name.
 

@@ -237,6 +237,37 @@ example:plugin/analyzer#analyze.removed = 9 param string reserved\n",
 }
 
 #[test]
+fn a_kind_change_keeps_old_numbers_and_names_reserved() {
+    let model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
+    let mut lock = lock_for(&model);
+    let mut text = lock.render();
+    // A released enum became a record: its cases are now reserved under the same parent, and
+    // the reverse for an enum that used to be a record.
+    text.push_str(
+        "example:plugin/types/span.old = 9 enum-case reserved\n\
+example:plugin/types/applicability.old = 9 field u64 reserved\n\
+example:plugin/gone.removed = 42 method string reserved\n\
+example:plugin/gone.also-gone = 43 method reserved\n",
+    );
+    lock = WireLock::parse(&text).unwrap();
+    let schema = proto::emit_major(&model, &lock).unwrap();
+
+    // The record kept the old enum case's number and its old, prefixed enum value name.
+    assert!(schema.contains("reserved 9;"), "{schema}");
+    assert!(schema.contains("reserved \"TYPES_SPAN_OLD\";"), "{schema}");
+    // The enum kept the old record field's number and its old message field name.
+    assert!(schema.contains("reserved \"old\";"), "{schema}");
+    // A removed interface keeps its method enum, including every reserved id and name.
+    assert!(schema.contains("enum GoneMethod {"), "{schema}");
+    assert!(schema.contains("GONE_METHOD_UNSPECIFIED = 0;"), "{schema}");
+    assert!(schema.contains("reserved 42, 43;"), "{schema}");
+    assert!(
+        schema.contains("reserved \"GONE_METHOD_ALSO_GONE\", \"GONE_METHOD_REMOVED\";"),
+        "{schema}"
+    );
+}
+
+#[test]
 fn named_option_alias_wrappers_resolve_through_aliases() {
     let dir = std::env::temp_dir().join(format!(
         "witforge-proto-option-alias-{}",

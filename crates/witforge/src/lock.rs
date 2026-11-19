@@ -560,6 +560,12 @@ impl WireLock {
             );
             changes.added.push((key.key(), number));
         }
+        // One parent has one kind. A type that changes kind keeps its old entries reserved, and
+        // adding the new kind's members would leave both kinds under the same parent; the
+        // schema of every field that refers to the type has already changed. Refuse that here,
+        // in the shared reconcile/drift path, so `check`, `lock`, and every generator report
+        // the same violation. A lockfile that already mixes kinds is refused by the same check.
+        self.validate_kinds()?;
         // A reintroduced member is a contract violation; leave the lockfile (including its
         // order section) untouched so the caller cannot mistake it for a usable update.
         if changes.reintroduced.is_empty() {
@@ -764,6 +770,39 @@ impl WireLock {
         for (key, entry) in &self.entries {
             if let Some(other) = seen.insert((key.parent(), entry.number), key) {
                 bail!("`{other}` and `{key}` share number {}", entry.number);
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse a parent whose live and reserved entries do not all have one kind.
+    ///
+    /// A named type has one kind, so its lockfile parent holds `field`, `variant-case`,
+    /// `enum-case`, or `flag` entries, never a mix. When a released type changes kind its old
+    /// entries stay reserved, and reconciliation would add the new kind beside them; the wire
+    /// shape of every referring member has already changed even when the old numbers survive.
+    /// Interface parents hold `method` entries and function parents `param` entries by
+    /// construction, so this also rejects a hand-written lockfile that mixes those.
+    ///
+    /// This is deliberately not part of [`WireLock::parse`]: `diff` must be able to load a
+    /// mixed-kind endpoint and report the kind change. `check`, `lock`, and the generators
+    /// reach it through [`WireLock::drift`] or [`WireLock::reconcile`], which makes the
+    /// refusal a contract violation (exit `1`) rather than a parse error (exit `2`).
+    fn validate_kinds(&self) -> Result<()> {
+        let mut kinds: BTreeMap<String, MemberKind> = BTreeMap::new();
+        for (key, entry) in &self.entries {
+            let parent = key.parent();
+            match kinds.get(&parent) {
+                Some(&kind) if kind != entry.kind => bail!(
+                    "lockfile parent `{parent}` mixes member kinds `{kind}` and `{}`; a type, \
+                     interface, or function keeps one kind, so give the changed definition a \
+                     new name in a new version",
+                    entry.kind
+                ),
+                Some(_) => {}
+                None => {
+                    kinds.insert(parent, entry.kind);
+                }
             }
         }
         Ok(())

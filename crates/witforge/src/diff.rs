@@ -705,10 +705,9 @@ impl Builder<'_> {
         let old_kind = type_kind_name(&old.kind);
         let new_kind = type_kind_name(&new.kind);
         if old_kind != new_kind {
-            let prefix = format!(
-                "{}/{}/{}",
-                self.old.endpoint.package, interface.name, old.name
-            );
+            // A kind change is wire-breaking even when every old number stays reserved: the
+            // members that refer to the type keep the same canonical type name while their
+            // encoding changes from an enum value or a bool field to a message (or back).
             self.push(
                 ChangeKind::KindChanged {
                     from: old_kind.to_string(),
@@ -718,7 +717,7 @@ impl Builder<'_> {
                 path,
                 None,
                 Breaking {
-                    wire: !self.new.preserves_scope(self.old, &prefix),
+                    wire: true,
                     source: true,
                     api: true,
                 },

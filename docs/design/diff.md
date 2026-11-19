@@ -2,9 +2,10 @@
 
 Status: implemented 2026-11-05 (`W8-001`); endpoint ordering, missing-lock, and root/direct
 declaration-order boundaries 2026-11-18 (`W10-026`); conversion-impact notes 2026-11-17
-(`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`). The
-2026-11-18 items are not in 0.5.0: reversed-endpoint rejection, missing-lock guidance, and
-`conversion_blockers` are on `main` and unreleased.
+(`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`); kind
+changes are wire-breaking 2026-11-19 (`W10-045`). The 2026-11-18 items are not in 0.5.0:
+reversed-endpoint rejection, missing-lock guidance, and `conversion_blockers` are on `main` and
+unreleased.
 
 `witforge diff <old> <new>` compares two contract versions and reports what changed in three
 independent compatibility views:
@@ -82,7 +83,9 @@ Wire-breaking changes are:
 
 - a changed wire number (`renumbered`);
 - a changed kind or canonical type of a numbered member (`retyped`);
-- a type kind change (`kind-changed`) whose old numbered entries are not preserved;
+- a type kind change (`kind-changed`), whether or not the old numbers stay reserved: every
+  reference to the type keeps its canonical name while its encoding changes between an enum
+  value, a bool field, and a message;
 - removal of a member or a whole type, interface, or function whose old lockfile entries are not
   retained with their numbers and reserved.
 

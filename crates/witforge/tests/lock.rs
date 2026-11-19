@@ -750,6 +750,62 @@ fn first_mode_readds_a_reserved_draft() {
 }
 
 #[test]
+fn a_parent_that_mixes_kinds_is_refused_by_itself_and_by_drift() {
+    // What a pre-0.6.0 `lock --against` left after a released enum became a record: the old
+    // cases stay reserved and the new fields are numbered after them. Neither number nor type
+    // changed, so the old released-entry checks alone would accept it.
+    let mixed = WireLock::parse(&format!(
+        "{HEADER}\n\
+a:b/i/t.old = 1 enum-case reserved\n\
+a:b/i/t.new = 2 field u64\n"
+    ))
+    .unwrap();
+    let members = [Member {
+        parent: "a:b/i/t".into(),
+        name: "new".into(),
+        kind: MemberKind::Field,
+        ty: Some("u64".into()),
+    }];
+    let error = mixed.drift(&members).unwrap_err().to_string();
+    assert!(error.contains("`a:b/i/t`"), "{error}");
+    assert!(error.contains("enum-case"), "{error}");
+    assert!(error.contains("field"), "{error}");
+
+    let mut lock = mixed.clone();
+    assert!(lock.reconcile(&members).is_err());
+    assert_eq!(lock, mixed, "a refused reconciliation must not mutate");
+}
+
+#[test]
+fn first_mode_drops_a_draft_kind_change_instead_of_mixing_it() {
+    let mut lock = WireLock::parse(&format!(
+        "{HEADER}\n\
+a:b/i/t.one = 1 enum-case\n\
+a:b/i/t.two = 2 enum-case\n"
+    ))
+    .unwrap();
+    let members = [Member {
+        parent: "a:b/i/t".into(),
+        name: "one".into(),
+        kind: MemberKind::Field,
+        ty: Some("u32".into()),
+    }];
+    let changes = lock.reconcile_with(&members, LockMode::First).unwrap();
+    assert_eq!(changes.dropped, vec![("a:b/i/t.two".to_string(), 2)]);
+    assert_eq!(
+        changes.updated,
+        vec![(
+            "a:b/i/t.one".to_string(),
+            MemberKind::Field,
+            Some("u32".to_string())
+        )]
+    );
+    assert!(changes.added.is_empty());
+    assert_eq!(lock.entries().count(), 1);
+    assert!(lock.get("a:b/i/t.two").is_none());
+}
+
+#[test]
 fn against_mode_rejects_a_released_kind_change() {
     let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
     let mut current =

@@ -281,6 +281,13 @@ Canonicalization rules:
 
 - Numbers are unique within their parent: a type, an interface for method ids, or a function
   for parameters.
+- One parent has one kind. A type parent holds only `field`, `variant-case`, `enum-case`, or
+  `flag` entries, never a mix; an interface parent holds only `method` entries and a function
+  parent only `param` entries. A named type has one kind, so a reconciliation that would leave
+  the old kind reserved beside new members of another kind is refused with exit `1`, naming the
+  parent and both kinds. `check` and every generator refuse a lockfile that already holds such
+  a mix. A contract that needs the other kind uses a new type name in a new version; a draft
+  type may change kind because `--first` drops its draft entries before adding the new ones.
 - A new parent starts at `1`.
 - A new member gets `max(existing numbers in its parent) + 1`. Reserved numbers count, so they
   are never reused.
@@ -335,7 +342,8 @@ would otherwise look removed. Every entry, and every entry of an `--against` bas
 belong to the contract's package, also when the contract has no members. Exit code `1` means
 contract or lockfile violations, an unreleased version's lockfile that is not in canonical form
 (section 4) and a version directory holding another version (section 2) included; exit code `2`
-means usage, IO, parse, or internal errors.
+means usage, IO, parse, or internal errors. Every mode also refuses a parent that mixes member
+kinds (section 6); the error names the parent and both kinds.
 
 Without a baseline (default mode):
 
@@ -380,7 +388,8 @@ With `--first`:
 
 `lock` loads the package and runs the subset checker. It writes nothing if there are subset
 violations, parse errors, reintroduced released members, released type/kind changes, renumbered
-or un-reserved released entries, exhausted number space, or a released-directory refusal.
+or un-reserved released entries, a parent that would mix member kinds (section 6), exhausted
+number space, or a released-directory refusal.
 
 It then applies the mode:
 
@@ -457,6 +466,8 @@ left alone.
 - Removing a released member reserves it; reintroducing it is refused. A draft member's entry is
   dropped instead, and a returning draft gets a new entry.
 - Changing a member's type or kind for a released version is an error. A draft may change.
+- A released type that changes kind cannot orphan its reserved entries beside the new kind;
+  section 6 refuses the mix. Give the new type a new name in a new version.
 - A member moved between types is a removal from the old parent plus an addition in the new one.
 - A type removed from the source reserves all of its member entries. A type with no members
   (for example a named list/option/result) has no entries of its own; released-directory

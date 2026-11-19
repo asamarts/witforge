@@ -1,6 +1,65 @@
 //! Stable diff API coverage for conversion impacts.
 
+use std::fs;
 use std::path::Path;
+
+use witforge::diff::ChangeKind;
+use witforge::lock::WireLock;
+use witforge::{load, model};
+
+#[test]
+fn a_kind_change_is_wire_breaking_even_with_every_old_number_reserved() {
+    let base = std::env::temp_dir().join(format!("witforge-diff-kind-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let old = base.join("v0.1");
+    let new = base.join("v0.2");
+    fs::create_dir_all(&old).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    fs::write(
+        old.join("contract.wit"),
+        "package ex:t@0.1.0;\n\
+interface types {\n\
+  enum thing { one, two }\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        new.join("contract.wit"),
+        "package ex:t@0.2.0;\n\
+interface types {\n\
+  record thing { fresh-one: u32, fresh-two: string }\n\
+}\n",
+    )
+    .unwrap();
+
+    let old_model = model::build(&load(&old).unwrap()).unwrap();
+    let old_members = old_model.members().unwrap();
+    let mut old_lock = WireLock::default();
+    old_lock.reconcile(&old_members).unwrap();
+    fs::write(old.join("wire.lock"), old_lock.render()).unwrap();
+
+    // The lockfile a pre-0.6.0 `lock --against` produced: the old enum cases stay reserved and
+    // the new record fields are numbered after them.
+    let mut mixed = old_lock
+        .render()
+        .replace(" enum-case\n", " enum-case reserved\n");
+    mixed.push_str(
+        "ex:t/types/thing.fresh-one = 3 field u32\n\
+ex:t/types/thing.fresh-two = 4 field string\n",
+    );
+    fs::write(new.join("wire.lock"), mixed).unwrap();
+
+    let report = witforge::diff::compare(&old, &new).unwrap();
+    let change = report
+        .changes
+        .iter()
+        .find(|change| matches!(change.kind, ChangeKind::KindChanged { .. }))
+        .expect("the enum-to-record change is reported");
+    assert!(change.wire_breaking, "{change:?}");
+    assert_eq!(report.summary.wire_breaking, 1);
+
+    fs::remove_dir_all(&base).unwrap();
+}
 
 #[test]
 fn compare_with_impacts_matches_compare_on_the_versions_fixture() {

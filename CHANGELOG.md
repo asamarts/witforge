@@ -11,6 +11,10 @@ have it.
 
 ### Added
 
+- `proto` reserves every old member of a type whose kind changed, not only entries of the
+  current kind, using the name the old projection gave it. A removed interface keeps its
+  method-id enum with `UNSPECIFIED` and its reserved method ids and names, because the per-major
+  proto file is shared by every minor of the major.
 - `diff` reports a non-defaulted required record field addition as a conversion-generation
   blocker in human, `--json`, JSON diagnostics (`WF3004`), and SARIF output. The note is
   informational; compatibility counts and exit codes are unchanged.
@@ -43,6 +47,15 @@ have it.
 
 ### Fixed
 
+- A lockfile parent whose live and reserved members have different kinds is refused by `check`,
+  `lock`, and every generator with exit `1`, naming the parent and both kinds. A released type
+  that changes kind (enum to record, and every other ordered pair) previously kept the old
+  cases reserved beside the new members while `check --against`, `proto`, `glue`, and `schema`
+  accepted the contract. `diff` now reports the change as wire-breaking, because every field
+  that refers to the type keeps its canonical name while its encoding changes. An unreleased
+  draft that already mixes kinds recovers by renaming the type in a new version (or by
+  recreating the draft with `lock --first`, which drops its draft entries); a released
+  directory in that state cannot be generated again and needs a new type name.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and
