@@ -158,13 +158,11 @@ async function latestVersion(token) {
   return tag.startsWith('v') ? tag.slice(1) : tag;
 }
 
-async function download(url, destination, token) {
-  const response = await request(url, token);
+// Release assets are public and are fetched without credentials: `github-token` is for the
+// rate limit of the latest-release API query and is not sent to the download host.
+async function download(url, destination, options = {}) {
+  const response = await request(url, '', options);
   fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
-}
-
-async function downloadText(url, token) {
-  return (await request(url, token)).text();
 }
 
 async function install(options) {
@@ -179,8 +177,8 @@ async function install(options) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'witforge-action-'));
   const archive = path.join(temporary, asset);
   const checksumFile = `${archive}.sha256`;
-  await download(`${base}/${asset}`, archive, options.token);
-  await download(`${base}/${asset}.sha256`, checksumFile, options.token);
+  await download(`${base}/${asset}`, archive);
+  await download(`${base}/${asset}.sha256`, checksumFile);
   const expected = parseChecksum(fs.readFileSync(checksumFile, 'utf8'));
   const actual = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
   if (actual !== expected) {
@@ -214,6 +212,7 @@ module.exports = {
   archiveName,
   assetTarget,
   buildCommands,
+  download,
   input,
   normalizeVersion,
   parseChecksum,

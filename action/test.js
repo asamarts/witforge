@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -10,6 +11,7 @@ const {
   archiveName,
   assetTarget,
   buildCommands,
+  download,
   input,
   normalizeVersion,
   parseChecksum,
@@ -163,6 +165,24 @@ test('requests carry a bounded abort signal and authorization', async () => {
   assert.ok(requestInit.signal instanceof AbortSignal);
   assert.equal(requestInit.signal.aborted, false);
   assert.equal(REQUEST_TIMEOUT_MS, 30_000);
+});
+
+test('release assets are downloaded without credentials', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'witforge-action-test-'));
+  const destination = path.join(directory, 'asset');
+  let requestInit;
+  try {
+    await download('https://example.test/asset', destination, {
+      fetch: async (_url, init) => {
+        requestInit = init;
+        return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('bytes').buffer };
+      },
+    });
+    assert.equal(requestInit.headers.Authorization, undefined);
+    assert.equal(fs.readFileSync(destination, 'utf8'), 'bytes');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('requests abort when the timeout expires', async () => {
