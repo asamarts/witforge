@@ -6,14 +6,15 @@
 //! represent, such as resources, tuples, and world-defined types. Named types from standard
 //! `deps/` packages are represented with their package identity.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
 use wit_parser::{
-    Docs as WitDocs, Function as WitFunction, FunctionKind, InterfaceId, PackageId, Resolve, Span,
-    Stability as WitStability, Type, TypeDefKind as WitTypeDefKind, TypeId, TypeOwner, WorldId,
-    WorldItem, WorldKey,
+    Docs as WitDocs, Function as WitFunction, FunctionKind, InterfaceId, PackageId, PackageName,
+    Resolve, Span, Stability as WitStability, Type, TypeDefKind as WitTypeDefKind, TypeId,
+    TypeOwner, WorldId, WorldItem, WorldKey,
 };
 
 use crate::Contract;
@@ -549,6 +550,66 @@ impl TypeExpr {
     pub fn canonical(&self, model: &Model) -> Result<String> {
         model.canonical_type(self)
     }
+}
+
+/// Refuse a dependency graph that gives one package identity two versions, or that reuses the
+/// root package's namespace and name.
+///
+/// Type identity is `namespace:name/interface/type`; the dependency version is not part of a
+/// lockfile key or canonical type. Two versions under one `deps/` tree would therefore collapse
+/// into one package in the lockfile and every emitter. One graph must pin one version, and a new
+/// major is adopted by every dependent at once.
+///
+/// The diagnostic names the package, every version found, and the `deps/` entry that supplied
+/// each copy. It is a [`crate::ContractError`], so `check`, `lock`, `diff`, and every generator
+/// report exit `1` from the shared loader.
+///
+/// # Errors
+///
+/// Returns a contract error when a dependency has the root's namespace and name, or when more
+/// than one dependency package has one namespace and name.
+pub(crate) fn ensure_dependency_identity(
+    root: &PackageName,
+    dependencies: &[(PackageName, PathBuf)],
+) -> Result<()> {
+    let mut groups: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
+    for (package, entry) in dependencies {
+        if package.namespace == root.namespace && package.name == root.name {
+            bail!(crate::ContractError::new(format!(
+                "dependency package `{}:{}` has the root package's namespace:name; the root and \
+                 a dependency cannot share a package identity",
+                package.namespace, package.name
+            )));
+        }
+        let version = package
+            .version
+            .as_ref()
+            .map_or_else(|| "<unversioned>".to_string(), ToString::to_string);
+        groups
+            .entry((package.namespace.clone(), package.name.clone()))
+            .or_default()
+            .push((version, entry.display().to_string()));
+    }
+    for ((namespace, name), copies) in groups {
+        if copies.len() > 1 {
+            let versions = copies
+                .iter()
+                .map(|(version, _)| version.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let entries = copies
+                .iter()
+                .map(|(_, entry)| format!("`{entry}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(crate::ContractError::new(format!(
+                "duplicate dependency package `{namespace}:{name}` at versions {versions} in \
+                 {entries}; one dependency graph must pin one version, and a new major is \
+                 adopted by every dependent at once"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Build the owned model from a loaded contract.

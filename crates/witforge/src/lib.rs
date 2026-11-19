@@ -37,7 +37,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use wit_parser::{PackageId, Resolve};
+use wit_parser::{PackageId, PackageName, Resolve, UnresolvedPackageGroup};
 
 /// A contract, lockfile, or generated-output violation, as opposed to a usage, I/O, parse, or
 /// internal error.
@@ -118,8 +118,20 @@ impl Contract {
 ///
 /// # Errors
 ///
-/// Returns an error when the directory cannot be read or the WIT does not parse or resolve.
+/// Returns an error when the directory cannot be read or the WIT does not parse or resolve, and a
+/// [`ContractError`] when the dependency graph pins more than one version of one package or a
+/// dependency uses the root package's namespace and name.
 pub fn load(dir: &Path) -> Result<Contract> {
+    // `wit-parser` refuses two identical package names before witforge can classify the error.
+    // Scan the dependency entries first so that every duplicate-package shape is a contract
+    // violation (exit 1) that names the package, versions, and entries.
+    let scanned = scan_dependency_packages(dir);
+    if !scanned.is_empty()
+        && let Ok(root) = UnresolvedPackageGroup::parse_dir(dir)
+    {
+        crate::model::ensure_dependency_identity(&root.main.name, &scanned)?;
+    }
+
     let mut resolve = Resolve {
         all_features: true,
         ..Resolve::default()
@@ -128,7 +140,7 @@ pub fn load(dir: &Path) -> Result<Contract> {
         .push_dir(dir)
         .with_context(|| format!("failed to load the WIT package in {}", dir.display()))?;
     let deps_dir = dir.join("deps");
-    let dependencies = resolve
+    let dependencies: Vec<PackageId> = resolve
         .packages
         .iter()
         .map(|(id, _)| id)
@@ -139,11 +151,76 @@ pub fn load(dir: &Path) -> Result<Contract> {
                 .is_some_and(|mut paths| paths.all(|path| path.starts_with(&deps_dir)))
         })
         .collect();
+    let dependency_entries: Vec<(PackageId, PathBuf)> = dependencies
+        .iter()
+        .filter_map(|id| {
+            sources
+                .package_paths(*id)
+                .and_then(|mut paths| paths.next())
+                .map(|source| (*id, dependency_entry_path(dir, source)))
+        })
+        .collect();
+    let dependency_names: Vec<(PackageName, PathBuf)> = dependency_entries
+        .iter()
+        .map(|(id, entry)| (resolve.packages[*id].name.clone(), entry.clone()))
+        .collect();
+    crate::model::ensure_dependency_identity(&resolve.packages[package].name, &dependency_names)?;
     Ok(Contract {
         resolve,
         package,
         dependencies,
     })
+}
+
+/// The `deps/` entry that contains a dependency source path.
+fn dependency_entry_path(dir: &Path, source: &Path) -> PathBuf {
+    let deps = dir.join("deps");
+    source
+        .strip_prefix(&deps)
+        .ok()
+        .and_then(|rest| rest.components().next())
+        .map_or_else(
+            || source.to_path_buf(),
+            |component| deps.join(component.as_os_str()),
+        )
+}
+
+/// Parse the package declarations in `deps/` without resolving them.
+///
+/// This only supplies names for the duplicate-package diagnostics; `wit-parser` still owns the
+/// real parse and reports its own diagnostics for a malformed entry. Entries it cannot read or
+/// parse are skipped here and refused by `push_dir` afterwards.
+fn scan_dependency_packages(dir: &Path) -> Vec<(PackageName, PathBuf)> {
+    let deps = dir.join("deps");
+    let Ok(entries) = fs::read_dir(&deps) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let mut packages = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let group = if path.is_dir() {
+            UnresolvedPackageGroup::parse_dir(&path).ok()
+        } else if path
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("wit"))
+        {
+            fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| UnresolvedPackageGroup::parse(&path, &text).ok())
+        } else {
+            None
+        };
+        let Some(group) = group else {
+            continue;
+        };
+        for package in std::iter::once(group.main).chain(group.nested) {
+            packages.push((package.name, path.clone()));
+        }
+    }
+    packages
 }
 
 /// The default released-version manifest name.

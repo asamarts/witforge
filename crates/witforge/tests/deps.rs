@@ -75,11 +75,120 @@ fn ambiguous_dependency_is_an_error() {
     .unwrap();
     let error = load(&root.join("v0.1")).unwrap_err();
     let message = format!("{error:#}");
+    assert!(witforge::is_contract_error(&error), "{message}");
     assert!(
-        message.contains("duplicate") || message.contains("defined"),
+        message.contains("duplicate dependency package"),
         "{message}"
     );
+    assert!(message.contains("example:shared"), "{message}");
+    assert!(message.contains("deps/one"), "{message}");
+    assert!(message.contains("deps/two"), "{message}");
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn two_versions_of_one_dependency_are_refused() {
+    let root =
+        std::env::temp_dir().join(format!("witforge-deps-two-versions-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("v0.1/deps/shared-a")).unwrap();
+    fs::create_dir_all(root.join("v0.1/deps/shared-b")).unwrap();
+    fs::write(
+        root.join("v0.1/deps/shared-a/types.wit"),
+        "package example:shared@0.1.0;\ninterface types { record item { a: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("v0.1/deps/shared-b/types.wit"),
+        "package example:shared@1.0.0;\ninterface types { enum item { x, y } }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("v0.1/contract.wit"),
+        "package example:root@0.1.0;\ninterface api {\n\
+         use example:shared/types@0.1.0.{item as old-item};\n\
+         use example:shared/types@1.0.0.{item as new-item};\n\
+         record r { x: old-item, y: new-item }\n}\n",
+    )
+    .unwrap();
+    let error = load(&root.join("v0.1")).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(witforge::is_contract_error(&error), "{message}");
+    assert!(
+        message.contains("duplicate dependency package `example:shared`"),
+        "{message}"
+    );
+    assert!(message.contains("0.1.0"), "{message}");
+    assert!(message.contains("1.0.0"), "{message}");
+    assert!(message.contains("deps/shared-a"), "{message}");
+    assert!(message.contains("deps/shared-b"), "{message}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_dependency_may_not_use_the_root_package_name() {
+    for dependency_version in ["0.1.0", "0.2.0", "0.3.0"] {
+        let root = std::env::temp_dir().join(format!(
+            "witforge-deps-root-name-{}-{}",
+            dependency_version.replace('.', "-"),
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("v0.1/deps/self")).unwrap();
+        fs::write(
+            root.join("v0.1/contract.wit"),
+            "package example:root@0.2.0;\ninterface api { record item { a: u32 } }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("v0.1/deps/self/types.wit"),
+            format!(
+                "package example:root@{dependency_version};\n\
+                 interface types {{ record item {{ b: u32 }} }}\n"
+            ),
+        )
+        .unwrap();
+        let error = load(&root.join("v0.1")).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(witforge::is_contract_error(&error), "{message}");
+        assert!(
+            message.contains("dependency package `example:root`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("root package's namespace:name"),
+            "{message}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn equal_names_in_different_namespaces_are_accepted() {
+    let root =
+        std::env::temp_dir().join(format!("witforge-deps-namespaces-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("v0.1/deps/shared-one")).unwrap();
+    fs::create_dir_all(root.join("v0.1/deps/shared-two")).unwrap();
+    fs::write(
+        root.join("v0.1/deps/shared-one/types.wit"),
+        "package example:shared@0.1.0;\ninterface types { record item { a: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("v0.1/deps/shared-two/types.wit"),
+        "package acme:shared@0.1.0;\ninterface types { record item { b: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("v0.1/contract.wit"),
+        "package example:root@0.1.0;\ninterface api { record r { a: u32 } }\n",
+    )
+    .unwrap();
+    let contract = load(&root.join("v0.1")).unwrap();
+    let model = model::build(&contract).unwrap();
+    assert_eq!(model.dependencies.len(), 2);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

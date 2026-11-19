@@ -66,6 +66,16 @@ have it.
   uint32` to `bytes` (or, in Rust, from `Vec<Byte>` to `Vec<u8>`); mixed deployments read the
   same bytes when every value is below 128 and different bytes above it, because both
   encodings are length-delimited.
+- A dependency graph that contains two versions of one `namespace:name`, or a dependency that
+  reuses the root package's `namespace:name`, is refused by `check`, `lock`, `diff`, and every
+  generator with exit `1`, naming the package, versions, and `deps/` entries. Dependency type
+  identity has no version, so two versions previously collapsed into one package in the lockfile
+  and emitters. One graph must pin one version, and a new major is adopted by every dependent at
+  once; a contract that needs both uses separate WIT roots. A released directory already in that
+  state is frozen and becomes unusable, so it needs a new version that chooses one version (or
+  renames the root package). No fixture, example, or known contract has such a graph. A
+  same-version duplicate in two `deps/` entries is refused by the same pre-scan instead of
+  surfacing as a `wit-parser` parse error.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

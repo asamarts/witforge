@@ -1,6 +1,7 @@
 # WIT package dependencies
 
-Status: implemented 2026-11-06 (`W9-001`, `W9-004`, `W9-005`).
+Status: implemented 2026-11-06 (`W9-001`, `W9-004`, `W9-005`); one-version-per-graph and
+root-name refusal 2026-11-19 (`W10-047`).
 
 witforge accepts the standard WIT dependency layout: a version directory may contain a `deps/`
 directory of WIT packages, and a local package may reference a named type from a dependency with
@@ -102,6 +103,28 @@ inventories and their source order; shapes and signatures; stability metadata; a
 emitters write one shared dependency binding surface, so allowing any of those inputs to vary
 would make the generated result depend on which contract version happened to supply it.
 
+One dependency graph MUST contain at most one version of a `namespace:name` package. A dependency
+type's identity is `namespace:name/interface/type`; the version is not part of a lockfile key or
+canonical type. Two versions under `deps/` would therefore collapse into one package in the
+lockfile and every generated surface. This applies to every package under `deps/`, including one
+nothing refers to, because every package contributes to the generated surface. The diagnostic
+names the package, every version found, and the `deps/` entry that supplied each copy; `check`,
+`lock`, `diff`, and every generator refuse it with exit `1` from the shared loader.
+
+A dependency MUST NOT use the root package's `namespace:name`. The root and a dependency with one
+identity would generate one module, one proto package, and one schema namespace. Rename one side
+instead. Two packages with the same name in different namespaces (`example:shared` and
+`acme:shared`) are different packages and are accepted.
+
+Two copies of one package at the same version are a duplicate package as well, whether they sit
+in two `deps/` entries or one entry has an accidental copy. `wit-parser` already refuses that
+shape; witforge's pre-scan reports it as the same contract violation before resolution so the
+diagnostic names both entries and the exit status is `1` rather than a parse error.
+
+A new major of a dependency is adopted by every dependent at once. Updating one dependent only,
+or keeping two versions in one graph so that both can be used, requires separate WIT roots and
+generated binding surfaces.
+
 `rust`, `proto`, `schema`, and `glue` compare every version with the first and refuse the first
 changed package, version, interface, type, or function. `diff` applies the same comparison and
 refuses mismatched graphs instead of reporting a local contract as compatible. A dependency pin
@@ -124,7 +147,9 @@ A local lockfile records only members defined by the local package. A local fiel
 method, or variant payload whose type is foreign records the full canonical type (with package
 identity), so a retype from one dependency type to another is a wire change even when both names
 end in the same suffix. Dependencies do not get a second lockfile here; their proto numbers are
-derived deterministically from their own source order.
+derived deterministically from their own source order. Dependency identity has no version, so
+one graph may contain only one version of a `namespace:name` package; a duplicate version or a
+dependency on the root package's name is refused before the lockfile is read or written.
 
 A dependency under a released version's `deps/` directory is part of that frozen version
 directory: changing it after release fails the release-freeze check. Dependencies placed beside
@@ -143,8 +168,14 @@ are explicitly later work, not part of this compatibility rule.
   unsupported items elsewhere in an unexposed dependency remain skippable.
 - Every emitter refuses package or module names that normalize to the same generated name.
   These contract failures use exit `1`, including cross-version dependency disagreement.
+- Two versions of one `namespace:name`, two copies of one package at one version, and a
+  dependency that reuses the root package's `namespace:name` are contract failures with exit
+  `1`. The first names the package, both versions, and both `deps/` entries; the root-name case
+  names the package and says the root and a dependency cannot share an identity.
 - Tests cover a local package importing a pinned dependency, a missing dependency, two
-  dependencies declaring the same package name, aliases, lists, options, results, variants,
+  dependencies declaring the same package name, two versions of one dependency, a dependency
+  with the root's name at an earlier, equal, and later version, equal names in different
+  namespaces, aliases, lists, options, results, variants,
   cross-dependency references, hyphenated package names, unused unsupported dependency items,
   rejected unsupported types reached through a local `use`, rejected unsupported items in a
   world-exposed dependency interface, dependency generated-name collisions, foreign world
