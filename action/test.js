@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
@@ -8,8 +10,10 @@ const {
   archiveName,
   assetTarget,
   buildCommands,
+  input,
   normalizeVersion,
   parseChecksum,
+  readInputs,
   request,
   resolveVersion,
   splitLines,
@@ -61,6 +65,73 @@ test('the command plan runs check, diff, and configured generators', () => {
     ['witforge', 'rust', '--config', 'witforge.toml', '--check', '--project', 'demo'],
     ['witforge', 'proto', '--config', 'witforge.toml', '--check', '--project', 'demo'],
   ]);
+});
+
+// The names GitHub's runner sets: upper-cased, spaces replaced, hyphens kept.
+function runnerEnvironment(inputs) {
+  const env = {};
+  for (const [name, value] of Object.entries(inputs)) {
+    env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`] = value;
+  }
+  return env;
+}
+
+function declaredInputs() {
+  const metadata = fs.readFileSync(path.join(__dirname, '..', 'action.yml'), 'utf8');
+  const start = metadata.indexOf('\ninputs:\n');
+  const end = metadata.indexOf('\nruns:\n');
+  assert.ok(start >= 0 && end > start, 'action.yml has an inputs block before runs');
+  return [...metadata.slice(start, end).matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)].map(
+    (match) => match[1],
+  );
+}
+
+test('inputs are read under the environment names the runner sets', () => {
+  const env = runnerEnvironment({ 'diff-old': ' wit/v0.1 ', check: 'wit/v0.2' });
+  assert.deepEqual(Object.keys(env), ['INPUT_DIFF-OLD', 'INPUT_CHECK']);
+  assert.equal(input('diff-old', env), 'wit/v0.1');
+  assert.equal(input('check', env), 'wit/v0.2');
+  assert.equal(input('diff-new', env), '');
+  // An underscore spelling is a different variable; the runner never sets it.
+  assert.equal(input('diff-old', { INPUT_DIFF_OLD: 'wit/v0.1' }), '');
+});
+
+test('hyphenated inputs reach the install options and the command plan', () => {
+  const { install, commands } = readInputs(
+    runnerEnvironment({
+      version: '0.5.0',
+      'github-token': 'secret',
+      check: 'wit/v0.2',
+      'diff-old': 'wit/v0.1',
+      'diff-new': 'wit/v0.2',
+      'diff-check': 'false',
+    }),
+  );
+  assert.deepEqual(install, { version: '0.5.0', token: 'secret' });
+  assert.deepEqual(buildCommands('witforge', commands), [
+    ['witforge', 'check', 'wit/v0.2'],
+    ['witforge', 'diff', 'wit/v0.1', 'wit/v0.2'],
+  ]);
+});
+
+test('every input action.yml declares is read', () => {
+  const names = declaredInputs();
+  assert.deepEqual(names, [
+    'version',
+    'check',
+    'diff-old',
+    'diff-new',
+    'diff-check',
+    'config',
+    'project',
+    'generators',
+    'github-token',
+  ]);
+  const { install, commands } = readInputs(
+    runnerEnvironment(Object.fromEntries(names.map((name) => [name, `value of ${name}`]))),
+  );
+  const read = [...Object.values(install), ...Object.values(commands)].sort();
+  assert.deepEqual(read, names.map((name) => `value of ${name}`).sort());
 });
 
 test('incomplete or unknown inputs are refused', () => {

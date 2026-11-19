@@ -21,6 +21,20 @@ Pin the Action to the same release used for local generation:
 
 The Action installs a checksum-verified release binary and runs configured generators with `--check`.
 
+**Action releases up to and including v0.5.0 ignore `diff-old`, `diff-new`, `diff-check`, and
+`github-token`.** They read those inputs under the wrong environment names, so the snippet above
+runs `check` and the generators and never runs `diff`. The fix is in the next release. Until then,
+run the gate as its own step; the Action leaves `witforge` on `PATH`:
+
+```yaml
+- uses: asamarts/witforge@v0.5.0
+  with:
+    check: wit/v0.2
+    config: witforge.toml
+    generators: rust,proto,schema,glue
+- run: witforge diff wit/v0.1 wit/v0.2 --check
+```
+
 ## Direct commands
 
 ```sh

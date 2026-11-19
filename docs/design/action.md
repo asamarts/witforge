@@ -76,6 +76,14 @@ published release. A `version` input overrides either default:
 Pass `${{ github.token }}` as `github-token` when querying the latest release to avoid anonymous
 GitHub API rate limits; pinned versions do not query the API.
 
+The runner exports an input as `INPUT_<NAME>` with the name upper-cased and spaces replaced by
+underscores; a hyphen stays a hyphen, so `diff-old` is `INPUT_DIFF-OLD`. Action releases through
+v0.5.0 replaced hyphens too and therefore read `diff-old`, `diff-new`, `diff-check`, and
+`github-token` as empty: they never ran `diff`, and every latest-release lookup was anonymous.
+`action/test.js` now reads every input declared in `action.yml` through the runner's names, and
+CI runs the checked-out Action twice on a breaking fixture pair: once reporting
+(`diff-check: false`) and once gating, where the step must fail.
+
 ### Inputs
 
 | Input | Default | Behavior |

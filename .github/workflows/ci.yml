@@ -101,13 +101,36 @@ jobs:
       - run: bash ci/test-release-version.sh
       - run: node --test action/test.js
       # Execute the checked-out action through GitHub's JavaScript-action runtime. Unit tests
-      # call index.js directly and therefore cannot catch a retired `runs.using` value.
+      # call index.js directly and therefore cannot catch a retired `runs.using` value or an
+      # input the runner exports under another name than the action reads. The fixture pair has
+      # breaking changes: the first step reports them (`diff-check: false`), the second must
+      # fail on them, so together they prove `diff-old`, `diff-new`, and `diff-check` arrive.
       - name: Smoke the local Action
         uses: ./
         with:
           version: 0.5.0
           check: crates/witforge/tests/fixtures/versions/wit/v0.2
+          diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
+          diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
+          diff-check: "false"
           github-token: ${{ github.token }}
+      - name: Run the local Action's diff gate on a breaking change (expected to fail)
+        id: diff-gate
+        continue-on-error: true
+        uses: ./
+        with:
+          version: 0.5.0
+          diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
+          diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
+          github-token: ${{ github.token }}
+      - name: Require the diff gate to have failed
+        env:
+          OUTCOME: ${{ steps.diff-gate.outcome }}
+        run: |
+          if [ "$OUTCOME" != failure ]; then
+            echo "::error::the Action's diff gate passed a breaking change (outcome: $OUTCOME)"
+            exit 1
+          fi
 
   published-action:
     name: published Action (${{ matrix.runner }})

@@ -162,6 +162,9 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
       installed binary passed the single-version and evolved-version example checks.
 - [x] crates.io lists both crates at 0.3.0, docs.rs built the library, and the published Action
       installed the 0.3.0 Linux asset and ran `check`, `diff`, and a configured `rust --check`.
+      Correction, 2026-11-18: the Action cannot have run `diff` from its inputs. Through v0.5.0 it
+      read `diff-old` and `diff-new` under the wrong environment names and planned no `diff`
+      command, and no workflow in this repository passed those inputs before `W10-039`.
 
 ## 0.4.0 record
 

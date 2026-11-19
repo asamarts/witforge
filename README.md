@@ -195,7 +195,9 @@ Pin the Action to the same release used locally:
 ```
 
 The Action downloads the matching checksum-verified release binary and runs configured generators
-with `--check`. See the [CI guide](https://asamarts.github.io/witforge/guide/ci.html).
+with `--check`. Action releases up to v0.5.0 ignore `diff-old` and `diff-new`; until the next
+release, run `witforge diff wit/v0.1 wit/v0.2 --check` as a separate step. See the
+[CI guide](https://asamarts.github.io/witforge/guide/ci.html).
 
 ## Important JSON boundary
 

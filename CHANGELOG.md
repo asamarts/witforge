@@ -24,6 +24,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
+  release through v0.5.0 looked them up under the wrong environment names and treated them as
+  empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and
+  never ran `witforge diff`, and latest-release lookups were anonymous. Workflows pinned to an
+  earlier Action release should run `witforge diff … --check` as a separate step.
 - `diff` rejects a reversed old/new argument order and reports a missing `wire.lock` on a direct
   version-directory endpoint with the same actionable guidance as `check`.
 
