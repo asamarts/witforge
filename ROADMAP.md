@@ -127,7 +127,8 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Generated writes are atomic; released version directories reject symlinks; the fuzz
       workspace is integrated with CI, Dependabot, and the security gate; dependency-graph,
       conversion, output, and diagnostic coverage is expanded.
-- [x] Documentation snippets and current-version references are checked in CI; shared emitter
+- [x] Generated-output excerpts in the README and the output guide, and current-version
+      references, are checked in CI; shared emitter
       helpers remove duplicated naming and type rendering without changing generated output.
 - [x] Diff and version-conversion benchmark budgets cover a generated two-version fixture.
 - [x] Release 0.5.0 (2026-11-17), with alint moved to the release and its generated output

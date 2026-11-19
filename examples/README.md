@@ -29,5 +29,6 @@ cargo run --manifest-path ../../Cargo.toml -p witforge-cli -- rust --config witf
 
 Generated output is committed under each example's `generated/` directory. Run a generator
 without `--check` to refresh it, review the diff, and rerun with `--check`. `v0.1` in the evolved
-example is released, so do not edit its WIT, lockfile, or generated Rust module; add `v0.3` for
-the next contract change.
+example is released (`wit/released` lists it), so do not edit its WIT, lockfile, or generated Rust
+module. `v0.2` is an unreleased draft: change it in place, and add `v0.3` only after `v0.2` has
+been added to `wit/released`.

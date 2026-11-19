@@ -164,10 +164,13 @@ For configuration, dependencies, evolution, and complete command sequences, cont
 
 ## Evolve a contract
 
-Keep each contract version in its own directory. Start a new minor from the previous lockfile:
+Keep each contract version in its own directory. Start a new minor as a copy of the previous
+version, lockfile included:
 
 ```sh
-cp wit/v0.1/wire.lock wit/v0.2/wire.lock
+mkdir wit/v0.2
+cp wit/v0.1/contract.wit wit/v0.1/wire.lock wit/v0.2/
+# Edit wit/v0.2/contract.wit: set the package version to 0.2.0, then change the contract.
 witforge lock wit/v0.2 --against wit/v0.1/wire.lock
 witforge check wit/v0.2 --against wit/v0.1/wire.lock
 witforge diff wit/v0.1 wit/v0.2

@@ -34,7 +34,8 @@ cargo run -p witforge-cli -- --version
 ```
 
 The examples below use `witforge`; replace it with `cargo run -p witforge-cli --` when working
-from a checkout.
+from a checkout. Every command on this page runs from one working directory, the one that
+contains `my-contract/`, and the test suite runs them in this order.
 
 ## One version
 
@@ -47,16 +48,25 @@ my-contract/
       contract.wit
 ```
 
-Start minimal:
+```sh
+mkdir -p my-contract/wit/v0.1
+```
+
+Save a small contract as `my-contract/wit/v0.1/contract.wit`. The package version must match the
+directory name, and an interface and a world cannot share a name:
 
 ```wit
 package example:hello@0.1.0;
 
 interface greeter {
-    greet: func(name: string) -> string;
+    record greeting {
+        text: string,
+    }
+
+    greet: func(name: string) -> greeting;
 }
 
-world greeter {
+world hello {
     export greeter;
 }
 ```
@@ -99,7 +109,7 @@ witforge glue   my-contract/wit --out my-contract/generated/glue \
 
 ## Use `witforge.toml`
 
-Put the repeated paths in a project file:
+Put the repeated paths in a project file, `my-contract/witforge.toml`:
 
 ```toml
 version = 1
@@ -123,13 +133,13 @@ plain-root = "crate::generated::rust"
 proto-root = "crate::generated::proto"
 ```
 
-Then each generator only needs the project:
+Then each generator only needs the project file:
 
 ```sh
-witforge rust   --config witforge.toml
-witforge proto  --config witforge.toml
-witforge schema --config witforge.toml
-witforge glue   --config witforge.toml
+witforge rust   --config my-contract/witforge.toml
+witforge proto  --config my-contract/witforge.toml
+witforge schema --config my-contract/witforge.toml
+witforge glue   --config my-contract/witforge.toml
 ```
 
 If the file has more than one project, add `--project NAME`. Paths inside the file are relative to
@@ -139,11 +149,12 @@ generated code then requires the consumer's `serde` crate with `derive`.
 
 ## Evolve a contract
 
-Keep every released version in the tree:
+A contract change is a new version directory, never an edit to a released one. Keep every
+released version in the tree:
 
 ```text
-wit/
-  released              # contains v0.1
+my-contract/wit/
+  released              # lists v0.1
   v0.1/
     contract.wit
     wire.lock
@@ -152,46 +163,84 @@ wit/
     wire.lock
 ```
 
-Start the new minor from the previous lockfile:
+When `v0.1` ships, record it as released. `released` lists frozen version directories, one per
+line:
 
 ```sh
-cp wit/v0.1/wire.lock wit/v0.2/wire.lock
-witforge lock  wit/v0.2 --against wit/v0.1/wire.lock
-witforge check wit/v0.2 --against wit/v0.1/wire.lock
+echo v0.1 > my-contract/wit/released
 ```
 
-Add new members with defaultable types when possible:
+Start the next minor as a copy of the previous version, lockfile included. The copied lockfile is
+what carries the field numbers, method ids, and reservations forward; never start a later minor
+with `lock --first`:
+
+```sh
+mkdir my-contract/wit/v0.2
+cp my-contract/wit/v0.1/contract.wit my-contract/wit/v0.1/wire.lock my-contract/wit/v0.2/
+```
+
+Edit `my-contract/wit/v0.2/contract.wit`. Change the package version to `0.2.0` first: until it
+matches the directory name, `lock` and `check` refuse the directory. Then make the change. Add new members
+with defaultable types when possible:
 
 ```wit
-record task {
-    id: u64,
-    title: string,
-    done: bool,
-    priority: option<u8>,   // old values become None
-    tags: list<string>,     // old values become an empty list
+package example:hello@0.2.0;
+
+interface greeter {
+    record greeting {
+        text: string,
+        language: option<string>,   // old values become None
+        tags: list<string>,         // old values become an empty list
+    }
+
+    greet: func(name: string) -> greeting;
+}
+
+world hello {
+    export greeter;
 }
 ```
 
-`witforge rust` emits `convert.rs` with old-to-new and new-to-old adapters. Missing required older
-members are reported as `ConversionError::MissingMember`; added or removed cases are reported as
+Assign numbers to the new members and validate the draft against the released lockfile:
+
+```sh
+witforge lock  my-contract/wit/v0.2 --against my-contract/wit/v0.1/wire.lock
+witforge check my-contract/wit/v0.2 --against my-contract/wit/v0.1/wire.lock
+```
+
+Regenerate. With two versions in the root, `witforge rust` also writes `convert.rs`:
+
+```sh
+witforge rust   --config my-contract/witforge.toml
+witforge proto  --config my-contract/witforge.toml
+witforge schema --config my-contract/witforge.toml
+witforge glue   --config my-contract/witforge.toml
+```
+
+`convert.rs` holds old-to-new and new-to-old adapters. Old-to-new conversion fills an added
+`option` with `None` and an added `list` with an empty list. New-to-old conversion drops members
+the older version does not have. Missing required older members are reported as
+`ConversionError::MissingMember`; added or removed cases are reported as
 `ConversionError::UnknownCase`. A required, non-defaultable addition is refused by conversion
 generation.
 
-`wit/released` lists frozen versions. Do not edit a released version's WIT, lockfile, or generated
-Rust module. The release-freeze check and `--check` enforce that rule.
+Do not edit a released version's WIT, lockfile, or generated Rust module. The release-freeze
+check and `--check` enforce that rule.
 
 ## Review a change
 
 Compare a draft with the previous version before merging it:
 
 ```sh
-witforge diff wit/v0.1 wit/v0.2
-witforge diff wit/v0.1 wit/v0.2 --check
-witforge diff wit/v0.1 wit/v0.2 --json
+witforge diff my-contract/wit/v0.1 my-contract/wit/v0.2
+witforge diff my-contract/wit/v0.1 my-contract/wit/v0.2 --json
+witforge diff my-contract/wit/v0.1 my-contract/wit/v0.2 --check   # exits 1: see below
 ```
 
-`--check` fails on wire-, source-, or generated-API-breaking changes. `--json` is the complete
-diff report. `diff` also reports a note when a shared record type's generated new-to-old converter
+`--check` fails on wire-, source-, or generated-API-breaking changes. It exits 1 for the change
+above: the two added fields keep every wire number and convert from old values, but Rust code
+that constructs a `Greeting` has to be updated, so `diff` reports them as source- and
+API-breaking. `--json` is the complete diff report. `diff` also reports a note when a shared record type's generated new-to-old converter
 is guaranteed to fail because the older version requires a member the newer version removed; the
 notes do not change the change counts or `--check` result. To make any command's diagnostics
 machine-readable, add `--format json` or `--format sarif`; the catalogue is in the

@@ -13,6 +13,8 @@ All notable changes to this project are documented here. The format follows
   informational; compatibility counts and exit codes are unchanged.
 - CI checks generated-output documentation snippets and README/docs/Action current-version
   references.
+- The test suite runs the command sequences of the README, the quickstart, and the evolution
+  guide as written.
 
 ### Changed
 
@@ -29,6 +31,11 @@ All notable changes to this project are documented here. The format follows
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and
   never ran `witforge diff`, and latest-release lookups were anonymous. Workflows pinned to an
   earlier Action release should run `witforge diff … --check` as a separate step.
+- The quickstart's first contract declared an interface and a world with one name, which WIT
+  refuses, so its first command failed. The quickstart, README, and evolution guide now include
+  the steps their evolution sequences omitted: creating the new version directory, copying the
+  WIT, and changing the package version. The evolution guide no longer says that a field of a
+  flags type is defaulted or that new-to-old conversion reports dropped fields.
 - `diff` rejects a reversed old/new argument order and reports a missing `wire.lock` on a direct
   version-directory endpoint with the same actionable guidance as `check`.
 
