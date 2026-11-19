@@ -186,14 +186,22 @@ test('release assets are downloaded without credentials', async () => {
 });
 
 test('requests abort when the timeout expires', async () => {
-  await assert.rejects(
-    request('https://example.test/slow', '', {
-      timeoutMs: 10,
-      fetch: (_url, init) =>
-        new Promise((_resolve, reject) => {
-          init.signal.addEventListener('abort', () => reject(new Error('request aborted')));
-        }),
-    }),
-    /timed out after 10ms/,
-  );
+  // A real request holds a socket open until the signal aborts it. This fetch holds nothing, and
+  // before Node 24 the timer behind AbortSignal.timeout() does not keep the event loop alive on
+  // its own, so the runner would see the loop drain and cancel the test.
+  const keepAlive = setTimeout(() => {}, 10_000);
+  try {
+    await assert.rejects(
+      request('https://example.test/slow', '', {
+        timeoutMs: 10,
+        fetch: (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new Error('request aborted')));
+          }),
+      }),
+      /timed out after 10ms/,
+    );
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
