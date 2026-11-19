@@ -9,15 +9,16 @@
 # Usage: [WITFORGE=path/to/candidate] [BASE_WITFORGE=path/to/historical]
 #        [BUF=path/to/buf] ci/check-buf.sh [WIT_ROOT] [BASE]
 #   WIT_ROOT  WIT root relative to the repository root (default: the versions fixture)
-#   BASE      released tag to compare against (default: the newest release tag in HEAD's
-#             history)
+#   BASE      released tag to compare against (default: the newest `vX.Y.Z` tag in HEAD's
+#             history that does not point at HEAD, because a tag at HEAD is the release being
+#             made and has no published binary yet)
 #
 # ci/check-buf-history.sh runs this for every fixture root against every published release.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WIT_ROOT="${1:-crates/witforge/tests/fixtures/versions/wit}"
-BASE="${2:-$(git -C "${ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*')}"
+BASE="${2:-}"
 BUF="${BUF:-buf}"
 
 if ! command -v "${BUF}" >/dev/null 2>&1; then
@@ -30,6 +31,19 @@ if ! command -v "${BUF}" >/dev/null 2>&1; then
 fi
 
 cd "${ROOT}"
+if [[ -z "${BASE}" ]]; then
+    head="$(git rev-parse HEAD)"
+    while IFS= read -r tag; do
+        [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+        [[ "$(git rev-parse --verify "${tag}^{commit}")" != "${head}" ]] || continue
+        BASE="${tag}"
+        break
+    done <<<"$(git tag --list 'v*' --sort=-v:refname --merged HEAD)"
+    if [[ -z "${BASE}" ]]; then
+        echo "no published release tag in HEAD's history; fetch the tags (git fetch --tags) or name BASE" >&2
+        exit 1
+    fi
+fi
 base_commit="$(git rev-parse --verify "${BASE}^{commit}")"
 scratch="${TMPDIR:-${HOME}/.tmp}"
 mkdir -p "${scratch}"
