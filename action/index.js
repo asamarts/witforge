@@ -11,9 +11,31 @@ const REPOSITORY = 'asamarts/witforge';
 const GENERATORS = new Set(['rust', 'proto', 'schema', 'glue']);
 const REQUEST_TIMEOUT_MS = 30_000;
 
-function input(name) {
-  const key = `INPUT_${name.replaceAll('-', '_').toUpperCase()}`;
-  return (process.env[key] || '').trim();
+// The runner exports each input as `INPUT_<NAME>`: the name upper-cased, with spaces replaced
+// by underscores. A hyphen stays a hyphen, so `diff-old` arrives as `INPUT_DIFF-OLD`. This is
+// the rule `getInput` in @actions/core applies.
+function input(name, env = process.env) {
+  const key = `INPUT_${name.replace(/ /g, '_').toUpperCase()}`;
+  return (env[key] || '').trim();
+}
+
+// Every input `action.yml` declares, read from the runner's environment.
+function readInputs(env = process.env) {
+  return {
+    install: {
+      version: input('version', env),
+      token: input('github-token', env),
+    },
+    commands: {
+      check: input('check', env),
+      diffOld: input('diff-old', env),
+      diffNew: input('diff-new', env),
+      diffCheck: input('diff-check', env),
+      config: input('config', env),
+      project: input('project', env),
+      generators: input('generators', env),
+    },
+  };
 }
 
 function normalizeVersion(value) {
@@ -136,13 +158,11 @@ async function latestVersion(token) {
   return tag.startsWith('v') ? tag.slice(1) : tag;
 }
 
-async function download(url, destination, token) {
-  const response = await request(url, token);
+// Release assets are public and are fetched without credentials: `github-token` is for the
+// rate limit of the latest-release API query and is not sent to the download host.
+async function download(url, destination, options = {}) {
+  const response = await request(url, '', options);
   fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
-}
-
-async function downloadText(url, token) {
-  return (await request(url, token)).text();
 }
 
 async function install(options) {
@@ -157,8 +177,8 @@ async function install(options) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'witforge-action-'));
   const archive = path.join(temporary, asset);
   const checksumFile = `${archive}.sha256`;
-  await download(`${base}/${asset}`, archive, options.token);
-  await download(`${base}/${asset}.sha256`, checksumFile, options.token);
+  await download(`${base}/${asset}`, archive);
+  await download(`${base}/${asset}.sha256`, checksumFile);
   const expected = parseChecksum(fs.readFileSync(checksumFile, 'utf8'));
   const actual = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
   if (actual !== expected) {
@@ -178,19 +198,9 @@ async function install(options) {
 }
 
 async function main() {
-  const binary = await install({
-    version: input('version'),
-    token: input('github-token'),
-  });
-  const commands = buildCommands(binary, {
-    check: input('check'),
-    diffOld: input('diff-old'),
-    diffNew: input('diff-new'),
-    diffCheck: input('diff-check'),
-    config: input('config'),
-    project: input('project'),
-    generators: input('generators'),
-  });
+  const inputs = readInputs();
+  const binary = await install(inputs.install);
+  const commands = buildCommands(binary, inputs.commands);
   for (const command of commands) {
     console.log(`> ${command.join(' ')}`);
     execFileSync(command[0], command.slice(1), { stdio: 'inherit' });
@@ -202,8 +212,11 @@ module.exports = {
   archiveName,
   assetTarget,
   buildCommands,
+  download,
+  input,
   normalizeVersion,
   parseChecksum,
+  readInputs,
   request,
   resolveVersion,
   splitLines,

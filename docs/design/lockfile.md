@@ -41,7 +41,8 @@ frozen as a whole, which covers the remaining source-level cases.
 - A directory listed in `wit/released` MUST NOT contain a symlink in any file or subdirectory.
   The released-manifest loader and every command that reads it refuse one with exit `2`: a
   symlinked `contract.wit`, `wire.lock`, or `deps/` entry could change outside the manifest's
-  view. The freeze script independently checks the tracked history and working tree.
+  view. The freeze script independently checks the tracked history and working tree. This rule
+  is not in 0.5.0, which refuses only a listed directory that is itself a symlink.
 - Each version directory has its own `wire.lock`.
 - Rust module: `v<major>_<minor>`.
 - Protobuf package/file: `v<major>` and `v<major>.proto`.
@@ -59,10 +60,11 @@ frozen as a whole, which covers the remaining source-level cases.
   directory (the parent of the canonicalised directory, so `.` and a symlinked WIT root find
   their real parent's manifest) and `<wit-root>/released` for generation. A missing default
   manifest means no version is treated as released. An explicitly supplied missing manifest is an
-  error. Every command (`check`, `lock`, `rust`, `proto`, and `glue`) validates the manifest it
-  uses and fails with exit `2` if it is missing when given explicitly or is malformed; only
-  `lock` acts on its contents, and for `lock` an explicit manifest is read in addition to the
-  defaults, never instead of them.
+  error. Every command that takes `--released` (`check`, `lock`, `rust`, `proto`, `schema`, and
+  `glue`) validates the manifest it uses and fails with exit `2` if it is missing when given
+  explicitly or is malformed; only `lock` acts on its contents, and for `lock` an explicit
+  manifest is read in addition to the defaults, never instead of them. `diff` does not take
+  `--released` and does not read the manifest.
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
@@ -98,12 +100,14 @@ frozen as a whole, which covers the remaining source-level cases.
   apply, whatever `--released` names, so neither a lockfile in another WIT root, nor one in a
   subdirectory of a released directory (`--lock other/v0.1/sub/wire.lock`), nor an explicit
   manifest that omits the directory gets past the manifest that lists it. `check`, `rust`,
-  `proto`, and `glue` are allowed; they verify or reproduce the frozen contract. For a released
+  `proto`, `schema`, `glue`, and `diff` are allowed; they verify, reproduce, or compare the
+  frozen contract. For a released
   version, `check` advises restoring the released WIT and lockfile rather than naming a `lock`
   command that `lock` refuses.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the
   previous minor's `wire.lock` and is then developed with `lock --against`.
-- The generators (`rust`, `proto`, and `glue`) enforce that continuity across a WIT root: within
+- The generators (`rust`, `proto`, `schema`, and `glue`) enforce that continuity across a WIT
+  root: within
   each major, every minor's `wire.lock` must keep every entry of the previous minor's lockfile
   with the same number, kind, and canonical type, and must keep reserved entries reserved (rule
   1 of `check --against`, section 8). A lockfile that does not continue its predecessor fails
@@ -531,7 +535,7 @@ without adding a field to every entry:
 
 - `<parent>` is a lockfile parent: a type (`namespace:package/interface/type`), an interface's
   functions (`namespace:package/interface`), or a function's parameters
-  (`namespace:package/interface#function`), exactly as in section 5. The interface parent
+  (`namespace:package/interface#function`), exactly as in section 3. The interface parent
   fingerprints function declaration order; the function parent fingerprints parameter order.
 - Members are the live member names of that parent in declaration order, separated by spaces.
   Reserved members are absent.

@@ -101,13 +101,40 @@ jobs:
       - run: bash ci/test-release-version.sh
       - run: node --test action/test.js
       # Execute the checked-out action through GitHub's JavaScript-action runtime. Unit tests
-      # call index.js directly and therefore cannot catch a retired `runs.using` value.
+      # call index.js directly and therefore cannot catch a retired `runs.using` value or an
+      # input the runner exports under another name than the action reads. The fixture pair has
+      # breaking changes: the first step reports them (`diff-check: false`), the second must
+      # fail on them, so together they prove `diff-old`, `diff-new`, and `diff-check` arrive.
+      # The second step's outcome cannot tell a failed gate from a failed install. The first
+      # step has just installed the same release on this runner, so an input regression, which
+      # fails every run, is not hidden by a transient download failure in one of them. `W10-086`
+      # replaces this with an assertion on the command that failed.
       - name: Smoke the local Action
         uses: ./
         with:
           version: 0.5.0
           check: crates/witforge/tests/fixtures/versions/wit/v0.2
+          diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
+          diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
+          diff-check: "false"
           github-token: ${{ github.token }}
+      - name: Run the local Action's diff gate on a breaking change (expected to fail)
+        id: diff-gate
+        continue-on-error: true
+        uses: ./
+        with:
+          version: 0.5.0
+          diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
+          diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
+          github-token: ${{ github.token }}
+      - name: Require the diff gate to have failed
+        env:
+          OUTCOME: ${{ steps.diff-gate.outcome }}
+        run: |
+          if [ "$OUTCOME" != failure ]; then
+            echo "::error::the Action's diff gate passed a breaking change (outcome: $OUTCOME)"
+            exit 1
+          fi
 
   published-action:
     name: published Action (${{ matrix.runner }})
@@ -205,9 +232,12 @@ jobs:
         with:
           toolchain: stable
       - run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # Override the inferred 1.0 major release type: the declared 1.0 policy preserves the
-      # reviewed 0.4.1 library surface rather than permitting a last-minute breaking change.
-      - run: cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type minor
+      # Override the inferred release type: the declared 1.0 policy preserves the released
+      # library surface rather than permitting a last-minute breaking change. No baseline is
+      # named, so cargo-semver-checks compares with the newest release on crates.io that is not
+      # newer than the workspace version; a named baseline has to be advanced by hand and was
+      # still 0.4.1 when 0.5.0 shipped.
+      - run: cargo semver-checks check-release -p witforge --release-type minor
 
   benchmark:
     name: benchmark budget
@@ -325,13 +355,8 @@ jobs:
           BUF: ${{ runner.temp }}/buf
           BUF_REQUIRED: "1"
           WITFORGE_BASE_CACHE: ${{ runner.temp }}/witforge-baselines
-        run: |
-          for release in v0.1.2 v0.2.0 v0.3.0 v0.4.1; do
-            ci/check-buf.sh crates/witforge/tests/fixtures/versions/wit "$release"
-          done
-          for fixture in deps deps-full deps-world deps-convert deps-unsupported; do
-            ci/check-buf.sh "crates/witforge/tests/fixtures/${fixture}/wit" v0.4.1
-          done
+        # Every fixture WIT root against every published release tag.
+        run: ci/check-buf-history.sh
 
   # The one check branch protection requires: every job above passed, or, for the optional buf
   # job only, was skipped. Requiring this instead of each job keeps the rule valid when a job is

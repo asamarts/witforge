@@ -1,0 +1,8 @@
+# Releases that ci/check-buf-history.sh does not compare, one per line:
+#
+#   vX.Y.Z reason
+#
+# List a release only when `cargo install witforge-cli --version X.Y.Z` cannot succeed: the
+# version was yanked, or the tag exists and the crate was never published. The reason is printed
+# on every run. A release that installs stays in the comparison, whatever its defects: the gate
+# compares protobuf output with what consumers of that release generated.

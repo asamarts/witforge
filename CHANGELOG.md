@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Everything in this section is on `main` and in no release: 0.5.0 and the `v0.5.0` Action do not
+have it.
+
 ### Added
 
 - `diff` reports a non-defaulted required record field addition as a conversion-generation
@@ -13,6 +16,8 @@ All notable changes to this project are documented here. The format follows
   informational; compatibility counts and exit codes are unchanged.
 - CI checks generated-output documentation snippets and README/docs/Action current-version
   references.
+- The test suite runs the command sequences of the README, the quickstart, and the evolution
+  guide as written, and `cargo test` runs the release-script cases and the Action's unit tests.
 
 ### Changed
 
@@ -21,9 +26,38 @@ All notable changes to this project are documented here. The format follows
   inconsistent public model instead of panicking.
 - Emitter naming and type-rendering helpers now share one implementation; generated output is
   unchanged.
+- Generation replaces each generated file atomically: it writes a temporary file beside the
+  target and renames it into place, and it removes stale generated files only after every
+  expected file has been written. A failed or interrupted run no longer leaves a truncated
+  generated file.
+- Every command that reads `wit/released` refuses a symlink anywhere inside a listed version
+  directory (a symlinked `contract.wit`, `wire.lock`, or `deps/` entry) with exit `2`. Releases
+  through 0.5.0 refused only a listed directory that was itself a symlink.
+- The GitHub Action aborts every GitHub API and release-asset request after 30 seconds, so a
+  stalled network fails the step instead of waiting for the job timeout.
+- The release gates compare the library API with the newest published release and the protobuf
+  output of every fixture with every published release. Both gates previously named 0.4.1.
+- The JSON Schema test dependency moved to `jsonschema` 0.61, and the locked version of the
+  CLI's `toml` dependency moved to 1.2.1; both are internal dependency updates with no runtime
+  API change.
 
 ### Fixed
 
+- The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
+  release through v0.5.0 looked them up under the wrong environment names and treated them as
+  empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and
+  never ran `witforge diff`, and latest-release lookups were anonymous. Workflows pinned to an
+  earlier Action release should run `witforge diff` as a separate step. A workflow that already
+  passes `diff-old` and `diff-new` starts running `witforge diff … --check` when its pin moves
+  to the release with this fix, and then fails on any wire-, source-, or generated-API-breaking
+  change, which includes an added record field; set `diff-check: "false"` to print the diff
+  without failing. The token is sent only to the latest-release query, not with the asset
+  downloads.
+- The quickstart's first contract declared an interface and a world with one name, which WIT
+  refuses, so its first command failed. The quickstart, README, and evolution guide now include
+  the steps their evolution sequences omitted: creating the new version directory, copying the
+  WIT, and changing the package version. The evolution guide no longer says that a field of a
+  flags type is defaulted or that new-to-old conversion reports dropped fields.
 - `diff` rejects a reversed old/new argument order and reports a missing `wire.lock` on a direct
   version-directory endpoint with the same actionable guidance as `check`.
 

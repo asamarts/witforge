@@ -53,7 +53,7 @@ witforge glue --config witforge.toml
 
 ## Output ownership
 
-Each emitter needs its own output directory. witforge only overwrites or removes files with that emitter's generated header. It refuses symlinks, directories, and unowned files at expected output paths.
+Each emitter needs its own output directory. witforge only overwrites or removes files that start with its generated header, and the Rust, protobuf, and glue emitters write the same header: in a shared directory each removes the others' files as stale output. It refuses symlinks, directories, and unowned files at expected output paths.
 
 Every generator supports `--check`, which writes nothing and fails on missing, changed, or extra generated files.
 

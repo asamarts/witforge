@@ -16,6 +16,7 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 | `fixtures/emit/rust/all/contract.wit` | every Rust mapping row, including nested wrappers, aliases, named structural types, and a function with every parameter shape |
 | `fixtures/emit/proto/mapping/contract.wit` | every protobuf mapping row, wrappers, oneofs, method ids, and reserved members |
 | `fixtures/emit/glue/contract/contract.wit` | every glue type, request/response helper, presence rule, closed enum, and round-trip case |
+| `fixtures/emit/json/all.schema.json` | every JSON Schema mapping row: the golden Draft 7 output for `fixtures/emit/rust/all/contract.wit`, whose definitions `tests/emit_json_schema.rs` also compiles and validates instances against |
 
 ## Version and evolution surface
 
@@ -38,8 +39,7 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 - Generated output is checked by `ci/check-generated.sh`, and release directories by
   `ci/check-release-freeze.sh`.
 - CI runs the suite on Linux, macOS, and Windows; MSRV is tested at 1.88.
-- The 1.0 compatibility gate runs `ci/check-buf.sh` with buf 1.74 against the released
-  generators (v0.1.2, v0.2.0, v0.3.0, v0.4.1) for the versions fixture and against v0.4.1 for
-  every dependency fixture. The historical release binary generates the old side; the candidate
-  binary generates the new side. CI exposes the check through workflow dispatch, and the tag
-  release workflow runs it before publication.
+- The 1.0 compatibility gate runs `ci/check-buf-history.sh` with buf 1.74: every fixture WIT
+  root against every released generator at which the fixture exists. The historical release
+  binary generates the old side; the candidate binary generates the new side. CI exposes the
+  check through workflow dispatch, and the tag release workflow runs it before publication.

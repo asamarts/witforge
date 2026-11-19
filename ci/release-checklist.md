@@ -100,11 +100,20 @@ explicit release-owner action.
       changes for a contract the previous release accepts (`git diff vPREV -- crates/*/tests`
       shows any changed golden output); consumers such as alint pin a release and regenerate
       when they move the pin.
+- [ ] Move the current-version references in `README.md` and `docs/` to X.Y.Z
+      (`ci/check-version-references.sh` names each one and fails on a stale one). Leave
+      `.github/workflows/ci.yml` on the previous release: its `asamarts/witforge@v…` reference
+      and Action `version` inputs install a published release, and no `vX.Y.Z` tag or asset
+      exists before the release workflow has run. The check accepts the workspace version or
+      the release before it there, and requires one release throughout the file. It stops
+      accepting the release before it once `vX.Y.Z` is tagged on an earlier commit, which is
+      what makes the last step of this list mandatory.
 - [ ] Run the gates of [Before publishing](#before-publishing), then
-      `cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type
-      minor`, `ci/check-release.sh`, `ci/publish.sh --dry-run`, the historical-generator
-      `ci/check-buf.sh` loops in [`release-1.0.md`](../docs/design/release-1.0.md), and the aplan
-      commands (also in CI).
+      `cargo semver-checks check-release -p witforge --release-type minor`,
+      `ci/check-release.sh`, `ci/publish.sh --dry-run`, `BUF_REQUIRED=1 ci/check-buf-history.sh`,
+      and the aplan commands (also in CI). Neither compatibility gate names a baseline: the
+      semver check compares with the newest published release, and the protobuf check walks
+      every release tag, so there is nothing to advance after a release.
 - [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass. Record the commit SHA
       and job URL; `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push
       --status success` must identify that run.
@@ -120,8 +129,11 @@ explicit release-owner action.
       the GitHub release exists, and docs.rs built the library.
 - [ ] Record the release commit, its exact-commit `ci ok` URL, and the release run URL under the
       changelog section.
-- [ ] Update CI's pinned published-Action ref and `version` to `vX.Y.Z`, push the release record,
-      and require all four hosted target jobs to pass.
+- [ ] Update CI's pinned published-Action ref and every Action `version` input in
+      `.github/workflows/ci.yml` to X.Y.Z in one commit, push the release record, and require
+      all four hosted target jobs to pass. Do this directly after publishing: from the first
+      commit after the tag, `ci/check-release.sh` fails while `ci.yml` still names the
+      previous release.
 
 A new crate in the workspace needs its first version published by hand, as for 0.1.0 above. If
 trusted publishing itself fails (for example a changed workflow or environment name that no
@@ -162,6 +174,9 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
       installed binary passed the single-version and evolved-version example checks.
 - [x] crates.io lists both crates at 0.3.0, docs.rs built the library, and the published Action
       installed the 0.3.0 Linux asset and ran `check`, `diff`, and a configured `rust --check`.
+      Correction, 2026-11-18: the Action cannot have run `diff` from its inputs. Through v0.5.0 it
+      read `diff-old` and `diff-new` under the wrong environment names and planned no `diff`
+      command, and no workflow in this repository passed those inputs before `W10-039`.
 
 ## 0.4.0 record
 

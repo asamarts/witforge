@@ -43,7 +43,7 @@ inputs:
     required: false
     default: 'rust'
   github-token:
-    description: Token used to query the latest release; pass the workflow token for rate limits.
+    description: Token used only to query the latest release; pass the workflow token for rate limits. Release assets are downloaded without it.
     required: false
     default: ''
 runs:

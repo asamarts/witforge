@@ -164,10 +164,13 @@ For configuration, dependencies, evolution, and complete command sequences, cont
 
 ## Evolve a contract
 
-Keep each contract version in its own directory. Start a new minor from the previous lockfile:
+Keep each contract version in its own directory. Start a new minor as a copy of the previous
+version, lockfile included:
 
 ```sh
-cp wit/v0.1/wire.lock wit/v0.2/wire.lock
+mkdir wit/v0.2
+cp wit/v0.1/contract.wit wit/v0.1/wire.lock wit/v0.2/
+# Edit wit/v0.2/contract.wit: set the package version to 0.2.0, then change the contract.
 witforge lock wit/v0.2 --against wit/v0.1/wire.lock
 witforge check wit/v0.2 --against wit/v0.1/wire.lock
 witforge diff wit/v0.1 wit/v0.2
@@ -188,14 +191,17 @@ Pin the Action to the same release used locally:
 - uses: asamarts/witforge@v0.5.0
   with:
     check: wit/v0.2
-    diff-old: wit/v0.1
-    diff-new: wit/v0.2
     config: witforge.toml
     generators: rust,proto,schema,glue
+- run: witforge diff wit/v0.1 wit/v0.2
 ```
 
-The Action downloads the matching checksum-verified release binary and runs configured generators
-with `--check`. See the [CI guide](https://asamarts.github.io/witforge/guide/ci.html).
+The Action downloads the matching checksum-verified release binary, leaves `witforge` on `PATH`,
+and runs the configured generators with `--check`. The second step prints the contract diff. Add
+`--check` to it to fail the job on a wire-, source-, or generated-API-breaking change, which
+includes an added record field. The Action also has `diff-old`, `diff-new`, and `diff-check`
+inputs; releases up to v0.5.0 ignore them. See the
+[CI guide](https://asamarts.github.io/witforge/guide/ci.html).
 
 ## Important JSON boundary
 

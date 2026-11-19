@@ -2,18 +2,32 @@
 
 witforge is a WIT-first contract compiler. The hand-written WIT package is the
 source of truth for a contract; witforge checks it, locks its wire numbers, and
-generates plain Rust types/traits, a protobuf schema, and protobuf glue.
+generates plain Rust types/traits and version adapters, a protobuf schema,
+JSON Schema, and protobuf glue.
 
 ## Current state
 
-- The 0.1 line is implemented and published (the latest release is the top
-  dated section of [`CHANGELOG.md`](CHANGELOG.md)): package loading, the
-  restricted-subset checker, the append-only lockfile (v2), the Rust, protobuf,
-  and glue emitters, and the `witforge check`, `lock`, `rust`, `proto`, and
-  `glue` commands.
+- The latest release is the top dated section of [`CHANGELOG.md`](CHANGELOG.md).
+  `main` can be ahead of it: the `[Unreleased]` section lists what no release
+  has yet.
+- Implemented: package loading with standard `deps/` dependencies, the
+  restricted-subset checker, the append-only lockfile (v2, with
+  declaration-order fingerprints), the Rust emitter (opt-in Serde derives,
+  `convert.rs` version adapters, `worlds.rs`), the protobuf, JSON Schema, and
+  glue emitters, contract `diff`, structured diagnostics
+  (`--format human|json|sarif`), `witforge.toml` projects, and the GitHub
+  Action.
+- The commands are `witforge check`, `lock`, `rust`, `proto`, `schema`, `glue`,
+  and `diff`.
 - The normative specifications are [`docs/design/model.md`](docs/design/model.md),
   [`docs/design/lockfile.md`](docs/design/lockfile.md), and
-  [`docs/design/emitters.md`](docs/design/emitters.md).
+  [`docs/design/emitters.md`](docs/design/emitters.md) (Rust, protobuf, glue,
+  conversions, JSON Schema, and `witforge.toml`). `diff`, diagnostics,
+  dependencies, and the Action are specified in
+  [`docs/design/diff.md`](docs/design/diff.md),
+  [`docs/design/diagnostics.md`](docs/design/diagnostics.md),
+  [`docs/design/dependencies.md`](docs/design/dependencies.md), and
+  [`docs/design/action.md`](docs/design/action.md).
 - The narrative sequence is [`ROADMAP.md`](ROADMAP.md).
 - The 1.0 public API policy is [`docs/design/public-api.md`](docs/design/public-api.md), the
   conformance matrix is [`docs/design/conformance.md`](docs/design/conformance.md), and the 1.0
@@ -70,13 +84,17 @@ it is reproducible and general. Do not modify the aplan checkout under
 ## Build and test
 
 ```sh
+mkdir -p "$HOME/.tmp"
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --locked
+TMPDIR="$HOME/.tmp" cargo test --workspace --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
-cargo +1.88 test --workspace --locked          # MSRV
+TMPDIR="$HOME/.tmp" cargo +1.88 test --workspace --locked   # MSRV
 ```
 
+- The tests create their scratch directories under `std::env::temp_dir()`, which
+  is `/tmp` unless `TMPDIR` says otherwise. Set `TMPDIR` as above for every test
+  run on this host.
 - Do not change cargo configuration, parallelism, or host-wide settings to make a
   build pass.
 - Put scratch worktrees, target dirs, and large downloads under `~/.tmp`, not

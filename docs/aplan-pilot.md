@@ -71,6 +71,23 @@ Still open:
 2. **Generated agent block.** `aplan export-agents-md --write` writes a second
    copy of the policy by design. Keep the hand-written project instructions
    outside the generated markers, and gate the block with `--check`.
+3. **Evidence for work that a non-Cargo suite tests** (2026-11-19). `W10-040` changed shell
+   scripts whose cases are in `ci/test-release-version.sh`, and `W10-039` changed the Action,
+   whose cases are in `action/test.js`. Both runners in `.aplan.yml` are `cargo test` runners,
+   so neither suite has a name that `aplan close --evidence test:…` can resolve, and both tasks
+   were first tagged `untestable`, which their bodies could not justify: reverting the work
+   fails those suites.
+   - Command: `aplan amend W10-040 --add-evidence
+     test:release_version_reference_script_passes_its_cases`, after wrapping the script in a
+     cargo test (`crates/witforge-cli/tests/tooling.rs`).
+   - Expected: accepted, since the `witforge-cli` runner lists the test.
+   - Actual: refused with `APLAN025`, because the runner covers `crates/witforge-cli/**` and
+     the task's `paths` named only `ci/` files. Adding the wrapper file to the task's `paths`
+     made it pass.
+   - Impact: the rule is right (the wrapper is part of the proof), but the route is indirect:
+     one wrapper test per suite, and every task that cites it lists the wrapper in `paths`.
+     A runner kind that lists and runs a shell or `node --test` suite would remove the
+     wrapper. Not reported upstream yet: one occurrence, and the workaround is small.
 
 ## Adversarial audit of the first plan
 
