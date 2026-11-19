@@ -237,6 +237,18 @@ fn byte_list_alias_spellings_have_one_schema() {
 }
 
 #[test]
+fn dependency_byte_list_alias_schema_uses_integer_items() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-bytes/wit");
+    let files = json_schema::plan(&root).unwrap();
+    let schema: Value =
+        serde_json::from_str(&files.files()["example.shared.v0.schema.json"]).unwrap();
+    let items = &schema["definitions"]["types/dep-bytes"]["items"];
+    assert_eq!(items["type"], "integer");
+    assert_eq!(items["minimum"], 0);
+    assert_eq!(items["maximum"], 255);
+}
+
+#[test]
 fn a_trailing_space_or_crlf_is_not_canonical() {
     let root = fixture("versions/convert");
     let out = temp("canonical").join("out");
