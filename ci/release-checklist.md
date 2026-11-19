@@ -100,6 +100,12 @@ explicit release-owner action.
       changes for a contract the previous release accepts (`git diff vPREV -- crates/*/tests`
       shows any changed golden output); consumers such as alint pin a release and regenerate
       when they move the pin.
+- [ ] Move the current-version references in `README.md` and `docs/` to X.Y.Z
+      (`ci/check-version-references.sh` names each one and fails on a stale one). Leave
+      `.github/workflows/ci.yml` on the previous release: its `asamarts/witforge@v…` reference
+      and Action `version` inputs install a published release, and no `vX.Y.Z` tag or asset
+      exists before the release workflow has run. The check accepts the workspace version or
+      the release before it there, and requires one release throughout the file.
 - [ ] Run the gates of [Before publishing](#before-publishing), then
       `cargo semver-checks check-release -p witforge --baseline-version 0.4.1 --release-type
       minor`, `ci/check-release.sh`, `ci/publish.sh --dry-run`, the historical-generator
@@ -120,8 +126,9 @@ explicit release-owner action.
       the GitHub release exists, and docs.rs built the library.
 - [ ] Record the release commit, its exact-commit `ci ok` URL, and the release run URL under the
       changelog section.
-- [ ] Update CI's pinned published-Action ref and `version` to `vX.Y.Z`, push the release record,
-      and require all four hosted target jobs to pass.
+- [ ] Update CI's pinned published-Action ref and every Action `version` input in
+      `.github/workflows/ci.yml` to X.Y.Z in one commit, push the release record, and require
+      all four hosted target jobs to pass.
 
 A new crate in the workspace needs its first version published by hand, as for 0.1.0 above. If
 trusted publishing itself fails (for example a changed workflow or environment name that no

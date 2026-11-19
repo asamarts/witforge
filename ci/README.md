@@ -49,7 +49,10 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`. It also runs
   `ci/test-release-asset.sh` for release archive/checksum generation,
   `ci/test-release-version.sh` for current-version reference checking, and `node --test
-  action/test.js` for the Action's asset selection and command plan.
+  action/test.js` for the Action's inputs, asset selection, and command plan. The reference
+  check requires documentation to name the workspace version; `ci.yml` itself may name that
+  version or the release before it, so that the commit preparing a release still runs a
+  published Action and binary.
 - **published Action**: invokes the pinned remote release ref on Linux x86_64, macOS arm64,
   macOS Intel, and Windows x86_64. Each job downloads its platform archive, verifies its checksum,
   extracts it, adds it to `PATH`, and runs a real contract check. The workflows job separately

@@ -1,24 +1,44 @@
 #!/usr/bin/env bash
-# Check that current-release references in documentation and the Action agree with a version.
+# Check that current-release references in documentation and CI agree with a version.
 #
-# Usage: ci/check-version-references.sh [ROOT] [VERSION]
+# Usage: ci/check-version-references.sh ROOT VERSION
+#
+# Documentation names VERSION, the workspace version: it is written with the release it
+# describes. CI's Action references are different, because CI executes them: they install a
+# published release, and on the commit that prepares VERSION no `vVERSION` tag or asset exists
+# yet. `.github/workflows/ci.yml` may therefore name VERSION or the release before it (the next
+# dated heading in ROOT/CHANGELOG.md), and must name one release throughout. The release
+# checklist moves it to VERSION once VERSION is published.
 #
 # The checker deliberately names the current-version patterns instead of scanning every
 # occurrence of a version string: historical design notes, the changelog, and release records
 # legitimately mention older releases.
 set -euo pipefail
 
-ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-VERSION="${2:-}"
-
 fail() {
     echo "version reference check: $*" >&2
     exit 1
 }
 
-[[ -n "${VERSION}" ]] || fail "missing expected version"
+[[ $# -eq 2 ]] || fail "usage: ci/check-version-references.sh ROOT VERSION"
+ROOT="$1"
+VERSION="$2"
 [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid expected version: ${VERSION}"
 cd "${ROOT}"
+
+# The release before VERSION: the first dated changelog heading after VERSION's own. Empty when
+# VERSION has no dated heading or is the first release, and then only VERSION is accepted.
+PREVIOUS=""
+if [[ -f CHANGELOG.md ]]; then
+    PREVIOUS="$(awk -v version="${VERSION}" '
+        /^## \[[0-9]+\.[0-9]+\.[0-9]+\] - / {
+            heading = $2
+            sub(/^\[/, "", heading)
+            sub(/\]$/, "", heading)
+            if (seen) { print heading; exit }
+            if (heading == version) seen = 1
+        }' CHANGELOG.md)"
+fi
 
 check_pattern() {
     local file="$1"
@@ -41,6 +61,35 @@ check_pattern() {
     [[ "${found}" -eq 1 ]] || fail "${file}: no ${label} found"
 }
 
+# Like check_pattern, for a workflow that runs a published release: every match must name
+# VERSION or PREVIOUS, and all matches of all patterns in the file must name the same release.
+WORKFLOW_RELEASE=""
+check_workflow_pattern() {
+    local file="$1"
+    local regex="$2"
+    local label="$3"
+    local found=0
+    local number=0
+    local line
+    local expected="${VERSION}"
+    [[ -z "${PREVIOUS}" ]] || expected="${VERSION} or the previous release ${PREVIOUS}"
+    [[ -f "${file}" ]] || fail "missing ${file}"
+
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        number=$((number + 1))
+        if [[ "${line}" =~ ${regex} ]]; then
+            found=1
+            local value="${BASH_REMATCH[1]}"
+            [[ "${value}" == "${VERSION}" || ( -n "${PREVIOUS}" && "${value}" == "${PREVIOUS}" ) ]] \
+                || fail "${file}:${number}: ${label} names ${value}; expected ${expected}"
+            [[ -z "${WORKFLOW_RELEASE}" || "${value}" == "${WORKFLOW_RELEASE}" ]] \
+                || fail "${file}:${number}: ${label} names ${value}, but the file also names ${WORKFLOW_RELEASE}; use one release"
+            WORKFLOW_RELEASE="${value}"
+        fi
+    done <"${file}"
+    [[ "${found}" -eq 1 ]] || fail "${file}: no ${label} found"
+}
+
 current_release='Current release: \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*'
 install_version='cargo install witforge-cli --version ([0-9]+\.[0-9]+\.[0-9]+)'
 action_ref='asamarts/witforge@v([0-9]+\.[0-9]+\.[0-9]+)'
@@ -58,7 +107,11 @@ check_pattern docs/design/action.md "${action_ref}" "Action reference"
 check_pattern docs/design/action.md "${action_comment}" "Action reference comment"
 check_pattern docs/design/action.md "${action_version}" "Action version example"
 check_pattern docs/design/action.md "${action_input}" "Action input example"
-check_pattern .github/workflows/ci.yml "${action_ref}" "Action reference"
-check_pattern .github/workflows/ci.yml "${action_input}" "Action input"
+check_workflow_pattern .github/workflows/ci.yml "${action_ref}" "Action reference"
+check_workflow_pattern .github/workflows/ci.yml "${action_input}" "Action input"
 
-echo "version references match ${VERSION}"
+if [[ "${WORKFLOW_RELEASE}" == "${VERSION}" ]]; then
+    echo "version references match ${VERSION}"
+else
+    echo "version references match ${VERSION}; CI runs the published ${WORKFLOW_RELEASE} Action"
+fi
