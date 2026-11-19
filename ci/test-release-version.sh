@@ -145,10 +145,38 @@ fi
 reset_case
 previous_workflow
 sed '/^## \[9\.9\.9\]/,/^- Current\./d' "${base}/CHANGELOG.md" >"${tmp}/case/CHANGELOG.md"
-if bash "${SCRIPT}" "${tmp}/case" 9.9.9 >/dev/null 2>&1; then
+if report="$(bash "${SCRIPT}" "${tmp}/case" 9.9.9 2>&1)"; then
     echo "version reference check accepted an older workflow release for an undated version" >&2
     exit 1
 fi
+# The message must not send the reader to pin CI to the unpublished version.
+[[ "${report}" == *"no dated section for 9.9.9"* ]] \
+    || { echo "an undated version was not reported as such: ${report}" >&2; exit 1; }
+
+# Once the version's tag is on an earlier commit, the release is published and the workflow
+# must run it. Without the tag, and with the tag at HEAD (the release being made), the previous
+# release is still accepted.
+scratch_git() {
+    git -C "${tmp}/case" -c user.name=test -c user.email=test@example.invalid \
+        -c commit.gpgsign=false -c tag.gpgsign=false "$@"
+}
+reset_case
+previous_workflow
+scratch_git init --quiet
+scratch_git add --all
+scratch_git commit --quiet --message "prepare 9.9.9"
+expect_pass
+scratch_git tag v9.9.9
+expect_pass
+scratch_git commit --quiet --allow-empty --message "after the release"
+if report="$(bash "${SCRIPT}" "${tmp}/case" 9.9.9 2>&1)"; then
+    echo "version reference check accepted the previous release in CI after 9.9.9 was tagged" >&2
+    exit 1
+fi
+[[ "${report}" == *"v9.9.9 is published"* ]] \
+    || { echo "a stale CI pin was not reported as such: ${report}" >&2; exit 1; }
+cp "${base}/.github/workflows/ci.yml" "${tmp}/case/.github/workflows/ci.yml"
+expect_pass
 
 # Both arguments are required.
 reset_case

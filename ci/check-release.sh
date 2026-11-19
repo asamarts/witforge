@@ -32,11 +32,6 @@ requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependenc
 [[ "${requirement}" == "^${version}" || "${requirement}" == "=${version}" ]] \
     || fail "witforge-cli requires witforge ${requirement}; require the released version ${version}"
 
-# Keep documentation and Action references on the same version as the crates. The checker's
-# output goes to stderr because this script's stdout is the version consumed by the release
-# workflow.
-bash "${ROOT}/ci/check-version-references.sh" "${ROOT}" "${version}" >&2
-
 escaped="${version//./\\.}"
 heading="$(grep -E "^## \[${escaped}\]" CHANGELOG.md || true)"
 [[ -n "${heading}" ]] || fail "CHANGELOG.md has no section for ${version}"
@@ -58,6 +53,12 @@ grep -q '^- ' <<<"${notes}" || fail "the CHANGELOG.md section for ${version} has
 if [[ -n "${RELEASE_NOTES:-}" ]]; then
     printf '%s\n' "${notes}" >"${RELEASE_NOTES}"
 fi
+
+# Keep documentation and Action references on the same version as the crates. This runs after
+# the changelog checks: the reference check reads the dated headings to find the release before
+# this one, so a missing date is reported above as a missing date. The checker's output goes to
+# stderr because this script's stdout is the version consumed by the release workflow.
+bash "${ROOT}/ci/check-version-references.sh" "${ROOT}" "${version}" >&2
 
 if [[ -n "${TAG}" ]]; then
     [[ "${TAG}" == "v${version}" ]] || fail "tag ${TAG} does not match the version ${version}"

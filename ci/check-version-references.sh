@@ -6,9 +6,12 @@
 # Documentation names VERSION, the workspace version: it is written with the release it
 # describes. CI's Action references are different, because CI executes them: they install a
 # published release, and on the commit that prepares VERSION no `vVERSION` tag or asset exists
-# yet. `.github/workflows/ci.yml` may therefore name VERSION or the release before it (the next
-# dated heading in ROOT/CHANGELOG.md), and must name one release throughout. The release
-# checklist moves it to VERSION once VERSION is published.
+# yet. Until VERSION is published, `.github/workflows/ci.yml` may therefore name VERSION or the
+# release before it (the next dated heading in ROOT/CHANGELOG.md), and must name one release
+# throughout. VERSION counts as published once ROOT's repository has a `vVERSION` tag on a
+# commit other than HEAD; from then on the workflow must name VERSION, which is the release
+# checklist's step after publishing. A tag at HEAD is the release being made. A checkout without
+# its tags cannot tell, and accepts the previous release.
 #
 # The checker deliberately names the current-version patterns instead of scanning every
 # occurrence of a version string: historical design notes, the changelog, and release records
@@ -28,7 +31,15 @@ cd "${ROOT}"
 
 # The release before VERSION: the first dated changelog heading after VERSION's own. Empty when
 # VERSION has no dated heading or is the first release, and then only VERSION is accepted.
+# WHY_NOT_PREVIOUS says why an older release in the workflow is refused, so that the message
+# does not send the reader to pin CI to a release that does not exist yet.
 PREVIOUS=""
+WHY_NOT_PREVIOUS=""
+if [[ ! -f CHANGELOG.md ]]; then
+    WHY_NOT_PREVIOUS="there is no CHANGELOG.md to name the release before ${VERSION}"
+elif ! grep -Eq "^## \\[${VERSION//./\\.}\\] - " CHANGELOG.md; then
+    WHY_NOT_PREVIOUS="CHANGELOG.md has no dated section for ${VERSION}; date its heading, and CI may stay on the release before it until ${VERSION} is published"
+fi
 if [[ -f CHANGELOG.md ]]; then
     PREVIOUS="$(awk -v version="${VERSION}" '
         /^## \[[0-9]+\.[0-9]+\.[0-9]+\] - / {
@@ -38,6 +49,13 @@ if [[ -f CHANGELOG.md ]]; then
             if (seen) { print heading; exit }
             if (heading == version) seen = 1
         }' CHANGELOG.md)"
+fi
+if [[ -n "${PREVIOUS}" && -e .git ]]; then
+    tagged="$(git rev-parse --verify --quiet "refs/tags/v${VERSION}^{commit}" 2>/dev/null || true)"
+    if [[ -n "${tagged}" && "${tagged}" != "$(git rev-parse --verify --quiet HEAD 2>/dev/null || true)" ]]; then
+        WHY_NOT_PREVIOUS="v${VERSION} is published (its tag is on an earlier commit), so CI must run it; the release checklist's last step moves the pinned Action"
+        PREVIOUS=""
+    fi
 fi
 
 check_pattern() {
@@ -73,6 +91,7 @@ check_workflow_pattern() {
     local line
     local expected="${VERSION}"
     [[ -z "${PREVIOUS}" ]] || expected="${VERSION} or the previous release ${PREVIOUS}"
+    [[ -z "${WHY_NOT_PREVIOUS}" ]] || expected="${VERSION}: ${WHY_NOT_PREVIOUS}"
     [[ -f "${file}" ]] || fail "missing ${file}"
 
     while IFS= read -r line || [[ -n "${line}" ]]; do
