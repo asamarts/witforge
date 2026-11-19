@@ -2,8 +2,9 @@
 
 Status: audit recorded 2026-11-18 on `main` at `6565490`, 51 commits after tag `v0.5.0`. It
 follows [the first audit of the same day](audit-2026-11-18.md), whose remediation tasks
-`W10-026` to `W10-037` were already closed. Every finding below maps to a task that is still
-open; `aplan ready` is the live list of what can start. This is an internal design note;
+`W10-026` to `W10-037` were already closed. Every finding below maps to a task, and the plan,
+not this record, says which of them are done: `aplan show <id>` for one task, `aplan ready` for
+what can start. This is an internal design note;
 `docs/_config.yml` excludes the `design/` tree from the public site.
 
 ## Summary
@@ -286,10 +287,11 @@ statements in it were wrong or too broad, and the tables above supersede them:
 The order below is a recommendation; the dependency edges in the plan enforce only what is
 marked.
 
-1. **Unblock and correct what is published** (`W10-039` to `W10-043`). The Action's `diff` gate
-   does not run, the next release cannot pass CI, and the quickstart fails at its first command.
-   These are small and independent. The owner decided on 2026-11-18 that they ship with 0.6.0
-   rather than as a 0.5.1 patch release, so `W10-044` is dropped and they block `W10-069`.
+1. **Unblock and correct what is published** (`W10-039` to `W10-043`). When the audit was
+   written the Action's `diff` gate did not run, the next release could not pass CI, and the
+   quickstart failed at its first command. These are small and independent. The owner decided on
+   2026-11-18 that they ship with 0.6.0 and not as a 0.5.1 patch release, so `W10-044` is dropped
+   and they block `W10-069`.
 2. **Restore the wire-identity guarantee** (`W10-045` to `W10-058`). Start with A1 to A3: each is
    a silent wire change that today passes every gate.
 3. **Make "generation succeeded" mean "it compiles"** (`W10-059` to `W10-068`). Build the
@@ -297,12 +299,18 @@ marked.
    the class from returning.
 4. **Stop the tool losing work** (`W10-073`, `W10-075`, `W10-077`, `W10-078`).
 5. **Release 0.6.0** (`W10-069`, blocked by everything in 1 to 4) with a migration section,
-   because four fixes change generated output for affected contracts.
-6. **Decide what 1.0 freezes** (`W10-093`, `W10-095`, `W10-070`, `W10-059`, `W10-098`). Each is
-   a surface that cannot change after 1.0 without a major version, and each task records a
-   recommendation for the owner to accept or replace.
+   because the fixes change generated output or refuse contracts that were accepted. On
+   2026-11-19 the owner added `W10-070`, `W10-072`, and `W10-074` to this release, so that
+   consumers regenerate once.
+6. **Implement what 1.0 freezes** (`W10-093`, `W10-095`, `W10-070`, `W10-059`, `W10-098`). Each is
+   a surface that cannot change after 1.0 without a major version. The owner decided each on
+   2026-11-19, and the task records the decision.
 7. Everything else in the cut: diagnostics, CLI workflow, release integrity, adopter
    documentation.
+
+Decisions made after this record was written are in the tasks' `Decision` sections, which say
+whether the owner made them or whether they are a default chosen while the task was documented
+([`aplan/README.md`](../../aplan/README.md), Task bodies).
 
 `W10-001` remains parked until 2027-01-15. `W10-002` (release 1.0.0) now also waits for
 `W10-069` and `W10-098`.

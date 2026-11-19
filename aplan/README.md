@@ -19,6 +19,30 @@ plan here says what can start, what is blocked, and what proof closes a task.
   could fail if the work were reverted, and the body says why.
 - `deny_warnings` is on: every finding blocks.
 
+## Task bodies
+
+A task is read by someone who has only the task. Its body uses these sections, in this order,
+and leaves out the ones it does not need:
+
+| Section | Holds |
+| --- | --- |
+| `Dropped`, `Parked` | Why the task is not live, and what would change that. |
+| `Why` | The problem, with what was observed and when. |
+| `Why it is untestable` | Required with the `untestable` tag: why no test could fail if the work were reverted. |
+| `Reproduction` | Commands and their results, with the date they were run. |
+| `Decision` | What was decided, by whom, and when. |
+| `Approach` | How the work is meant to be done, where that is not obvious. |
+| `Edge cases` | The inputs and states the work has to handle, each one a candidate test. |
+| `Out of scope` | What belongs to another task, with its id. |
+| `Acceptance criteria` | A checklist of lines that can each be checked. Where two outcomes are possible, `Decision` gives the rule that picks one. |
+| `Verification` | Which test or run proves the work. |
+| `What was done` | Written when the task closes, where the result differs from the plan. |
+
+A `Decision` section says whose decision it holds. "Decided by the owner on DATE" is a decision
+of the repository's owner. "Default chosen while documenting the task on DATE, not an owner
+decision" is the author's choice: the owner can replace it before the work starts, and the task
+is then edited. A default that concerns one edge case is written in that case, after "Default:".
+
 ## Commands
 
 ```sh
