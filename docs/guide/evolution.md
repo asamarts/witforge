@@ -16,7 +16,7 @@ cp wit/v0.1/contract.wit wit/v0.1/wire.lock wit/v0.2/
 witforge lock wit/v0.2 --against wit/v0.1/wire.lock
 witforge check wit/v0.2 --against wit/v0.1/wire.lock
 witforge diff wit/v0.1 wit/v0.2
-witforge diff wit/v0.1 wit/v0.2 --check
+witforge diff wit/v0.1 wit/v0.2 --check   # exits 1 if the change is breaking
 ```
 
 The package version in `contract.wit` must match the directory name; with the copied `@0.1.0`

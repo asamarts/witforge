@@ -185,11 +185,15 @@ fn no_comments(comment: &str) {
     panic!("unexpected instruction in a command block: `# {comment}`");
 }
 
-/// What a reader does at "Edit wit/v0.2/contract.wit: set the package version to 0.2.0": the
-/// smallest edit that makes the copied contract a valid `v0.2`.
-fn bump_copied_version(directory: &Path, comment: &str, edits: &mut usize) {
+/// What a reader does at "Edit wit/v0.2/contract.wit: set the package version to 0.2.0, then
+/// change the contract": both halves of the instruction. The change is the one the guides
+/// recommend, a defaultable field appended to the first record, so the commands after the edit
+/// see a real difference between the versions and `diff --check` reports it.
+fn edit_copied_contract(directory: &Path, comment: &str, edits: &mut usize) {
     assert!(
-        comment.starts_with("Edit wit/v0.2/contract.wit: set the package version to 0.2.0"),
+        comment.starts_with(
+            "Edit wit/v0.2/contract.wit: set the package version to 0.2.0, then change the contract"
+        ),
         "unexpected instruction in a command block: `# {comment}`"
     );
     let path = directory.join("wit/v0.2/contract.wit");
@@ -198,7 +202,29 @@ fn bump_copied_version(directory: &Path, comment: &str, edits: &mut usize) {
         copied.contains("@0.1.0;"),
         "the copied contract is not 0.1.0"
     );
-    fs::write(&path, copied.replacen("@0.1.0;", "@0.2.0;", 1)).unwrap();
+    let bumped = copied.replacen("@0.1.0;", "@0.2.0;", 1);
+
+    // A record body holds no braces, so the first `}` after the declaration closes it.
+    let mut offset = 0;
+    let mut declaration = None;
+    for line in bumped.split_inclusive('\n') {
+        if line.trim_start().starts_with("record ") {
+            declaration = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+    let declaration = declaration.expect("the copied contract has a record");
+    let open = declaration + bumped[declaration..].find('{').unwrap();
+    let close = open + bumped[open..].find('}').unwrap();
+    let fields = bumped[open + 1..close].trim_end();
+    let separator = if fields.ends_with(',') { "" } else { "," };
+    let edited = format!(
+        "{}{fields}{separator}\n    added-in-v2: option<string>,\n  {}",
+        &bumped[..=open],
+        &bumped[close..]
+    );
+    fs::write(&path, edited).unwrap();
     *edits += 1;
 }
 
@@ -290,7 +316,7 @@ fn readme_commands_run_verbatim() {
             }
             "sh" => {
                 ran += run_block(&directory, &body, &mut |comment| {
-                    bump_copied_version(&directory, comment, &mut edits);
+                    edit_copied_contract(&directory, comment, &mut edits);
                 });
             }
             // Output excerpts are compared with emitter output in `distribution.rs`; the
@@ -338,12 +364,16 @@ fn evolution_guide_commands_run_verbatim() {
     for (language, body) in fenced_blocks(&guide) {
         assert_eq!(language, "sh", "unexpected block in the evolution guide");
         ran += run_block(&directory, &body, &mut |comment| {
-            bump_copied_version(&directory, comment, &mut edits);
+            edit_copied_contract(&directory, comment, &mut edits);
         });
     }
     assert_eq!(edits, 1, "the guide's sequence has one edit step");
     assert_eq!(ran, 4, "the guide runs lock, check, diff, and diff --check");
-    assert!(directory.join("wit/v0.2/wire.lock").is_file());
+    let lock = fs::read_to_string(directory.join("wit/v0.2/wire.lock")).unwrap();
+    assert!(
+        lock.contains("example:ingest/types/item.added-in-v2 = 5 field option<string>"),
+        "the edit step did not change the contract:\n{lock}"
+    );
 
     fs::remove_dir_all(&directory).unwrap();
 }
