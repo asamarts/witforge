@@ -526,6 +526,10 @@ fn looks_like_version_directory(path: &Path) -> bool {
 
 fn load_version(path: &Path) -> Result<Loaded> {
     ensure_version_directory(path)?;
+    // `diff` reads the manifest beside the endpoint, as `check` does by default. This validates
+    // a released directory and its contents, including a symlinked contract, lockfile, or
+    // dependency entry; it does not otherwise change the comparison.
+    crate::is_released(path, None)?;
     let contract = load(path)?;
     let violations = subset::check(&contract);
     if !violations.is_empty() {

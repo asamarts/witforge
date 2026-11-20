@@ -122,6 +122,11 @@ have it.
   with the generators' shared rule when its baseline is a version directory's `wire.lock`. A
   copied baseline outside a version directory cannot be compared; `check` says so in a note and
   CI must run a generator over the root.
+- `diff` now resolves a dependency alias of a named type (record, enum, variant, or flags) and
+  defaultability through the package that declares it, even when the root defines a type with
+  the same name. It also reads the `released` manifest beside a version-directory endpoint, so a
+  malformed manifest or a symlink in a listed released directory is refused with exit `2` as
+  `check` refuses it. `diff.md` and the emitter guide state both behaviours.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

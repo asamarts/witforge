@@ -721,7 +721,9 @@ Every command also accepts the global `--format human|json|sarif`
   validate the manifest: an explicitly given missing manifest or a malformed one is an error
   (exit `2`). Generation reproduces released versions without modifying them, so for `rust`,
   `proto`, `schema`, and `glue` the manifest only has to be valid. `diff` has no `--released`
-  option and does not read the manifest.
+  option; it reads the default manifest beside each version-directory endpoint (or beside the
+  WIT-root endpoint), so a released directory and its contents are validated as they are for
+  `check`.
 - `--first` and `--against` are mutually exclusive. They are defined in
   [`lockfile.md`](lockfile.md).
 - Generation creates the output directory when it is missing. The output root MUST NOT be the WIT

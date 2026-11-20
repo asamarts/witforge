@@ -4,9 +4,10 @@ Status: implemented 2026-11-05 (`W8-001`); endpoint ordering, missing-lock, and 
 declaration-order boundaries 2026-11-18 (`W10-026`); conversion-impact notes 2026-11-17
 (`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`); kind
 changes and reused reserved numbers are wire-breaking 2026-11-19 (`W10-045`, `W10-048`); alias
-spellings and retyped conversion blockers 2026-11-20 (`W10-057`). The 2026-11-18 items are not in
-0.5.0: reversed-endpoint rejection, missing-lock guidance, and `conversion_blockers` are on
-`main` and unreleased.
+spellings and retyped conversion blockers 2026-11-20 (`W10-057`); released-manifest and
+dependency-alias endpoints 2026-11-20 (`W10-056`). The 2026-11-18 items are not in 0.5.0:
+reversed-endpoint rejection, missing-lock guidance, and `conversion_blockers` are on `main` and
+unreleased.
 
 `witforge diff <old> <new>` compares two contract versions and reports what changed in three
 independent compatibility views:
@@ -53,6 +54,12 @@ reported by a direct endpoint and refused by root loading. A direct endpoint sti
 order line for an unknown parent or one naming a non-member, a subset, or the wrong live set:
 that is structurally inconsistent with the contract, not merely stale. Missing order lines are
 accepted by a direct endpoint and reported as a reorder when the source order differs.
+
+A version-directory endpoint also reads the default `released` manifest beside it, as `check`
+does: a malformed manifest, or a symlink in a listed released directory (its `contract.wit`,
+`wire.lock`, or a `deps/` entry), is refused with exit `2`. A WIT-root endpoint uses the
+generator-grade loader, which validates the root's manifest. There is no `--released` option;
+each endpoint uses its own root's manifest, so two checkouts can be compared independently.
 
 `diff` does not require the canonical lockfile rendering; `check` is the canonical-form gate.
 `diff` requires current entries, not a particular byte layout or comment set.

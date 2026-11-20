@@ -157,6 +157,93 @@ fn reuse_of_a_reserved_number_is_wire_breaking_and_generators_agree() {
 }
 
 #[test]
+fn dependency_alias_shapes_diff_with_their_own_version_and_an_evolution() {
+    let root = std::env::temp_dir().join(format!("witforge-diff-dep-alias-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let dependency = "package example:shared@0.1.0;\n\
+         interface types {\n\
+           record item { id: u64 }\n\
+           enum state { on, off }\n\
+           variant choice { none, some(item) }\n\
+           flags flags-t { read, write }\n\
+           type alias-item = item;\n\
+           type alias-chain = alias-item;\n\
+           type alias-state = state;\n\
+           type alias-choice = choice;\n\
+           type alias-flags = flags-t;\n\
+           type list-item = list<item>;\n\
+           type maybe-item = option<item>;\n\
+           type result-item = result<item, string>;\n\
+         }\n";
+    for version in ["v0.1", "v0.2"] {
+        let shared = root.join(version).join("deps/shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("types.wit"), dependency).unwrap();
+    }
+    let body = "interface api {\n\
+         use example:shared/types@0.1.0.{alias-item, alias-chain, alias-state, alias-choice, \
+         alias-flags, list-item, maybe-item, result-item, item as local-item};\n\
+         record item { local: u32 }\n\
+         record r {\n\
+           a: alias-item, b: alias-chain, c: alias-state, d: alias-choice, e: alias-flags,\n\
+           f: list-item, g: maybe-item, h: result-item, i: local-item\n\
+         }\n\
+         get: func(input: alias-item) -> alias-item;\n\
+       }\n";
+    let old = write_contract(
+        &root,
+        "v0.1",
+        &format!("package example:root@0.1.0;\n{body}"),
+    );
+    fs::write(old.join("wire.lock"), generated_lock(&old)).unwrap();
+    let new = write_contract(
+        &root,
+        "v0.2",
+        &format!("package example:root@0.2.0;\n{body}")
+            .replace("i: local-item\n", "i: local-item, added: option<u32>\n"),
+    );
+    fs::write(new.join("wire.lock"), generated_lock(&new)).unwrap();
+
+    let same = witforge::diff::compare(&old, &old).unwrap();
+    assert_eq!(same.summary.changes, 0, "{same:?}");
+    let evolved = witforge::diff::compare(&old, &new).unwrap();
+    assert!(
+        evolved
+            .changes
+            .iter()
+            .any(|change| change.path == "api/r.added"),
+        "{evolved:?}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn diff_reads_the_released_manifest_beside_a_version_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diff-released-manifest-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let version = write_contract(
+        &root,
+        "v0.1",
+        "package example:root@0.1.0;\ninterface api { record r { a: u32 } }\n",
+    );
+    fs::write(version.join("wire.lock"), generated_lock(&version)).unwrap();
+    fs::write(root.join("released"), "v0.1\n").unwrap();
+    let real = root.join("real.lock");
+    fs::rename(version.join("wire.lock"), &real).unwrap();
+    symlink(&real, version.join("wire.lock")).unwrap();
+
+    let error = witforge::diff::compare(&version, &version).unwrap_err();
+    assert!(format!("{error:#}").contains("symlink"), "{error:#}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn direct_diff_accepts_a_stale_order_but_refuses_a_named_non_member() {
     let root = std::env::temp_dir().join(format!(
         "witforge-diff-order-structure-{}",
