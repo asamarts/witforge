@@ -19,6 +19,15 @@ use wit_parser::{
 
 use crate::Contract;
 
+/// Maximum nested `list`, `option`, and `result` levels in one type expression.
+pub const MAX_TYPE_NESTING: usize = 32;
+/// Maximum number of alias links followed while resolving one type expression.
+pub const MAX_ALIAS_CHAIN: usize = 32;
+/// Maximum bytes in one canonical type string.
+pub const MAX_CANONICAL_TYPE_BYTES: usize = 1024;
+/// Maximum bytes in one synthesized protobuf wrapper name.
+pub const MAX_WRAPPER_NAME_BYTES: usize = 1024;
+
 /// A contract version, used for package versions and `@since` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {
@@ -440,51 +449,65 @@ impl Model {
     /// Returns an error if `ty` names a type that is not in this model, or if aliases or named
     /// structural definitions form a cycle.
     pub fn canonical_type(&self, ty: &TypeExpr) -> Result<String> {
-        self.canonical_type_inner(ty, &mut HashSet::new())
+        self.canonical_type_inner(ty, &mut HashSet::new(), 0, 0)
     }
 
     fn canonical_type_inner(
         &self,
         ty: &TypeExpr,
         visiting: &mut HashSet<QualifiedName>,
+        nesting: usize,
+        aliases: usize,
     ) -> Result<String> {
-        match ty {
-            TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 => Ok("u8".to_string()),
-            TypeExpr::U16 => Ok("u16".to_string()),
-            TypeExpr::U32 => Ok("u32".to_string()),
-            TypeExpr::U64 => Ok("u64".to_string()),
-            TypeExpr::S8 => Ok("s8".to_string()),
-            TypeExpr::S16 => Ok("s16".to_string()),
-            TypeExpr::S32 => Ok("s32".to_string()),
-            TypeExpr::S64 => Ok("s64".to_string()),
-            TypeExpr::F32 => Ok("f32".to_string()),
-            TypeExpr::F64 => Ok("f64".to_string()),
-            TypeExpr::String => Ok("string".to_string()),
-            TypeExpr::Named(name) => self.canonical_named(name, visiting),
-            TypeExpr::List(element) => Ok(format!(
-                "list<{}>",
-                self.canonical_type_inner(element, visiting)?
-            )),
-            TypeExpr::Option(payload) => Ok(format!(
-                "option<{}>",
-                self.canonical_type_inner(payload, visiting)?
-            )),
-            TypeExpr::Result(result) => self.canonical_result(result, visiting),
-        }
+        let text = match ty {
+            TypeExpr::Bool => "bool".to_string(),
+            TypeExpr::U8 => "u8".to_string(),
+            TypeExpr::U16 => "u16".to_string(),
+            TypeExpr::U32 => "u32".to_string(),
+            TypeExpr::U64 => "u64".to_string(),
+            TypeExpr::S8 => "s8".to_string(),
+            TypeExpr::S16 => "s16".to_string(),
+            TypeExpr::S32 => "s32".to_string(),
+            TypeExpr::S64 => "s64".to_string(),
+            TypeExpr::F32 => "f32".to_string(),
+            TypeExpr::F64 => "f64".to_string(),
+            TypeExpr::String => "string".to_string(),
+            TypeExpr::Named(name) => self.canonical_named(name, visiting, nesting, aliases)?,
+            TypeExpr::List(element) => {
+                let nesting = next_nesting(nesting)?;
+                format!(
+                    "list<{}>",
+                    self.canonical_type_inner(element, visiting, nesting, aliases)?
+                )
+            }
+            TypeExpr::Option(payload) => {
+                let nesting = next_nesting(nesting)?;
+                format!(
+                    "option<{}>",
+                    self.canonical_type_inner(payload, visiting, nesting, aliases)?
+                )
+            }
+            TypeExpr::Result(result) => {
+                let nesting = next_nesting(nesting)?;
+                self.canonical_result(result, visiting, nesting, aliases)?
+            }
+        };
+        check_canonical_length(text)
     }
 
     fn canonical_result(
         &self,
         result: &ResultExpr,
         visiting: &mut HashSet<QualifiedName>,
+        nesting: usize,
+        aliases: usize,
     ) -> Result<String> {
         let ok = match &result.ok {
-            Some(ty) => self.canonical_type_inner(ty, visiting)?,
+            Some(ty) => self.canonical_type_inner(ty, visiting, nesting, aliases)?,
             None => "_".to_string(),
         };
         let err = match &result.err {
-            Some(ty) => self.canonical_type_inner(ty, visiting)?,
+            Some(ty) => self.canonical_type_inner(ty, visiting, nesting, aliases)?,
             None => "_".to_string(),
         };
         Ok(format!("result<{ok},{err}>"))
@@ -494,6 +517,8 @@ impl Model {
         &self,
         name: &QualifiedName,
         visiting: &mut HashSet<QualifiedName>,
+        nesting: usize,
+        aliases: usize,
     ) -> Result<String> {
         if name.is_foreign() {
             return Ok(name.to_string());
@@ -513,30 +538,62 @@ impl Model {
             Some(TypeDef {
                 kind: TypeDefKind::Alias(target),
                 ..
-            }) => self.canonical_type_inner(target, visiting),
+            }) => {
+                if aliases >= MAX_ALIAS_CHAIN {
+                    bail!("alias chain at `{name}` exceeds {MAX_ALIAS_CHAIN} links");
+                }
+                self.canonical_type_inner(target, visiting, nesting, aliases + 1)
+            }
             Some(TypeDef {
                 kind: TypeDefKind::List(element),
                 ..
-            }) => Ok(format!(
-                "list<{}>",
-                self.canonical_type_inner(element, visiting)?
-            )),
+            }) => {
+                let nesting = next_nesting(nesting)?;
+                Ok(format!(
+                    "list<{}>",
+                    self.canonical_type_inner(element, visiting, nesting, aliases)?
+                ))
+            }
             Some(TypeDef {
                 kind: TypeDefKind::Option(payload),
                 ..
-            }) => Ok(format!(
-                "option<{}>",
-                self.canonical_type_inner(payload, visiting)?
-            )),
+            }) => {
+                let nesting = next_nesting(nesting)?;
+                Ok(format!(
+                    "option<{}>",
+                    self.canonical_type_inner(payload, visiting, nesting, aliases)?
+                ))
+            }
             Some(TypeDef {
                 kind: TypeDefKind::Result(result),
                 ..
-            }) => self.canonical_result(result, visiting),
+            }) => {
+                let nesting = next_nesting(nesting)?;
+                self.canonical_result(result, visiting, nesting, aliases)
+            }
             None => bail!("type `{name}` is not in the model"),
         };
         visiting.remove(name);
         result
     }
+}
+
+fn next_nesting(nesting: usize) -> Result<usize> {
+    let next = nesting + 1;
+    if next > MAX_TYPE_NESTING {
+        bail!("type nesting exceeds {MAX_TYPE_NESTING} levels");
+    }
+    Ok(next)
+}
+
+fn check_canonical_length(text: String) -> Result<String> {
+    if text.len() > MAX_CANONICAL_TYPE_BYTES {
+        bail!(
+            "canonical type is {} bytes, over the {MAX_CANONICAL_TYPE_BYTES}-byte limit",
+            text.len()
+        );
+    }
+    Ok(text)
 }
 
 impl TypeExpr {
@@ -717,12 +774,102 @@ pub fn build(contract: &Contract) -> Result<Model> {
         (&left.package.namespace, &left.package.name)
             .cmp(&(&right.package.namespace, &right.package.name))
     });
-    Ok(Model {
+    let model = Model {
         package,
         interfaces,
         worlds,
         dependencies,
-    })
+    };
+    model.validate_type_limits()?;
+    Ok(model)
+}
+
+impl Model {
+    /// Refuse an alias chain, nested type, or canonical string over the documented limits.
+    ///
+    /// This runs for every definition and function in the root package and in every dependency
+    /// package, including definitions nothing refers to, so `check`, `lock`, `diff`, and every
+    /// generator see the same bound before they can recurse.
+    fn validate_type_limits(&self) -> Result<()> {
+        for interface in &self.interfaces {
+            self.validate_interface_limits(interface)?;
+        }
+        for dependency in &self.dependencies {
+            let model = Model {
+                package: dependency.package.clone(),
+                interfaces: dependency.interfaces.clone(),
+                worlds: Vec::new(),
+                dependencies: self
+                    .dependencies
+                    .iter()
+                    .filter(|other| {
+                        other.package.namespace != dependency.package.namespace
+                            || other.package.name != dependency.package.name
+                    })
+                    .cloned()
+                    .collect(),
+            };
+            for interface in &model.interfaces {
+                model.validate_interface_limits(interface)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_interface_limits(&self, interface: &Interface) -> Result<()> {
+        for def in &interface.types {
+            let context = || format!("type `{}/{}`", interface.name, def.name);
+            match &def.kind {
+                TypeDefKind::Record(fields) => {
+                    for field in fields {
+                        self.canonical_type(&field.ty)
+                            .with_context(|| format!("{} field `{}`", context(), field.name))
+                            .map_err(|err| crate::ContractError::from_error(&err))?;
+                    }
+                }
+                TypeDefKind::Variant(cases) => {
+                    for case in cases {
+                        if let Some(payload) = &case.payload {
+                            self.canonical_type(payload)
+                                .with_context(|| format!("{} case `{}`", context(), case.name))
+                                .map_err(|err| crate::ContractError::from_error(&err))?;
+                        }
+                    }
+                }
+                TypeDefKind::Alias(_)
+                | TypeDefKind::List(_)
+                | TypeDefKind::Option(_)
+                | TypeDefKind::Result(_) => {
+                    let name = QualifiedName {
+                        interface: interface.name.clone(),
+                        name: def.name.clone(),
+                    };
+                    self.canonical_type(&TypeExpr::Named(name))
+                        .with_context(context)
+                        .map_err(|err| crate::ContractError::from_error(&err))?;
+                }
+                TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
+            }
+        }
+        for function in &interface.functions {
+            for param in &function.params {
+                self.canonical_type(&param.ty)
+                    .with_context(|| {
+                        format!(
+                            "type `{}/{}` parameter `{}`",
+                            interface.name, function.name, param.name
+                        )
+                    })
+                    .map_err(|err| crate::ContractError::from_error(&err))?;
+            }
+            if let Some(result) = &function.result {
+                self.canonical_type(result)
+                    .with_context(|| format!("type `{}/{}` result", interface.name, function.name))
+                    .map_err(|err| crate::ContractError::from_error(&err))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn build_dependency_interface(

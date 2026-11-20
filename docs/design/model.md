@@ -219,6 +219,26 @@ The full grammar and examples are in [`lockfile.md`](lockfile.md#5-canonical-typ
 MUST expose one method that renders a `TypeExpr` canonically; the lockfile MUST use it rather
 than reimplementing the rules.
 
+### 4.1 Expansion limits
+
+Every model is checked once, after construction and before any lockfile or emitter walks it:
+
+- at most **32** nested `list`/`option`/`result` levels in one type expression;
+- at most **32** alias links followed in one chain;
+- at most **1024 bytes** in one canonical type string.
+
+The limits are separate: a chain of aliases to `u8` consumes the alias limit but no nesting, and
+the doubling `type tN = list<result<tN-1, tN-1>>` consumes nesting and output length. A
+canonical type over the byte limit is refused while it is being built, so the output is never
+allocated. The same limits apply to every definition and function in the root package and every
+`deps/` package, including definitions nothing references; the lockfile reader applies the
+nesting and byte limits to a type token and refuses an over-limit token as a parse error.
+
+The limit diagnostic is a contract violation (exit `1`) when it comes from a contract and a
+parse error (exit `2`) when it comes from the lockfile. `wit-parser` also has its own source
+nesting bound; a WIT source nested beyond it is refused during `load` with exit `2` before the
+model exists. Raising a limit later is compatible; lowering one is not.
+
 ## 5. Member extraction
 
 The model exposes deterministic members for the lockfile:

@@ -108,6 +108,13 @@ have it.
   alias target remains a real type change and is refused. `diff` now lists retyped record
   fields, variant cases, and types under `conversion_blockers`, so a passing `diff --check`
   implies `rust` generation succeeds.
+- Type expansion is bounded: at most 32 nested `list`/`option`/`result` levels, 32 alias links,
+  and 1024 bytes per canonical type string. Every definition and function in the root and its
+  dependencies is checked after model construction, the lockfile reader applies the same nesting
+  and byte limits to a token, and wrapper message names are capped at 1024 bytes. Over-limit
+  contract types are contract errors (exit `1`); an over-limit lockfile token is a parse error
+  (exit `2`). Number assignment for a wide contract is now linear in the member count instead of
+  rescanning every entry for every new member.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

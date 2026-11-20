@@ -14,6 +14,17 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn temp_wit(name: &str, contract: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-model-limit-{name}-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("contract.wit"), contract).unwrap();
+    dir
+}
+
 fn build(name: &str) -> Model {
     model::build(&load(&fixture(name)).unwrap()).unwrap()
 }
@@ -1433,4 +1444,69 @@ fn qualified_names_render_as_interface_slash_type() {
         .to_string(),
         "types/span"
     );
+}
+
+#[test]
+#[allow(clippy::format_push_string)]
+fn alias_chains_are_bounded() {
+    let mut contract = String::from("package ex:t@0.1.0;\ninterface types {\n  type a0 = u8;\n");
+    for index in 1..=40 {
+        contract.push_str(&format!("  type a{index} = a{};\n", index - 1));
+    }
+    contract.push_str("}\n");
+    let dir = temp_wit("alias-chain", &contract);
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
+    assert!(witforge::is_contract_error(&error), "{error:#}");
+    assert!(format!("{error:#}").contains("alias chain"), "{error:#}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn nested_types_are_bounded() {
+    let nested = format!("{}u8{}", "list<".repeat(40), ">".repeat(40));
+    let contract =
+        format!("package ex:t@0.1.0;\ninterface types {{ record r {{ value: {nested} }} }}\n");
+    let dir = temp_wit("nesting", &contract);
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
+    assert!(witforge::is_contract_error(&error), "{error:#}");
+    assert!(format!("{error:#}").contains("nesting"), "{error:#}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn canonical_type_strings_are_bounded() {
+    let long = "a".repeat(1100);
+    let contract = format!(
+        "package ex:t@0.1.0;\ninterface types {{ record {long} {{ value: u32 }} \
+         record r {{ value: {long} }} }}\n"
+    );
+    let dir = temp_wit("canonical-length", &contract);
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
+    assert!(witforge::is_contract_error(&error), "{error:#}");
+    assert!(format!("{error:#}").contains("byte limit"), "{error:#}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[allow(clippy::format_push_string)]
+fn a_doubling_contract_is_refused_before_it_grows_large() {
+    let mut contract = String::from("package ex:t@0.1.0;\ninterface types {\n  type t0 = u8;\n");
+    for index in 1..=12 {
+        contract.push_str(&format!(
+            "  type t{index} = list<result<t{},t{}>>;\n",
+            index - 1,
+            index - 1
+        ));
+    }
+    contract.push_str("  record r { value: t12 }\n}\n");
+    let dir = temp_wit("doubling", &contract);
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(witforge::is_contract_error(&error), "{message}");
+    assert!(message.contains("byte limit"), "{message}");
+    assert!(
+        message.len() < 4096,
+        "diagnostic should stay small: {message}"
+    );
+    fs::remove_dir_all(dir).unwrap();
 }

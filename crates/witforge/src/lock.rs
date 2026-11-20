@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 
-use crate::model::{Member, MemberKind};
+use crate::model::{MAX_CANONICAL_TYPE_BYTES, MAX_TYPE_NESTING, Member, MemberKind};
 
 /// The exact first line of every v2 lockfile.
 pub const HEADER: &str = "# witforge wire lockfile v2";
@@ -473,6 +473,7 @@ impl WireLock {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn reconcile_in_place(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
         let live: BTreeMap<MemberKey, &Member> = members
             .iter()
@@ -527,6 +528,18 @@ impl WireLock {
             }
         }
 
+        // The next number for each parent is tracked once. Re-scanning every entry for every new
+        // member made a wide contract quadratic.
+        let mut next_numbers: BTreeMap<String, u32> = BTreeMap::new();
+        for (key, entry) in &self.entries {
+            let parent = key.parent();
+            let candidate = entry.number.checked_add(1).unwrap_or(PROTOBUF_MAX + 1);
+            next_numbers
+                .entry(parent)
+                .and_modify(|next| *next = (*next).max(candidate))
+                .or_insert(candidate);
+        }
+
         for member in members {
             let key = MemberKey::from_member(member)?;
             match self.entries.get(&key) {
@@ -557,7 +570,7 @@ impl WireLock {
                 Some(_) => continue,
                 None => {}
             }
-            let number = self.next_number(&key.parent())?;
+            let number = next_number_in(&mut next_numbers, &key.parent())?;
             self.entries.insert(
                 key.clone(),
                 Entry {
@@ -834,26 +847,6 @@ impl WireLock {
         compare_common_orders(&self.orders, &older.orders)
     }
 
-    fn next_number(&self, parent: &str) -> Result<u32> {
-        let max = self
-            .entries
-            .iter()
-            .filter(|(key, _)| key.parent() == parent)
-            .map(|(_, entry)| entry.number)
-            .max()
-            .unwrap_or(0);
-        let mut next = max
-            .checked_add(1)
-            .with_context(|| format!("no protobuf field numbers left in `{parent}`"))?;
-        if PROTOBUF_RESERVED.contains(&next) {
-            next = PROTOBUF_RESERVED.end() + 1;
-        }
-        if next > PROTOBUF_MAX {
-            bail!("no protobuf field numbers left in `{parent}`");
-        }
-        Ok(next)
-    }
-
     fn validate(&self) -> Result<()> {
         let mut seen: BTreeMap<(String, u32), &MemberKey> = BTreeMap::new();
         for (key, entry) in &self.entries {
@@ -896,6 +889,22 @@ impl WireLock {
         }
         Ok(())
     }
+}
+
+/// Assign the next number in `parent` from the per-parent cursors.
+fn next_number_in(next_numbers: &mut BTreeMap<String, u32>, parent: &str) -> Result<u32> {
+    let next = next_numbers.entry(parent.to_string()).or_insert(1);
+    if PROTOBUF_RESERVED.contains(next) {
+        *next = PROTOBUF_RESERVED.end() + 1;
+    }
+    let number = *next;
+    if number > PROTOBUF_MAX {
+        bail!("no protobuf field numbers left in `{parent}`");
+    }
+    *next = number
+        .checked_add(1)
+        .with_context(|| format!("no protobuf field numbers left in `{parent}`"))?;
+    Ok(number)
 }
 
 /// Group live members by parent, preserving their source order.
@@ -1115,6 +1124,12 @@ fn valid_number(number: u32) -> bool {
 
 /// Validate the lockfile's canonical type grammar.
 fn validate_canonical_type(value: &str) -> Result<()> {
+    if value.len() > MAX_CANONICAL_TYPE_BYTES {
+        bail!(
+            "canonical type is {} bytes, over the {MAX_CANONICAL_TYPE_BYTES}-byte limit",
+            value.len()
+        );
+    }
     let mut parser = CanonicalTypeParser::new(value);
     parser.parse_type()?;
     if parser.position != value.len() {
@@ -1126,14 +1141,29 @@ fn validate_canonical_type(value: &str) -> Result<()> {
 struct CanonicalTypeParser<'a> {
     input: &'a str,
     position: usize,
+    depth: usize,
 }
 
 impl<'a> CanonicalTypeParser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input, position: 0 }
+        Self {
+            input,
+            position: 0,
+            depth: 0,
+        }
     }
 
     fn parse_type(&mut self) -> Result<()> {
+        if self.depth >= MAX_TYPE_NESTING {
+            bail!("type nesting exceeds {MAX_TYPE_NESTING} levels");
+        }
+        self.depth += 1;
+        let result = self.parse_type_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_type_inner(&mut self) -> Result<()> {
         let ident = self.ident()?;
         if ident == "list" && self.eat('<') {
             self.parse_type()?;

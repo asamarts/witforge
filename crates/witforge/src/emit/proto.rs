@@ -12,8 +12,8 @@ use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::emit::{pascal_case, snake_case};
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
-    Case, Dependency, Field, Function, MemberKind, Model, QualifiedName, ResultExpr, TypeDef,
-    TypeDefKind, TypeExpr,
+    Case, Dependency, Field, Function, MAX_WRAPPER_NAME_BYTES, MemberKind, Model, QualifiedName,
+    ResultExpr, TypeDef, TypeDefKind, TypeExpr,
 };
 
 /// The ownership header on every generated protobuf file.
@@ -1135,6 +1135,13 @@ impl<'a> Emitter<'a> {
         source: String,
         context: Option<&Dependency>,
     ) -> Result<()> {
+        if name.len() > MAX_WRAPPER_NAME_BYTES {
+            contract_bail!(
+                "wrapper message name is {} bytes, over the {MAX_WRAPPER_NAME_BYTES}-byte limit \
+                 (for `{source}`)",
+                name.len()
+            );
+        }
         let body = (|| -> Result<String> {
             Ok(match kind {
                 WrapperKind::List(element) => {
@@ -1385,6 +1392,13 @@ impl<'a> Emitter<'a> {
         kind: WrapperKind,
         source: String,
     ) -> Result<String> {
+        if name.len() > MAX_WRAPPER_NAME_BYTES {
+            contract_bail!(
+                "wrapper message name is {} bytes, over the {MAX_WRAPPER_NAME_BYTES}-byte limit \
+                 (for `{source}`)",
+                name.len()
+            );
+        }
         let body = (|| -> Result<String> {
             Ok(match kind {
                 WrapperKind::List(element) => {

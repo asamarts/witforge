@@ -278,6 +278,10 @@ Canonicalization rules:
   `error-context` are refused by the subset checker. The canonicalizer treats them as internal
   errors if they ever reach it.
 - No spaces, comments, or escapes appear inside a type token.
+- A type token is at most 1024 bytes and nests `list`/`option`/`result` at most 32 levels deep.
+  The reader refuses a longer or deeper token as a parse error (exit `2`) before recursive
+  parsing, matching the model's expansion limits in [`model.md`](model.md#41-expansion-limits).
+  A lockfile cannot hold an alias chain: aliases are already expanded in the canonical form.
 
 ## 6. Number allocation
 

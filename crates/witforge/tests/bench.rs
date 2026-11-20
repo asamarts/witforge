@@ -126,3 +126,26 @@ fn two_version_diff_and_conversion_stay_within_budget() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn a_wide_contract_locks_within_budget() {
+    let root = workspace("wide");
+    let dir = root.join("v0.1");
+    fs::create_dir_all(&dir).unwrap();
+    let mut source = String::from("package example:wide@0.1.0;\ninterface types {\n  record t {\n");
+    for field in 0..16_000 {
+        let _ = writeln!(source, "    field{field}: u64,");
+    }
+    source.push_str("  }\n}\n");
+    fs::write(dir.join("contract.wit"), source).unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let members = model.members().unwrap();
+    let started = Instant::now();
+    let mut lock = WireLock::default();
+    lock.reconcile(&members).unwrap();
+    let elapsed = started.elapsed();
+    println!("wide contract lock: {elapsed:?}");
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert_eq!(lock.entries().count(), 16_000);
+    fs::remove_dir_all(root).unwrap();
+}

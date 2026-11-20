@@ -1120,3 +1120,37 @@ fn an_unchanged_lockfile_is_not_rewritten() {
     assert_eq!(fs::read_to_string(&path).unwrap(), changed.render());
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn lockfile_type_tokens_are_bounded_in_depth_and_length() {
+    let deep = format!("{}u8{}", "list<".repeat(40), ">".repeat(40));
+    let error = format!(
+        "{:#}",
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field {deep}\n")).unwrap_err()
+    );
+    assert!(error.contains("nesting"), "{error}");
+
+    let long = format!("{}u8{}", "list<".repeat(300), ">".repeat(300));
+    let error = format!(
+        "{:#}",
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field {long}\n")).unwrap_err()
+    );
+    assert!(error.contains("byte limit"), "{error}");
+}
+
+#[test]
+fn number_assignment_is_linear_in_a_wide_contract() {
+    let members: Vec<Member> = (0..16_000)
+        .map(|index| Member {
+            parent: "a:b/i/t".into(),
+            name: format!("m{index:05}"),
+            kind: MemberKind::Field,
+            ty: Some("u32".into()),
+        })
+        .collect();
+    let mut lock = WireLock::default();
+    let changes = lock.reconcile(&members).unwrap();
+    assert_eq!(changes.added.len(), 16_000);
+    assert_eq!(lock.entries().count(), 16_000);
+    assert_eq!(lock.get("a:b/i/t.m15999").unwrap().number, 16_000);
+}

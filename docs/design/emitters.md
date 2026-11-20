@@ -593,6 +593,10 @@ Naming rules for named types:
   that message, and `check` reports it (`W10-067`).
 - A wrapper name collision with a user type or another wrapper is a hard error. Existing wrapper
   names do not move; the lookup change only turns a silent reuse into a refusal.
+- A wrapper message name is at most 1024 bytes. The canonical-type limit of 1024 bytes bounds
+  the structural name, and the emitter refuses an over-limit wrapper before building its body.
+  Type nesting and alias chains are bounded by [`model.md`](model.md#41-expansion-limits), so the
+  wrapper expression cannot recurse without bound.
 
 ### 4.5 Functions
 
