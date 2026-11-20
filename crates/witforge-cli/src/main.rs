@@ -508,8 +508,8 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         }
     }
     let mode = lock_mode(options, previous.as_ref());
-    let drift = match lock.drift_with(&members, mode) {
-        Ok(changes) => changes,
+    let report = match lock.drift_report_with(&members, mode) {
+        Ok(report) => report,
         Err(err) => {
             reporter.error(
                 "WF1100",
@@ -542,7 +542,7 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     // with a current entry set still reaches this check in every mode. A non-canonical
     // rendering is already reported above; the semantic check adds nothing to it.
     if canonical
-        && drift.is_empty()
+        && report.is_empty()
         && let Err(err) = lock.validate_order_section(&members, released)
     {
         reporter.error(
@@ -552,8 +552,8 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         );
         return Ok(ExitCode::from(1));
     }
-    report_check_changes(&drift, &remedy, reporter);
-    if drift.is_empty() && canonical {
+    report_check_changes(&report.changes, &report.discrepancies, &remedy, reporter);
+    if report.is_empty() && canonical {
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::from(1))
@@ -596,11 +596,12 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     }
     let mode = lock_mode(options, previous.as_ref());
     // Every refusal from reconciling is a lockfile violation, as `check` reports it.
-    let changes = lock
-        .reconcile_with(&members, mode)
+    let report = lock
+        .reconcile_report_with(&members, mode)
         .map_err(|err| ContractError::from_error(&err))?;
+    let changes = &report.changes;
     let mut refused = false;
-    for discrepancy in &changes.discrepancies {
+    for discrepancy in &report.discrepancies {
         reporter.error(
             "WF1100",
             &discrepancy.message,
@@ -618,7 +619,7 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         if reporter.human() {
             bail!(ContractError::new(format!(
                 "{} lockfile discrepancy(s); the lockfile was not updated",
-                changes.discrepancies.len() + changes.reintroduced.len()
+                report.discrepancies.len() + changes.reintroduced.len()
             )));
         }
         return Ok(ExitCode::from(1));
@@ -1291,10 +1292,11 @@ impl Remedy {
 
 fn report_check_changes(
     changes: &witforge::lock::Changes,
+    discrepancies: &[witforge::lock::Discrepancy],
     remedy: &Remedy,
     reporter: &mut Reporter,
 ) {
-    for discrepancy in &changes.discrepancies {
+    for discrepancy in discrepancies {
         reporter.error(
             "WF1100",
             format!("{}; {}", discrepancy.message, remedy.advice("")),

@@ -135,7 +135,7 @@ fn a_reintroduced_member_stays_reserved_and_is_reported() {
     assert_eq!(changes.reintroduced, expected);
     assert_eq!(changes.added.len(), 0);
     assert_eq!(changes.reserved.len(), 0);
-    assert!(!changes.is_empty());
+    assert!(!changes.is_empty(), "{changes:?}");
     assert_eq!(lock.drift(&members).unwrap().reintroduced, expected);
     let end = lock.get("example:plugin/types/span.end").unwrap();
     assert!(end.reserved && end.number == 2);

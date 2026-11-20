@@ -65,7 +65,10 @@ fn measure(root: &Path) -> Duration {
     let proto = proto::emit_major(&model, &lock).unwrap();
     let schema = json_schema::emit_version(&model).unwrap();
     let glue = glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap();
-    assert!(!rust.is_empty() && !proto.is_empty() && !schema.is_empty() && !glue.is_empty());
+    assert!(
+        !rust.is_empty() && !proto.is_empty() && !schema.is_empty() && !glue.is_empty(),
+        "every emitter must produce output"
+    );
     started.elapsed()
 }
 

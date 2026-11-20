@@ -319,13 +319,6 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
         let drift = lock.drift(&members).map_err(|err| {
             ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
         })?;
-        if let Some(discrepancy) = drift.discrepancies.first() {
-            bail!(ContractError::new(format!(
-                "{}: {}; run `witforge lock`",
-                directory.display(),
-                discrepancy.message
-            )));
-        }
         if !drift.is_empty() {
             bail!(ContractError::new(format!(
                 "{}: lockfile is stale; run `witforge lock`",

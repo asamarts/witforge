@@ -286,7 +286,7 @@ pub struct Discrepancy {
     pub message: String,
 }
 
-/// What a reconciliation changed, and every discrepancy it refused.
+/// What a reconciliation changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
     /// Members that were assigned a new number.
@@ -301,8 +301,6 @@ pub struct Changes {
     pub dropped: Vec<(String, u32)>,
     /// Live draft entries whose kind or canonical type was updated.
     pub updated: Vec<(String, MemberKind, Option<String>)>,
-    /// Released or structural discrepancies, in deterministic key order.
-    pub discrepancies: Vec<Discrepancy>,
 }
 
 impl Changes {
@@ -314,19 +312,42 @@ impl Changes {
             && self.reintroduced.is_empty()
             && self.dropped.is_empty()
             && self.updated.is_empty()
-            && self.discrepancies.is_empty()
     }
+}
 
-    fn discrepancy(&mut self, key: impl Into<String>, message: impl Into<String>) {
-        let key = key.into();
-        let message = message.into();
-        if !self
-            .discrepancies
-            .iter()
-            .any(|found| found.key == key && found.message == message)
-        {
-            self.discrepancies.push(Discrepancy { key, message });
-        }
+/// The changes a reconciliation would make and every discrepancy it refused.
+///
+/// The lockfile is left unchanged when `discrepancies` is non-empty or `changes.reintroduced`
+/// is non-empty. Use this type when a caller must report every refusal instead of the first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reconciliation {
+    /// The changes that a successful reconciliation would make.
+    pub changes: Changes,
+    /// Released or structural discrepancies, in deterministic key order.
+    pub discrepancies: Vec<Discrepancy>,
+}
+
+impl Reconciliation {
+    /// Whether the lockfile already matches the contract: nothing changed and nothing was
+    /// refused.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty() && self.discrepancies.is_empty()
+    }
+}
+
+fn push_discrepancy(
+    discrepancies: &mut Vec<Discrepancy>,
+    key: impl Into<String>,
+    message: impl Into<String>,
+) {
+    let key = key.into();
+    let message = message.into();
+    if !discrepancies
+        .iter()
+        .any(|found| found.key == key && found.message == message)
+    {
+        discrepancies.push(Discrepancy { key, message });
     }
 }
 
@@ -433,15 +454,14 @@ impl WireLock {
 
     /// Bring the lockfile up to date with `members` in the conservative default mode.
     ///
-    /// A released discrepancy, order change, mixed-kind parent, or reintroduced member is
-    /// returned in [`Changes`] and leaves this lockfile unchanged; the caller reports it and
-    /// does not write. The additive order section is refreshed from `members` only on a
-    /// successful reconciliation.
+    /// This returns the first released discrepancy, order change, or mixed-kind parent as an
+    /// error and leaves the lockfile unchanged. Use [`WireLock::reconcile_report`] to collect
+    /// every discrepancy in one run.
     ///
     /// # Errors
     ///
-    /// Returns an error when a member key is malformed or a parent has used every usable
-    /// protobuf field number.
+    /// Returns an error when a member key is malformed, a released discrepancy or order change
+    /// is found, a parent mixes kinds, or a parent has used every usable protobuf field number.
     pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
         self.reconcile_with(members, LockMode::Default)
     }
@@ -449,22 +469,49 @@ impl WireLock {
     /// Bring the lockfile up to date with `members` under an explicit classification mode.
     ///
     /// The operation is transactional: a malformed key, exhausted number space, released
-    /// discrepancy, or reintroduced member leaves this lockfile unchanged. A successful
-    /// reconciliation returns no discrepancies and no reintroduction; when it returns either,
-    /// the `Changes` describe what was refused and the caller must report it rather than write
-    /// the lockfile.
+    /// discrepancy, or reintroduced member leaves this lockfile unchanged. Use
+    /// [`WireLock::reconcile_report_with`] to collect every discrepancy instead of the first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the baseline is inconsistent, a member key is malformed, a
+    /// released discrepancy or order change is found, a parent mixes kinds, or a parent has
+    /// used every usable protobuf field number.
+    pub fn reconcile_with(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
+        let report = self.reconcile_report_with(members, mode)?;
+        if let Some(discrepancy) = report.discrepancies.first() {
+            bail!("{}", discrepancy.message);
+        }
+        Ok(report.changes)
+    }
+
+    /// Reconcile like [`WireLock::reconcile`] and report every discrepancy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a member key is malformed or a parent has used every usable
+    /// protobuf field number.
+    pub fn reconcile_report(&mut self, members: &[Member]) -> Result<Reconciliation> {
+        self.reconcile_report_with(members, LockMode::Default)
+    }
+
+    /// Reconcile like [`WireLock::reconcile_with`] and report every discrepancy.
     ///
     /// # Errors
     ///
     /// Returns an error when the baseline is inconsistent, a member key is malformed, or a
     /// parent has used every usable protobuf field number.
-    pub fn reconcile_with(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
+    pub fn reconcile_report_with(
+        &mut self,
+        members: &[Member],
+        mode: LockMode<'_>,
+    ) -> Result<Reconciliation> {
         let mut staged = self.clone();
-        let changes = staged.reconcile_in_place(members, mode)?;
-        if changes.discrepancies.is_empty() && changes.reintroduced.is_empty() {
+        let report = staged.reconcile_in_place(members, mode)?;
+        if report.discrepancies.is_empty() && report.changes.reintroduced.is_empty() {
             *self = staged;
         }
-        Ok(changes)
+        Ok(report)
     }
 
     fn validate_against(
@@ -535,7 +582,11 @@ impl WireLock {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn reconcile_in_place(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
+    fn reconcile_in_place(
+        &mut self,
+        members: &[Member],
+        mode: LockMode<'_>,
+    ) -> Result<Reconciliation> {
         let live: BTreeMap<MemberKey, &Member> = members
             .iter()
             .map(|member| Ok((MemberKey::from_member(member)?, member)))
@@ -554,8 +605,9 @@ impl WireLock {
             LockMode::Against(previous) => &previous.orders,
         };
         let mut changes = Changes::default();
+        let mut discrepancies = Vec::new();
         for (parent, message) in common_order_discrepancies(&current_orders, baseline_orders) {
-            changes.discrepancy(parent, message);
+            push_discrepancy(&mut discrepancies, parent, message);
         }
 
         // Every key belongs to the contract's package in every mode; `--against` also checks
@@ -571,7 +623,7 @@ impl WireLock {
         }
         if let LockMode::Against(previous) = mode {
             for discrepancy in self.validate_against(previous, &live)? {
-                changes.discrepancy(discrepancy.key, discrepancy.message);
+                push_discrepancy(&mut discrepancies, discrepancy.key, discrepancy.message);
             }
         }
 
@@ -616,7 +668,8 @@ impl WireLock {
                     if entry.kind != member.kind || entry.ty.as_deref() != member.ty.as_deref() =>
                 {
                     if released.contains_key(&key) {
-                        changes.discrepancy(
+                        push_discrepancy(
+                            &mut discrepancies,
                             key.key(),
                             format!(
                                 "released entry `{key}` changed kind or type from `{} {}` to `{} {}`",
@@ -657,18 +710,19 @@ impl WireLock {
         // in the shared reconcile/drift path, so `check`, `lock`, and every generator report
         // the same violation. A lockfile that already mixes kinds is refused by the same check.
         for (parent, message) in self.kind_discrepancies() {
-            changes.discrepancy(parent, message);
+            push_discrepancy(&mut discrepancies, parent, message);
         }
         // A reintroduced member is a contract violation; leave the lockfile (including its
         // order section) untouched so the caller cannot mistake it for a usable update.
-        if changes.reintroduced.is_empty() && changes.discrepancies.is_empty() {
+        if changes.reintroduced.is_empty() && discrepancies.is_empty() {
             self.orders_present = !current_orders.is_empty();
             self.orders = current_orders;
         }
-        changes
-            .discrepancies
-            .sort_by(|left, right| left.key.cmp(&right.key));
-        Ok(changes)
+        discrepancies.sort_by(|left, right| left.key.cmp(&right.key));
+        Ok(Reconciliation {
+            changes,
+            discrepancies,
+        })
     }
 
     /// Members of the contract that the lockfile does not number, live lockfile entries whose
@@ -688,8 +742,34 @@ impl WireLock {
     ///
     /// Returns the same errors as [`WireLock::reconcile_with`].
     pub fn drift_with(&self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
+        let report = self.drift_report_with(members, mode)?;
+        if let Some(discrepancy) = report.discrepancies.first() {
+            bail!("{}", discrepancy.message);
+        }
+        Ok(report.changes)
+    }
+
+    /// Like [`WireLock::drift`] and report every discrepancy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`WireLock::reconcile_report`].
+    pub fn drift_report(&self, members: &[Member]) -> Result<Reconciliation> {
+        self.drift_report_with(members, LockMode::Default)
+    }
+
+    /// Like [`WireLock::drift_with`] and report every discrepancy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`WireLock::reconcile_report_with`].
+    pub fn drift_report_with(
+        &self,
+        members: &[Member],
+        mode: LockMode<'_>,
+    ) -> Result<Reconciliation> {
         let mut copy = self.clone();
-        copy.reconcile_with(members, mode)
+        copy.reconcile_report_with(members, mode)
     }
 
     /// Check that every entry and order fingerprint belongs to `package`, the contract's
