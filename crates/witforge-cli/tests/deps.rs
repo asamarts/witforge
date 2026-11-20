@@ -215,3 +215,79 @@ fn dependency_contract_checks_and_emits_rust_and_proto() {
 
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+fn check_against_compares_the_pinned_dependency_graph() {
+    let root =
+        std::env::temp_dir().join(format!("witforge-deps-check-graph-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    for (version, alias_target) in [("v0.1", "u32"), ("v0.2", "u64")] {
+        let shared = root.join(version).join("deps/shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(
+            shared.join("types.wit"),
+            format!(
+                "package example:shared@0.1.0;\ninterface types {{ type id = {alias_target}; }}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join(version).join("contract.wit"),
+            format!(
+                "package example:root@{}.0;\ninterface api {{\n\
+                   use example:shared/types@0.1.0.{{id}};\n\
+                   record r {{ a: id }}\n\
+                 }}\n",
+                &version[1..]
+            ),
+        )
+        .unwrap();
+    }
+    let old = root.join("v0.1");
+    let new = root.join("v0.2");
+    let first = witforge()
+        .arg("lock")
+        .arg(&old)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(first.status.success(), "{first:?}");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+    let lock = witforge()
+        .arg("lock")
+        .arg(&new)
+        .arg("--against")
+        .arg(old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
+
+    let check = witforge()
+        .arg("check")
+        .arg(&new)
+        .arg("--against")
+        .arg(old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(stderr.contains("dependency graph differs"), "{stderr}");
+
+    // A copied baseline has no WIT beside it; check says the graph cannot be compared.
+    let copied = root.join("baseline.lock");
+    fs::copy(old.join("wire.lock"), &copied).unwrap();
+    let output = witforge()
+        .arg("check")
+        .arg(&new)
+        .arg("--against")
+        .arg(&copied)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("cannot compare the pinned dependency graph"),
+        "{output:?}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}

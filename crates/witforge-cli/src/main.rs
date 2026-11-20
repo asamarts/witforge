@@ -436,6 +436,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_version_directory(&options.dir)?;
     // `check` may verify a released directory; the manifest only has to be valid.
@@ -461,6 +462,34 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         .unwrap_or_else(|| options.dir.join("wire.lock"));
     let (lock, text) = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
+    if let Some(against) = &options.against {
+        match baseline_model(against)? {
+            Some(baseline) => {
+                if let Err(err) = witforge::ensure_same_dependency_graph(&model, &baseline) {
+                    reporter.error(
+                        "WF1100",
+                        format!("{err:#}"),
+                        Some(against.display().to_string()),
+                    );
+                    return Ok(ExitCode::from(1));
+                }
+            }
+            None => reporter.note(
+                "WF1107",
+                &format!(
+                    "note: cannot compare the pinned dependency graph: baseline `{}` is not the \
+                     wire.lock of a version directory; run a generator over the WIT root",
+                    against.display()
+                ),
+                format!(
+                    "cannot compare the pinned dependency graph: baseline `{}` is not a \
+                     version-directory wire.lock",
+                    against.display()
+                ),
+                against.display().to_string(),
+            ),
+        }
+    }
     let released = is_released(&options.dir, options.released.as_deref())?;
     let remedy = if released {
         Remedy::Released(options.dir.display().to_string())
@@ -1041,6 +1070,33 @@ fn sibling_predecessor(dir: &Path) -> Option<(u64, PathBuf)> {
         }
     }
     best
+}
+
+/// Load the WIT model beside a version-directory baseline lockfile.
+///
+/// A baseline copied outside a version directory has no WIT to compare and returns `None`; the
+/// caller reports that the pinned dependency graph cannot be checked.
+fn baseline_model(path: &Path) -> Result<Option<model::Model>> {
+    let Some(parent) = path.parent() else {
+        return Ok(None);
+    };
+    if path.file_name().and_then(|name| name.to_str()) != Some("wire.lock")
+        || version_directory(parent).is_none()
+    {
+        return Ok(None);
+    }
+    let contract = load(parent)
+        .with_context(|| format!("failed to load the baseline version {}", parent.display()))?;
+    let violations = subset::check(&contract);
+    if !violations.is_empty() {
+        let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
+        bail!(ContractError::new(format!(
+            "{}: {}",
+            parent.display(),
+            messages.join("; ")
+        )));
+    }
+    Ok(Some(model::build(&contract)?))
 }
 
 fn same_parent(left: Option<&Path>, right: Option<&Path>) -> bool {

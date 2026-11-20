@@ -87,6 +87,69 @@ fn ambiguous_dependency_is_an_error() {
 }
 
 #[test]
+fn foreign_aliases_and_named_structures_keep_their_qualified_name() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-deps-canonical-foreign-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("v0.1/deps/shared")).unwrap();
+    fs::write(
+        root.join("v0.1/deps/shared/types.wit"),
+        "package example:shared@0.1.0;\n\
+         interface types {\n\
+           record item { id: u64 }\n\
+           type id = u64;\n\
+           type id-chain = id;\n\
+           type items = list<item>;\n\
+           type maybe = option<item>;\n\
+           type outcome = result<item, string>;\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("v0.1/contract.wit"),
+        "package example:root@0.1.0;\n\
+         interface api {\n\
+           use example:shared/types@0.1.0.{id, id-chain, items, maybe, outcome};\n\
+           type local-id = id;\n\
+           record r {\n\
+             a: id, b: id-chain, c: items, d: maybe, e: outcome, f: local-id\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&root.join("v0.1")).unwrap()).unwrap();
+    let record = model
+        .interface("api")
+        .unwrap()
+        .types
+        .iter()
+        .find(|def| def.name == "r")
+        .unwrap();
+    let TypeDefKind::Record(fields) = &record.kind else {
+        panic!("r should be a record");
+    };
+    let expected = [
+        ("a", "example:shared/types/id"),
+        ("b", "example:shared/types/id-chain"),
+        ("c", "example:shared/types/items"),
+        ("d", "example:shared/types/maybe"),
+        ("e", "example:shared/types/outcome"),
+        ("f", "example:shared/types/id"),
+    ];
+    for (name, canonical) in expected {
+        let field = fields.iter().find(|field| field.name == name).unwrap();
+        assert_eq!(
+            model.canonical_type(&field.ty).unwrap(),
+            canonical,
+            "{name}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn two_versions_of_one_dependency_are_refused() {
     let root =
         std::env::temp_dir().join(format!("witforge-deps-two-versions-{}", std::process::id()));

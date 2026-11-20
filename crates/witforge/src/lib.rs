@@ -223,6 +223,20 @@ fn scan_dependency_packages(dir: &Path) -> Vec<(PackageName, PathBuf)> {
     packages
 }
 
+/// Refuse two models whose pinned dependency graphs cannot share one generated binding surface.
+///
+/// This is the comparison the generators and `diff` apply. `check --against` uses it when the
+/// baseline lockfile belongs to a version directory, so a dependency change cannot pass the
+/// lockfile gate while every generator refuses the root.
+///
+/// # Errors
+///
+/// Returns a [`ContractError`] for the first changed package, version, interface, type,
+/// function, declaration order, stability metadata, or docs.
+pub fn ensure_same_dependency_graph(old: &model::Model, new: &model::Model) -> Result<()> {
+    crate::emit::versions::ensure_same_dependency_graph(&old.dependencies, &new.dependencies)
+}
+
 /// The default released-version manifest name.
 pub const RELEASED_MANIFEST: &str = "released";
 

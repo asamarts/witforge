@@ -115,6 +115,13 @@ have it.
   contract types are contract errors (exit `1`); an over-limit lockfile token is a parse error
   (exit `2`). Number assignment for a wide contract is now linear in the member count instead of
   rescanning every entry for every new member.
+- Canonical type strings now document the foreign form they already used: a dependency type
+  keeps its package-qualified name whether it is an alias, a named `list`/`option`/`result`, or a
+  member-bearing type; local aliases still expand. Because the recorded form cannot expose a
+  foreign alias's target change, `check --against` now compares the pinned dependency graphs
+  with the generators' shared rule when its baseline is a version directory's `wire.lock`. A
+  copied baseline outside a version directory cannot be compared; `check` says so in a note and
+  CI must run a generator over the root.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

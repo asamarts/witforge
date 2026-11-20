@@ -259,10 +259,16 @@ Canonicalization rules:
 - A named record, variant, enum, or flags type is written as its defining interface and type:
   `types/span`. The defining interface is used even when the reference site uses
   `use ... as ...`.
-- `type a = b` aliases are expanded recursively.
-- Named `list`, `option`, and `result` definitions are expanded structurally. For example,
+- A local `type a = b` alias is expanded recursively to its target. A named type imported from
+  a `deps/` dependency is recorded by its package-qualified name without expansion, whether it
+  is an alias, a named `list`/`option`/`result`, or a member-bearing type:
+  `ex:shared/types/id`, `ex:shared/types/items`. A local `use ... as ...` alias of a foreign
+  type is expanded to that foreign name. The version is not part of the name.
+- Local named `list`, `option`, and `result` definitions are expanded structurally. For example,
   `type tags = list<string>` is written as `list<string>` wherever it is used, not as `tags`.
-  The named Rust alias is still emitted; the lockfile records the structure.
+  The named Rust alias is still emitted; the lockfile records the structure. A named structural
+  type defined in a dependency keeps its dependency-qualified name
+  (`ex:shared/types/items`), not its structural expansion.
 - `result` always has both slots. `result<T, _>`, `result<_, E>`, and bare `result` are written
   as `result<T,_>`, `result<_,E>`, and `result<_,_>`. There is no space after the comma.
 - `list<u8>` stays `list<u8>` in the lockfile; the protobuf `bytes` projection is an emitter
@@ -270,7 +276,10 @@ Canonicalization rules:
   `u8` canonicalizes to the same `list<u8>` token, so the lockfile cannot distinguish the two
   spellings and every emitter must project both the same way.
 - Named list/option/result definitions have no locked members of their own; expanding them at
-  use sites is what makes an inner type change visible.
+  use sites is what makes an inner type change visible. A foreign alias therefore does not
+  expose its target's change through the canonical string; `check --against` compares the
+  pinned dependency graph with the same rule the generators use (section 7), and the generators
+  refuse a changed graph when the root is generated.
 - A named type is always qualified (`types/reserved`, `types/field`), so the bare token
   `reserved` can only be the reserved flag. A bare `reserved` in the type position is a parse
   error.
@@ -333,6 +342,12 @@ Canonicalization rules:
   predecessor: a baseline from another major is refused with exit `1` and the `--first` remedy,
   and one that skips an existing intermediate minor is refused while naming the predecessor. A
   baseline file outside a version directory is accepted as given.
+- When the baseline file belongs to a version directory, `check --against` also compares the
+  current and baseline pinned dependency graphs with the generators' shared rule: package pins,
+  versions, interface/type/function inventories and order, shapes, stability, and docs. A
+  difference fails with exit `1` and the generators' message. A baseline copied outside a
+  version directory has no WIT to compare; `check` says so in a note, and CI must run a generator
+  over the WIT root to prove the graph.
 - The current version's `wire.lock` must exist for `--against`; the workflow starts a new minor
   by copying the previous lockfile. A missing current lockfile is an error, not an implicit
   copy, and the error says to copy the previous lockfile first. The previous lockfile must parse

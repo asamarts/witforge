@@ -128,12 +128,17 @@ generated binding surfaces.
 `rust`, `proto`, `schema`, and `glue` compare every version with the first and refuse the first
 changed package, version, interface, type, or function. `diff` applies the same comparison and
 refuses mismatched graphs instead of reporting a local contract as compatible. A dependency pin
-change therefore requires a separate WIT root and generated binding surface.
+change therefore requires a separate WIT root and generated binding surface, or a single change
+that updates the copied `deps/` graph in every version directory of the root at once; partial
+adoption is refused. `check --against` applies the same comparison when its baseline is a
+version directory.
 
 `witforge check` accepts one version directory. It proves that directory loads, stays in the
-supported subset, has a current lockfile, and—when `--against` is supplied—continues the prior
-lockfile. It cannot prove cross-version dependency identity. CI MUST also run a generator
-`--check` over the WIT root, and SHOULD run `diff` for a reviewed version pair.
+supported subset, has a current lockfile, and—when `--against` supplies a version directory's
+`wire.lock`—continues the prior lockfile and resolves the identical pinned dependency graph
+using the generators' shared comparison. A baseline lockfile copied outside a version directory
+has no WIT beside it; `check` reports that the graph cannot be compared, and CI MUST also run a
+generator `--check` over the WIT root and SHOULD run `diff` for a reviewed version pair.
 
 Every package loaded from the standard `deps/` directory contributes its supported generated
 surface to this graph, including a package the root does not reference. Root reachability instead

@@ -209,8 +209,11 @@ model::build(&Contract) -> Result<Model>
 
 - primitives use WIT spelling (`bool`, `u8`, `s64`, `f64`, `string`);
 - a named record/variant/enum/flags is `interface/type` (package version omitted);
-- an alias expands recursively to its target;
-- a named `list`/`option`/`result` expands structurally;
+- a local alias expands recursively to its target;
+- a local named `list`/`option`/`result` expands structurally;
+- a named type imported from a dependency—alias, named structural, or member-bearing—is written
+  as its package-qualified name (`ex:shared/types/id`, `ex:shared/types/items`) and is not
+  expanded; the dependency version is not part of the name;
 - `list<T>` is `list<T>`, `option<T>` is `option<T>`;
 - `result` is `result<ok,err>` with both slots and `_` for a missing payload;
 - no whitespace.
