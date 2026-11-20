@@ -592,20 +592,24 @@ pub(crate) fn ensure_dependency_identity(
     }
     for ((namespace, name), copies) in groups {
         if copies.len() > 1 {
-            let versions = copies
-                .iter()
-                .map(|(version, _)| version.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
+            let mut versions: Vec<&str> =
+                copies.iter().map(|(version, _)| version.as_str()).collect();
+            versions.sort_unstable();
+            versions.dedup();
+            let versions = if versions.len() == 1 {
+                format!("version {}", versions[0])
+            } else {
+                format!("versions {}", versions.join(", "))
+            };
             let entries = copies
                 .iter()
                 .map(|(_, entry)| format!("`{entry}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
             bail!(crate::ContractError::new(format!(
-                "duplicate dependency package `{namespace}:{name}` at versions {versions} in \
-                 {entries}; one dependency graph must pin one version, and a new major is \
-                 adopted by every dependent at once"
+                "duplicate dependency package `{namespace}:{name}`: {versions} in {entries}; \
+                 one dependency graph must pin one version, and a new major is adopted by every \
+                 dependent at once"
             )));
         }
     }
