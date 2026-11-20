@@ -73,13 +73,15 @@ They are not in issues, TODO comments, chat, or prose. The plan is validated by
   hand. Closing or changing a task can also make the generated agent block
   stale; regenerate it and rerun `aplan export-agents-md --check AGENTS.md`.
 
-## Dogfooding
+## Reporting aplan issues, friction, and feature requests
 
-This repository is a pilot for aplan. Record reproducible friction, surprising
-behavior, and questions in [`docs/aplan-pilot.md`](docs/aplan-pilot.md) with the
-date, command, expected/actual behavior, and impact. Report an issue upstream when
-it is reproducible and general. Do not modify the aplan checkout under
-`~/projects/aplan` unless the user asks; the report belongs here first.
+Report `aplan` bugs, workflow friction, documentation gaps, and feature requests as GitHub issues on the public [`asamarts/aplan`](https://github.com/asamarts/aplan/issues) repository (do not write local pilot logs or add tasks directly in `~/projects/aplan`):
+
+1. Search first: `gh issue list -R asamarts/aplan --state all --search "<words>"`. If an issue already exists, add new reproduction details there.
+2. Reproduce on a minimal generic scratch plan under `~/.tmp`.
+3. File with exact command, exit code, output, and `aplan --version` (plus `aplan facts --identity` when relevant): `gh issue create -R asamarts/aplan --title "..." --label bug|enhancement --body-file <file>`.
+4. **Keep public issues sanitized:** `witforge` is private and `asamarts/aplan` is public. Never include `witforge`'s name, tasks, internal paths, or confidential data in a public issue; reproduce on a generic scratch plan instead.
+5. **Do not edit `~/projects/aplan` directly** as a workaround from here.
 
 ## Build and test
 
