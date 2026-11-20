@@ -278,6 +278,16 @@ pub enum LockMode<'a> {
 }
 
 /// What [`WireLock::reconcile`] changed.
+/// One released or structural lockfile discrepancy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Discrepancy {
+    /// The lockfile key the discrepancy concerns, or the order parent for a reorder.
+    pub key: String,
+    /// The actionable description.
+    pub message: String,
+}
+
+/// What a reconciliation changed, and every discrepancy it refused.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
     /// Members that were assigned a new number.
@@ -292,6 +302,8 @@ pub struct Changes {
     pub dropped: Vec<(String, u32)>,
     /// Live draft entries whose kind or canonical type was updated.
     pub updated: Vec<(String, MemberKind, Option<String>)>,
+    /// Released or structural discrepancies, in deterministic key order.
+    pub discrepancies: Vec<Discrepancy>,
 }
 
 impl Changes {
@@ -303,6 +315,19 @@ impl Changes {
             && self.reintroduced.is_empty()
             && self.dropped.is_empty()
             && self.updated.is_empty()
+            && self.discrepancies.is_empty()
+    }
+
+    fn discrepancy(&mut self, key: impl Into<String>, message: impl Into<String>) {
+        let key = key.into();
+        let message = message.into();
+        if !self
+            .discrepancies
+            .iter()
+            .any(|found| found.key == key && found.message == message)
+        {
+            self.discrepancies.push(Discrepancy { key, message });
+        }
     }
 }
 
@@ -432,7 +457,7 @@ impl WireLock {
         &self,
         previous: &WireLock,
         live: &BTreeMap<MemberKey, &Member>,
-    ) -> Result<()> {
+    ) -> Result<Vec<Discrepancy>> {
         if let Some(first) = previous.entries.keys().next() {
             let expected = first.package();
             for key in previous.entries.keys() {
@@ -452,25 +477,47 @@ impl WireLock {
                 }
             }
         }
+        let mut discrepancies = Vec::new();
         for (key, old) in &previous.entries {
             let Some(current) = self.entries.get(key) else {
-                bail!("released entry `{key}` is missing from the current lockfile");
+                discrepancies.push(Discrepancy {
+                    key: key.key(),
+                    message: format!("released entry `{key}` is missing from the current lockfile"),
+                });
+                continue;
             };
             if current.number != old.number {
-                bail!(
-                    "released entry `{key}` was renumbered from {} to {}; numbers never change",
-                    old.number,
-                    current.number
-                );
+                discrepancies.push(Discrepancy {
+                    key: key.key(),
+                    message: format!(
+                        "released entry `{key}` was renumbered from {} to {}; numbers never \
+                         change",
+                        old.number, current.number
+                    ),
+                });
             }
             if current.kind != old.kind || current.ty != old.ty {
-                bail!("released entry `{key}` changed kind or type");
+                discrepancies.push(Discrepancy {
+                    key: key.key(),
+                    message: format!(
+                        "released entry `{key}` changed kind or type from `{} {}` to `{} {}`",
+                        old.kind,
+                        old.ty.as_deref().unwrap_or("-"),
+                        current.kind,
+                        current.ty.as_deref().unwrap_or("-")
+                    ),
+                });
             }
             if old.reserved && !current.reserved {
-                bail!("released entry `{key}` was un-reserved; reserved numbers are never reused");
+                discrepancies.push(Discrepancy {
+                    key: key.key(),
+                    message: format!(
+                        "released entry `{key}` was un-reserved; reserved numbers are never reused"
+                    ),
+                });
             }
         }
-        Ok(())
+        Ok(discrepancies)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -492,7 +539,10 @@ impl WireLock {
             LockMode::First => &empty_orders,
             LockMode::Against(previous) => &previous.orders,
         };
-        compare_common_orders(&current_orders, baseline_orders)?;
+        let mut changes = Changes::default();
+        for (parent, message) in common_order_discrepancies(&current_orders, baseline_orders) {
+            changes.discrepancy(parent, message);
+        }
 
         // Every key belongs to the contract's package in every mode; `--against` also checks
         // the previous lockfile's keys.
@@ -506,10 +556,11 @@ impl WireLock {
             );
         }
         if let LockMode::Against(previous) = mode {
-            self.validate_against(previous, &live)?;
+            for discrepancy in self.validate_against(previous, &live)? {
+                changes.discrepancy(discrepancy.key, discrepancy.message);
+            }
         }
 
-        let mut changes = Changes::default();
         let mut dropped = Vec::new();
         for (key, entry) in &self.entries {
             if !released.contains_key(key) && (entry.reserved || !live.contains_key(key)) {
@@ -551,13 +602,17 @@ impl WireLock {
                     if entry.kind != member.kind || entry.ty.as_deref() != member.ty.as_deref() =>
                 {
                     if released.contains_key(&key) {
-                        bail!(
-                            "released entry `{key}` changed kind or type from `{} {}` to `{} {}`",
-                            entry.kind,
-                            entry.ty.as_deref().unwrap_or("-"),
-                            member.kind,
-                            member.ty.as_deref().unwrap_or("-")
+                        changes.discrepancy(
+                            key.key(),
+                            format!(
+                                "released entry `{key}` changed kind or type from `{} {}` to                                  `{} {}`",
+                                entry.kind,
+                                entry.ty.as_deref().unwrap_or("-"),
+                                member.kind,
+                                member.ty.as_deref().unwrap_or("-")
+                            ),
                         );
+                        continue;
                     }
                     let entry = self.entries.get_mut(&key).expect("entry exists");
                     entry.kind = member.kind;
@@ -587,13 +642,18 @@ impl WireLock {
         // schema of every field that refers to the type has already changed. Refuse that here,
         // in the shared reconcile/drift path, so `check`, `lock`, and every generator report
         // the same violation. A lockfile that already mixes kinds is refused by the same check.
-        self.validate_kinds()?;
+        for (parent, message) in self.kind_discrepancies() {
+            changes.discrepancy(parent, message);
+        }
         // A reintroduced member is a contract violation; leave the lockfile (including its
         // order section) untouched so the caller cannot mistake it for a usable update.
-        if changes.reintroduced.is_empty() {
+        if changes.reintroduced.is_empty() && changes.discrepancies.is_empty() {
             self.orders_present = !current_orders.is_empty();
             self.orders = current_orders;
         }
+        changes
+            .discrepancies
+            .sort_by(|left, right| left.key.cmp(&right.key));
         Ok(changes)
     }
 
@@ -870,24 +930,33 @@ impl WireLock {
     /// mixed-kind endpoint and report the kind change. `check`, `lock`, and the generators
     /// reach it through [`WireLock::drift`] or [`WireLock::reconcile`], which makes the
     /// refusal a contract violation (exit `1`) rather than a parse error (exit `2`).
-    fn validate_kinds(&self) -> Result<()> {
+    fn kind_discrepancies(&self) -> Vec<(String, String)> {
         let mut kinds: BTreeMap<String, MemberKind> = BTreeMap::new();
+        let mut reported: BTreeSet<String> = BTreeSet::new();
+        let mut discrepancies = Vec::new();
         for (key, entry) in &self.entries {
             let parent = key.parent();
             match kinds.get(&parent) {
-                Some(&kind) if kind != entry.kind => bail!(
-                    "lockfile parent `{parent}` mixes member kinds `{kind}` and `{}`; a type, \
-                     interface, or function keeps one kind, so give the changed definition a \
-                     new name in a new version",
-                    entry.kind
-                ),
+                Some(&kind) if kind != entry.kind => {
+                    if reported.insert(parent.clone()) {
+                        discrepancies.push((
+                            parent.clone(),
+                            format!(
+                                "lockfile parent `{parent}` mixes member kinds `{kind}` and \
+                                 `{}`; a type, interface, or function keeps one kind, so give \
+                                 the changed definition a new name in a new version",
+                                entry.kind
+                            ),
+                        ));
+                    }
+                }
                 Some(_) => {}
                 None => {
                     kinds.insert(parent, entry.kind);
                 }
             }
         }
-        Ok(())
+        discrepancies
     }
 }
 
@@ -927,10 +996,11 @@ fn orders_from_members(members: &[Member]) -> BTreeMap<String, Order> {
 /// Members that exist on only one side are ignored, so adding or removing a member does not
 /// report a false reorder. If either side has no fingerprint for a parent, there is nothing to
 /// compare; that is the migration path for v2 lockfiles written before this section existed.
-fn compare_common_orders(
+fn common_order_discrepancies(
     current: &BTreeMap<String, Order>,
     baseline: &BTreeMap<String, Order>,
-) -> Result<()> {
+) -> Vec<(String, String)> {
+    let mut discrepancies = Vec::new();
     for (parent, current_order) in current {
         let Some(baseline_order) = baseline.get(parent) else {
             continue;
@@ -954,11 +1024,24 @@ fn compare_common_orders(
             .filter(|name| common.contains(name))
             .collect();
         if old_common != new_common {
-            bail!(
-                "declaration order of `{parent}` changed for members present in both versions; \
-                 append new members instead of reordering"
-            );
+            discrepancies.push((
+                parent.clone(),
+                format!(
+                    "declaration order of `{parent}` changed for members present in both \
+                     versions; append new members instead of reordering"
+                ),
+            ));
         }
+    }
+    discrepancies
+}
+
+fn compare_common_orders(
+    current: &BTreeMap<String, Order>,
+    baseline: &BTreeMap<String, Order>,
+) -> Result<()> {
+    if let Some((_, message)) = common_order_discrepancies(current, baseline).first() {
+        bail!("{message}");
     }
     Ok(())
 }

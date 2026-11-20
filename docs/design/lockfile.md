@@ -376,6 +376,13 @@ contract or lockfile violations, an unreleased version's lockfile that is not in
 means usage, IO, parse, or internal errors. Every mode also refuses a parent that mixes member
 kinds (section 6); the error names the parent and both kinds.
 
+A run collects every discrepancy before it fails, in lockfile key order: released kind/type
+changes, renumbering, un-reserving, missing entries, reintroduced members, order changes, and a
+mixed-kind parent. An entry whose kind and type both changed is one diagnostic naming both. A
+mixed parent is one diagnostic for the parent, not one per member. `lock` reports the same list
+and writes nothing when it contains any discrepancy, however many of the others it could have
+reconciled.
+
 Without a baseline (default mode):
 
 1. Every live member has a non-reserved entry of the same kind and canonical type. A missing or

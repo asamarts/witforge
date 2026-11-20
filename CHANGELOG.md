@@ -127,6 +127,11 @@ have it.
   the same name. It also reads the `released` manifest beside a version-directory endpoint, so a
   malformed manifest or a symlink in a listed released directory is refused with exit `2` as
   `check` refuses it. `diff.md` and the emitter guide state both behaviours.
+- `check` and `lock` now report every released-member discrepancy in one run instead of stopping
+  at the first kind or type change: all kind/type changes, renumbering, un-reserving, missing
+  entries, reintroductions, order changes, and mixed-kind parents are collected in lockfile key
+  order. `lock` writes nothing when the list is non-empty. JSON and SARIF carry one diagnostic
+  per discrepancy.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

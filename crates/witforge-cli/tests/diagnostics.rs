@@ -272,3 +272,75 @@ fn lock_emits_structured_subset_errors() {
     assert_eq!(diagnostics[0]["severity"], "error");
     assert_eq!(diagnostics[0]["path"], "example:bad/types/blob");
 }
+
+#[test]
+fn check_emits_every_released_discrepancy_as_its_own_diagnostic() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-discrepancies-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    for version in ["v0.1", "v0.2"] {
+        let dir = root.join(version);
+        fs::create_dir_all(&dir).unwrap();
+        let ty = if version == "v0.1" { "string" } else { "u32" };
+        let fields = ["a", "b", "c", "d"]
+            .into_iter()
+            .map(|name| format!("{name}: {ty}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fs::write(
+            dir.join("contract.wit"),
+            format!(
+                "package example:root@{}.0;\ninterface api {{ record r {{ {fields} }} }}\n",
+                &version[1..]
+            ),
+        )
+        .unwrap();
+    }
+    let old = root.join("v0.1");
+    let new = root.join("v0.2");
+    let first = output(&["lock", old.to_str().unwrap(), "--first"]);
+    assert!(first.status.success(), "{first:?}");
+    fs::copy(old.join("wire.lock"), new.join("wire.lock")).unwrap();
+
+    let json_output = output(&[
+        "check",
+        new.to_str().unwrap(),
+        "--against",
+        old.join("wire.lock").to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(json_output.status.code(), Some(1), "{json_output:?}");
+    let diagnostics = json(&json_output)["diagnostics"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(diagnostics.len(), 4, "{diagnostics:?}");
+    for (index, name) in ["a", "b", "c", "d"].into_iter().enumerate() {
+        assert_eq!(diagnostics[index]["code"], "WF1100");
+        assert_eq!(
+            diagnostics[index]["path"],
+            format!("example:root/api/r.{name}")
+        );
+    }
+
+    let sarif_output = output(&[
+        "check",
+        new.to_str().unwrap(),
+        "--against",
+        old.join("wire.lock").to_str().unwrap(),
+        "--format",
+        "sarif",
+    ]);
+    assert_eq!(sarif_output.status.code(), Some(1), "{sarif_output:?}");
+    assert_eq!(
+        json(&sarif_output)["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    fs::remove_dir_all(&root).unwrap();
+}

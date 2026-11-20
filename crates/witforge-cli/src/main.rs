@@ -600,14 +600,26 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     let changes = lock
         .reconcile_with(&members, mode)
         .map_err(|err| ContractError::from_error(&err))?;
+    let mut refused = false;
+    for discrepancy in &changes.discrepancies {
+        reporter.error(
+            "WF1100",
+            &discrepancy.message,
+            Some(discrepancy.key.clone()),
+        );
+        refused = true;
+    }
     if !changes.reintroduced.is_empty() {
         for (key, number) in &changes.reintroduced {
             reporter.error("WF1103", reintroduced(key, *number), Some(key.clone()));
+            refused = true;
         }
+    }
+    if refused {
         if reporter.human() {
             bail!(ContractError::new(format!(
-                "{} removed member(s) reintroduced; the lockfile was not updated",
-                changes.reintroduced.len()
+                "{} lockfile discrepancy(s); the lockfile was not updated",
+                changes.discrepancies.len() + changes.reintroduced.len()
             )));
         }
         return Ok(ExitCode::from(1));
@@ -1283,6 +1295,13 @@ fn report_check_changes(
     remedy: &Remedy,
     reporter: &mut Reporter,
 ) {
+    for discrepancy in &changes.discrepancies {
+        reporter.error(
+            "WF1100",
+            format!("{}; {}", discrepancy.message, remedy.advice("")),
+            Some(discrepancy.key.clone()),
+        );
+    }
     for (key, _) in &changes.added {
         reporter.error(
             "WF1101",

@@ -99,16 +99,24 @@ fn against_catches_reorders_but_ignores_additions_and_removals() {
         .map(|(index, _)| index)
         .unwrap();
     reordered.swap(first, second);
-    let error = baseline
+    let changes = baseline
         .drift_with(&reordered, LockMode::Against(&baseline))
-        .unwrap_err();
-    let message = format!("{error:#}");
+        .unwrap();
+    let message = changes
+        .discrepancies
+        .iter()
+        .map(|change| change.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(message.contains("declaration order"), "{message}");
     assert!(message.contains(&parent), "{message}");
-    let error = baseline.drift(&reordered).unwrap_err();
+    let changes = baseline.drift(&reordered).unwrap();
     assert!(
-        format!("{error:#}").contains("declaration order"),
-        "{error:#}"
+        changes
+            .discrepancies
+            .iter()
+            .any(|change| change.message.contains("declaration order")),
+        "{changes:?}"
     );
 
     // Adding a member to the same parent is not a reorder of common members.
@@ -368,7 +376,14 @@ fn reconcile_records_and_checks_kind_and_type() {
         ty: Some("u16".into()),
     }];
     let mut edited_lock = lock.clone();
-    assert!(edited_lock.reconcile(&edited).is_err());
+    let changes = edited_lock.reconcile(&edited).unwrap();
+    assert!(
+        changes
+            .discrepancies
+            .iter()
+            .any(|change| change.key == "a:b/i/t.x" && change.message.contains("kind or type")),
+        "{changes:?}"
+    );
 
     lock.reconcile(&members[1..]).unwrap();
     let reserved = lock.get("a:b/i/t.x").unwrap();
@@ -464,13 +479,14 @@ fn reconcile_does_not_mutate_on_error() {
     let mut lock = WireLock::default();
     lock.reconcile(&members).unwrap();
     let before = lock.clone();
-    let changed = [Member {
+    let retyped_members = [Member {
         parent: "a:b/i/t".into(),
         name: "x".into(),
         kind: MemberKind::Field,
         ty: Some("u16".into()),
     }];
-    assert!(lock.reconcile(&changed).is_err());
+    let changes = lock.reconcile(&retyped_members).unwrap();
+    assert!(!changes.discrepancies.is_empty(), "{changes:?}");
     assert_eq!(lock, before);
 }
 
@@ -649,10 +665,15 @@ fn against_mode_updates_drafts_but_protects_released_entries() {
         kind: MemberKind::Field,
         ty: Some("u16".into()),
     }];
+    let changes = retyped
+        .reconcile_with(&changed_members, LockMode::Against(&previous))
+        .unwrap();
     assert!(
-        retyped
-            .reconcile_with(&changed_members, LockMode::Against(&previous))
-            .is_err()
+        changes
+            .discrepancies
+            .iter()
+            .any(|change| change.key == "a:b/i/t.x" && change.message.contains("kind or type")),
+        "{changes:?}"
     );
     assert_eq!(retyped, previous);
 
@@ -684,20 +705,30 @@ fn against_mode_rejects_released_renumbering_and_un_reserving() {
     ))
     .unwrap();
     let mut renumbered = renumbered;
+    let changes = renumbered
+        .reconcile_with(&[], LockMode::Against(&previous))
+        .unwrap();
     assert!(
-        renumbered
-            .reconcile_with(&[], LockMode::Against(&previous))
-            .is_err()
+        changes
+            .discrepancies
+            .iter()
+            .any(|change| change.key == "a:b/i/t.x" && change.message.contains("renumbered")),
+        "{changes:?}"
     );
     let unreserved = WireLock::parse(&format!(
         "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 2 field u64\n"
     ))
     .unwrap();
     let mut unreserved = unreserved;
+    let changes = unreserved
+        .reconcile_with(&[], LockMode::Against(&previous))
+        .unwrap();
     assert!(
-        unreserved
-            .reconcile_with(&[], LockMode::Against(&previous))
-            .is_err()
+        changes
+            .discrepancies
+            .iter()
+            .any(|change| change.key == "a:b/i/t.y" && change.message.contains("un-reserved")),
+        "{changes:?}"
     );
 }
 
@@ -726,10 +757,15 @@ fn against_mode_rejects_a_different_package() {
 fn against_mode_rejects_a_missing_released_entry() {
     let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
     let mut current = WireLock::default();
+    let changes = current
+        .reconcile_with(&[], LockMode::Against(&previous))
+        .unwrap();
     assert!(
-        current
-            .reconcile_with(&[], LockMode::Against(&previous))
-            .is_err()
+        changes
+            .discrepancies
+            .iter()
+            .any(|change| change.key == "a:b/i/t.x" && change.message.contains("missing")),
+        "{changes:?}"
     );
 }
 
@@ -847,13 +883,20 @@ a:b/i/t.new = 2 field u64\n"
         kind: MemberKind::Field,
         ty: Some("u64".into()),
     }];
-    let error = mixed.drift(&members).unwrap_err().to_string();
-    assert!(error.contains("`a:b/i/t`"), "{error}");
-    assert!(error.contains("enum-case"), "{error}");
-    assert!(error.contains("field"), "{error}");
+    let changes = mixed.drift(&members).unwrap();
+    let message = changes
+        .discrepancies
+        .iter()
+        .map(|change| change.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(message.contains("`a:b/i/t`"), "{message}");
+    assert!(message.contains("enum-case"), "{message}");
+    assert!(message.contains("field"), "{message}");
 
     let mut lock = mixed.clone();
-    assert!(lock.reconcile(&members).is_err());
+    let changes = lock.reconcile(&members).unwrap();
+    assert!(!changes.discrepancies.is_empty(), "{changes:?}");
     assert_eq!(lock, mixed, "a refused reconciliation must not mutate");
 
     // Removing a type in one version and adding another kind under the same name in a later
@@ -864,7 +907,7 @@ a:b/i/t.old = 1 enum-case reserved\n\
 a:b/i/t.older = 2 field u64 reserved\n"
     ))
     .unwrap();
-    assert!(all_reserved.drift(&[]).is_err());
+    assert!(!all_reserved.drift(&[]).unwrap().discrepancies.is_empty());
 }
 
 #[test]
@@ -901,10 +944,15 @@ fn against_mode_rejects_a_released_kind_change() {
     let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
     let mut current =
         WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 variant-case u64\n")).unwrap();
+    let changes = current
+        .reconcile_with(&[], LockMode::Against(&previous))
+        .unwrap();
     assert!(
-        current
-            .reconcile_with(&[], LockMode::Against(&previous))
-            .is_err()
+        changes
+            .discrepancies
+            .iter()
+            .any(|change| change.key == "a:b/i/t.x" && change.message.contains("kind or type")),
+        "{changes:?}"
     );
 }
 
@@ -1153,4 +1201,49 @@ fn number_assignment_is_linear_in_a_wide_contract() {
     assert_eq!(changes.added.len(), 16_000);
     assert_eq!(lock.entries().count(), 16_000);
     assert_eq!(lock.get("a:b/i/t.m15999").unwrap().number, 16_000);
+}
+
+#[test]
+fn every_released_discrepancy_is_collected_in_key_order() {
+    let previous = WireLock::parse(&format!(
+        "{HEADER}\n\
+a:b/i/t.a = 1 field string\n\
+a:b/i/t.b = 2 field string\n\
+a:b/i/t.c = 3 field string\n\
+a:b/i/t.d = 4 field string\n\
+a:b/i/t.n1 = 5 field u8\n\
+a:b/i/t.n2 = 6 field u8\n"
+    ))
+    .unwrap();
+    let members = ["a", "b", "c", "d", "n2", "new1", "new2"]
+        .into_iter()
+        .map(|name| Member {
+            parent: "a:b/i/t".into(),
+            name: name.to_string(),
+            kind: MemberKind::Field,
+            ty: Some(if matches!(name, "a" | "b" | "c" | "d") {
+                "u32".to_string()
+            } else {
+                "u8".to_string()
+            }),
+        })
+        .collect::<Vec<_>>();
+    let mut current = previous.clone();
+    let changes = current.reconcile(&members).unwrap();
+    assert_eq!(
+        changes
+            .discrepancies
+            .iter()
+            .map(|change| change.key.as_str())
+            .collect::<Vec<_>>(),
+        ["a:b/i/t.a", "a:b/i/t.b", "a:b/i/t.c", "a:b/i/t.d"]
+    );
+    assert_eq!(changes.reserved, vec![("a:b/i/t.n1".to_string(), 5)]);
+    assert_eq!(
+        changes.added,
+        vec![
+            ("a:b/i/t.new1".to_string(), 7),
+            ("a:b/i/t.new2".to_string(), 8)
+        ]
+    );
 }
