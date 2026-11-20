@@ -778,17 +778,32 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             );
             reporter.note("WF3003", &human, message, impact.missing_path.clone());
         }
-        for blocker in required_addition_blockers(report) {
-            let human = format!(
-                "note: conversion generation refuses `{}`: a required record field was added \
-                 without a default; use option<T>, list<T>, or a new member",
-                blocker.path
-            );
-            let message = format!(
-                "conversion generation refuses `{}`: a required record field was added without a \
-                 default",
-                blocker.path
-            );
+        for (kind, blocker) in conversion_blockers(report) {
+            let (human, message) = match kind {
+                "required-addition" => (
+                    format!(
+                        "note: conversion generation refuses `{}`: a required record field was \
+                         added without a default; use option<T>, list<T>, or a new member",
+                        blocker.path
+                    ),
+                    format!(
+                        "conversion generation refuses `{}`: a required record field was added \
+                         without a default",
+                        blocker.path
+                    ),
+                ),
+                _ => (
+                    format!(
+                        "note: conversion generation refuses `{}`: the type changed; add a new \
+                         member or type instead",
+                        blocker.path
+                    ),
+                    format!(
+                        "conversion generation refuses `{}`: the type changed",
+                        blocker.path
+                    ),
+                ),
+            };
             reporter.note("WF3004", &human, message, blocker.path.clone());
         }
     }
@@ -804,11 +819,24 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-fn required_addition_blockers(report: &DiffReport) -> impl Iterator<Item = &diff::Change> {
-    report.changes.iter().filter(|change| {
-        change.element == "record field"
-            && matches!(change.kind, ChangeKind::Added { defaulted: false })
-    })
+fn conversion_blockers(report: &DiffReport) -> impl Iterator<Item = (&'static str, &diff::Change)> {
+    report
+        .changes
+        .iter()
+        .filter_map(|change| match &change.kind {
+            ChangeKind::Added { defaulted: false } if change.element == "record field" => {
+                Some(("required-addition", change))
+            }
+            ChangeKind::Retyped { .. }
+                if matches!(
+                    change.element.as_str(),
+                    "record field" | "variant case" | "type"
+                ) =>
+            {
+                Some(("retyped", change))
+            }
+            _ => None,
+        })
 }
 
 fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
@@ -834,10 +862,10 @@ fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
             })
         })
         .collect();
-    let conversion_blockers: Vec<Value> = required_addition_blockers(report)
-        .map(|change| {
+    let conversion_blockers: Vec<Value> = conversion_blockers(report)
+        .map(|(kind, change)| {
             json!({
-                "kind": "required-addition",
+                "kind": kind,
                 "path": &change.path,
             })
         })

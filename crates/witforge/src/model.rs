@@ -342,7 +342,7 @@ impl Model {
 
     /// Resolve a named type, using `context` for a dependency-local name that has no package
     /// prefix.
-    fn type_def_in<'a>(
+    pub(crate) fn type_def_in<'a>(
         &'a self,
         context: Option<&'a Dependency>,
         name: &QualifiedName,

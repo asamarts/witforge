@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use witforge::emit::rust;
-use witforge::is_contract_error;
+use witforge::lock::WireLock;
+use witforge::{diff, is_contract_error, load, model};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -18,6 +19,135 @@ fn temp(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).unwrap();
     path
+}
+
+fn write_version(root: &Path, name: &str, package_version: &str, body: &str) -> PathBuf {
+    let dir = root.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        format!("package ex:t@{package_version};\n{body}"),
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let mut lock = WireLock::default();
+    lock.reconcile(&model.members().unwrap()).unwrap();
+    fs::write(dir.join("wire.lock"), lock.render()).unwrap();
+    dir
+}
+
+#[test]
+fn diff_passing_implies_generation_succeeds_for_alias_evolutions() {
+    let cases: &[(&str, &str, &str, bool)] = &[
+        (
+            "alias-to-target",
+            "interface types { type id = u32; record r { a: id } }",
+            "interface types { type id = u32; record r { a: u32 } }",
+            true,
+        ),
+        (
+            "target-to-alias",
+            "interface types { record r { a: u32 } }",
+            "interface types { type id = u32; record r { a: id } }",
+            true,
+        ),
+        (
+            "alias-to-alias",
+            "interface types { type id = u32; type other = u32; record r { a: id } }",
+            "interface types { type id = u32; type other = u32; record r { a: other } }",
+            true,
+        ),
+        (
+            "named-list-to-expansion",
+            "interface types { type ids = list<u32>; record r { a: ids } }",
+            "interface types { type ids = list<u32>; record r { a: list<u32> } }",
+            true,
+        ),
+        (
+            "nested-positions",
+            "interface types {\n\
+               type id = u32;\n\
+               record r { a: list<id>, b: option<id>, c: result<id, string>, d: list<list<id>> }\n\
+               variant v { x(id) }\n\
+             }",
+            "interface types {\n\
+               type id = u32;\n\
+               record r { a: list<u32>, b: option<u32>, c: result<u32, string>, d: list<list<u32>> }\n\
+               variant v { x(u32) }\n\
+             }",
+            true,
+        ),
+        (
+            "use-alias",
+            "interface types { type id = u32; }\n\
+             interface api { use types.{id as local}; record r { a: local } }",
+            "interface types { type id = u32; }\n\
+             interface api { use types.{id as local}; record r { a: u32 } }",
+            true,
+        ),
+        (
+            "changed-alias-target",
+            "interface types { type id = u32; record r { a: id } }",
+            "interface types { type id = u64; record r { a: id } }",
+            false,
+        ),
+    ];
+    for (name, old_contract, new_contract, diff_passes) in cases {
+        let root = temp(name);
+        write_version(&root, "v0.1", "0.1.0", old_contract);
+        write_version(&root, "v0.2", "0.2.0", new_contract);
+        let report = diff::compare(&root.join("v0.1"), &root.join("v0.2")).unwrap();
+        assert_eq!(
+            report.summary.breaking == 0,
+            *diff_passes,
+            "{name}: {report:?}"
+        );
+        let generated = rust::plan(&root);
+        if *diff_passes {
+            assert!(generated.is_ok(), "{name}: {generated:?}");
+        } else {
+            let error = generated.unwrap_err();
+            assert!(is_contract_error(&error), "{name}: {error:#}");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[test]
+fn foreign_alias_spellings_share_the_resolved_conversion() {
+    let root = temp("foreign-alias");
+    for version in ["v0.1", "v0.2"] {
+        let shared = root.join(version).join("deps/shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(
+            shared.join("types.wit"),
+            "package example:shared@0.1.0;\ninterface types { type id = u32; }\n",
+        )
+        .unwrap();
+    }
+    write_version(
+        &root,
+        "v0.1",
+        "0.1.0",
+        "interface api {\n\
+           use example:shared/types@0.1.0.{id as local};\n\
+           record r { a: local }\n\
+         }",
+    );
+    write_version(
+        &root,
+        "v0.2",
+        "0.2.0",
+        "interface api {\n\
+           use example:shared/types@0.1.0.{id as local};\n\
+           use example:shared/types@0.1.0.{id};\n\
+           record r { a: id }\n\
+         }",
+    );
+    let report = diff::compare(&root.join("v0.1"), &root.join("v0.2")).unwrap();
+    assert_eq!(report.summary.breaking, 0, "{report:?}");
+    assert!(rust::plan(&root).is_ok());
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[allow(clippy::too_many_lines)]

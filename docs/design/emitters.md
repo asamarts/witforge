@@ -1206,8 +1206,10 @@ variant, so a `match` on `ConversionError` there needs a wildcard arm.
 
 The source is the older version and the target is the newer one.
 
-- A record field present in both versions converts recursively. Its name and type must be
-  unchanged; a changed type is a contract error.
+- A record field present in both versions converts recursively. Its name must be unchanged and
+  its resolved type must be the same: aliases, `use` aliases, and named structural types are
+  expanded before comparison, so `type id = u32` and `u32`, or `type ids = list<u32>` and
+  `list<u32>`, convert identically. A changed resolved type is a contract error.
 - A field added by the newer version is defaulted only when its type is `option<T>`, `list<T>`,
   or a named alias/structural type that resolves to one: `option` defaults to `None`, `list` to
   an empty vector. A required addition that is not defaultable is a contract error, so an
@@ -1240,9 +1242,10 @@ The source is the newer version and the target is the older one.
   removed by the newer version is unreachable in this direction.
 - A flag added by the newer version is dropped; an older flag removed by the newer version is
   `false`.
-- Aliases, named structural types, and nested payloads follow the same recursive rules. Kind,
-  payload-shape, and type changes are contract errors of the conversion emitter, not silent
-  lossy adapters.
+- Aliases, named structural types, and nested payloads follow the same recursive rules. An alias
+  and its target are one type, so either spelling converts through the same identity expression;
+  a changed alias target is a type change. Kind, payload-shape, and type changes are contract
+  errors of the conversion emitter, not silent lossy adapters.
 
 ### 9.4 Testing requirements
 
@@ -1252,7 +1255,10 @@ The source is the newer version and the target is the older one.
 - Exercise both directions and assert old-to-new defaults, new-to-old removed-field errors,
   added/removed cases, and flags defaults.
 - A required non-defaultable addition is refused with a `ContractError`.
-- A changed alias target or changed type is refused.
+- Alias spellings of one resolved type convert in both directions; a changed alias target or
+  changed type is refused.
+- A table of alias evolutions asserts that a passing `diff --check` implies `rust` generation
+  succeeds.
 - `--check` treats `convert.rs` as shared generated output and reports missing, changed, and
   extra files.
 - A root with one version emits no `convert.rs`.

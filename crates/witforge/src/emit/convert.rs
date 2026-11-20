@@ -6,7 +6,7 @@
 //! deliberately explicit and fallible: evolution can remove a field or a case, and a conversion
 //! must report that it cannot reconstruct it instead of inventing a value.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail};
@@ -17,7 +17,10 @@ use crate::emit::versions::Version;
 use crate::emit::{
     TypeRenderStyle, pascal_case, render_type, rust_ident, snake_case, type_kind_name,
 };
-use crate::model::{Case, Field, Interface, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
+use crate::model::{
+    Case, Dependency, Field, Interface, Model, QualifiedName, ResultExpr, TypeDef, TypeDefKind,
+    TypeExpr,
+};
 
 /// The shared error type generated in `convert.rs`.
 const ERROR: &str = "super::super::ConversionError";
@@ -627,7 +630,107 @@ fn flags_body(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Expand aliases and named structural definitions to the expression they project.
+///
+/// Conversion compares the types values actually have. An alias and its target are one Rust type
+/// and one wire type, so `type id = u32` and `u32` must convert identically. Named records,
+/// variants, enums, and flags stay named: their conversion function is the adapter.
+fn qualify_name(context: Option<&Dependency>, name: &QualifiedName) -> QualifiedName {
+    if name.package().is_some() {
+        return name.clone();
+    }
+    let Some(dependency) = context else {
+        return name.clone();
+    };
+    QualifiedName {
+        interface: format!(
+            "{}:{}/{}",
+            dependency.package.namespace, dependency.package.name, name.interface
+        ),
+        name: name.name.clone(),
+    }
+}
+
+fn resolve_expr(
+    model: &Model,
+    context: Option<&Dependency>,
+    ty: &TypeExpr,
+    role: &str,
+    visiting: &mut HashSet<String>,
+) -> Result<TypeExpr> {
+    match ty {
+        TypeExpr::Named(name) => {
+            let Some((resolved, def)) = model.type_def_in(context, name) else {
+                if role == "source" {
+                    bail!("type `{name}` is not in the source model");
+                }
+                bail!("type `{name}` is missing from the target version");
+            };
+            let key = resolved.map_or_else(
+                || name.to_string(),
+                |dependency| {
+                    format!(
+                        "{}:{}/{}",
+                        dependency.package.namespace, dependency.package.name, name
+                    )
+                },
+            );
+            match &def.kind {
+                TypeDefKind::Alias(target) => {
+                    if !visiting.insert(key.clone()) {
+                        bail!("alias cycle at `{name}`");
+                    }
+                    let resolved = resolve_expr(model, resolved, target, role, visiting);
+                    visiting.remove(&key);
+                    resolved
+                }
+                TypeDefKind::List(element) => Ok(TypeExpr::List(Box::new(resolve_expr(
+                    model, resolved, element, role, visiting,
+                )?))),
+                TypeDefKind::Option(payload) => Ok(TypeExpr::Option(Box::new(resolve_expr(
+                    model, resolved, payload, role, visiting,
+                )?))),
+                TypeDefKind::Result(result) => Ok(TypeExpr::Result(ResultExpr {
+                    ok: result
+                        .ok
+                        .as_deref()
+                        .map(|ty| resolve_expr(model, resolved, ty, role, visiting).map(Box::new))
+                        .transpose()?,
+                    err: result
+                        .err
+                        .as_deref()
+                        .map(|ty| resolve_expr(model, resolved, ty, role, visiting).map(Box::new))
+                        .transpose()?,
+                })),
+                TypeDefKind::Record(_)
+                | TypeDefKind::Variant(_)
+                | TypeDefKind::Enum(_)
+                | TypeDefKind::Flags(_) => Ok(TypeExpr::Named(qualify_name(context, name))),
+            }
+        }
+        TypeExpr::List(element) => Ok(TypeExpr::List(Box::new(resolve_expr(
+            model, context, element, role, visiting,
+        )?))),
+        TypeExpr::Option(payload) => Ok(TypeExpr::Option(Box::new(resolve_expr(
+            model, context, payload, role, visiting,
+        )?))),
+        TypeExpr::Result(result) => Ok(TypeExpr::Result(ResultExpr {
+            ok: result
+                .ok
+                .as_deref()
+                .map(|ty| resolve_expr(model, context, ty, role, visiting).map(Box::new))
+                .transpose()?,
+            err: result
+                .err
+                .as_deref()
+                .map(|ty| resolve_expr(model, context, ty, role, visiting).map(Box::new))
+                .transpose()?,
+        })),
+        _ => Ok(ty.clone()),
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn convert_expr(
     source: &Version,
     target: &Version,
@@ -638,7 +741,21 @@ fn convert_expr(
     expression: &str,
     path: &str,
 ) -> Result<String> {
-    match (source_type, target_type) {
+    let source_type = resolve_expr(
+        &source.model,
+        None,
+        source_type,
+        "source",
+        &mut HashSet::new(),
+    )?;
+    let target_type = resolve_expr(
+        &target.model,
+        None,
+        target_type,
+        "target",
+        &mut HashSet::new(),
+    )?;
+    match (&source_type, &target_type) {
         (TypeExpr::Bool, TypeExpr::Bool)
         | (TypeExpr::U8, TypeExpr::U8)
         | (TypeExpr::U16, TypeExpr::U16)
@@ -730,8 +847,8 @@ fn convert_expr(
         _ => contract_bail!(
             "{} changes type from `{}` to `{}`; evolution requires a new member",
             path,
-            render_type(source_type, TypeRenderStyle::Spaced),
-            render_type(target_type, TypeRenderStyle::Spaced)
+            render_type(&source_type, TypeRenderStyle::Spaced),
+            render_type(&target_type, TypeRenderStyle::Spaced)
         ),
     }
 }

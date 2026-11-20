@@ -3,9 +3,10 @@
 Status: implemented 2026-11-05 (`W8-001`); endpoint ordering, missing-lock, and root/direct
 declaration-order boundaries 2026-11-18 (`W10-026`); conversion-impact notes 2026-11-17
 (`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`); kind
-changes and reused reserved numbers are wire-breaking 2026-11-19 (`W10-045`, `W10-048`). The
-2026-11-18 items are not in 0.5.0: reversed-endpoint rejection, missing-lock guidance, and
-`conversion_blockers` are on `main` and unreleased.
+changes and reused reserved numbers are wire-breaking 2026-11-19 (`W10-045`, `W10-048`); alias
+spellings and retyped conversion blockers 2026-11-20 (`W10-057`). The 2026-11-18 items are not in
+0.5.0: reversed-endpoint rejection, missing-lock guidance, and `conversion_blockers` are on
+`main` and unreleased.
 
 `witforge diff <old> <new>` compares two contract versions and reports what changed in three
 independent compatibility views:
@@ -224,9 +225,31 @@ note: conversion generation refuses `types/task.required`: a required record fie
 ]
 ```
 
+A retyped record field, variant case, or named type also blocks conversion generation: the
+generated adapter has no conversion between two different values. `diff` reports it with
+`"kind": "retyped"` and `WF3004`:
+
+```text
+note: conversion generation refuses `types/task.id`: the type changed; add a new member or type instead
+```
+
+```json
+"conversion_blockers": [
+  {
+    "kind": "retyped",
+    "path": "types/task.id"
+  }
+]
+```
+
+Alias spellings of one resolved type are not a change and not a blocker: `type id = u32` and
+`u32` are one wire type and one Rust type. A changed alias target is a real retype and remains a
+blocker. Parameters and function results have no generated conversion, so they are not blocker
+entries.
+
 Defaultable additions (`option<T>`, `list<T>`, or a named alias or structural type of one) do not
-block generation and have no blocker note. The blocker notes are informational too: the added
-field is still a source/API-breaking change, and `--check` exits `1` for it.
+block generation and have no blocker note. The blocker notes are informational too: an addition
+or retype is still a source/API-breaking change, and `--check` exits `1` for it.
 
 ## Limits
 

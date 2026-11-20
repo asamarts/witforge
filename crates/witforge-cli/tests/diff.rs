@@ -1107,6 +1107,62 @@ interface types { record task { id: u64 } }
 }
 
 #[test]
+fn diff_reports_an_alias_target_change_as_a_conversion_blocker() {
+    let root = workspace("alias-target-blocker");
+    contract(
+        &root,
+        "old/v0.1",
+        r"
+package example:tasks@0.1.0;
+interface types { type id = u32; record task { id: id } }
+",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        r"
+package example:tasks@0.2.0;
+interface types { type id = u64; record task { id: id } }
+",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    let lock_text = fs::read_to_string(old.join("wire.lock")).unwrap();
+    fs::write(
+        new.join("wire.lock"),
+        lock_text.replace(
+            "example:tasks/types/task.id = 1 field u32",
+            "example:tasks/types/task.id = 1 field u64",
+        ),
+    )
+    .unwrap();
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let blockers = report["conversion_blockers"].as_array().unwrap();
+    assert!(
+        blockers
+            .iter()
+            .any(|blocker| { blocker["kind"] == "retyped" && blocker["path"] == "types/task.id" }),
+        "{report}"
+    );
+    assert!(
+        report["changes"].as_array().unwrap().iter().any(|change| {
+            change["kind"] == "retyped"
+                && change["path"] == "types/task.id"
+                && change["wire_breaking"] == true
+        }),
+        "{report}"
+    );
+
+    let check = diff(&old, &new, &["--check"]);
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn diff_reports_required_additions_that_block_conversion_generation() {
     let root = workspace("required-addition");
     contract(

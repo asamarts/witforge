@@ -101,6 +101,13 @@ have it.
   and a message naming both canonical types and the wrapper; previously the second silently
   reused the first wrapper's schema. Aliases and the byte-list spellings that resolve to one
   projection still share one wrapper. No existing wrapper name changes.
+- Generated conversions expand aliases, `use … as …` aliases, named `list`/`option`/`result`
+  definitions, and dependency aliases before comparing types. Changing `id` to `u32` (or the
+  reverse), or a named list to its expansion, now generates the identity conversion instead of
+  making `rust` refuse a pair that `check --against` and `diff --check` accepted. A changed
+  alias target remains a real type change and is refused. `diff` now lists retyped record
+  fields, variant cases, and types under `conversion_blockers`, so a passing `diff --check`
+  implies `rust` generation succeeds.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and
