@@ -11,8 +11,8 @@ fuzz_target!(|data: &[u8]| {
     }
     if let Ok(lock) = witforge::lock::WireLock::parse(text) {
         let rendered = lock.render();
-        let reparsed = witforge::lock::WireLock::parse(&rendered)
-            .expect("a rendered lockfile must parse");
+        let reparsed =
+            witforge::lock::WireLock::parse(&rendered).expect("a rendered lockfile must parse");
         assert_eq!(
             lock.entries()
                 .map(|(key, entry)| (key.key(), entry.clone()))
