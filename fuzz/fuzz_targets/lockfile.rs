@@ -10,6 +10,19 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     if let Ok(lock) = witforge::lock::WireLock::parse(text) {
-        let _ = lock.render();
+        let rendered = lock.render();
+        let reparsed = witforge::lock::WireLock::parse(&rendered)
+            .expect("a rendered lockfile must parse");
+        assert_eq!(
+            lock.entries()
+                .map(|(key, entry)| (key.key(), entry.clone()))
+                .collect::<Vec<_>>(),
+            reparsed
+                .entries()
+                .map(|(key, entry)| (key.key(), entry.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(rendered, reparsed.render());
+        assert!(reparsed.is_canonical(&rendered));
     }
 });

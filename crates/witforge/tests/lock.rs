@@ -300,6 +300,10 @@ fn v2_rejects_v1_and_malformed_entries() {
         format!("{HEADER}\na:b/i/t.x = -1 field u64\n"),
         format!("{HEADER}\na:b/i/t.x = 1_0 field u64\n"),
         format!("{HEADER}\na:b/i/t.x = 0x1 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 0 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 19000 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 536870912 field u64\n"),
+        format!("{HEADER}\na:b/i/t.x = 4294967296 field u64\n"),
         format!("{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.x = 2 field u64\n"),
         format!("{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 1 field u64\n"),
         format!("{HEADER}\nnonsense\n"),
@@ -309,6 +313,136 @@ fn v2_rejects_v1_and_malformed_entries() {
         format!("{HEADER}\na:b/#f.p = 1 param u32\n"),
     ] {
         assert!(WireLock::parse(&bad).is_err(), "{bad:?} should fail");
+    }
+}
+
+#[test]
+fn entry_kinds_must_match_their_key_shape() {
+    let keys = [
+        (
+            "a:b/i/t.x",
+            &[
+                MemberKind::Field,
+                MemberKind::VariantCase,
+                MemberKind::EnumCase,
+                MemberKind::Flag,
+            ][..],
+        ),
+        ("a:b/i.f", &[MemberKind::Method][..]),
+        ("a:b/i#f.p", &[MemberKind::Param][..]),
+    ];
+    let kinds = [
+        MemberKind::Field,
+        MemberKind::VariantCase,
+        MemberKind::EnumCase,
+        MemberKind::Flag,
+        MemberKind::Method,
+        MemberKind::Param,
+    ];
+    for (key, allowed) in keys {
+        for kind in kinds {
+            let ty = match kind {
+                MemberKind::Field | MemberKind::Param => " u8",
+                _ => "",
+            };
+            let text = format!("{HEADER}\n{key} = 1 {}{ty}\n", kind.as_str());
+            let parsed = WireLock::parse(&text);
+            assert_eq!(
+                parsed.is_ok(),
+                allowed.contains(&kind),
+                "`{key}` with kind `{kind}` should {} parse",
+                if allowed.contains(&kind) { "" } else { "not" }
+            );
+            if let Err(error) = parsed {
+                let message = format!("{error:#}");
+                assert!(message.contains("line 2"), "{message}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_audit_reproduction_lines_are_rejected() {
+    for line in [
+        "ex:t/api#get.old = 7 enum-case reserved",
+        "ex:t/api.gone = 5 field u32 reserved",
+        "ex:t/api/r.zz = 9 method reserved",
+    ] {
+        let text = format!("{HEADER}\n{line}\n");
+        let error = WireLock::parse(&text).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("line 2"), "{message}");
+        assert!(message.contains("not allowed under key"), "{message}");
+    }
+}
+
+#[test]
+fn only_ascii_spaces_and_tabs_separate_entry_fields() {
+    let good = format!("{HEADER}\n\ta:b/i/t.x\t=\t1\tfield\tu64\t\n");
+    let lock = WireLock::parse(&good).unwrap();
+    assert_eq!(lock.get("a:b/i/t.x").unwrap().ty.as_deref(), Some("u64"));
+
+    let accepted = format!(
+        "{HEADER}\r\n# comment\r\n\r\n  a:b/i/t.x = 1 field u64  \r\n\
+         a:b/i/t.y = 2 field u64"
+    );
+    let lock = WireLock::parse(&accepted).unwrap();
+    assert_eq!(lock.entries().count(), 2);
+
+    for separator in ['\u{a0}', '\u{2003}', '\u{000b}', '\u{000c}'] {
+        for text in [
+            format!("{HEADER}\na:b/i/t.x = 1{separator}field u64\n"),
+            format!("{HEADER}\na:b/i/t.x = 1 field{separator}u64\n"),
+        ] {
+            assert!(
+                WireLock::parse(&text).is_err(),
+                "U+{:04X} must not separate fields: {text:?}",
+                separator as u32
+            );
+        }
+    }
+
+    let bom = format!("\u{feff}{HEADER}\n");
+    let error = WireLock::parse(&bom).unwrap_err();
+    assert!(format!("{error:#}").contains("line 1"), "{error:#}");
+}
+
+#[test]
+fn order_lines_use_the_key_grammar_and_exact_fingerprints() {
+    let fingerprint = format!("{:016x}", order_fingerprint(&["x"]));
+    for parent in ["a:b/i/t", "a:b/i", "a:b/i#f"] {
+        let text = format!("{HEADER}\n{ORDER_HEADER}\n# order {parent} {fingerprint} = x\n");
+        WireLock::parse(&text).unwrap();
+    }
+    let tabbed = format!("{HEADER}\n{ORDER_HEADER}\n# order a:b/i/t\t{fingerprint} = x\n");
+    assert!(WireLock::parse(&tabbed).is_err());
+    for parent in [
+        "a:b/i/t.x",
+        "a:b/i#f.p",
+        "a:b/i/t#f",
+        "a:b/i/t/u",
+        "a:b",
+        "a:b/i/t.",
+    ] {
+        let text = format!("{HEADER}\n{ORDER_HEADER}\n# order {parent} {fingerprint} = x\n");
+        let error = WireLock::parse(&text).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("line 3"), "{message}");
+        assert!(message.contains("invalid order parent"), "{message}");
+    }
+    let bad_fingerprints = [
+        format!("+{fingerprint}"),
+        format!("A{}", &fingerprint[1..]),
+        fingerprint[..15].to_string(),
+        format!("{fingerprint}0"),
+        "g000000000000000".to_string(),
+    ];
+    for token in bad_fingerprints {
+        let text = format!("{HEADER}\n{ORDER_HEADER}\n# order a:b/i/t {token} = x\n");
+        let error = WireLock::parse(&text).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("line 3"), "{message}");
+        assert!(message.contains("sixteen lowercase"), "{message}");
     }
 }
 
@@ -337,7 +471,32 @@ fn canonical_type_tokens_accept_the_supported_grammar() {
         let text = format!("{HEADER}\na:b/i/t.x = 1 field {good}\n");
         assert!(WireLock::parse(&text).is_ok(), "{good:?} should parse");
     }
-    for bad in ["types/SpAn", "types/span_x", "types/span-", "types//span"] {
+    for bad in [
+        "types/SpAn",
+        "types/span_x",
+        "types/span-",
+        "types//span",
+        "types/span/extra",
+        "u8:foo/bar",
+        "ex:shared/types",
+        "ex:shared/types/item/extra",
+        "ex:shared//item",
+        "ex:/types/item",
+        "list",
+        "option",
+        "result",
+        "reserved",
+        "list<>",
+        "list<",
+        "list<u8",
+        "list<u8>>",
+        "option<u8",
+        "result<u8>",
+        "result<,>",
+        "result<u8,>",
+        "result<_,_,_>",
+        "list< u8>",
+    ] {
         let text = format!("{HEADER}\na:b/i/t.x = 1 field {bad}\n");
         assert!(WireLock::parse(&text).is_err(), "{bad:?} should fail");
     }
@@ -387,16 +546,25 @@ fn reconcile_records_and_checks_kind_and_type() {
             .any(|change| change.key == "a:b/i/t.x" && change.message.contains("kind or type")),
         "{changes:?}"
     );
+    assert_eq!(
+        edited_lock, lock,
+        "a refused reconciliation must not mutate"
+    );
 
     lock.reconcile(&members[1..]).unwrap();
     let reserved = lock.get("a:b/i/t.x").unwrap();
     assert!(reserved.reserved);
     assert_eq!(reserved.kind, MemberKind::Field);
     assert_eq!(reserved.ty.as_deref(), Some("u64"));
+    let before_reintroduction = lock.clone();
     let reintroduced = lock.reconcile(&members).unwrap();
     assert_eq!(
         reintroduced.reintroduced,
         vec![("a:b/i/t.x".to_string(), 1)]
+    );
+    assert_eq!(
+        lock, before_reintroduction,
+        "a reintroduction must not mutate the lockfile"
     );
 }
 
@@ -1187,6 +1355,32 @@ fn lockfile_type_tokens_are_bounded_in_depth_and_length() {
         WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field {long}\n")).unwrap_err()
     );
     assert!(error.contains("byte limit"), "{error}");
+}
+
+#[test]
+fn every_repository_lockfile_uses_the_tightened_grammar() {
+    fn collect(directory: &Path, found: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                collect(&path, found);
+            } else if entry.file_name() == "wire.lock" {
+                found.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut found = Vec::new();
+    for directory in ["crates/witforge/tests/fixtures", "examples"] {
+        collect(&root.join(directory), &mut found);
+    }
+    assert!(!found.is_empty());
+    for path in found {
+        let text = fs::read_to_string(&path).unwrap();
+        WireLock::parse(&text).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
+    }
 }
 
 #[test]

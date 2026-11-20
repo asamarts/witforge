@@ -177,7 +177,9 @@ Every other non-comment line has the form:
 key = number kind [type] [reserved]
 ```
 
-- One or more spaces or tabs separate the fields; the canonical render uses single spaces.
+- One or more ASCII spaces or tabs separate the fields; the canonical render uses single spaces.
+  U+00A0, other Unicode spaces, vertical tab, and form feed are not separators; they make the
+  field that contains them invalid.
 - `number` is a decimal integer without leading zeros.
 - `kind` is one of `field`, `variant-case`, `enum-case`, `flag`, `method`, `param`.
 - `type` is a canonical type token (section 5) with no whitespace.
@@ -185,7 +187,9 @@ key = number kind [type] [reserved]
   name stay taken.
 - Reserved entries keep their kind and type. This preserves append-only kind/type checks and
   makes the history auditable.
-- Blank lines and lines whose first non-whitespace character is `#` are ignored.
+- Blank lines and lines whose first non-space-or-tab character is `#` are ignored.
+- A UTF-8 byte-order mark at the start of the file is refused as a missing header. Write the
+  lockfile as UTF-8 without a BOM, as `lock` does.
 - Render writes the header, then entries sorted lexicographically by key, with LF line endings
   and a final newline. Comments are not preserved by render.
 - The reader, and so `lock` and the generators, accepts the looser forms above. `check`
@@ -202,8 +206,9 @@ key = number kind [type] [reserved]
 - Git rewrites line endings at checkout under `core.autocrlf=true`, the Git for Windows default.
   A consumer pins its contracts to LF in `.gitattributes` (`wire.lock text eol=lf` and
   `*.wit text eol=lf`), so every checkout holds what `lock` wrote and what was reviewed.
-- A missing header, an unknown header version, malformed lines, unknown kind tokens, invalid
-  numbers, duplicate keys, or two entries of one parent sharing a number are parse errors.
+- A missing header, an unknown header version, malformed lines, unknown kind tokens, a kind
+  under the wrong key shape, invalid numbers, duplicate keys, or two entries of one parent
+  sharing a number are parse errors, as is a canonical type token outside section 5.
 
 The kind/type matrix is:
 
@@ -215,6 +220,10 @@ The kind/type matrix is:
 | `flag` | forbidden |
 | `method` | optional; absent means the function has no result |
 | `param` | required |
+
+The entry's kind must also match its key shape: a type key holds `field`, `variant-case`,
+`enum-case`, or `flag`; an interface key holds `method`; and a `#` function key holds `param`.
+Any other pairing is a parse error naming the line and the key shape.
 
 A `method` entry's type is the function's result type. Request/response messages are generated
 from parameters and the result; their field numbers are not locked (the response result field is
@@ -255,6 +264,10 @@ slot          = type | "_"
 
 Canonicalization rules:
 
+- The token is parsed with this grammar, not checked only for a slash. A primitive is exactly
+  its WIT spelling; `u8:foo/bar` is not a primitive with an annotation or a foreign name. A
+  foreign name is exactly `namespace:package/interface/type`: too few or too many components,
+  including a trailing slash, are parse errors.
 - Primitive types use their WIT spelling.
 - A named record, variant, enum, or flags type is written as its defining interface and type:
   `types/span`. The defining interface is used even when the reference site uses
@@ -376,12 +389,13 @@ contract or lockfile violations, an unreleased version's lockfile that is not in
 means usage, IO, parse, or internal errors. Every mode also refuses a parent that mixes member
 kinds (section 6); the error names the parent and both kinds.
 
-A run collects every discrepancy before it fails, in lockfile key order: released kind/type
-changes, renumbering, un-reserving, missing entries, reintroduced members, order changes, and a
-mixed-kind parent. An entry whose kind and type both changed is one diagnostic naming both. A
-mixed parent is one diagnostic for the parent, not one per member. `lock` reports the same list
-and writes nothing when it contains any discrepancy, however many of the others it could have
-reconciled.
+A run collects every released discrepancy before it fails, in lockfile key order: released
+kind/type changes, renumbering, un-reserving, missing entries, order changes, and a mixed-kind
+parent. Reintroduced members are collected separately in `Changes.reintroduced` and reported in
+the same run, so they never hide a released discrepancy. An entry whose kind and type both
+changed is one diagnostic naming both. A mixed parent is one diagnostic for the parent, not one
+per member. `lock` reports the same list and writes nothing when it contains any discrepancy,
+however many of the others it could have reconciled.
 
 Without a baseline (default mode):
 
@@ -448,7 +462,8 @@ The update order is:
 3. Retype/re-kind live draft entries.
 4. Reserve removed released entries.
 5. Add new live members with the next number in their parent.
-6. Fail without writing if any released entry would change or any reintroduction is detected.
+6. Fail without writing if any discrepancy (released entry, order, or mixed-kind parent) or any
+   reintroduction is detected.
 7. Render and write atomically (temporary file in the same directory, then rename).
 
 `lock` prints one line per change (`added`, `reserved`, `updated`, `dropped`) and exits `0`.
@@ -591,11 +606,14 @@ without adding a field to every entry:
   functions (`namespace:package/interface`), or a function's parameters
   (`namespace:package/interface#function`), exactly as in section 3. The interface parent
   fingerprints function declaration order; the function parent fingerprints parameter order.
-- Members are the live member names of that parent in declaration order, separated by spaces.
-  Reserved members are absent.
-- `<fingerprint>` is the lowercase, zero-padded 16-digit hexadecimal FNV-1a 64 hash over each
-  member name's UTF-8 bytes followed by one NUL byte, in the listed order. A parser MUST verify
-  the fingerprint against the member list.
+  The reader parses the parent with the section 3 key grammar and refuses a dotted member key,
+  a parameter key, or any other shape that is not one of those three parents.
+- Members are the live member names of that parent in declaration order, separated by ASCII
+  spaces. Reserved members are absent.
+- `<fingerprint>` is exactly sixteen lowercase hexadecimal digits (zero-padded) holding the
+  FNV-1a 64 hash over each member name's UTF-8 bytes followed by one NUL byte, in the listed
+  order. A leading `+`, uppercase digits, and fifteen or seventeen digits are parse errors. A
+  parser MUST verify the fingerprint against the member list.
 - The marker must appear before its order lines. A line beginning `# order ` before the marker is
   an ordinary comment. Duplicate markers, duplicate parents, duplicate member names, malformed
   fingerprints, and a fingerprint mismatch are parse errors.
@@ -611,9 +629,9 @@ without adding a field to every entry:
 - Direct `diff` endpoints accept a stale order so they can report a reorder, but a line for an
   unknown parent, or one naming a non-member or a subset, is structurally wrong and refused.
   A WIT-root endpoint uses the generator-grade loader and applies the full rule.
-- Order discrepancies are reported after entry-level discrepancies, so a stale entry or a
-  reintroduced member keeps its more specific message. A non-canonical rendering is reported as
-  canonical-form drift before the semantic order check.
+- Order discrepancies are collected with entry-level discrepancies and sorted by lockfile key,
+  so one report can name every refusal. A non-canonical rendering is reported as canonical-form
+  drift before the semantic order check.
 - `lock` computes the section from the current live members after every successful reconcile.
   `--first` and `--against` replace the section with the current version's order; they do not
   preserve a draft parent that no longer has live members.
@@ -627,3 +645,27 @@ without adding a field to every entry:
 - The order section is not part of wire identity and does not affect generated code or proto
   numbers. `check` includes it in canonical-form checking; an edited section must be regenerated
   by `lock`.
+
+## 17. Reader migration through 0.6.0
+
+The 0.6.0 reader is stricter than the readers through 0.5.0. The following forms used to be
+accepted by `WireLock::parse` and are now parse errors (exit `2`, naming the line):
+
+- a kind that does not belong to its key shape, such as an `enum-case` under a `#` function key,
+  a `field` under an interface key, or a `method` under a type key;
+- a canonical type token outside section 5, including `u8:foo/bar`, a foreign name with too few
+  or too many components, a bare `list`/`option`/`result`/`reserved`, and unbalanced, empty, or
+  one-slot `list`/`option`/`result` tokens;
+- U+00A0, another Unicode space, vertical tab, or form feed used as a field separator;
+- an order fingerprint spelled with a leading `+`, uppercase hexadecimal, or fifteen or
+  seventeen digits;
+- an order parent that is not a type, interface, or function parent in the section 3 key
+  grammar;
+- a UTF-8 byte-order mark before the header.
+
+Before this tightening, a released lockfile using one of these forms parsed, so freezing it did
+not notice the difference. The reader was run over every `wire.lock` in the test fixtures, both
+examples, the alint contract fixture, and every release tag; none uses a refused form. A
+consumer whose released lockfile does use one must add a new version rather than edit the
+released directory: the tightened reader refuses the old root, and a released lockfile is never
+rewritten.

@@ -25,6 +25,11 @@ have it.
 
 ### Changed
 
+- The lockfile reader now enforces the documented grammar: an entry's kind must match its key
+  shape, canonical type tokens are parsed rather than checked for a slash, only ASCII spaces and
+  tabs separate fields, order parents use the key grammar, and order fingerprints are exactly
+  sixteen lowercase hexadecimal digits. These are parse errors (exit `2`) naming the line; the
+  migration forms are listed in `docs/design/lockfile.md` section 17.
 - `diff::compare` no longer collects conversion-impact notes it discards, and the new `diff`
   report types are documented as fixed for 1.0. `emit::proto::emit_major` now reports an
   inconsistent public model instead of panicking.

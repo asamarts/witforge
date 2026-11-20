@@ -277,7 +277,6 @@ pub enum LockMode<'a> {
     Against(&'a WireLock),
 }
 
-/// What [`WireLock::reconcile`] changed.
 /// One released or structural lockfile discrepancy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discrepancy {
@@ -354,7 +353,7 @@ impl WireLock {
         let mut saw_order_header = false;
         for (index, raw) in lines.enumerate() {
             let line_no = index + 2;
-            let line = raw.trim();
+            let line = raw.trim_matches(is_field_separator);
             if line.is_empty() {
                 continue;
             }
@@ -382,9 +381,16 @@ impl WireLock {
             let (key_text, rest) = line
                 .split_once('=')
                 .with_context(|| format!("line {line_no}: expected `key = number kind [type]`"))?;
-            let key =
-                MemberKey::parse(key_text.trim()).with_context(|| format!("line {line_no}"))?;
+            let key = MemberKey::parse(key_text.trim_matches(is_field_separator))
+                .with_context(|| format!("line {line_no}"))?;
             let (number, kind, ty, reserved) = parse_entry(rest, line_no)?;
+            if !kind_allowed_for(&key, kind) {
+                bail!(
+                    "line {line_no}: kind `{kind}` is not allowed under key `{key}`; a `#` key \
+                     holds `param`, an interface key holds `method`, and a type key holds \
+                     `field`, `variant-case`, `enum-case`, or `flag`"
+                );
+            }
             if !valid_number(number) {
                 bail!("line {line_no}: {number} is not a usable protobuf field number");
             }
@@ -427,29 +433,37 @@ impl WireLock {
 
     /// Bring the lockfile up to date with `members` in the conservative default mode.
     ///
+    /// A released discrepancy, order change, mixed-kind parent, or reintroduced member is
+    /// returned in [`Changes`] and leaves this lockfile unchanged; the caller reports it and
+    /// does not write. The additive order section is refreshed from `members` only on a
+    /// successful reconciliation.
+    ///
     /// # Errors
     ///
-    /// Returns an error when a member key is malformed, a released kind/type changed, a common
-    /// member was reordered, or a parent has used every usable protobuf field number. The
-    /// additive order section is refreshed from `members`.
+    /// Returns an error when a member key is malformed or a parent has used every usable
+    /// protobuf field number.
     pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
         self.reconcile_with(members, LockMode::Default)
     }
 
     /// Bring the lockfile up to date with `members` under an explicit classification mode.
     ///
-    /// The operation is transactional: a released kind/type error, malformed key, or exhausted
-    /// number space leaves this lockfile unchanged.
+    /// The operation is transactional: a malformed key, exhausted number space, released
+    /// discrepancy, or reintroduced member leaves this lockfile unchanged. A successful
+    /// reconciliation returns no discrepancies and no reintroduction; when it returns either,
+    /// the `Changes` describe what was refused and the caller must report it rather than write
+    /// the lockfile.
     ///
     /// # Errors
     ///
-    /// Returns an error when the baseline is inconsistent, a released entry would change, a
-    /// common member was reordered, a member key is malformed, or a parent has used every usable
-    /// protobuf field number.
+    /// Returns an error when the baseline is inconsistent, a member key is malformed, or a
+    /// parent has used every usable protobuf field number.
     pub fn reconcile_with(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
         let mut staged = self.clone();
         let changes = staged.reconcile_in_place(members, mode)?;
-        *self = staged;
+        if changes.discrepancies.is_empty() && changes.reintroduced.is_empty() {
+            *self = staged;
+        }
         Ok(changes)
     }
 
@@ -605,7 +619,7 @@ impl WireLock {
                         changes.discrepancy(
                             key.key(),
                             format!(
-                                "released entry `{key}` changed kind or type from `{} {}` to                                  `{} {}`",
+                                "released entry `{key}` changed kind or type from `{} {}` to `{} {}`",
                                 entry.kind,
                                 entry.ty.as_deref().unwrap_or("-"),
                                 member.kind,
@@ -1051,7 +1065,7 @@ fn parse_order(rest: &str, line_no: usize) -> Result<(String, Order)> {
     let (left, names) = rest.split_once(" = ").with_context(|| {
         format!("line {line_no}: expected `<parent> <fingerprint> = <members>`")
     })?;
-    let mut left = left.split_whitespace();
+    let mut left = split_spaces(left);
     let parent = left
         .next()
         .with_context(|| format!("line {line_no}: missing order parent"))?;
@@ -1061,12 +1075,20 @@ fn parse_order(rest: &str, line_no: usize) -> Result<(String, Order)> {
     if left.next().is_some() {
         bail!("line {line_no}: unexpected text after the order fingerprint");
     }
-    if !parent.contains('/') {
-        bail!("line {line_no}: invalid order parent `{parent}`");
+    validate_order_parent(parent, line_no)?;
+    if token.len() != 16
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!(
+            "line {line_no}: invalid order fingerprint `{token}`: expected exactly sixteen \
+             lowercase hexadecimal digits"
+        );
     }
     let fingerprint = u64::from_str_radix(token, 16)
         .with_context(|| format!("line {line_no}: invalid order fingerprint `{token}`"))?;
-    let members: Vec<String> = names.split_whitespace().map(ToString::to_string).collect();
+    let members: Vec<String> = split_spaces(names).map(ToString::to_string).collect();
     if members.is_empty() {
         bail!("line {line_no}: an order fingerprint must name at least one member");
     }
@@ -1084,6 +1106,48 @@ fn parse_order(rest: &str, line_no: usize) -> Result<(String, Order)> {
     Ok((parent.to_string(), order))
 }
 
+fn validate_order_parent(parent: &str, line_no: usize) -> Result<()> {
+    let sample = format!("{parent}.member");
+    let parsed = MemberKey::parse(&sample).with_context(|| {
+        format!(
+            "line {line_no}: invalid order parent `{parent}`: expected a type, interface, or \
+             function parent"
+        )
+    })?;
+    if parsed.parent() != parent {
+        bail!(
+            "line {line_no}: invalid order parent `{parent}`: expected a type, interface, or \
+             function parent"
+        );
+    }
+    Ok(())
+}
+
+fn is_field_separator(ch: char) -> bool {
+    ch == ' ' || ch == '\t'
+}
+
+fn split_fields(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(is_field_separator)
+        .filter(|field| !field.is_empty())
+}
+
+fn split_spaces(value: &str) -> impl Iterator<Item = &str> {
+    value.split(' ').filter(|field| !field.is_empty())
+}
+
+fn kind_allowed_for(key: &MemberKey, kind: MemberKind) -> bool {
+    match key {
+        MemberKey::TypeMember { .. } => matches!(
+            kind,
+            MemberKind::Field | MemberKind::VariantCase | MemberKind::EnumCase | MemberKind::Flag
+        ),
+        MemberKey::Method { .. } => kind == MemberKind::Method,
+        MemberKey::Parameter { .. } => kind == MemberKind::Param,
+    }
+}
+
 /// Stable FNV-1a 64 over each name followed by a NUL byte.
 fn fingerprint(members: &[String]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1099,7 +1163,7 @@ fn fingerprint(members: &[String]) -> u64 {
 }
 
 fn parse_entry(rest: &str, line_no: usize) -> Result<(u32, MemberKind, Option<String>, bool)> {
-    let mut words = rest.split_whitespace();
+    let mut words = split_fields(rest);
     let number_token = words
         .next()
         .with_context(|| format!("line {line_no}: missing number"))?;
@@ -1269,9 +1333,11 @@ impl<'a> CanonicalTypeParser<'a> {
             self.ident()?;
             self.expect('/')?;
             self.ident()?;
-        }
-        if self.peek() == Some('/') {
             self.expect('/')?;
+            self.ident()?;
+            return Ok(());
+        }
+        if self.eat('/') {
             self.ident()?;
             return Ok(());
         }

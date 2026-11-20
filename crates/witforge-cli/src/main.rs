@@ -538,10 +538,9 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
             Some(lock_path.display().to_string()),
         );
     }
-    // A missing or wrong order section is reported after the entry-level discrepancies, so a
-    // stale entry or a reintroduced member keeps its more specific message. A reorder with a
-    // current entry set still reaches this check in every mode. A non-canonical rendering is
-    // already reported above; the semantic check adds nothing to it.
+    // A missing or wrong order section is checked when the entry set is current. A reorder
+    // with a current entry set still reaches this check in every mode. A non-canonical
+    // rendering is already reported above; the semantic check adds nothing to it.
     if canonical
         && drift.is_empty()
         && let Err(err) = lock.validate_order_section(&members, released)
