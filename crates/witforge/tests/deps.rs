@@ -81,8 +81,14 @@ fn ambiguous_dependency_is_an_error() {
         "{message}"
     );
     assert!(message.contains("example:shared"), "{message}");
-    assert!(message.contains("deps/one"), "{message}");
-    assert!(message.contains("deps/two"), "{message}");
+    assert!(
+        message.contains("deps/one") || message.contains(r"deps\one"),
+        "{message}"
+    );
+    assert!(
+        message.contains("deps/two") || message.contains(r"deps\two"),
+        "{message}"
+    );
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -183,8 +189,14 @@ fn two_versions_of_one_dependency_are_refused() {
     );
     assert!(message.contains("0.1.0"), "{message}");
     assert!(message.contains("1.0.0"), "{message}");
-    assert!(message.contains("deps/shared-a"), "{message}");
-    assert!(message.contains("deps/shared-b"), "{message}");
+    assert!(
+        message.contains("deps/shared-a") || message.contains(r"deps\shared-a"),
+        "{message}"
+    );
+    assert!(
+        message.contains("deps/shared-b") || message.contains(r"deps\shared-b"),
+        "{message}"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

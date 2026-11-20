@@ -193,7 +193,7 @@ fn main() {
     assert_eq!(new_user.maybe_id, Some(9));
     assert_eq!(new_user.outcome, Ok(11));
     assert_eq!(new_user.email, None);
-    assert!(new_user.scores.is_empty());
+    assert_eq!(new_user.scores.len(), 0);
 
     let back = generated::convert::v0_2_to_v0_1::types::user(&new_user).unwrap();
     assert_eq!(back.name, old_user.name);

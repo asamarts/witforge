@@ -101,7 +101,7 @@ fn parse_block(block: &str) -> Vec<Result<Line, String>> {
             text: text.clone(),
         }));
     }
-    assert!(pending.is_empty(), "a block ends in a line continuation");
+    assert_eq!(pending.len(), 0, "a block ends in a line continuation");
     items
 }
 

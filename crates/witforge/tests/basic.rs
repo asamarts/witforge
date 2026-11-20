@@ -17,7 +17,7 @@ fn fixture(name: &str) -> witforge::Contract {
 #[test]
 fn valid_contract_passes_the_subset() {
     let violations = subset::check(&fixture("ok"));
-    assert!(violations.is_empty(), "{violations:#?}");
+    assert_eq!(violations.len(), 0, "{violations:#?}");
 }
 
 /// Each directory under `fixtures/refused` holds one refused construct and either
@@ -133,7 +133,8 @@ fn a_reintroduced_member_stays_reserved_and_is_reported() {
     let changes = lock.reconcile(&members).unwrap();
     let expected = vec![("example:plugin/types/span.end".to_string(), 2)];
     assert_eq!(changes.reintroduced, expected);
-    assert!(changes.added.is_empty() && changes.reserved.is_empty());
+    assert_eq!(changes.added.len(), 0);
+    assert_eq!(changes.reserved.len(), 0);
     assert!(!changes.is_empty());
     assert_eq!(lock.drift(&members).unwrap().reintroduced, expected);
     let end = lock.get("example:plugin/types/span.end").unwrap();

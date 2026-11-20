@@ -400,7 +400,7 @@ fn lock_then_check_succeeds() {
     assert!(dir.join("wire.lock").is_file());
     let relock = witforge().arg("lock").arg(&dir).output().unwrap();
     assert!(relock.status.success(), "{relock:?}");
-    assert!(relock.stdout.is_empty(), "{relock:?}");
+    assert_eq!(relock.stdout.len(), 0, "{relock:?}");
 
     let check = witforge().arg("check").arg(&dir).output().unwrap();
     assert!(

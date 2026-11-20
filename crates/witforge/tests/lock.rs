@@ -232,7 +232,10 @@ fn a_v2_lockfile_without_fingerprints_migrates_on_the_next_lock() {
     let old = WireLock::parse(without_orders).unwrap();
     assert!(!old.render().contains(ORDER_HEADER));
     assert!(old.is_canonical(without_orders));
-    assert!(old.drift(&members).unwrap().is_empty());
+    assert_eq!(
+        old.drift(&members).unwrap(),
+        witforge::lock::Changes::default()
+    );
 
     let mut migrated = old;
     migrated.reconcile(&members).unwrap();
@@ -934,7 +937,7 @@ a:b/i/t.two = 2 enum-case\n"
             Some("u32".to_string())
         )]
     );
-    assert!(changes.added.is_empty());
+    assert_eq!(changes.added.len(), 0);
     assert_eq!(lock.entries().count(), 1);
     assert!(lock.get("a:b/i/t.two").is_none());
 }
