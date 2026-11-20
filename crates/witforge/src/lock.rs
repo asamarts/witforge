@@ -259,6 +259,11 @@ impl Order {
 pub struct WireLock {
     entries: BTreeMap<MemberKey, Entry>,
     orders: BTreeMap<String, Order>,
+    /// Whether the parsed text contained the additive order-section marker.
+    ///
+    /// A released lockfile written before the section existed has no marker and stays accepted;
+    /// an unreleased lockfile without one is stale and `lock` adds it.
+    orders_present: bool,
 }
 
 /// The classification baseline for a lock operation.
@@ -373,7 +378,11 @@ impl WireLock {
                 bail!("line {line_no}: duplicate key `{key}`");
             }
         }
-        let lock = Self { entries, orders };
+        let lock = Self {
+            entries,
+            orders,
+            orders_present: saw_order_header,
+        };
         lock.validate()?;
         Ok(lock)
     }
@@ -569,6 +578,7 @@ impl WireLock {
         // A reintroduced member is a contract violation; leave the lockfile (including its
         // order section) untouched so the caller cannot mistake it for a usable update.
         if changes.reintroduced.is_empty() {
+            self.orders_present = !current_orders.is_empty();
             self.orders = current_orders;
         }
         Ok(changes)
@@ -622,6 +632,85 @@ impl WireLock {
                 "order fingerprint `{parent}` belongs to another package, not the contract's \
                  package `{package}`"
             );
+        }
+        Ok(())
+    }
+
+    /// Validate the additive order section against the contract's live members.
+    ///
+    /// The section must contain exactly one line for every parent with ordered members, naming
+    /// exactly that parent's live members in declaration order. A line for another parent, a
+    /// missing line, or a line naming a subset, a non-member, or the wrong order is an error.
+    ///
+    /// `allow_missing_section` is for a released lockfile written before the section existed: a
+    /// missing marker is accepted, but a marker with a wrong or incomplete section is not.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first parent whose line is missing, extra, or different.
+    pub fn validate_order_section(
+        &self,
+        members: &[Member],
+        allow_missing_section: bool,
+    ) -> Result<()> {
+        let expected = orders_from_members(members);
+        if !self.orders_present {
+            if allow_missing_section || expected.is_empty() {
+                return Ok(());
+            }
+            bail!(
+                "lockfile has no `{ORDER_HEADER}` section; the contract has ordered members and \
+                 `witforge lock` writes them"
+            );
+        }
+        if let Some(parent) = self
+            .orders
+            .keys()
+            .find(|parent| !expected.contains_key(*parent))
+        {
+            bail!("lockfile has an order line for `{parent}`, which has no live members");
+        }
+        for (parent, expected_order) in &expected {
+            let Some(found) = self.orders.get(parent) else {
+                bail!("lockfile is missing the order line for `{parent}`");
+            };
+            if found.members != expected_order.members {
+                bail!(
+                    "order line for `{parent}` names `{}`, expected `{}`",
+                    found.members.join(" "),
+                    expected_order.members.join(" ")
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse structurally wrong order lines without requiring the section to be current.
+    ///
+    /// `diff` deliberately accepts a stale order so it can report a reorder, but a line for an
+    /// unknown parent, or one naming a non-member, is not stale: it is inconsistent with the
+    /// contract and cannot describe any earlier order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first order line that does not describe its parent's live
+    /// members.
+    pub(crate) fn validate_order_structure(&self, members: &[Member]) -> Result<()> {
+        let expected = orders_from_members(members);
+        for (parent, order) in &self.orders {
+            let Some(expected_order) = expected.get(parent) else {
+                bail!("lockfile has an order line for `{parent}`, which has no live members");
+            };
+            let found: BTreeSet<&str> = order.members.iter().map(String::as_str).collect();
+            let expected_names: BTreeSet<&str> =
+                expected_order.members.iter().map(String::as_str).collect();
+            if found != expected_names {
+                bail!(
+                    "order line for `{parent}` names `{}`, expected the live members `{}`",
+                    order.members.join(" "),
+                    expected_order.members.join(" ")
+                );
+            }
         }
         Ok(())
     }

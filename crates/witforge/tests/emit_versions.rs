@@ -157,6 +157,11 @@ fn a_required_addition_is_refused() {
             .unwrap();
         }
     }
+    fs::copy(
+        fixture("versions/wit").join("released"),
+        root.join("released"),
+    )
+    .unwrap();
     let contract = root.join("v0.2/contract.wit");
     let text = fs::read_to_string(&contract)
         .unwrap()

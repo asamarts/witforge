@@ -426,6 +426,13 @@ fn every_generator_requires_each_minor_to_continue_the_previous_lockfile() {
             fs::copy(source.join(name), root.join(version).join(name)).unwrap();
         }
     }
+    // `v0.1` is the released legacy fixture whose lockfile predates the order section; keep its
+    // manifest so the copied root treats it as released.
+    fs::copy(
+        fixture("versions/wit").join("released"),
+        root.join("released"),
+    )
+    .unwrap();
     let v03 = root.join("v0.3");
     fs::create_dir_all(&v03).unwrap();
     let source = fs::read_to_string(root.join("v0.2/contract.wit")).unwrap();
@@ -588,6 +595,11 @@ fn version_directories_refuse_symlinks_and_non_canonical_names() {
             fs::copy(source.join(name), destination.join(name)).unwrap();
         }
     }
+    fs::copy(
+        fixture("versions/wit").join("released"),
+        root.join("released"),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         // A symlinked version directory is refused, not followed: a released version must not

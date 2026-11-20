@@ -48,7 +48,10 @@ loads every version through the generator-grade loader, which requires declarati
 fingerprints to be current; a root with a stale order fingerprint is refused before comparison.
 Direct endpoints deliberately accept that stale order so a reorder can be reported. The two
 forms therefore agree about stale members, but a reorder recorded only in the order section is
-reported by a direct endpoint and refused by root loading.
+reported by a direct endpoint and refused by root loading. A direct endpoint still refuses an
+order line for an unknown parent or one naming a non-member, a subset, or the wrong live set:
+that is structurally inconsistent with the contract, not merely stale. Missing order lines are
+accepted by a direct endpoint and reported as a reorder when the source order differs.
 
 `diff` does not require the canonical lockfile rendering; `check` is the canonical-form gate.
 `diff` requires current entries, not a particular byte layout or comment set.

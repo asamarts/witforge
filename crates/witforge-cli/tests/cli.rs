@@ -537,6 +537,70 @@ fn lock_and_check_accept_an_against_baseline() {
 }
 
 #[test]
+fn a_missing_order_section_fails_check_in_every_mode_and_generators() {
+    let root = versions("order-section");
+    let v01 = root.join("wit/v0.1");
+    let v02 = root.join("wit/v0.2");
+    let contract = fs::read_to_string(v02.join("contract.wit")).unwrap();
+    let reordered = contract.replace(
+        "        name: string,\n        new-field: option<string>,",
+        "        new-field: option<string>,\n        name: string,",
+    );
+    assert_ne!(contract, reordered);
+    fs::write(v02.join("contract.wit"), reordered).unwrap();
+    let lock = fs::read_to_string(v02.join("wire.lock")).unwrap();
+    let cut = lock.find("# witforge order v1").unwrap();
+    fs::write(v02.join("wire.lock"), &lock[..cut]).unwrap();
+
+    for args in [
+        &["check", v02.to_str().unwrap()][..],
+        &["check", v02.to_str().unwrap(), "--first"],
+        &[
+            "check",
+            v02.to_str().unwrap(),
+            "--against",
+            v01.join("wire.lock").to_str().unwrap(),
+        ],
+    ] {
+        let output = witforge().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("order"),
+            "{args:?}: {output:?}"
+        );
+    }
+
+    let out = root
+        .parent()
+        .unwrap()
+        .join(format!("witforge-order-section-out-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    for command in ["rust", "proto", "schema", "glue"] {
+        let mut run = witforge();
+        run.arg(command)
+            .arg(root.join("wit"))
+            .arg("--out")
+            .arg(&out);
+        if command == "glue" {
+            run.args([
+                "--plain-root",
+                "crate::plain",
+                "--proto-root",
+                "crate::proto",
+            ]);
+        }
+        let output = run.output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{command}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("order"),
+            "{command}: {output:?}"
+        );
+    }
+    let _ = fs::remove_dir_all(&out);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn first_is_refused_behind_a_same_major_predecessor() {
     let root =
         std::env::temp_dir().join(format!("witforge-first-predecessor-{}", std::process::id()));

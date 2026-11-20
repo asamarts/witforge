@@ -358,6 +358,8 @@ impl Loaded {
         lock.check_package(&package_name)
             .map_err(|error| ContractError::from_error(&error))?;
         let member_list = model.members()?;
+        lock.validate_order_structure(&member_list)
+            .map_err(|error| ContractError::from_error(&error))?;
         let members: BTreeMap<String, Member> = member_list
             .iter()
             .cloned()

@@ -750,6 +750,87 @@ fn first_mode_readds_a_reserved_draft() {
 }
 
 #[test]
+fn order_section_must_name_every_live_member_of_every_parent() {
+    let a = Member {
+        parent: "a:b/i/t".into(),
+        name: "a".into(),
+        kind: MemberKind::Field,
+        ty: Some("u32".into()),
+    };
+    let b = Member {
+        parent: "a:b/i/t".into(),
+        name: "b".into(),
+        kind: MemberKind::Field,
+        ty: Some("u32".into()),
+    };
+    let lock_for = |members: &[Member]| {
+        let mut lock = WireLock::default();
+        lock.reconcile(members).unwrap();
+        lock
+    };
+    let exact = lock_for(&[a.clone(), b.clone()]);
+    exact
+        .validate_order_section(&[a.clone(), b.clone()], false)
+        .unwrap();
+
+    // Deleting a line but keeping the marker is a missing line, not a legacy section.
+    let text: String = exact
+        .render()
+        .lines()
+        .filter(|line| !line.starts_with("# order "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let deleted_line = WireLock::parse(&text).unwrap();
+    assert!(
+        deleted_line
+            .validate_order_section(&[a.clone(), b.clone()], false)
+            .is_err()
+    );
+
+    let subset = lock_for(std::slice::from_ref(&a));
+    let error = subset
+        .validate_order_section(&[a.clone(), b.clone()], false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("names `a`"), "{error}");
+    assert!(error.contains("expected `a b`"), "{error}");
+
+    let extra = lock_for(&[a.clone(), b.clone()]);
+    assert!(
+        extra
+            .validate_order_section(std::slice::from_ref(&a), false)
+            .is_err()
+    );
+
+    let other = Member {
+        parent: "a:b/i/other".into(),
+        name: "a".into(),
+        kind: MemberKind::Field,
+        ty: Some("u32".into()),
+    };
+    let unknown = lock_for(&[other]);
+    let error = unknown
+        .validate_order_section(std::slice::from_ref(&a), false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no live members"), "{error}");
+
+    let missing = WireLock::parse(&format!("{HEADER}\na:b/i/t.a = 1 field u32\n")).unwrap();
+    assert!(
+        missing
+            .validate_order_section(std::slice::from_ref(&a), false)
+            .is_err()
+    );
+    // A released lockfile written before the section existed stays accepted.
+    assert!(
+        missing
+            .validate_order_section(std::slice::from_ref(&a), true)
+            .is_ok()
+    );
+}
+
+#[test]
 fn a_parent_that_mixes_kinds_is_refused_by_itself_and_by_drift() {
     // What a pre-0.6.0 `lock --against` left after a released enum became a record: the old
     // cases stay reserved and the new fields are numbered after them. Neither number nor type

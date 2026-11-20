@@ -11,3 +11,10 @@ example:reserved-proto/types/kept.live = 1 field string
 example:reserved-proto/types/kept.old = 9 field u64 reserved
 example:reserved-proto/types/status.live = 1 enum-case
 example:reserved-proto/types/status.old = 9 enum-case reserved
+# witforge order v1
+# order example:reserved-proto/service f0d6ed3a9d58cb2b = call
+# order example:reserved-proto/service#call a155e4aa185b71fd = live
+# order example:reserved-proto/types/caps a155e4aa185b71fd = live
+# order example:reserved-proto/types/choice a155e4aa185b71fd = live
+# order example:reserved-proto/types/kept a155e4aa185b71fd = live
+# order example:reserved-proto/types/status a155e4aa185b71fd = live

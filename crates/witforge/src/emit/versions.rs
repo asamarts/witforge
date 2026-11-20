@@ -252,6 +252,7 @@ fn dependency_name(dependency: &Dependency) -> String {
 /// violation, a version or package mismatch, a lockfile entry of another package, a lockfile
 /// that does not continue the previous minor's, or a stale lockfile.
 pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
+    let released = crate::load_root_released_manifest(wit_root, None)?;
     let mut versions: Vec<Version> = Vec::new();
     for (major, minor, directory) in discover_versions(wit_root)? {
         let contract = load(&directory)?;
@@ -311,6 +312,10 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             })?;
         }
         let members = model.members()?;
+        let is_released = directory
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| released.contains(name));
         let drift = lock.drift(&members).map_err(|err| {
             ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
         })?;
@@ -320,6 +325,15 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                 directory.display()
             )));
         }
+        lock.validate_order_section(&members, is_released)
+            .map_err(|err| {
+                let remedy = if is_released {
+                    "the directory is released; restore its released lockfile"
+                } else {
+                    "run `witforge lock`"
+                };
+                ContractError::new(format!("{}: {err:#}; {remedy}", lock_path.display()))
+            })?;
         versions.push(Version {
             major,
             directory,

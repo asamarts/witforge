@@ -527,6 +527,10 @@ The implementation must cover:
   of common type and parameter members caught by `--against`, additions/removals not reported as
   reorders, a v2 lockfile without fingerprints migrating on the next `lock`, and `check_append_only`
   refusing a reordered section;
+- order-section completeness: a missing section for an unreleased version, a deleted line, a
+  subset, a non-member, an unknown parent, a released legacy section without a marker, a released
+  section with a wrong marker, and a direct `diff` accepting a stale order but refusing a
+  structurally wrong line;
 - an unchanged lockfile left untouched;
 - a missing lockfile refused in default mode and with `--against`, and accepted with `--first`;
 - the `wit/released` manifest: append-only, duplicate/missing entries, the plain-name entry rule,
@@ -569,10 +573,21 @@ without adding a field to every entry:
 - The marker must appear before its order lines. A line beginning `# order ` before the marker is
   an ordinary comment. Duplicate markers, duplicate parents, duplicate member names, malformed
   fingerprints, and a fingerprint mismatch are parse errors.
-- The section is additive: an old v2 parser ignores it as comments, and a v2 lockfile without the
-  section remains readable and canonical. A missing section means no stored order; `lock` adds
-  the current section on its next successful write. A released lockfile without a section is
-  accepted as released and is not rewritten by `lock`.
+- The section is additive: an old v2 parser ignores it as comments. For an unreleased version the
+  section is required and canonical: it carries exactly one line for every parent with live
+  members, naming exactly that parent's live members in declaration order. A missing line, a
+  line for a parent with no live members, a subset, a non-member, or a wrong order is exit `1`;
+  `lock` writes the current section on its next successful reconcile. `check` applies that rule
+  in default, `--first`, and `--against` modes, and every generator refuses a lockfile that
+  fails it. A released lockfile written before the section existed has no marker and stays
+  accepted and unmodified; once a released lockfile has the marker, its section is validated
+  exactly like an unreleased one and a mismatch is refused rather than rewritten.
+- Direct `diff` endpoints accept a stale order so they can report a reorder, but a line for an
+  unknown parent, or one naming a non-member or a subset, is structurally wrong and refused.
+  A WIT-root endpoint uses the generator-grade loader and applies the full rule.
+- Order discrepancies are reported after entry-level discrepancies, so a stale entry or a
+  reintroduced member keeps its more specific message. A non-canonical rendering is reported as
+  canonical-form drift before the semantic order check.
 - `lock` computes the section from the current live members after every successful reconcile.
   `--first` and `--against` replace the section with the current version's order; they do not
   preserve a draft parent that no longer has live members.

@@ -1,7 +1,7 @@
 //! Stable diff API coverage for conversion impacts.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use witforge::diff::ChangeKind;
 use witforge::lock::WireLock;
@@ -39,10 +39,14 @@ interface types {\n\
     fs::write(old.join("wire.lock"), old_lock.render()).unwrap();
 
     // The lockfile a pre-0.6.0 `lock --against` produced: the old enum cases stay reserved and
-    // the new record fields are numbered after them.
-    let mut mixed = old_lock
-        .render()
-        .replace(" enum-case\n", " enum-case reserved\n");
+    // the new record fields are numbered after them. Drop the old order line: a direct `diff`
+    // accepts a missing or stale order, but an order line naming the old members is structurally
+    // wrong for the new live set.
+    let mut mixed = old_lock.render();
+    if let Some(index) = mixed.find("# witforge order v1") {
+        mixed.truncate(index);
+    }
+    let mut mixed = mixed.replace(" enum-case\n", " enum-case reserved\n");
     mixed.push_str(
         "ex:t/types/thing.fresh-one = 3 field u32\n\
 ex:t/types/thing.fresh-two = 4 field string\n",
@@ -61,33 +65,40 @@ ex:t/types/thing.fresh-two = 4 field string\n",
     fs::remove_dir_all(&base).unwrap();
 }
 
-fn write_version(root: &Path, name: &str, contract: &str, lock: &str) {
+fn write_contract(root: &Path, name: &str, contract: &str) -> PathBuf {
     let dir = root.join(name);
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("contract.wit"), contract).unwrap();
-    fs::write(dir.join("wire.lock"), lock).unwrap();
+    dir
+}
+
+fn generated_lock(dir: &Path) -> String {
+    let model = model::build(&load(dir).unwrap()).unwrap();
+    let mut lock = WireLock::default();
+    lock.reconcile(&model.members().unwrap()).unwrap();
+    lock.render()
 }
 
 #[test]
 fn method_ids_are_compared_and_generators_agree() {
     let root = std::env::temp_dir().join(format!("witforge-diff-methods-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    write_version(
+    let old = write_contract(
         &root,
         "v0.1",
         "package ex:t@0.1.0;\ninterface api { alpha: func() -> u32; beta: func(); }\n",
-        "# witforge wire lockfile v2\n\
-         ex:t/api.alpha = 1 method u32\n\
-         ex:t/api.beta = 2 method\n",
     );
-    write_version(
+    fs::write(old.join("wire.lock"), generated_lock(&old)).unwrap();
+    let new = write_contract(
         &root,
         "v0.2",
         "package ex:t@0.2.0;\ninterface api { alpha: func() -> u32; beta: func(); }\n",
-        "# witforge wire lockfile v2\n\
-         ex:t/api.alpha = 2 method u32\n\
-         ex:t/api.beta = 1 method\n",
     );
+    let new_lock = generated_lock(&new).replace(
+        "ex:t/api.alpha = 1 method u32\nex:t/api.beta = 2 method",
+        "ex:t/api.alpha = 2 method u32\nex:t/api.beta = 1 method",
+    );
+    fs::write(new.join("wire.lock"), new_lock).unwrap();
 
     let report = witforge::diff::compare(&root.join("v0.1"), &root.join("v0.2")).unwrap();
     let renumbered: Vec<_> = report
@@ -114,22 +125,20 @@ fn reuse_of_a_reserved_number_is_wire_breaking_and_generators_agree() {
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    write_version(
+    let old = write_contract(
         &root,
         "v0.1",
         "package ex:t@0.1.0;\ninterface types { record r { a: u32 } }\n",
-        "# witforge wire lockfile v2\n\
-         ex:t/types/r.a = 1 field u32\n\
-         ex:t/types/r.old = 2 field u32 reserved\n",
     );
-    write_version(
+    let mut old_lock = generated_lock(&old);
+    old_lock.push_str("ex:t/types/r.old = 2 field u32 reserved\n");
+    fs::write(old.join("wire.lock"), old_lock).unwrap();
+    let new = write_contract(
         &root,
         "v0.2",
         "package ex:t@0.2.0;\ninterface types { record r { a: u32, fresh: u64 } }\n",
-        "# witforge wire lockfile v2\n\
-         ex:t/types/r.a = 1 field u32\n\
-         ex:t/types/r.fresh = 2 field u64\n",
     );
+    fs::write(new.join("wire.lock"), generated_lock(&new)).unwrap();
 
     let report = witforge::diff::compare(&root.join("v0.1"), &root.join("v0.2")).unwrap();
     let added = report
@@ -144,6 +153,49 @@ fn reuse_of_a_reserved_number_is_wire_breaking_and_generators_agree() {
     let error = witforge::emit::proto::plan(&root).unwrap_err();
     assert!(witforge::is_contract_error(&error), "{error:#}");
     assert!(format!("{error:#}").contains("removed"), "{error:#}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn direct_diff_accepts_a_stale_order_but_refuses_a_named_non_member() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diff-order-structure-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let old = write_contract(
+        &root,
+        "v0.1",
+        "package ex:t@0.1.0;\ninterface types { record r { a: u32, b: u32 } }\n",
+    );
+    let old_lock = generated_lock(&old);
+    fs::write(old.join("wire.lock"), &old_lock).unwrap();
+    let new = write_contract(
+        &root,
+        "v0.2",
+        "package ex:t@0.2.0;\ninterface types { record r { b: u32, a: u32 } }\n",
+    );
+    // A stale order still names exactly the live members, so direct diff may report the reorder.
+    fs::write(new.join("wire.lock"), &old_lock).unwrap();
+    let report = witforge::diff::compare(&old, &new).unwrap();
+    assert!(
+        report
+            .changes
+            .iter()
+            .any(|change| matches!(change.kind, ChangeKind::Reordered { .. })),
+        "{report:?}"
+    );
+
+    // A line naming a non-member is structurally wrong, not stale.
+    let extra = write_contract(
+        &root,
+        "extra",
+        "package ex:t@0.1.0;\ninterface types { record r { a: u32, b: u32, ghost: u32 } }\n",
+    );
+    let lock = generated_lock(&extra).replace("ex:t/types/r.ghost = 3 field u32\n", "");
+    fs::write(new.join("wire.lock"), lock).unwrap();
+    let error = witforge::diff::compare(&old, &new).unwrap_err();
+    assert!(format!("{error:#}").contains("order line"), "{error:#}");
     fs::remove_dir_all(&root).unwrap();
 }
 

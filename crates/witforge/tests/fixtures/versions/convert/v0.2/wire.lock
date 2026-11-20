@@ -17,3 +17,8 @@ example:convert/types/user.nickname = 7 field option<string>
 example:convert/types/user.outcome = 5 field result<u32,string>
 example:convert/types/user.scores = 9 field list<u32>
 example:convert/types/user.tags = 6 field list<string>
+# witforge order v1
+# order example:convert/types/event 18f8af3fbc446c9b = started progress finished
+# order example:convert/types/options c013d639df362a66 = verbose strict
+# order example:convert/types/state 77ca4481e68cae5b = idle running stopped
+# order example:convert/types/user 1a9a70a1141455b1 = name id names maybe-id outcome tags nickname email scores

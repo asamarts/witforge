@@ -86,6 +86,16 @@ have it.
   immediate predecessor in the same major: a baseline from another major, or one that skips an
   existing intermediate minor, is refused with the `--first` or predecessor remedy. A baseline
   outside a version directory is accepted as given.
+- An unreleased lockfile must carry a complete `# witforge order v1` section: exactly one line
+  for every parent with live members, naming exactly those members in declaration order. A
+  missing section, a deleted line, a subset, a non-member, an unknown parent, or a wrong order
+  is exit `1`; `check` applies the rule in default, `--first`, and `--against` modes, and every
+  generator refuses a lockfile that fails it. Previously deleting the section let a reordered
+  record or parameter list pass `check`, `rust`, and `proto`, and `check --first` skipped the
+  comparison. A released lockfile written before the section existed has no marker and stays
+  accepted and unmodified; once a released lockfile has the marker, a wrong section is refused
+  rather than rewritten. Direct `diff` endpoints still accept stale order so they can report a
+  reorder, but refuse an unknown parent or a line naming a non-member, subset, or wrong set.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and
