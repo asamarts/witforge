@@ -96,6 +96,11 @@ have it.
   accepted and unmodified; once a released lockfile has the marker, a wrong section is refused
   rather than rewritten. Direct `diff` endpoints still accept stale order so they can report a
   reorder, but refuse an unknown parent or a line naming a non-member, subset, or wrong set.
+- Synthesized wrapper messages are looked up by the type they wrap, not by their generated name
+  alone. Two different types that would produce one wrapper name are now refused with exit `1`
+  and a message naming both canonical types and the wrapper; previously the second silently
+  reused the first wrapper's schema. Aliases and the byte-list spellings that resolve to one
+  projection still share one wrapper. No existing wrapper name changes.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

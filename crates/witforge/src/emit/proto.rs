@@ -128,6 +128,8 @@ struct Emitter<'a> {
     top_names: BTreeMap<String, String>,
     enum_values: BTreeMap<String, String>,
     wrappers: BTreeMap<String, String>,
+    /// The source type that produced each synthesized wrapper, for collision diagnostics.
+    wrapper_sources: BTreeMap<String, String>,
     live_keys: BTreeSet<String>,
 }
 
@@ -162,6 +164,7 @@ impl<'a> Emitter<'a> {
             top_names,
             enum_values: BTreeMap::new(),
             wrappers: BTreeMap::new(),
+            wrapper_sources: BTreeMap::new(),
             live_keys,
         })
     }
@@ -1076,10 +1079,11 @@ impl<'a> Emitter<'a> {
             "WitforgeListOf{}",
             self.foreign_shape_name_ty(context, element)?
         );
+        let source = self.wrapper_source(context, &TypeExpr::List(Box::new(element.clone())))?;
         self.ensure_foreign_wrapper(
             name.clone(),
             WrapperKind::List(element.clone()),
-            "anonymous list".to_string(),
+            source,
             context,
         )?;
         Ok(name)
@@ -1095,10 +1099,12 @@ impl<'a> Emitter<'a> {
             self.foreign_shape_name_ty(context, payload)?
         );
         let some = self.foreign_singular_ty(context, payload)?;
-        self.ensure_wrapper(
+        let source = self.wrapper_source(context, &TypeExpr::Option(Box::new(payload.clone())))?;
+        self.ensure_foreign_wrapper(
             name.clone(),
             WrapperKind::OptionValue(some),
-            "anonymous option".to_string(),
+            source,
+            context,
         )?;
         Ok(name)
     }
@@ -1112,10 +1118,11 @@ impl<'a> Emitter<'a> {
             "Witforge{}",
             self.foreign_result_shape_name(context, result)?
         );
+        let source = self.wrapper_source(context, &TypeExpr::Result(result.clone()))?;
         self.ensure_foreign_wrapper(
             name.clone(),
             WrapperKind::Result(result.clone()),
-            "anonymous result".to_string(),
+            source,
             context,
         )?;
         Ok(name)
@@ -1128,35 +1135,48 @@ impl<'a> Emitter<'a> {
         source: String,
         context: Option<&Dependency>,
     ) -> Result<()> {
-        if self.wrappers.contains_key(&name) {
-            return Ok(());
+        let body = (|| -> Result<String> {
+            Ok(match kind {
+                WrapperKind::List(element) => {
+                    let ty = self.foreign_singular_ty(context, &element)?;
+                    format!("message {name} {{\n  repeated {ty} values = 1;\n}}")
+                }
+                WrapperKind::OptionValue(some) => {
+                    format!(
+                        "message {name} {{\n  oneof value {{\n    Empty none = 1;\n    {some} some = 2;\n  }}\n}}"
+                    )
+                }
+                WrapperKind::Result(result) => {
+                    let ok = match &result.ok {
+                        Some(ok) => self.foreign_singular_ty(context, ok)?,
+                        None => EMPTY.to_string(),
+                    };
+                    let err = match &result.err {
+                        Some(err) => self.foreign_singular_ty(context, err)?,
+                        None => EMPTY.to_string(),
+                    };
+                    format!(
+                        "message {name} {{\n  oneof value {{\n    {ok} ok = 1;\n    {err} err = 2;\n  }}\n}}"
+                    )
+                }
+            })
+        })()
+        .with_context(|| format!("synthesizing wrapper `{name}` for `{source}`"))?;
+        if let Some(existing) = self.wrappers.get(&name) {
+            if existing == &body {
+                return Ok(());
+            }
+            let previous = self
+                .wrapper_sources
+                .get(&name)
+                .map_or("another wrapper", String::as_str);
+            contract_bail!(
+                "wrapper message `{name}` is produced by both `{previous}` and `{source}`"
+            );
         }
-        self.register_top(&name, source)?;
-        let body = match kind {
-            WrapperKind::List(element) => {
-                let ty = self.foreign_singular_ty(context, &element)?;
-                format!("message {name} {{\n  repeated {ty} values = 1;\n}}")
-            }
-            WrapperKind::OptionValue(some) => {
-                format!(
-                    "message {name} {{\n  oneof value {{\n    Empty none = 1;\n    {some} some = 2;\n  }}\n}}"
-                )
-            }
-            WrapperKind::Result(result) => {
-                let ok = match &result.ok {
-                    Some(ok) => self.foreign_singular_ty(context, ok)?,
-                    None => EMPTY.to_string(),
-                };
-                let err = match &result.err {
-                    Some(err) => self.foreign_singular_ty(context, err)?,
-                    None => EMPTY.to_string(),
-                };
-                format!(
-                    "message {name} {{\n  oneof value {{\n    {ok} ok = 1;\n    {err} err = 2;\n  }}\n}}"
-                )
-            }
-        };
-        self.wrappers.insert(name, body);
+        self.register_top(&name, source.clone())?;
+        self.wrappers.insert(name.clone(), body);
+        self.wrapper_sources.insert(name, source);
         Ok(())
     }
 
@@ -1261,25 +1281,18 @@ impl<'a> Emitter<'a> {
         named: Option<&QualifiedName>,
         payload: &TypeExpr,
     ) -> Result<String> {
+        let source = self.wrapper_source(None, &TypeExpr::Option(Box::new(payload.clone())))?;
         let wrapper_name = if let Some(name) = named {
             if let Some(direct) = self.named_option_wrapper(name, payload)? {
                 let wrapper = format!("WitforgeOptionOf{direct}");
-                return self.ensure_wrapper(
-                    wrapper,
-                    WrapperKind::OptionValue(direct),
-                    format!("option {name}"),
-                );
+                return self.ensure_wrapper(wrapper, WrapperKind::OptionValue(direct), source);
             }
             format!("WitforgeOptionOf{}", self.shape_name(payload)?)
         } else {
             format!("WitforgeOptionOf{}", self.shape_name(payload)?)
         };
         let some = self.singular(payload)?;
-        self.ensure_wrapper(
-            wrapper_name,
-            WrapperKind::OptionValue(some),
-            "anonymous option".to_string(),
-        )
+        self.ensure_wrapper(wrapper_name, WrapperKind::OptionValue(some), source)
     }
 
     fn named_option_wrapper(
@@ -1287,26 +1300,19 @@ impl<'a> Emitter<'a> {
         name: &QualifiedName,
         payload: &TypeExpr,
     ) -> Result<Option<String>> {
+        let source = self.wrapper_source(None, &TypeExpr::Named(name.clone()))?;
         match self.shape(payload)? {
             Shape::List => {
                 let element = self.list_element(payload)?;
                 let wrapper = Self::type_ident(&name.interface, &name.name)?;
-                self.ensure_wrapper(
-                    wrapper.clone(),
-                    WrapperKind::List(element),
-                    format!("option {name}"),
-                )?;
+                self.ensure_wrapper(wrapper.clone(), WrapperKind::List(element), source)?;
                 Ok(Some(wrapper))
             }
             Shape::Option => {
                 let inner = self.option_payload(payload)?;
                 let wrapper = Self::type_ident(&name.interface, &name.name)?;
                 let some = self.singular(&inner)?;
-                self.ensure_wrapper(
-                    wrapper.clone(),
-                    WrapperKind::OptionValue(some),
-                    format!("option {name}"),
-                )?;
+                self.ensure_wrapper(wrapper.clone(), WrapperKind::OptionValue(some), source)?;
                 Ok(Some(wrapper))
             }
             _ => Ok(None),
@@ -1355,25 +1361,22 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    fn wrapper_source(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<String> {
+        self.model.canonical_type(&qualify_type(context, ty))
+    }
+
     fn list_wrapper(&mut self, element: &TypeExpr) -> Result<String> {
+        let wrapped = TypeExpr::List(Box::new(element.clone()));
         let name = format!("WitforgeListOf{}", self.shape_name(element)?);
-        self.ensure_wrapper(
-            name.clone(),
-            WrapperKind::List(element.clone()),
-            "anonymous list".to_string(),
-        )
+        let source = self.wrapper_source(None, &wrapped)?;
+        self.ensure_wrapper(name.clone(), WrapperKind::List(element.clone()), source)
     }
 
     fn ensure_result_wrapper(&mut self, result: &ResultExpr) -> Result<String> {
-        let name = format!(
-            "Witforge{}",
-            self.shape_name(&TypeExpr::Result(result.clone()))?
-        );
-        self.ensure_wrapper(
-            name.clone(),
-            WrapperKind::Result(result.clone()),
-            "anonymous result".to_string(),
-        )
+        let wrapped = TypeExpr::Result(result.clone());
+        let name = format!("Witforge{}", self.shape_name(&wrapped)?);
+        let source = self.wrapper_source(None, &wrapped)?;
+        self.ensure_wrapper(name.clone(), WrapperKind::Result(result.clone()), source)
     }
 
     fn ensure_wrapper(
@@ -1382,35 +1385,48 @@ impl<'a> Emitter<'a> {
         kind: WrapperKind,
         source: String,
     ) -> Result<String> {
-        if self.wrappers.contains_key(&name) {
-            return Ok(name);
+        let body = (|| -> Result<String> {
+            Ok(match kind {
+                WrapperKind::List(element) => {
+                    let ty = self.singular(&element)?;
+                    format!("message {name} {{\n  repeated {ty} values = 1;\n}}")
+                }
+                WrapperKind::OptionValue(some) => {
+                    format!(
+                        "message {name} {{\n  oneof value {{\n    Empty none = 1;\n    {some} some = 2;\n  }}\n}}"
+                    )
+                }
+                WrapperKind::Result(result) => {
+                    let ok = match &result.ok {
+                        Some(ok) => self.singular(ok)?,
+                        None => EMPTY.to_string(),
+                    };
+                    let err = match &result.err {
+                        Some(err) => self.singular(err)?,
+                        None => EMPTY.to_string(),
+                    };
+                    format!(
+                        "message {name} {{\n  oneof value {{\n    {ok} ok = 1;\n    {err} err = 2;\n  }}\n}}"
+                    )
+                }
+            })
+        })()
+        .with_context(|| format!("synthesizing wrapper `{name}` for `{source}`"))?;
+        if let Some(existing) = self.wrappers.get(&name) {
+            if existing == &body {
+                return Ok(name);
+            }
+            let previous = self
+                .wrapper_sources
+                .get(&name)
+                .map_or("another wrapper", String::as_str);
+            contract_bail!(
+                "wrapper message `{name}` is produced by both `{previous}` and `{source}`"
+            );
         }
-        self.register_top(&name, source)?;
-        let body = match kind {
-            WrapperKind::List(element) => {
-                let ty = self.singular(&element)?;
-                format!("message {name} {{\n  repeated {ty} values = 1;\n}}")
-            }
-            WrapperKind::OptionValue(some) => {
-                format!(
-                    "message {name} {{\n  oneof value {{\n    Empty none = 1;\n    {some} some = 2;\n  }}\n}}"
-                )
-            }
-            WrapperKind::Result(result) => {
-                let ok = match &result.ok {
-                    Some(ok) => self.singular(ok)?,
-                    None => EMPTY.to_string(),
-                };
-                let err = match &result.err {
-                    Some(err) => self.singular(err)?,
-                    None => EMPTY.to_string(),
-                };
-                format!(
-                    "message {name} {{\n  oneof value {{\n    {ok} ok = 1;\n    {err} err = 2;\n  }}\n}}"
-                )
-            }
-        };
+        self.register_top(&name, source.clone())?;
         self.wrappers.insert(name.clone(), body);
+        self.wrapper_sources.insert(name.clone(), source);
         Ok(name)
     }
 
@@ -1806,6 +1822,67 @@ fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::{Model, Package, Version};
+
+    #[test]
+    fn result_wrappers_are_compared_by_the_type_they_wrap() {
+        let model = Model {
+            package: Package {
+                namespace: "example".to_string(),
+                name: "model".to_string(),
+                version: Version {
+                    major: 0,
+                    minor: 1,
+                    patch: 0,
+                },
+                docs: String::new(),
+            },
+            interfaces: Vec::new(),
+            worlds: Vec::new(),
+            dependencies: Vec::new(),
+        };
+        let lock = WireLock::default();
+        let mut emitter = Emitter::new(&model, &lock).unwrap();
+        let name = "WitforgeResultOfU32AndString".to_string();
+        let u32_result = ResultExpr {
+            ok: Some(Box::new(TypeExpr::U32)),
+            err: Some(Box::new(TypeExpr::String)),
+        };
+        emitter
+            .ensure_wrapper(
+                name.clone(),
+                WrapperKind::Result(u32_result.clone()),
+                "result<u32,string>".to_string(),
+            )
+            .unwrap();
+        // A different result mapped to one name is a collision.
+        let u64_result = ResultExpr {
+            ok: Some(Box::new(TypeExpr::U64)),
+            err: Some(Box::new(TypeExpr::String)),
+        };
+        let error = emitter
+            .ensure_wrapper(
+                name.clone(),
+                WrapperKind::Result(u64_result),
+                "result<u64,string>".to_string(),
+            )
+            .unwrap_err();
+        assert!(crate::is_contract_error(&error), "{error:#}");
+        let message = format!("{error:#}");
+        assert!(message.contains(&name), "{message}");
+        assert!(message.contains("result<u32,string>"), "{message}");
+        assert!(message.contains("result<u64,string>"), "{message}");
+        // The same body is one wrapper, whatever spelling produced it.
+        assert_eq!(
+            emitter
+                .ensure_wrapper(
+                    name,
+                    WrapperKind::Result(u32_result),
+                    "another spelling of result<u32,string>".to_string()
+                )
+                .unwrap(),
+            "WitforgeResultOfU32AndString"
+        );
+    }
 
     #[test]
     fn method_enum_reports_a_missing_interface() {

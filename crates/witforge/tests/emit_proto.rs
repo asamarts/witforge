@@ -237,6 +237,149 @@ example:plugin/analyzer#analyze.removed = 9 param string reserved\n",
 }
 
 #[test]
+fn wrapper_messages_are_looked_up_by_type_and_collisions_are_refused() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-proto-wrapper-collision-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let version = root.join("v0.1");
+    fs::create_dir_all(&version).unwrap();
+    fs::write(
+        version.join("contract.wit"),
+        "package ex:w@0.1.0;\n\
+interface ab { record cd { a: u8 } }\n\
+interface list-of-ab { record cd { b: string } }\n\
+interface api {\n\
+  use ab.{cd as cd1};\n\
+  use list-of-ab.{cd as cd2};\n\
+  record r { first: list<list<list<cd1>>>, second: list<list<cd2>> }\n\
+}\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&version).unwrap()).unwrap();
+    let lock = lock_for(&model);
+    let error = proto::emit_major(&model, &lock).unwrap_err();
+    assert!(witforge::is_contract_error(&error), "{error:#}");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("wrapper message `WitforgeListOfListOfAbCd`"),
+        "{message}"
+    );
+    assert!(message.contains("list<list<ab/cd>>"), "{message}");
+    assert!(message.contains("list<list-of-ab/cd>"), "{message}");
+
+    fs::write(version.join("wire.lock"), lock.render()).unwrap();
+    let proto_error = proto::plan(&root).unwrap_err();
+    let glue_error = witforge::emit::glue::plan(&root, "crate::plain", "crate::proto").unwrap_err();
+    for error in [&proto_error, &glue_error] {
+        let message = format!("{error:#}");
+        assert!(witforge::is_contract_error(error), "{message}");
+        assert!(
+            message.contains("wrapper message `WitforgeListOfListOfAbCd`"),
+            "{message}"
+        );
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn alias_spellings_share_one_wrapper() {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-proto-wrapper-alias-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package ex:w@0.1.0;\n\
+interface api {\n\
+  type id = u32;\n\
+  record r { first: list<list<id>>, second: list<list<u32>> }\n\
+}\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let schema = proto::emit_major(&model, &lock_for(&model)).unwrap();
+    assert_eq!(
+        schema.matches("message WitforgeListOfU32").count(),
+        1,
+        "{schema}"
+    );
+    assert!(
+        schema.contains("repeated WitforgeListOfU32 first = 1;"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("repeated WitforgeListOfU32 second = 2;"),
+        "{schema}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn result_wrapper_collisions_are_refused() {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-proto-result-wrapper-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package ex:w@0.1.0;\n\
+interface ab { record cd { a: u8 } record cd-and { b: string } }\n\
+interface and { record ef-gh { c: bool } }\n\
+interface ef { record gh { d: u16 } }\n\
+interface api {\n\
+  use ab.{cd, cd-and};\n\
+  use and.{ef-gh};\n\
+  use ef.{gh};\n\
+  record r { first: result<cd, ef-gh>, second: result<cd-and, gh> }\n\
+}\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let error = proto::emit_major(&model, &lock_for(&model)).unwrap_err();
+    assert!(witforge::is_contract_error(&error), "{error:#}");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("wrapper message `WitforgeResultOfAbCdAndAndEfGh`"),
+        "{message}"
+    );
+    assert!(message.contains("result<ab/cd,and/ef-gh>"), "{message}");
+    assert!(message.contains("result<ab/cd-and,ef/gh>"), "{message}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_wrapper_name_colliding_with_a_user_type_is_refused() {
+    let dir = std::env::temp_dir().join(format!(
+        "witforge-proto-wrapper-user-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package ex:w@0.1.0;\n\
+interface witforge { record list-of-string { value: string } }\n\
+interface api {\n\
+  variant v { value(list<string>) }\n\
+}\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let error = proto::emit_major(&model, &lock_for(&model)).unwrap_err();
+    assert!(witforge::is_contract_error(&error), "{error:#}");
+    let message = format!("{error:#}");
+    assert!(message.contains("WitforgeListOfString"), "{message}");
+    assert!(message.contains("witforge/list-of-string"), "{message}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn byte_lists_use_the_resolved_element_type_in_every_spelling() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/emit/bytes");
     let model = model::build(&load(&dir).unwrap()).unwrap();

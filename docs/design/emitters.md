@@ -584,8 +584,15 @@ Naming rules for named types:
   wrapper; their singular form is an anonymous option wrapper around the mapped payload type,
   named structurally from that payload.
 - Anonymous shapes always use the `Witforge...` names.
-- Identical anonymous shapes share one wrapper within the package.
-- A wrapper name collision with a user type or another wrapper is a hard error.
+- A wrapper is looked up by the type it wraps, not by its generated name alone. The wrapper body
+  (`values`, `none`/`some`, or `ok`/`err`) is the identity: two spellings that resolve to the
+  same projection share one wrapper, including aliases and the byte-list spellings of `W10-046`.
+- Two different types that would produce one wrapper name are a hard error, even when their
+  canonical spellings differ but their concatenated shape names collide. The diagnostic names
+  both canonical types and the wrapper name. `proto` and `glue` refuse the same contract with
+  that message, and `check` reports it (`W10-067`).
+- A wrapper name collision with a user type or another wrapper is a hard error. Existing wrapper
+  names do not move; the lookup change only turns a silent reuse into a refusal.
 
 ### 4.5 Functions
 
