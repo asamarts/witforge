@@ -25,6 +25,19 @@ fn temp_contract(name: &str) -> PathBuf {
     dir
 }
 
+fn version_contract(root: &Path, version: &str, package_version: &str) {
+    let dir = root.join(version);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        format!(
+            "package ex:t@{package_version};\n\
+             interface api {{ alpha: func() -> u32; beta: func(); }}\n"
+        ),
+    )
+    .unwrap();
+}
+
 fn copy_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
@@ -524,6 +537,147 @@ fn lock_and_check_accept_an_against_baseline() {
 }
 
 #[test]
+fn first_is_refused_behind_a_same_major_predecessor() {
+    let root =
+        std::env::temp_dir().join(format!("witforge-first-predecessor-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    version_contract(&root, "v0.1", "0.1.0");
+    version_contract(&root, "v0.2", "0.2.0");
+    let first = witforge()
+        .args(["lock", root.join("v0.1").to_str().unwrap(), "--first"])
+        .output()
+        .unwrap();
+    assert!(first.status.success(), "{first:?}");
+    // Re-running `--first` on the lowest minor while it is still a draft stays allowed.
+    let again = witforge()
+        .args(["lock", root.join("v0.1").to_str().unwrap(), "--first"])
+        .output()
+        .unwrap();
+    assert!(again.status.success(), "{again:?}");
+
+    for verb in ["lock", "check"] {
+        let output = witforge()
+            .arg(verb)
+            .arg(root.join("v0.2"))
+            .arg("--first")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{verb}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("v0.1"), "{verb}: {stderr}");
+        assert!(stderr.contains("--against"), "{verb}: {stderr}");
+    }
+
+    // A new major and a root that starts at a later minor are both firsts.
+    version_contract(&root, "v1.0", "1.0.0");
+    let new_major = witforge()
+        .args(["lock", root.join("v1.0").to_str().unwrap(), "--first"])
+        .output()
+        .unwrap();
+    assert!(new_major.status.success(), "{new_major:?}");
+    let _ = fs::remove_dir_all(&root);
+
+    let starts_later = std::env::temp_dir().join(format!(
+        "witforge-first-starts-later-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&starts_later);
+    version_contract(&starts_later, "v0.3", "0.3.0");
+    let output = witforge()
+        .args([
+            "lock",
+            starts_later.join("v0.3").to_str().unwrap(),
+            "--first",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    fs::remove_dir_all(starts_later).unwrap();
+}
+
+#[test]
+fn against_baseline_must_be_the_sibling_major_and_immediate_predecessor() {
+    let root = std::env::temp_dir().join(format!("witforge-against-paths-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    for (version, package_version) in [
+        ("v0.1", "0.1.0"),
+        ("v0.2", "0.2.0"),
+        ("v0.3", "0.3.0"),
+        ("v1.0", "1.0.0"),
+    ] {
+        version_contract(&root, version, package_version);
+    }
+    let first = witforge()
+        .args(["lock", root.join("v0.1").to_str().unwrap(), "--first"])
+        .output()
+        .unwrap();
+    assert!(first.status.success(), "{first:?}");
+    fs::copy(root.join("v0.1/wire.lock"), root.join("v0.2/wire.lock")).unwrap();
+    let second = witforge()
+        .args([
+            "lock",
+            root.join("v0.2").to_str().unwrap(),
+            "--against",
+            root.join("v0.1/wire.lock").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(second.status.success(), "{second:?}");
+    fs::copy(root.join("v0.2/wire.lock"), root.join("v0.3/wire.lock")).unwrap();
+    let new_major = witforge()
+        .args(["lock", root.join("v1.0").to_str().unwrap(), "--first"])
+        .output()
+        .unwrap();
+    assert!(new_major.status.success(), "{new_major:?}");
+
+    let skipped = witforge()
+        .args([
+            "check",
+            root.join("v0.3").to_str().unwrap(),
+            "--against",
+            root.join("v0.1/wire.lock").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(skipped.status.code(), Some(1), "{skipped:?}");
+    let stderr = String::from_utf8_lossy(&skipped.stderr);
+    assert!(stderr.contains("v0.2"), "{stderr}");
+    assert!(stderr.contains("--against"), "{stderr}");
+
+    for verb in ["check", "lock"] {
+        let cross_major = witforge()
+            .arg(verb)
+            .arg(root.join("v1.0"))
+            .arg("--against")
+            .arg(root.join("v0.2/wire.lock"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            cross_major.status.code(),
+            Some(1),
+            "{verb}: {cross_major:?}"
+        );
+        let stderr = String::from_utf8_lossy(&cross_major.stderr);
+        assert!(stderr.contains("--first"), "{verb}: {stderr}");
+    }
+
+    // A baseline outside a version directory is accepted as given.
+    let custom = root.join("baseline.lock");
+    fs::copy(root.join("v0.1/wire.lock"), &custom).unwrap();
+    let accepted = witforge()
+        .args([
+            "check",
+            root.join("v0.2").to_str().unwrap(),
+            "--against",
+            custom.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(accepted.status.success(), "{accepted:?}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn first_and_against_are_mutually_exclusive() {
     let dir = temp_contract("conflict");
     let output = witforge()
@@ -754,9 +908,13 @@ fn retyped_draft_is_updated_by_against() {
 fn first_mode_drops_stale_drafts() {
     let root = versions("first");
     let v02 = root.join("wit/v0.2");
+    // `--first` is refused in v0.2 beside v0.1; develop the same draft in an ad-hoc directory
+    // to exercise the mode itself.
+    let draft = root.join("draft");
+    copy_tree(&v02, &draft);
     let lock = witforge()
         .arg("lock")
-        .arg(&v02)
+        .arg(&draft)
         .arg("--first")
         .output()
         .unwrap();
@@ -770,7 +928,7 @@ fn first_mode_drops_stale_drafts() {
             "dropped  example:evolve/types/user.rename-me = 3",
         ]
     );
-    let text = fs::read_to_string(v02.join("wire.lock")).unwrap();
+    let text = fs::read_to_string(draft.join("wire.lock")).unwrap();
     assert!(!text.contains("old-field"), "{text}");
     assert!(!text.contains("rename-me"), "{text}");
     assert!(!text.contains("removed"), "{text}");
@@ -1595,14 +1753,18 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
     let base = versions("continuity");
     let root = base.join("wit");
     let v03 = add_v0_3(&base);
-    // A fresh lockfile for the new minor renumbers every member.
+    // A fresh lockfile for the new minor renumbers every member. `--first` is refused beside a
+    // predecessor, so generate the same draft in an ad-hoc directory and copy its lockfile.
+    let draft = base.join("draft");
+    copy_tree(&v03, &draft);
     let fresh = witforge()
         .arg("lock")
-        .arg(&v03)
+        .arg(&draft)
         .arg("--first")
         .output()
         .unwrap();
     assert!(fresh.status.success(), "{fresh:?}");
+    fs::copy(draft.join("wire.lock"), v03.join("wire.lock")).unwrap();
     let check = witforge().arg("check").arg(&v03).output().unwrap();
     assert!(check.status.success(), "{check:?}");
 

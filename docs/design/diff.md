@@ -3,9 +3,9 @@
 Status: implemented 2026-11-05 (`W8-001`); endpoint ordering, missing-lock, and root/direct
 declaration-order boundaries 2026-11-18 (`W10-026`); conversion-impact notes 2026-11-17
 (`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`); kind
-changes are wire-breaking 2026-11-19 (`W10-045`). The 2026-11-18 items are not in 0.5.0:
-reversed-endpoint rejection, missing-lock guidance, and `conversion_blockers` are on `main` and
-unreleased.
+changes and reused reserved numbers are wire-breaking 2026-11-19 (`W10-045`, `W10-048`). The
+2026-11-18 items are not in 0.5.0: reversed-endpoint rejection, missing-lock guidance, and
+`conversion_blockers` are on `main` and unreleased.
 
 `witforge diff <old> <new>` compares two contract versions and reports what changed in three
 independent compatibility views:
@@ -69,7 +69,7 @@ bindings are one shared output across versions.
 | `reordered` | Common members changed declaration order. The report lists the old and new relative order of the common members. |
 | `retyped` | A member, alias shape, or function result kept its name but changed type. |
 | `kind-changed` | A named type kept its name but changed kind, such as record to enum. |
-| `renumbered` | A common member kept its kind and type but changed wire number. This is reported separately from a retype. |
+| `renumbered` | A common member kept its kind and type but changed wire number, including a function's method id. This is reported separately from a retype. |
 
 Declaration order is compared for record fields, variant cases, enum cases, flags, functions,
 function parameters, and world imports and exports. Additions and removals are ignored when
@@ -81,7 +81,10 @@ comparing the relative order of common members, as in the lockfile's order finge
 
 Wire-breaking changes are:
 
-- a changed wire number (`renumbered`);
+- a changed wire number (`renumbered`), for a field, case, flag, parameter, or function method
+  id;
+- a new member whose number was reserved in the old lockfile, even though the member itself is
+  an addition;
 - a changed kind or canonical type of a numbered member (`retyped`);
 - a type kind change (`kind-changed`), whether or not the old numbers stay reserved: every
   reference to the type keeps its canonical name while its encoding changes between an enum

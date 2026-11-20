@@ -452,6 +452,8 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     }
     let model = model::build(&contract)?;
     ensure_directory_version(&options.dir, &model)?;
+    ensure_first_is_allowed(options, "check")?;
+    ensure_baseline_is_allowed(options, "check")?;
     let members = model.members()?;
     let lock_path = options
         .lock
@@ -539,6 +541,8 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         .clone()
         .unwrap_or_else(|| options.dir.join("wire.lock"));
     ensure_lockfile_not_released(&lock_path, &options.dir, options.released.as_deref())?;
+    ensure_first_is_allowed(options, "lock")?;
+    ensure_baseline_is_allowed(options, "lock")?;
     let (mut lock, _) = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
     let package = package_name(&model);
@@ -955,6 +959,137 @@ fn check_messages(messages: &[String], reporter: &mut Reporter) -> ExitCode {
     } else {
         ExitCode::from(1)
     }
+}
+
+/// The `v<major>.<minor>` a version directory name spells.
+fn version_directory(path: &Path) -> Option<(u64, u64)> {
+    let name = path.file_name()?.to_str()?;
+    let (major, minor) = name.strip_prefix('v')?.split_once('.')?;
+    if major.is_empty()
+        || minor.is_empty()
+        || !major.bytes().all(|byte| byte.is_ascii_digit())
+        || !minor.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// The highest sibling version directory of `dir` in the same major, if any.
+fn sibling_predecessor(dir: &Path) -> Option<(u64, PathBuf)> {
+    let (major, minor) = version_directory(dir)?;
+    let parent = dir.parent()?;
+    let mut best: Option<(u64, PathBuf)> = None;
+    for entry in fs::read_dir(parent).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some((sibling_major, sibling_minor)) = version_directory(&path) else {
+            continue;
+        };
+        if sibling_major == major
+            && sibling_minor < minor
+            && best
+                .as_ref()
+                .is_none_or(|(best_minor, _)| sibling_minor > *best_minor)
+        {
+            best = Some((sibling_minor, path));
+        }
+    }
+    best
+}
+
+fn same_parent(left: Option<&Path>, right: Option<&Path>) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
+/// The command that continues `options`' directory against `baseline`.
+fn against_command(options: &Options, verb: &str, baseline: &Path) -> String {
+    let mut command = format!("witforge {verb} {}", shell_quote(&options.dir));
+    if let Some(lock) = &options.lock {
+        let _ = write!(command, " --lock {}", shell_quote(lock));
+    }
+    let _ = write!(command, " --against {}", shell_quote(baseline));
+    if let Some(released) = &options.released {
+        let _ = write!(command, " --released {}", shell_quote(released));
+    }
+    command
+}
+
+/// Refuse `--first` when the root already holds an earlier minor of the same major.
+fn ensure_first_is_allowed(options: &Options, verb: &str) -> Result<()> {
+    if !options.first {
+        return Ok(());
+    }
+    let current = fs::canonicalize(&options.dir).unwrap_or_else(|_| options.dir.clone());
+    let Some((major, _minor)) = version_directory(&current) else {
+        return Ok(());
+    };
+    let Some((predecessor_minor, predecessor)) = sibling_predecessor(&current) else {
+        return Ok(());
+    };
+    let baseline = predecessor.join("wire.lock");
+    bail!(ContractError::new(format!(
+        "`--first` is refused for `{}`: major {major} already has {} at minor \
+         {predecessor_minor}, so a new minor continues that lockfile. Run `{}` instead",
+        options.dir.display(),
+        predecessor.display(),
+        against_command(options, verb, &baseline)
+    )));
+}
+
+/// Refuse a baseline from a sibling version directory of another major or one that skips the
+/// immediate predecessor.
+fn ensure_baseline_is_allowed(options: &Options, verb: &str) -> Result<()> {
+    let Some(against) = &options.against else {
+        return Ok(());
+    };
+    if against.file_name().and_then(|name| name.to_str()) != Some("wire.lock") || !against.is_file()
+    {
+        // A baseline outside a version directory is accepted as given.
+        return Ok(());
+    }
+    let current = fs::canonicalize(&options.dir).unwrap_or_else(|_| options.dir.clone());
+    let Some((current_major, current_minor)) = version_directory(&current) else {
+        return Ok(());
+    };
+    let Some(parent) = against.parent() else {
+        return Ok(());
+    };
+    let Some((baseline_major, baseline_minor)) = version_directory(parent) else {
+        return Ok(());
+    };
+    if !same_parent(current.parent(), parent.parent()) {
+        return Ok(());
+    }
+    if baseline_major != current_major {
+        bail!(ContractError::new(format!(
+            "`--against {}` is the lockfile of major {baseline_major}, but `{}` is major \
+             {current_major}; a new major starts a fresh lockfile with `--first`. Run \
+             `witforge {verb} {} --first` instead",
+            against.display(),
+            options.dir.display(),
+            shell_quote(&options.dir)
+        )));
+    }
+    if baseline_minor < current_minor
+        && let Some((predecessor_minor, predecessor)) = sibling_predecessor(&current)
+        && baseline_minor != predecessor_minor
+    {
+        bail!(ContractError::new(format!(
+            "`--against {}` skips the immediate predecessor `{}`; run `{}` instead",
+            against.display(),
+            predecessor.display(),
+            against_command(options, verb, &predecessor.join("wire.lock"))
+        )));
+    }
+    Ok(())
 }
 
 fn lock_mode<'a>(options: &Options, previous: Option<&'a WireLock>) -> LockMode<'a> {

@@ -316,9 +316,19 @@ Canonicalization rules:
 - `--first` is only for a version with no previous lockfile baseline: the first version of a
   package or the first version of a new major. It must not be used to rewrite an existing
   released or developed version.
+- In a WIT root, `--first` is accepted only for the lowest minor of a major: `v0.1` beside
+  `v0.2`, `v1.0` beside `v0.x`, and `v0.3` when the root starts there. It is refused in `v0.2`
+  beside `v0.1` with exit `1`; the message names the predecessor and the `--against` command
+  that continues it. Running `--first` again on the first minor while it is still a draft stays
+  allowed. A version directory outside a WIT root, or one whose name is not `v<major>.<minor>`,
+  has no siblings to judge by, and `--first` is accepted.
 - `--against` is a development command. It is used for the version being prepared, with the
   previous minor's committed lockfile as the baseline. A new major starts a fresh lockfile and
-  uses `--first`, not `--against` from the previous major.
+  uses `--first`, not `--against` from the previous major. When the baseline is the `wire.lock`
+  of a sibling `v<major>.<minor>` directory, an older baseline must be the immediate
+  predecessor: a baseline from another major is refused with exit `1` and the `--first` remedy,
+  and one that skips an existing intermediate minor is refused while naming the predecessor. A
+  baseline file outside a version directory is accepted as given.
 - The current version's `wire.lock` must exist for `--against`; the workflow starts a new minor
   by copying the previous lockfile. A missing current lockfile is an error, not an implicit
   copy, and the error says to copy the previous lockfile first. The previous lockfile must parse
@@ -390,8 +400,9 @@ With `--first`:
 
 `lock` loads the package and runs the subset checker. It writes nothing if there are subset
 violations, parse errors, reintroduced released members, released type/kind changes, renumbered
-or un-reserved released entries, a parent that would mix member kinds (section 6), exhausted
-number space, or a released-directory refusal.
+or un-reserved released entries, a parent that would mix member kinds (section 6), a misplaced
+`--first` or `--against` baseline (section 7), exhausted number space, or a released-directory
+refusal.
 
 It then applies the mode:
 

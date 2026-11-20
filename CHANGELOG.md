@@ -76,6 +76,16 @@ have it.
   renames the root package). No fixture, example, or known contract has such a graph. A
   same-version duplicate in two `deps/` entries is refused by the same pre-scan instead of
   surfacing as a `wit-parser` parse error.
+- `diff` compares function method ids and reports a new member that takes a number reserved in
+  the old lockfile as wire-breaking. Previously a renumbered interface printed `no contract
+  changes … COMPATIBLE` while the protobuf emitter refused it, and a field or function that
+  reused a reserved number was reported as a compatible addition.
+- `lock --first` and `check --first` are refused with exit `1` when the WIT root already holds
+  an earlier minor of the same major; the message names the predecessor and the `--against`
+  command to use. A baseline that is the `wire.lock` of a sibling version directory must be the
+  immediate predecessor in the same major: a baseline from another major, or one that skips an
+  existing intermediate minor, is refused with the `--first` or predecessor remedy. A baseline
+  outside a version directory is accepted as given.
 - The GitHub Action reads `diff-old`, `diff-new`, `diff-check`, and `github-token`. Every Action
   release through v0.5.0 looked them up under the wrong environment names and treated them as
   empty: a workflow that passed `diff-old` and `diff-new` ran `check` and the generators and

@@ -441,6 +441,16 @@ impl Loaded {
             .all(|(key, _)| self.preserves(old, key))
     }
 
+    /// Numbers reserved in this lockfile under `parent`.
+    fn reserved_numbers(&self, parent: &str) -> BTreeSet<u32> {
+        let prefix = format!("{}/{parent}.", self.endpoint.package);
+        self.entries
+            .iter()
+            .filter(|(key, (_, reserved))| *reserved && key.starts_with(&prefix))
+            .map(|(_, (number, _))| *number)
+            .collect()
+    }
+
     fn member(&self, parent: &str, name: &str) -> Result<&Member> {
         let key = format!("{}/{parent}.{name}", self.endpoint.package);
         self.members.get(&key).with_context(|| {
@@ -826,6 +836,7 @@ impl Builder<'_> {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn compare_members(
         &mut self,
         old: &[(String, String)],
@@ -847,15 +858,24 @@ impl Builder<'_> {
             .iter()
             .map(|(name, ty)| (name.as_str(), ty.as_str()))
             .collect();
+        let reserved_numbers = self.old.reserved_numbers(parent);
         for name in new_map.keys().filter(|name| !old_map.contains_key(**name)) {
+            let number = self.new.number(parent, name)?;
+            // Reusing a number the old lockfile reserved changes the wire even though the
+            // member is newly added: the old number belonged to a removed member.
+            let wire = reserved_numbers.contains(&number);
             self.push(
                 ChangeKind::Added {
                     defaulted: defaulted.contains(*name),
                 },
                 *element,
                 format!("{path}.{name}"),
-                Some(self.new.number(parent, name)?),
-                Breaking::SOURCE_API,
+                Some(number),
+                Breaking {
+                    wire,
+                    source: true,
+                    api: true,
+                },
             );
         }
         for name in old_map.keys().filter(|name| !new_map.contains_key(**name)) {
@@ -979,9 +999,23 @@ impl Builder<'_> {
                     to: new_result,
                 },
                 "function result",
-                path,
+                path.clone(),
                 Some(self.new.number(interface, name)?),
                 Breaking::ALL,
+            );
+        }
+        let old_method = self.old.number(interface, name)?;
+        let new_method = self.new.number(interface, name)?;
+        if old_method != new_method {
+            self.push(
+                ChangeKind::Renumbered {
+                    from: old_method,
+                    to: new_method,
+                },
+                "method id",
+                path,
+                Some(new_method),
+                Breaking::WIRE,
             );
         }
         Ok(())
@@ -998,13 +1032,20 @@ impl Builder<'_> {
             .iter()
             .map(|function| (function.name.as_str(), function))
             .collect();
+        let reserved_methods = self.old.reserved_numbers(&old.name);
         for name in new_map.keys().filter(|name| !old_map.contains_key(*name)) {
+            let number = self.new.number(&old.name, name)?;
+            let wire = reserved_methods.contains(&number);
             self.push(
                 ChangeKind::Added { defaulted: false },
                 "function",
                 format!("{}.{}", old.name, name),
-                Some(self.new.number(&old.name, name)?),
-                Breaking::SOURCE_API,
+                Some(number),
+                Breaking {
+                    wire,
+                    source: true,
+                    api: true,
+                },
             );
         }
         for name in old_map.keys().filter(|name| !new_map.contains_key(*name)) {
