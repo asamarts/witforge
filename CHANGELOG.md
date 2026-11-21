@@ -19,6 +19,14 @@ normalization, JSON Schema `result`/`f32`, protobuf cross-package references/imp
 ambiguous contracts and lockfiles are now refused. Read the migration section below before moving
 a release pin and regenerating committed outputs.
 
+Release commit `88fabf8` (tag `v0.6.0`), exact-commit main CI run 44946461491 (`ci ok`:
+`https://github.com/asamarts/witforge/actions/runs/44946461491/job/136976143283`), release run
+44957270999 (`https://github.com/asamarts/witforge/actions/runs/44957270999`). Both crates are
+published; `cargo install witforge-cli --version 0.6.0 --locked` reports `witforge 0.6.0`,
+docs.rs built the library, and the release carries four platform archives with checksums. The
+tagged Action passed `check`, `diff`, and all four configured generator checks on every release
+target.
+
 ### Migration
 
 Every change in 0.6.0 that alters generated output or refuses a previously accepted contract or

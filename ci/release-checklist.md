@@ -266,3 +266,23 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] Main CI run 44038055709 invoked the pinned published `asamarts/witforge@v0.5.0` Action
       against all four release targets; every target downloaded its matching 0.5.0 archive and
       passed a real contract check.
+
+## 0.6.0 record
+
+- [x] Release commit `88fabf8`, annotated tag `v0.6.0`; both pushed to `main`.
+- [x] Exact-commit main CI run 44946461491
+      (`https://github.com/asamarts/witforge/actions/runs/44946461491/job/136976143283`) passed on
+      Linux, macOS 15, Windows, MSRV 1.88, security, semver compatibility against 0.5.0, benchmark,
+      packaging, generated output (including committed-example compilation), release freeze,
+      workflows, the four-target pinned 0.5.0 Action matrix, the `prost` compile matrix, and the
+      plan gate.
+- [x] Release run 44957270999 (`https://github.com/asamarts/witforge/actions/runs/44957270999`)
+      required that exact `ci ok`, checked the 0.5.0 API baseline and all eleven historical
+      protobuf release generators, published both crates through trusted publishing, created the
+      GitHub release, uploaded four platform archives with checksums, and passed the tagged Action
+      smoke (`check`, `diff`, and all four configured generators) on Linux x86_64, macOS arm64,
+      macOS Intel, and Windows x86_64.
+- [x] `cargo install witforge-cli --version 0.6.0 --locked` downloaded both 0.6.0 crates and
+      reported `witforge 0.6.0`; docs.rs built the library documentation, the installed binary
+      reproduced all committed examples, and alint's proof crate (`alint-witforge-consumer`)
+      regenerated and passed its tests, Clippy, and consumer-script controls against `witforge 0.6.0`.

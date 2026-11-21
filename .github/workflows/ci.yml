@@ -112,7 +112,7 @@ jobs:
       - name: Smoke the local Action
         uses: ./
         with:
-          version: 0.5.0
+          version: 0.6.0
           check: crates/witforge/tests/fixtures/versions/wit/v0.2
           diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
           diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
@@ -123,7 +123,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: 0.5.0
+          version: 0.6.0
           diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
           diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
           github-token: ${{ github.token }}
@@ -152,10 +152,10 @@ jobs:
           persist-credentials: false
       # A remote pinned ref proves tag resolution and each published platform archive. The local
       # Action smoke above remains the pre-publication proof for changes to action.yml/action/.
-      - name: Smoke the published 0.5.0 Action
-        uses: asamarts/witforge@v0.5.0
+      - name: Smoke the published 0.6.0 Action
+        uses: asamarts/witforge@v0.6.0
         with:
-          version: 0.5.0
+          version: 0.6.0
           check: crates/witforge/tests/fixtures/versions/wit/v0.2
           generators: ""
           github-token: ${{ github.token }}
