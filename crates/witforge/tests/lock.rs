@@ -314,6 +314,12 @@ fn v2_rejects_v1_and_malformed_entries() {
     ] {
         assert!(WireLock::parse(&bad).is_err(), "{bad:?} should fail");
     }
+
+    let error = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.x = 1 field u64\na:b/i/t.y = 1 field u64\n"
+    ))
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("line 3"), "{error:#}");
 }
 
 #[test]
@@ -416,6 +422,9 @@ fn order_lines_use_the_key_grammar_and_exact_fingerprints() {
     }
     let tabbed = format!("{HEADER}\n{ORDER_HEADER}\n# order a:b/i/t\t{fingerprint} = x\n");
     assert!(WireLock::parse(&tabbed).is_err());
+    let bad_member = format!("{HEADER}\n{ORDER_HEADER}\n# order a:b/i/t {fingerprint} = x_y\n");
+    let error = WireLock::parse(&bad_member).unwrap_err();
+    assert!(format!("{error:#}").contains("line 3"), "{error:#}");
     for parent in [
         "a:b/i/t.x",
         "a:b/i#f.p",
@@ -1450,4 +1459,233 @@ a:b/i/t.n2 = 6 field u8\n"
             ("a:b/i/t.new2".to_string(), 8)
         ]
     );
+}
+
+#[test]
+fn draft_removal_of_a_released_member_can_be_restored() {
+    let previous = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/t.a = 1 field u64\na:b/i/t.b = 2 field u64\n"
+    ))
+    .unwrap();
+    let members_a = [Member {
+        parent: "a:b/i/t".into(),
+        name: "a".into(),
+        kind: MemberKind::Field,
+        ty: Some("u64".into()),
+    }];
+    let members_a_c = [
+        members_a[0].clone(),
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "c".into(),
+            kind: MemberKind::Field,
+            ty: Some("u64".into()),
+        },
+    ];
+    let members_a_b_c = [
+        members_a[0].clone(),
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "b".into(),
+            kind: MemberKind::Field,
+            ty: Some("u64".into()),
+        },
+        members_a_c[1].clone(),
+    ];
+    let mut current = previous.clone();
+    current
+        .reconcile_report_with(&members_a, LockMode::Against(&previous))
+        .unwrap();
+    assert!(current.get("a:b/i/t.b").unwrap().reserved);
+    current
+        .reconcile_report_with(&members_a_c, LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(current.get("a:b/i/t.c").unwrap().number, 3);
+
+    let report = current
+        .reconcile_report_with(&members_a_b_c, LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(report.restored, vec![("a:b/i/t.b".to_string(), 2)]);
+    assert!(report.changes.is_empty());
+    assert!(report.discrepancies.is_empty());
+    assert!(!current.get("a:b/i/t.b").unwrap().reserved);
+    assert_eq!(current.get("a:b/i/t.b").unwrap().number, 2);
+    assert_eq!(current.get("a:b/i/t.c").unwrap().number, 3);
+
+    let mut never_removed = previous.clone();
+    never_removed
+        .reconcile_report_with(&members_a_b_c, LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(current, never_removed);
+}
+
+#[test]
+fn draft_removal_can_be_restored_for_every_member_kind() {
+    let previous = WireLock::parse(&format!(
+        "{HEADER}\n\
+a:b/i/t.x = 1 field u64\n\
+a:b/i/v.c = 1 variant-case u64\n\
+a:b/i/e.c = 1 enum-case\n\
+a:b/i/f.g = 1 flag\n\
+a:b/i.m = 1 method u64\n\
+a:b/i#m.p = 1 param u64\n"
+    ))
+    .unwrap();
+    let members = vec![
+        Member {
+            parent: "a:b/i/t".into(),
+            name: "x".into(),
+            kind: MemberKind::Field,
+            ty: Some("u64".into()),
+        },
+        Member {
+            parent: "a:b/i/v".into(),
+            name: "c".into(),
+            kind: MemberKind::VariantCase,
+            ty: Some("u64".into()),
+        },
+        Member {
+            parent: "a:b/i/e".into(),
+            name: "c".into(),
+            kind: MemberKind::EnumCase,
+            ty: None,
+        },
+        Member {
+            parent: "a:b/i/f".into(),
+            name: "g".into(),
+            kind: MemberKind::Flag,
+            ty: None,
+        },
+        Member {
+            parent: "a:b/i".into(),
+            name: "m".into(),
+            kind: MemberKind::Method,
+            ty: Some("u64".into()),
+        },
+        Member {
+            parent: "a:b/i#m".into(),
+            name: "p".into(),
+            kind: MemberKind::Param,
+            ty: Some("u64".into()),
+        },
+    ];
+    let mut current = previous.clone();
+    let report = current
+        .reconcile_report_with(&[], LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(report.changes.reserved.len(), members.len());
+    assert!(
+        current.entries().all(|(_, entry)| entry.reserved),
+        "every released entry should be reserved after the draft removal"
+    );
+
+    let report = current
+        .reconcile_report_with(&members, LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(report.restored.len(), members.len());
+    assert!(report.changes.is_empty());
+    assert!(report.discrepancies.is_empty());
+    assert!(
+        current.entries().all(|(_, entry)| !entry.reserved),
+        "every released entry should be restored"
+    );
+    let mut never_removed = previous.clone();
+    never_removed
+        .reconcile_report_with(&members, LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(current, never_removed);
+}
+
+#[test]
+fn restoring_a_draft_removal_with_a_different_type_or_kind_is_refused() {
+    let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
+    let retyped = [Member {
+        parent: "a:b/i/t".into(),
+        name: "x".into(),
+        kind: MemberKind::Field,
+        ty: Some("u16".into()),
+    }];
+    let mut current = previous.clone();
+    current
+        .reconcile_report_with(&[], LockMode::Against(&previous))
+        .unwrap();
+    let report = current
+        .reconcile_report_with(&retyped, LockMode::Against(&previous))
+        .unwrap();
+    assert!(
+        report
+            .discrepancies
+            .iter()
+            .any(|discrepancy| discrepancy.key == "a:b/i/t.x"
+                && discrepancy.message.contains("kind or type")),
+        "{report:?}"
+    );
+    assert!(current.get("a:b/i/t.x").unwrap().reserved);
+
+    let rekinded = [Member {
+        parent: "a:b/i/t".into(),
+        name: "x".into(),
+        kind: MemberKind::VariantCase,
+        ty: Some("u64".into()),
+    }];
+    let report = current
+        .reconcile_report_with(&rekinded, LockMode::Against(&previous))
+        .unwrap();
+    assert!(!report.discrepancies.is_empty(), "{report:?}");
+    assert!(current.get("a:b/i/t.x").unwrap().reserved);
+}
+
+#[test]
+fn a_member_reserved_in_the_baseline_cannot_be_restored() {
+    let previous =
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64 reserved\n")).unwrap();
+    let members = [Member {
+        parent: "a:b/i/t".into(),
+        name: "x".into(),
+        kind: MemberKind::Field,
+        ty: Some("u64".into()),
+    }];
+    let mut current = previous.clone();
+    let report = current
+        .reconcile_report_with(&members, LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(
+        report.changes.reintroduced,
+        vec![("a:b/i/t.x".to_string(), 1)]
+    );
+    assert!(current.get("a:b/i/t.x").unwrap().reserved);
+}
+
+#[test]
+fn a_draft_member_removed_and_readded_gets_a_new_number() {
+    let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.a = 1 field u64\n")).unwrap();
+    let member = |name: &str| Member {
+        parent: "a:b/i/t".into(),
+        name: name.to_string(),
+        kind: MemberKind::Field,
+        ty: Some("u64".into()),
+    };
+    let mut current = previous.clone();
+    current
+        .reconcile_report_with(&[member("a"), member("c")], LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(current.get("a:b/i/t.c").unwrap().number, 2);
+
+    current
+        .reconcile_report_with(&[member("a")], LockMode::Against(&previous))
+        .unwrap();
+    assert!(current.get("a:b/i/t.c").is_none());
+
+    current
+        .reconcile_report_with(&[member("a"), member("d")], LockMode::Against(&previous))
+        .unwrap();
+    assert_eq!(current.get("a:b/i/t.d").unwrap().number, 2);
+
+    current
+        .reconcile_report_with(
+            &[member("a"), member("c"), member("d")],
+            LockMode::Against(&previous),
+        )
+        .unwrap();
+    assert_eq!(current.get("a:b/i/t.c").unwrap().number, 3);
 }

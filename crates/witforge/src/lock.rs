@@ -325,6 +325,8 @@ pub struct Reconciliation {
     pub changes: Changes,
     /// Released or structural discrepancies, in deterministic key order.
     pub discrepancies: Vec<Discrepancy>,
+    /// Draft removals that would be restored and need `lock` to un-reserve them.
+    pub restored: Vec<(String, u32)>,
 }
 
 impl Reconciliation {
@@ -332,7 +334,7 @@ impl Reconciliation {
     /// refused.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.changes.is_empty() && self.discrepancies.is_empty()
+        self.changes.is_empty() && self.discrepancies.is_empty() && self.restored.is_empty()
     }
 }
 
@@ -370,6 +372,7 @@ impl WireLock {
         }
 
         let mut entries = BTreeMap::new();
+        let mut numbers: BTreeMap<(String, u32), (MemberKey, usize)> = BTreeMap::new();
         let mut orders = BTreeMap::new();
         let mut saw_order_header = false;
         for (index, raw) in lines.enumerate() {
@@ -415,6 +418,14 @@ impl WireLock {
             if !valid_number(number) {
                 bail!("line {line_no}: {number} is not a usable protobuf field number");
             }
+            if let Some((other, other_line)) =
+                numbers.insert((key.parent(), number), (key.clone(), line_no))
+            {
+                bail!(
+                    "line {line_no}: `{other}` (line {other_line}) and `{key}` share number \
+                     {number}"
+                );
+            }
             if entries
                 .insert(
                     key.clone(),
@@ -435,7 +446,6 @@ impl WireLock {
             orders,
             orders_present: saw_order_header,
         };
-        lock.validate()?;
         Ok(lock)
     }
 
@@ -461,7 +471,8 @@ impl WireLock {
     /// # Errors
     ///
     /// Returns an error when a member key is malformed, a released discrepancy or order change
-    /// is found, a parent mixes kinds, or a parent has used every usable protobuf field number.
+    /// is found, a draft removal needs restoring, a parent mixes kinds, or a parent has used
+    /// every usable protobuf field number.
     pub fn reconcile(&mut self, members: &[Member]) -> Result<Changes> {
         self.reconcile_with(members, LockMode::Default)
     }
@@ -475,12 +486,15 @@ impl WireLock {
     /// # Errors
     ///
     /// Returns an error when the baseline is inconsistent, a member key is malformed, a
-    /// released discrepancy or order change is found, a parent mixes kinds, or a parent has
-    /// used every usable protobuf field number.
+    /// released discrepancy or order change is found, a draft removal needs restoring, a
+    /// parent mixes kinds, or a parent has used every usable protobuf field number.
     pub fn reconcile_with(&mut self, members: &[Member], mode: LockMode<'_>) -> Result<Changes> {
         let report = self.reconcile_report_with(members, mode)?;
         if let Some(discrepancy) = report.discrepancies.first() {
             bail!("{}", discrepancy.message);
+        }
+        if let Some((key, _)) = report.restored.first() {
+            bail!("draft removal of `{key}` can be restored; run `witforge lock`");
         }
         Ok(report.changes)
     }
@@ -606,6 +620,7 @@ impl WireLock {
         };
         let mut changes = Changes::default();
         let mut discrepancies = Vec::new();
+        let mut restored = Vec::new();
         for (parent, message) in common_order_discrepancies(&current_orders, baseline_orders) {
             push_discrepancy(&mut discrepancies, parent, message);
         }
@@ -659,9 +674,41 @@ impl WireLock {
 
         for member in members {
             let key = MemberKey::from_member(member)?;
-            match self.entries.get(&key) {
+            match self.entries.get_mut(&key) {
                 Some(entry) if entry.reserved => {
-                    changes.reintroduced.push((key.key(), entry.number));
+                    let Some(previous) = released.get(&key) else {
+                        changes.reintroduced.push((key.key(), entry.number));
+                        continue;
+                    };
+                    if previous.reserved {
+                        changes.reintroduced.push((key.key(), entry.number));
+                        continue;
+                    }
+                    // A released entry that the draft reserved only because its member was
+                    // removed may be restored. The baseline must still describe the entry,
+                    // and the source must describe the same kind and type.
+                    if entry.kind != previous.kind || entry.ty != previous.ty {
+                        // `validate_against` reports a changed draft entry against the baseline.
+                        continue;
+                    }
+                    if previous.kind != member.kind
+                        || previous.ty.as_deref() != member.ty.as_deref()
+                    {
+                        push_discrepancy(
+                            &mut discrepancies,
+                            key.key(),
+                            format!(
+                                "released entry `{key}` changed kind or type from `{} {}` to `{} {}`",
+                                previous.kind,
+                                previous.ty.as_deref().unwrap_or("-"),
+                                member.kind,
+                                member.ty.as_deref().unwrap_or("-")
+                            ),
+                        );
+                        continue;
+                    }
+                    entry.reserved = false;
+                    restored.push((key.key(), entry.number));
                     continue;
                 }
                 Some(entry)
@@ -681,7 +728,6 @@ impl WireLock {
                         );
                         continue;
                     }
-                    let entry = self.entries.get_mut(&key).expect("entry exists");
                     entry.kind = member.kind;
                     entry.ty.clone_from(&member.ty);
                     changes
@@ -719,9 +765,11 @@ impl WireLock {
             self.orders = current_orders;
         }
         discrepancies.sort_by(|left, right| left.key.cmp(&right.key));
+        restored.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(Reconciliation {
             changes,
             discrepancies,
+            restored,
         })
     }
 
@@ -745,6 +793,9 @@ impl WireLock {
         let report = self.drift_report_with(members, mode)?;
         if let Some(discrepancy) = report.discrepancies.first() {
             bail!("{}", discrepancy.message);
+        }
+        if let Some((key, _)) = report.restored.first() {
+            bail!("draft removal of `{key}` can be restored; run `witforge lock`");
         }
         Ok(report.changes)
     }
@@ -1001,16 +1052,6 @@ impl WireLock {
         compare_common_orders(&self.orders, &older.orders)
     }
 
-    fn validate(&self) -> Result<()> {
-        let mut seen: BTreeMap<(String, u32), &MemberKey> = BTreeMap::new();
-        for (key, entry) in &self.entries {
-            if let Some(other) = seen.insert((key.parent(), entry.number), key) {
-                bail!("`{other}` and `{key}` share number {}", entry.number);
-            }
-        }
-        Ok(())
-    }
-
     /// Refuse a parent whose live and reserved entries do not all have one kind.
     ///
     /// A named type has one kind, so its lockfile parent holds `field`, `variant-case`,
@@ -1174,7 +1215,7 @@ fn parse_order(rest: &str, line_no: usize) -> Result<(String, Order)> {
     }
     let mut seen = BTreeSet::new();
     for member in &members {
-        ensure_ident("order member", member)?;
+        ensure_ident("order member", member).with_context(|| format!("line {line_no}"))?;
         if !seen.insert(member.as_str()) {
             bail!("line {line_no}: duplicate member `{member}` in order fingerprint");
         }

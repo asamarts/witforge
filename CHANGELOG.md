@@ -11,6 +11,11 @@ have it.
 
 ### Added
 
+- `lock --against` restores a released member that the current draft removed when the source
+  adds it back with the baseline's number, kind, and type. The entry is un-reserved rather than
+  refused as a reintroduction; restoring a different kind or type, or a member already reserved
+  in the baseline, is still refused. Without `--against` the reintroduction message points at
+  the baseline option.
 - `proto` reserves every old member of a type whose kind changed, not only entries of the
   current kind, using the name the old projection gave it. A removed interface keeps its
   method-id enum with `UNSPECIFIED` and its reserved method ids and names, because the per-major

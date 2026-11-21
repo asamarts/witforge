@@ -552,7 +552,14 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         );
         return Ok(ExitCode::from(1));
     }
-    report_check_changes(&report.changes, &report.discrepancies, &remedy, reporter);
+    report_check_changes(
+        &report.changes,
+        &report.discrepancies,
+        &report.restored,
+        options.against.is_some(),
+        &remedy,
+        reporter,
+    );
     if report.is_empty() && canonical {
         Ok(ExitCode::SUCCESS)
     } else {
@@ -611,7 +618,11 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     }
     if !changes.reintroduced.is_empty() {
         for (key, number) in &changes.reintroduced {
-            reporter.error("WF1103", reintroduced(key, *number), Some(key.clone()));
+            reporter.error(
+                "WF1103",
+                reintroduced(key, *number, options.against.is_some()),
+                Some(key.clone()),
+            );
             refused = true;
         }
     }
@@ -623,6 +634,21 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
             )));
         }
         return Ok(ExitCode::from(1));
+    }
+    report_lock_notes(&report, reporter);
+    lock.write_atomic(&lock_path)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn report_lock_notes(report: &witforge::lock::Reconciliation, reporter: &mut Reporter) {
+    let changes = &report.changes;
+    for (key, number) in &report.restored {
+        reporter.note(
+            "WF1205",
+            &format!("restored {key} = {number}"),
+            format!("restored {key} = {number}"),
+            key.clone(),
+        );
     }
     for (key, number) in &changes.dropped {
         reporter.note(
@@ -656,8 +682,6 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
             key.clone(),
         );
     }
-    lock.write_atomic(&lock_path)?;
-    Ok(ExitCode::SUCCESS)
 }
 
 fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
@@ -1293,6 +1317,8 @@ impl Remedy {
 fn report_check_changes(
     changes: &witforge::lock::Changes,
     discrepancies: &[witforge::lock::Discrepancy],
+    restored: &[(String, u32)],
+    against: bool,
     remedy: &Remedy,
     reporter: &mut Reporter,
 ) {
@@ -1301,6 +1327,16 @@ fn report_check_changes(
             "WF1100",
             format!("{}; {}", discrepancy.message, remedy.advice("")),
             Some(discrepancy.key.clone()),
+        );
+    }
+    for (key, _) in restored {
+        reporter.error(
+            "WF1108",
+            format!(
+                "draft removal of {key} can be restored; {}",
+                remedy.advice("")
+            ),
+            Some(key.clone()),
         );
     }
     for (key, _) in &changes.added {
@@ -1321,7 +1357,11 @@ fn report_check_changes(
         );
     }
     for (key, number) in &changes.reintroduced {
-        reporter.error("WF1103", reintroduced(key, *number), Some(key.clone()));
+        reporter.error(
+            "WF1103",
+            reintroduced(key, *number, against),
+            Some(key.clone()),
+        );
     }
     for (key, number) in &changes.dropped {
         reporter.error(
@@ -1394,8 +1434,14 @@ fn shell_quote(path: &Path) -> String {
     }
 }
 
-fn reintroduced(key: &str, number: u32) -> String {
-    format!(
-        "{key} was removed and its name and number {number} stay reserved; give the member a new name"
-    )
+fn reintroduced(key: &str, number: u32, against: bool) -> String {
+    if against {
+        format!(
+            "{key} was removed and its name and number {number} stay reserved; give the member a new name"
+        )
+    } else {
+        format!(
+            "{key} was removed and its name and number {number} stay reserved; if the removal was a draft, use `--against` with the released baseline; otherwise give the member a new name"
+        )
+    }
 }

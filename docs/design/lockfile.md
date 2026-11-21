@@ -406,25 +406,33 @@ Without a baseline (default mode):
    "run `witforge lock` to reserve it".
 4. Every reserved entry that is still live is a reintroduced member and is an error.
 5. A type/kind change is an error. Without a baseline the tool cannot know whether the member
-   is a draft, so it is treated as released; use `--against` or `--first` while developing.
+   is a draft, so it is treated as released; the reintroduction message points at `--against`
+   while developing.
 
 With `--against <previous>`:
 
 1. Every entry in the previous lockfile must exist in the current lockfile with the same
-   number, kind, and canonical type, and must not be un-reserved. A missing, renumbered,
-   retyped, re-kinded, or un-reserved released entry is an error.
+   number, kind, and canonical type. A missing, renumbered, retyped, or re-kinded released
+   entry is an error.
 2. A previous entry that is reserved must stay reserved. If the current source reintroduces it,
    it is an error.
-3. A current entry not present in the previous lockfile is a draft:
+3. A previous **live** entry may be reserved in the current lockfile when its member was removed
+   in the draft. If the current source restores that member with the previous number, kind, and
+   type, the entry is un-reserved: this is not a reintroduction, and the resulting lockfile is
+   the same as one in which the removal never happened. Restoring it with another kind or type
+   is a released change and is refused. `check` reports the needed un-reservation with `WF1108`
+   until `lock --against` writes it; `lock` reports `WF1205` for the restored entry.
+4. A current entry not present in the previous lockfile is a draft:
    - if its member is live and its kind/type matches, it is fine;
    - if its member is live but its kind/type differs, report "run `witforge lock` to update the
      draft";
    - if its member is not live, report "run `witforge lock` to drop the stale draft".
-4. A live member with a released reserved entry is a reintroduced released member and is an
+5. A live member with a released reserved entry is a reintroduced released member and is an
    error.
-5. A live member with a stale draft reserved entry is a draft that was removed and re-added;
-   report "run `witforge lock`" (the stale entry is dropped and a new number is assigned).
-6. All live members must have entries, and released removed members must be reserved.
+6. A live member with a stale draft reserved entry that is not in the previous lockfile is a
+   draft that was removed and re-added; report "run `witforge lock`" (the stale entry is
+   dropped and a new number is assigned).
+7. All live members must have entries, and released removed members must be reserved.
 
 With `--first`:
 
@@ -461,12 +469,15 @@ The update order is:
    mode, every entry) that are either not live or reserved.
 3. Retype/re-kind live draft entries.
 4. Reserve removed released entries.
-5. Add new live members with the next number in their parent.
-6. Fail without writing if any discrepancy (released entry, order, or mixed-kind parent) or any
+5. Un-reserve a draft removal when the previous entry is live and the current source restores
+   it with the previous number, kind, and type.
+6. Add new live members with the next number in their parent.
+7. Fail without writing if any discrepancy (released entry, order, or mixed-kind parent) or any
    reintroduction is detected.
-7. Render and write atomically (temporary file in the same directory, then rename).
+8. Render and write atomically (temporary file in the same directory, then rename).
 
-`lock` prints one line per change (`added`, `reserved`, `updated`, `dropped`) and exits `0`.
+`lock` prints one line per change (`added`, `reserved`, `updated`, `dropped`) and exits `0`. A
+restored draft removal is simply un-reserved and has no change line.
 It uses the same exit codes as `check`: when it writes nothing because of a contract or lockfile
 violation (subset violations, reintroduced members, a changed, renumbered, missing, or
 un-reserved released entry, a mismatched `--against` baseline, or an exhausted number space) it
@@ -483,6 +494,10 @@ left alone.
 - A member that comes back under a **released** reserved name is refused. `check` reports an
   error and `lock` writes nothing. A stale draft reserved entry is instead dropped and the live
   member is re-added.
+- A released entry that the draft lock reserved because the source removed it may be restored
+  by `lock --against` when the baseline has it live with the same number, kind, and type. The
+  entry is un-reserved; this is not a reintroduction. Restoring a different kind or type is a
+  released change and is refused. A reserved baseline entry stays reserved.
 - A removed draft drops its entry; no `reserved` gap is left. If the name returns, it is a new
   draft with a possibly new number.
 - The lockfile is never compacted, and released entries are never deleted.
@@ -501,8 +516,9 @@ left alone.
   function's entries are dropped instead.
 - Renaming a function reserves the old method id and parameters and adds the new ones. For a
   draft, the old entries are dropped instead.
-- Removing a released parameter reserves it; a parameter that comes back under the same name is
-  reintroduced and refused. A draft parameter is dropped instead.
+- Removing a released parameter reserves it; restoring a draft removal through `--against`
+  follows section 8. A parameter reserved in the baseline cannot come back. A draft parameter
+  is dropped instead.
 - A function's response message is generated with a single `result = 1` field. That field is
   not locked; a change to the result type is caught by the method entry's canonical type.
 - Method-id enum values and request field numbers are locked; the zero `UNSPECIFIED` enum value
@@ -517,8 +533,10 @@ left alone.
   a payload-less case.
 - An enum case entry has kind `enum-case` and no type.
 - A flag entry has kind `flag` and no type.
-- Removing a released member reserves it; reintroducing it is refused. A draft member's entry is
-  dropped instead, and a returning draft gets a new entry.
+- Removing a released member reserves it; reintroducing a member reserved in the baseline is
+  refused. A draft removal can be restored through `--against` when the baseline member is live
+  with the same number, kind, and type (section 8). A draft member's entry is dropped instead,
+  and a returning draft gets a new entry.
 - Changing a member's type or kind for a released version is an error. A draft may change.
 - A released type that changes kind cannot orphan its reserved entries beside the new kind;
   section 6 refuses the mix. Give the new type a new name in a new version.
@@ -552,6 +570,9 @@ The implementation must cover:
 - number allocation, the `19000..=19999` skip, the maximum number error, and per-parent scopes;
 - idempotent reconcile and no renumbering;
 - reserved and reintroduced members;
+- a draft removal restored through `--against` for every member kind, with the baseline live
+  entry's number, kind, and type, while a baseline reserved entry and a changed restore are
+  still refused;
 - draft rename/removal/retype, including a draft removed and re-added;
 - released type/kind/renumber/un-reserve errors;
 - `--first`, `--against`, default mode, and released-directory refusal, including through `.`,

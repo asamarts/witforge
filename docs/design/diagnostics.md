@@ -64,10 +64,13 @@ Codes are never reused for a different meaning.
 | `WF1104` | error | A stale draft entry remains in the lockfile. |
 | `WF1105` | error | A draft member changed kind or canonical type. |
 | `WF1106` | error | The lockfile is not in canonical `lock` form. |
+| `WF1107` | note | The pinned dependency graph cannot be compared because the baseline is not a version-directory lockfile. |
+| `WF1108` | error | A draft removal can be restored; `lock --against` would un-reserve the member. |
 | `WF1201` | note | `lock` added a member. |
 | `WF1202` | note | `lock` reserved a removed member. |
 | `WF1203` | note | `lock` dropped a stale draft. |
 | `WF1204` | note | `lock` updated a draft's kind or type. |
+| `WF1205` | note | `lock` restored a draft removal. |
 | `WF2001` | error | A generated file is missing, changed, extra, unowned, or otherwise refuses `--check`. |
 | `WF3001` | error | `diff` found a wire-, source-, or generated-API-breaking change. |
 | `WF3002` | note | `diff` found a compatible change. |

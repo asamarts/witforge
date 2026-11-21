@@ -922,6 +922,12 @@ fn reintroduced_overlay_is_refused_without_writing() {
         stderr.trim(),
         "error: example:evolve/types/user.removed was removed and its name and number 4 stay reserved; give the member a new name"
     );
+    let default_check = witforge().arg("check").arg(&v02).output().unwrap();
+    assert_eq!(default_check.status.code(), Some(1), "{default_check:?}");
+    assert!(
+        String::from_utf8_lossy(&default_check.stderr).contains("use `--against`"),
+        "{default_check:?}"
+    );
     let lock = witforge()
         .arg("lock")
         .arg(&v02)
@@ -2534,5 +2540,95 @@ fn generators_refuse_a_symlinked_version_directory_no_manifest_lists() {
         }
     }
     assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_draft_removal_of_a_released_member_can_be_restored() {
+    let root = std::env::temp_dir().join(format!("witforge-draft-restore-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let v01 = root.join("v0.1");
+    let v02 = root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:restore@0.1.0;\ninterface api { record r { a: u32, b: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:restore@0.2.0;\ninterface api { record r { a: u32, b: u32 } }\n",
+    )
+    .unwrap();
+    let first = witforge()
+        .arg("lock")
+        .arg(&v01)
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(first.status.success(), "{first:?}");
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    let baseline = v01.join("wire.lock");
+    let never = witforge()
+        .arg("lock")
+        .arg(&v02)
+        .arg("--against")
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(never.status.success(), "{never:?}");
+    let never_lock = fs::read_to_string(v02.join("wire.lock")).unwrap();
+    assert!(never_lock.contains("ex:restore/api/r.b = 2 field u32"));
+
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:restore@0.2.0;\ninterface api { record r { a: u32 } }\n",
+    )
+    .unwrap();
+    let removed = witforge()
+        .arg("lock")
+        .arg(&v02)
+        .arg("--against")
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(removed.status.success(), "{removed:?}");
+    assert!(
+        fs::read_to_string(v02.join("wire.lock"))
+            .unwrap()
+            .contains("ex:restore/api/r.b = 2 field u32 reserved")
+    );
+
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:restore@0.2.0;\ninterface api { record r { a: u32, b: u32 } }\n",
+    )
+    .unwrap();
+    let stale = witforge()
+        .arg("check")
+        .arg(&v02)
+        .arg("--against")
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert_eq!(stale.status.code(), Some(1), "{stale:?}");
+    assert!(
+        String::from_utf8_lossy(&stale.stderr).contains("can be restored"),
+        "{stale:?}"
+    );
+    let restored = witforge()
+        .arg("lock")
+        .arg(&v02)
+        .arg("--against")
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(restored.status.success(), "{restored:?}");
+    assert_eq!(
+        fs::read_to_string(v02.join("wire.lock")).unwrap(),
+        never_lock,
+        "restoring a draft removal must recreate the unchanged lockfile"
+    );
     fs::remove_dir_all(&root).unwrap();
 }
