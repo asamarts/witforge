@@ -672,16 +672,8 @@ impl WireLock {
 
         // The next number and folded member names for each parent are tracked once. Re-scanning
         // every entry for every new member made a wide contract quadratic.
-        let mut next_numbers: BTreeMap<String, u32> = BTreeMap::new();
+        let mut next_numbers = initial_next_numbers(&self.entries);
         let mut case_index = build_case_index(&self.entries);
-        for (key, entry) in &self.entries {
-            let parent = key.parent();
-            let candidate = entry.number.checked_add(1).unwrap_or(PROTOBUF_MAX + 1);
-            next_numbers
-                .entry(parent)
-                .and_modify(|next| *next = (*next).max(candidate))
-                .or_insert(candidate);
-        }
 
         for member in members {
             let key = MemberKey::from_member(member)?;
@@ -892,7 +884,8 @@ impl WireLock {
                 entry.reserved = true;
             }
         }
-        let case_index = build_case_index(&staged);
+        let mut next_numbers = initial_next_numbers(&staged);
+        let mut case_index = build_case_index(&staged);
         let mut collisions = Vec::new();
         for member in members {
             let key = MemberKey::from_member(member)?;
@@ -911,7 +904,17 @@ impl WireLock {
                 {
                     collisions.push((path, message));
                 }
+                continue;
             }
+            let number = next_number_in(&mut next_numbers, &key.parent())?;
+            case_index.insert(
+                folded,
+                CaseAnchor {
+                    name: key.member_name().to_string(),
+                    reserved: false,
+                    number,
+                },
+            );
         }
         for (path, message) in entries_case_collisions(&staged) {
             if !collisions
@@ -1282,6 +1285,19 @@ fn entries_case_collisions(entries: &BTreeMap<MemberKey, Entry>) -> Vec<(String,
         }
     }
     discrepancies
+}
+
+fn initial_next_numbers(entries: &BTreeMap<MemberKey, Entry>) -> BTreeMap<String, u32> {
+    let mut next_numbers: BTreeMap<String, u32> = BTreeMap::new();
+    for (key, entry) in entries {
+        let parent = key.parent();
+        let candidate = entry.number.checked_add(1).unwrap_or(PROTOBUF_MAX + 1);
+        next_numbers
+            .entry(parent)
+            .and_modify(|next| *next = (*next).max(candidate))
+            .or_insert(candidate);
+    }
+    next_numbers
 }
 
 /// Assign the next number in `parent` from the per-parent cursors.

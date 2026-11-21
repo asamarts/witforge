@@ -1800,3 +1800,38 @@ fn case_variant_of_a_reserved_member_is_refused() {
         .unwrap();
     assert!(report.discrepancies.is_empty(), "{report:?}");
 }
+
+#[test]
+fn live_case_collisions_match_between_reconcile_and_case_collisions() {
+    let live_collision = [
+        Member {
+            parent: "a:b/i/r".to_string(),
+            name: "foo-bar".to_string(),
+            kind: MemberKind::Field,
+            ty: Some("u32".to_string()),
+        },
+        Member {
+            parent: "a:b/i/r".to_string(),
+            name: "FOO-bar".to_string(),
+            kind: MemberKind::Field,
+            ty: Some("u32".to_string()),
+        },
+    ];
+    let mut fresh = WireLock::default();
+    let reconcile_report = fresh
+        .reconcile_report_with(&live_collision, LockMode::First)
+        .unwrap();
+    let direct_collisions = WireLock::default()
+        .case_collisions(&live_collision, LockMode::First)
+        .unwrap();
+    assert_eq!(reconcile_report.discrepancies.len(), 1);
+    assert_eq!(direct_collisions.len(), 1);
+    assert_eq!(
+        direct_collisions[0].path.as_deref(),
+        Some(reconcile_report.discrepancies[0].key.as_str())
+    );
+    assert_eq!(
+        direct_collisions[0].message,
+        reconcile_report.discrepancies[0].message
+    );
+}

@@ -113,9 +113,26 @@ pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
         let right_name = &resolve.packages[*right].name;
         (&left_name.namespace, &left_name.name).cmp(&(&right_name.namespace, &right_name.name))
     });
+    let mut seen_packages: BTreeMap<String, (&str, String)> = BTreeMap::new();
+    seen_packages.insert(pkg.to_ascii_lowercase(), ("root package", pkg.clone()));
     for dep_id in dependencies {
         let dep = &resolve.packages[dep_id];
         let dep_pkg = format!("{}:{}", dep.name.namespace, dep.name.name);
+        let folded_pkg = dep_pkg.to_ascii_lowercase();
+        if let Some((prev_kind, prev_name)) = seen_packages.get(&folded_pkg) {
+            if prev_name != &dep_pkg {
+                refuse_collision(
+                    &mut out,
+                    &dep_pkg,
+                    format!(
+                        "dependency package `{dep_pkg}` differs only in letter case from \
+                         {prev_kind} `{prev_name}`; give them distinct names"
+                    ),
+                );
+            }
+        } else {
+            seen_packages.insert(folded_pkg, ("dependency package", dep_pkg.clone()));
+        }
         let entry = contract
             .dependency_entry(dep_id)
             .map_or_else(|| "deps/".to_string(), |path| path.display().to_string());
@@ -471,11 +488,11 @@ fn interface_display_name(contract: &Contract, id: InterfaceId) -> String {
 /// Explain which world item caused `wit-parser` to implicitly import dependency `target`.
 fn implicit_import_reason(contract: &Contract, world: &World, target: InterfaceId) -> String {
     let resolve = &contract.resolve;
-    for item in world.exports.values() {
+    for (key, item) in &world.exports {
         if let WorldItem::Interface { id, .. } = item
             && interface_reaches(resolve, *id, target)
         {
-            let label = interface_display_name(contract, *id);
+            let label = world_interface_label(contract, key, *id);
             return format!(
                 "implicitly imported by world `{}` via exported interface `{label}`",
                 world.name
@@ -483,12 +500,18 @@ fn implicit_import_reason(contract: &Contract, world: &World, target: InterfaceI
         }
     }
     for (key, item) in &world.imports {
-        if let (WorldKey::Interface(_), WorldItem::Interface { id, .. }) = (key, item)
-            && *id != target
-            && contract.is_explicit_world_import(&world.name, *id)
-            && interface_reaches(resolve, *id, target)
-        {
-            let label = interface_display_name(contract, *id);
+        let WorldItem::Interface { id, .. } = item else {
+            continue;
+        };
+        if *id == target {
+            continue;
+        }
+        let is_explicit = match key {
+            WorldKey::Name(_) => true,
+            WorldKey::Interface(_) => contract.is_explicit_world_import(&world.name, *id),
+        };
+        if is_explicit && interface_reaches(resolve, *id, target) {
+            let label = world_interface_label(contract, key, *id);
             return format!(
                 "implicitly imported by world `{}` via imported interface `{label}`",
                 world.name
@@ -509,7 +532,54 @@ fn implicit_import_reason(contract: &Contract, world: &World, target: InterfaceI
             );
         }
     }
+    for (ns, pkg_name, foreign_world_name) in contract.included_foreign_worlds(&world.name) {
+        if foreign_world_reaches_interface(resolve, ns, pkg_name, foreign_world_name, target) {
+            return format!(
+                "implicitly imported by world `{}` via included world \
+                 `{ns}:{pkg_name}/{foreign_world_name}`",
+                world.name
+            );
+        }
+    }
     format!("implicitly imported by world `{}`", world.name)
+}
+
+fn world_interface_label(contract: &Contract, key: &WorldKey, id: InterfaceId) -> String {
+    match key {
+        WorldKey::Name(name) => name.clone(),
+        WorldKey::Interface(_) => interface_display_name(contract, id),
+    }
+}
+
+fn foreign_world_reaches_interface(
+    resolve: &wit_parser::Resolve,
+    namespace: &str,
+    package_name: &str,
+    world_name: &str,
+    target: InterfaceId,
+) -> bool {
+    let Some((_, package)) = resolve
+        .packages
+        .iter()
+        .find(|(_, pkg)| pkg.name.namespace == namespace && pkg.name.name == package_name)
+    else {
+        return false;
+    };
+    let Some(&world_id) = package.worlds.get(world_name) else {
+        return false;
+    };
+    let world = &resolve.worlds[world_id];
+    world
+        .imports
+        .values()
+        .chain(world.exports.values())
+        .any(|item| match item {
+            WorldItem::Interface { id, .. } => {
+                *id == target || interface_reaches(resolve, *id, target)
+            }
+            WorldItem::Type { id, .. } => type_reaches_interface(resolve, *id, target),
+            WorldItem::Function(_) => false,
+        })
 }
 
 fn interface_reaches(
@@ -576,11 +646,10 @@ fn check_dependency_interface(
         return;
     };
     let package = &resolve.packages[package_id];
+    let dep_pkg = format!("{}:{}", package.name.namespace, package.name.name);
     let interface_name = interface.name.as_deref().unwrap_or_default();
-    let base = format!(
-        "{}:{}/{interface_name}",
-        package.name.namespace, package.name.name
-    );
+    check_interface_case_collisions(&dep_pkg, interface_name, interface, out);
+    let base = format!("{dep_pkg}/{interface_name}");
     for (name, id) in &interface.types {
         check_dependency_def(
             contract,

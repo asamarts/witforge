@@ -935,3 +935,98 @@ interface types {
         "{explicit:#?}"
     );
 }
+
+#[test]
+fn world_inline_and_foreign_include_diagnostics_name_their_world_item() {
+    let shared_wit = r"package example:shared@0.1.0;
+
+interface types {
+    record item { id: u32 }
+    resource session;
+}
+
+world base {
+    import types;
+}
+";
+    // Inline/named exports attribute implicit dependency imports to the world item name.
+    let via_inline = temp_dir("deps-world-implicit-inline");
+    let _ = fs::remove_dir_all(&via_inline);
+    fs::create_dir_all(via_inline.join("deps/shared")).unwrap();
+    fs::write(via_inline.join("deps/shared/types.wit"), shared_wit).unwrap();
+    fs::write(
+        via_inline.join("contract.wit"),
+        "package example:app@0.1.0;\nworld plugin { export custom: interface { use example:shared/types@0.1.0.{item}; get: func() -> item; } }\n",
+    )
+    .unwrap();
+    let via_inline_violations = subset::check(&load(&via_inline).unwrap());
+    assert!(
+        via_inline_violations.iter().any(|v| {
+            v.location == "example:shared/types/session"
+                && v.message.contains(
+                    "implicitly imported by world `plugin` via exported interface `custom`",
+                )
+        }),
+        "{via_inline_violations:#?}"
+    );
+    fs::remove_dir_all(&via_inline).unwrap();
+
+    // Foreign world `include` attributes the dependency import to the included world.
+    let via_foreign_include = temp_dir("deps-world-foreign-include");
+    let _ = fs::remove_dir_all(&via_foreign_include);
+    fs::create_dir_all(via_foreign_include.join("deps/shared")).unwrap();
+    fs::write(
+        via_foreign_include.join("deps/shared/types.wit"),
+        shared_wit,
+    )
+    .unwrap();
+    fs::write(
+        via_foreign_include.join("contract.wit"),
+        "package example:app@0.1.0;\nworld plugin { include example:shared/base@0.1.0; }\n",
+    )
+    .unwrap();
+    let included = subset::check(&load(&via_foreign_include).unwrap());
+    assert!(
+        included.iter().any(|v| {
+            v.location == "example:shared/types/session"
+                && v.message.contains(
+                    "implicitly imported by world `plugin` via included world `example:shared/base`",
+                )
+        }),
+        "{included:#?}"
+    );
+    fs::remove_dir_all(&via_foreign_include).unwrap();
+}
+
+#[test]
+fn dependency_package_case_collisions_are_refused() {
+    let dir = temp_dir("deps-package-case-collision");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("deps/a")).unwrap();
+    fs::create_dir_all(dir.join("deps/b")).unwrap();
+    fs::write(
+        dir.join("deps/a/types.wit"),
+        "package ex:shared@0.1.0;\ninterface types { record a { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("deps/b/types.wit"),
+        "package ex:SHARED@0.1.0;\ninterface types { record b { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package ex:root@0.1.0;\ninterface api { record local { id: u32 } }\n",
+    )
+    .unwrap();
+    let diagnostics = subset::check_diagnostics(&load(&dir).unwrap());
+    assert!(
+        diagnostics.iter().any(|d| {
+            d.code == "WF1003"
+                && d.message.contains("letter case")
+                && d.message.contains("ex:shared")
+        }),
+        "{diagnostics:#?}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

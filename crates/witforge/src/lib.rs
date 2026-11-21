@@ -89,6 +89,8 @@ pub fn is_contract_error(error: &anyhow::Error) -> bool {
 
 /// An interface explicitly imported by a root world: `(Option<(namespace, package)>, interface)`.
 type ExplicitWorldImport = (Option<(String, String)>, String);
+/// A foreign world referenced by a root world's `include`: `(namespace, package, world_name)`.
+type ForeignWorldInclude = (String, String, String);
 
 /// A parsed WIT package together with the resolve that owns it.
 ///
@@ -108,6 +110,7 @@ pub struct Contract {
     pub(crate) dependencies: Vec<PackageId>,
     pub(crate) dependency_entries: BTreeMap<PackageId, PathBuf>,
     pub(crate) explicit_world_imports: BTreeMap<String, BTreeSet<ExplicitWorldImport>>,
+    pub(crate) included_foreign_worlds: BTreeMap<String, Vec<ForeignWorldInclude>>,
 }
 
 impl Contract {
@@ -148,6 +151,14 @@ impl Contract {
             .get(world_name)
             .is_some_and(|imports| imports.contains(&(package_key, name.to_string())))
     }
+
+    /// Foreign worlds reached by `include` from root world `world_name`.
+    #[must_use]
+    pub(crate) fn included_foreign_worlds(&self, world_name: &str) -> &[ForeignWorldInclude] {
+        self.included_foreign_worlds
+            .get(world_name)
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 /// Load the WIT package in `dir`.
@@ -171,7 +182,7 @@ pub fn load(dir: &Path) -> Result<Contract> {
     {
         crate::model::ensure_dependency_identity(&root.main.name, &scanned)?;
     }
-    let explicit_world_imports = root_group
+    let (explicit_world_imports, included_foreign_worlds) = root_group
         .as_ref()
         .map(|group| collect_explicit_world_imports(&group.main))
         .unwrap_or_default();
@@ -216,50 +227,81 @@ pub fn load(dir: &Path) -> Result<Contract> {
         dependencies,
         dependency_entries,
         explicit_world_imports,
+        included_foreign_worlds,
     })
 }
 
-/// Record the interface imports explicitly written in each root world (including local `include`s)
-/// before `wit-parser` world elaboration synthesizes implicit dependency imports.
+/// Record the interface imports and foreign world includes explicitly written in each root world
+/// (including through local `include`s) before `wit-parser` world elaboration synthesizes
+/// implicit dependency imports.
+#[allow(clippy::type_complexity)]
 fn collect_explicit_world_imports(
     package: &UnresolvedPackage,
-) -> BTreeMap<String, BTreeSet<ExplicitWorldImport>> {
+) -> (
+    BTreeMap<String, BTreeSet<ExplicitWorldImport>>,
+    BTreeMap<String, Vec<ForeignWorldInclude>>,
+) {
     let mut foreign_interfaces: BTreeMap<InterfaceId, ((String, String), String)> = BTreeMap::new();
+    let mut foreign_worlds: BTreeMap<WorldId, ForeignWorldInclude> = BTreeMap::new();
     for (pkg_name, items) in &package.foreign_deps {
-        for (iface_name, (ast_item, _)) in items {
-            if let AstItem::Interface(interface_id) = ast_item {
-                foreign_interfaces.insert(
-                    *interface_id,
-                    (
-                        (pkg_name.namespace.clone(), pkg_name.name.clone()),
-                        iface_name.clone(),
-                    ),
-                );
+        for (item_name, (ast_item, _)) in items {
+            match ast_item {
+                AstItem::Interface(interface_id) => {
+                    foreign_interfaces.insert(
+                        *interface_id,
+                        (
+                            (pkg_name.namespace.clone(), pkg_name.name.clone()),
+                            item_name.clone(),
+                        ),
+                    );
+                }
+                AstItem::World(world_id) => {
+                    foreign_worlds.insert(
+                        *world_id,
+                        (
+                            pkg_name.namespace.clone(),
+                            pkg_name.name.clone(),
+                            item_name.clone(),
+                        ),
+                    );
+                }
             }
         }
     }
-    let mut result = BTreeMap::new();
+    let mut imports_by_world = BTreeMap::new();
+    let mut foreign_includes_by_world = BTreeMap::new();
     for (world_id, world) in &package.worlds {
+        if foreign_worlds.contains_key(&world_id) {
+            continue;
+        }
         let mut imports = BTreeSet::new();
+        let mut included = Vec::new();
         let mut visited = BTreeSet::new();
         collect_world_explicit_imports(
             package,
             world_id,
             &foreign_interfaces,
+            &foreign_worlds,
             &mut visited,
             &mut imports,
+            &mut included,
         );
-        result.insert(world.name.clone(), imports);
+        imports_by_world.insert(world.name.clone(), imports);
+        if !included.is_empty() {
+            foreign_includes_by_world.insert(world.name.clone(), included);
+        }
     }
-    result
+    (imports_by_world, foreign_includes_by_world)
 }
 
 fn collect_world_explicit_imports(
     package: &UnresolvedPackage,
     world_id: WorldId,
     foreign_interfaces: &BTreeMap<InterfaceId, ((String, String), String)>,
+    foreign_worlds: &BTreeMap<WorldId, ForeignWorldInclude>,
     visited: &mut BTreeSet<WorldId>,
-    out: &mut BTreeSet<ExplicitWorldImport>,
+    out_imports: &mut BTreeSet<ExplicitWorldImport>,
+    out_foreign_worlds: &mut Vec<ForeignWorldInclude>,
 ) {
     if !visited.insert(world_id) {
         return;
@@ -268,16 +310,28 @@ fn collect_world_explicit_imports(
     for key in world.imports.keys() {
         if let WorldKey::Interface(interface_id) = key {
             if let Some((pkg, name)) = foreign_interfaces.get(interface_id) {
-                out.insert((Some(pkg.clone()), name.clone()));
+                out_imports.insert((Some(pkg.clone()), name.clone()));
             } else if let Some(name) = package.interfaces[*interface_id].name.as_ref() {
-                out.insert((None, name.clone()));
+                out_imports.insert((None, name.clone()));
             }
         }
     }
     for include in &world.includes {
-        // `include.id` is in `package.worlds` for both local and foreign world stubs; a foreign
-        // stub has no imports here, while a local world contributes its own explicit imports.
-        collect_world_explicit_imports(package, include.id, foreign_interfaces, visited, out);
+        if let Some(foreign) = foreign_worlds.get(&include.id) {
+            if !out_foreign_worlds.contains(foreign) {
+                out_foreign_worlds.push(foreign.clone());
+            }
+        } else {
+            collect_world_explicit_imports(
+                package,
+                include.id,
+                foreign_interfaces,
+                foreign_worlds,
+                visited,
+                out_imports,
+                out_foreign_worlds,
+            );
+        }
     }
 }
 
