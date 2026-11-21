@@ -1043,6 +1043,31 @@ interface api { record xr { a: u32 } }\n",
         "{minor_glue_err:#}"
     );
 
+    // Cross-interface collisions involving method enums (`ApiXMethod`) and named option direct
+    // wrappers (`ApiOptItem`) are refused by `check` with WF1003.
+    let cross_clash = out.join("cross-clash/v0.1");
+    fs::create_dir_all(&cross_clash).unwrap();
+    fs::write(
+        cross_clash.join("contract.wit"),
+        "package example:cross-clash@0.1.0;\n\
+         interface api-x { ping: func(); }\n\
+         interface api {\n\
+           record x-method { x: u32 }\n\
+           type opt-item = option<list<u32>>;\n\
+         }\n\
+         interface api-opt { record item { x: u32 } }\n",
+    )
+    .unwrap();
+    let cross_diags = witforge::subset::check_diagnostics(&load(&cross_clash).unwrap());
+    for needle in ["ApiXMethod", "ApiOptItem"] {
+        assert!(
+            cross_diags
+                .iter()
+                .any(|d| d.code == "WF1003" && d.message.contains(needle)),
+            "expected WF1003 for `{needle}`, got {cross_diags:?}"
+        );
+    }
+
     fs::remove_dir_all(&out).unwrap();
 }
 

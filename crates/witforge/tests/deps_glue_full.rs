@@ -183,6 +183,8 @@ interface types {
   type opt-opt = option<option<u16>>;
   type opt-nested = option<list<list<u16>>>;
   type list-of-opt = list<option<u16>>;
+  type list-of-opt-list = list<opt-list>;
+  type list-of-anon-opt-list = list<option<list<u16>>>;
   type list-of-inline-res = list<result<u16, string>>;
   type named-res = result<list<u16>, string>;
   type byte = u8;
@@ -213,6 +215,8 @@ interface api {
     opt-opt,
     opt-nested,
     list-of-opt,
+    list-of-opt-list,
+    list-of-anon-opt-list,
     list-of-inline-res,
     named-res,
     blob,
@@ -256,6 +260,10 @@ interface api {
     dep-opt-opt: opt-opt,
     dep-opt-nested: opt-nested,
     dep-list-of-opt: list-of-opt,
+    dep-list-of-opt-list: list-of-opt-list,
+    dep-list-of-anon-opt-list: list-of-anon-opt-list,
+    list-of-dep-list-of-opt-list: list<list-of-opt-list>,
+    list-of-dep-list-of-anon-opt-list: list<list-of-anon-opt-list>,
     dep-list-of-res: list-of-inline-res,
     dep-named-res: named-res,
     list-of-dep-nested: list<nested>,
@@ -386,6 +394,10 @@ fn main() {
         dep_opt_opt: Some(Some(11)),
         dep_opt_nested: Some(vec![vec![12], vec![]]),
         dep_list_of_opt: vec![Some(13), None],
+        dep_list_of_opt_list: vec![Some(vec![40, 41]), None],
+        dep_list_of_anon_opt_list: vec![Some(vec![42]), None],
+        list_of_dep_list_of_opt_list: vec![vec![Some(vec![43]), None]],
+        list_of_dep_list_of_anon_opt_list: vec![vec![Some(vec![44]), None]],
         dep_list_of_res: vec![Ok(14), Err("bad".into())],
         dep_named_res: Ok(vec![15, 16]),
         list_of_dep_nested: vec![vec![vec![17]], vec![]],

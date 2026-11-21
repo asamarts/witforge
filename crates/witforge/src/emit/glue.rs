@@ -1139,10 +1139,22 @@ impl<'a> Emitter<'a> {
                             "ListOf{}",
                             self.owner_shape_name_ty(owner, element)?
                         )),
-                        TypeDefKind::Option(payload) => Ok(format!(
-                            "OptionOf{}",
-                            self.owner_shape_name_ty(owner, payload)?
-                        )),
+                        TypeDefKind::Option(payload) => {
+                            if matches!(
+                                self.foreign_form_expr(owner, payload)?,
+                                Form::List | Form::Option
+                            ) {
+                                Ok(format!(
+                                    "OptionOf{}",
+                                    ident::proto_type_name(name.interface_name(), &name.name)
+                                ))
+                            } else {
+                                Ok(format!(
+                                    "OptionOf{}",
+                                    self.owner_shape_name_ty(owner, payload)?
+                                ))
+                            }
+                        }
                         TypeDefKind::Result(result) => self.owner_result_shape_name(owner, result),
                         TypeDefKind::Record(_)
                         | TypeDefKind::Variant(_)

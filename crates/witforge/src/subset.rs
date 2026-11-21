@@ -1120,8 +1120,10 @@ fn check_package_generated_collisions(
     let mut prost_oneof_mods: BTreeMap<String, String> = BTreeMap::new();
     let mut proto_enum_vals: BTreeMap<String, String> = BTreeMap::new();
 
+    let mut seen_ifaces_ci: HashSet<String> = HashSet::new();
     for (iface_name, &iface_id) in &package.interfaces {
         let iface = &resolve.interfaces[iface_id];
+        let iface_ci_dup = !seen_ifaces_ci.insert(iface_name.to_ascii_lowercase());
         if let Ok(module) = ident::plain_ident(&ident::plain_snake(iface_name), "interface module")
             && let Some(prev) = rust_mods.insert(module.clone(), iface_name.clone())
             && !prev.eq_ignore_ascii_case(iface_name)
@@ -1148,16 +1150,40 @@ fn check_package_generated_collisions(
             );
         }
 
-        // Method enum values inside one interface and across the package.
+        // Method enum type and values inside one interface and across the package.
         let method_enum = ident::proto_method_enum_name(iface_name);
+        let method_prost = ident::prost_type_ident(&method_enum);
+        let method_source = format!("method enum {iface_name}");
+        if !iface_ci_dup {
+            if let Some(prev) = proto_types.insert(method_enum.clone(), method_source.clone()) {
+                refuse_collision(
+                    out,
+                    format!("{pkg}/{iface_name}"),
+                    format!(
+                        "proto name `{method_enum}` is produced by both {prev} and {method_source}"
+                    ),
+                );
+            } else if let Some(prev) =
+                prost_types.insert(method_prost.clone(), method_source.clone())
+            {
+                refuse_collision(
+                    out,
+                    format!("{pkg}/{iface_name}"),
+                    format!(
+                        "prost type name `{method_prost}` is produced by both {prev} and {method_source}"
+                    ),
+                );
+            }
+        }
         let method_zero = ident::proto_method_enum_zero_value(iface_name);
         let mut method_prost_variants: BTreeMap<String, String> = BTreeMap::new();
         method_prost_variants.insert(
             ident::prost_enum_variant(&method_enum, &method_zero),
             method_zero.clone(),
         );
-        if let Some(prev) =
-            proto_enum_vals.insert(method_zero.clone(), format!("method enum {iface_name}"))
+        if !iface_ci_dup
+            && let Some(prev) =
+                proto_enum_vals.insert(method_zero.clone(), format!("method enum {iface_name}"))
         {
             refuse_collision(
                 out,
@@ -1167,9 +1193,22 @@ fn check_package_generated_collisions(
                 ),
             );
         }
+        let mut rust_funcs: BTreeMap<String, String> = BTreeMap::new();
         for (func_name, func) in &iface.functions {
             if !matches!(func.kind, FunctionKind::Freestanding) {
                 continue;
+            }
+            if let Ok(rust_fn) = ident::plain_ident(&ident::plain_snake(func_name), "function")
+                && let Some(prev) = rust_funcs.insert(rust_fn.clone(), func_name.clone())
+                && !prev.eq_ignore_ascii_case(func_name)
+            {
+                refuse_collision(
+                    out,
+                    format!("{pkg}/{iface_name}#{func_name}"),
+                    format!(
+                        "functions `{prev}` and `{func_name}` in `{iface_name}` both map to Rust function `{rust_fn}`"
+                    ),
+                );
             }
             let val = ident::proto_method_enum_value(iface_name, func_name);
             let source = format!("function {iface_name}#{func_name}");
@@ -1203,12 +1242,52 @@ fn check_package_generated_collisions(
             );
         }
 
-        // Named types defined by this interface (skip `use` aliases, which emit no proto message).
+        // Named types in this interface: check plain Rust item/module collisions for every type
+        // (including `use` aliases), and proto/prost collisions for types defined here.
+        let mut iface_rust_types: BTreeMap<String, String> = BTreeMap::new();
+        let mut iface_glue_mods: BTreeMap<String, String> = BTreeMap::new();
         for (type_name, &type_id) in &iface.types {
+            let location = format!("{pkg}/{iface_name}/{type_name}");
+            if let Ok(rust_ty) = ident::plain_ident(&ident::plain_pascal(type_name), "type")
+                && let Some(prev) = iface_rust_types.insert(rust_ty.clone(), type_name.clone())
+                && !prev.eq_ignore_ascii_case(type_name)
+            {
+                refuse_collision(
+                    out,
+                    &location,
+                    format!(
+                        "types `{prev}` and `{type_name}` in `{iface_name}` both map to Rust type `{rust_ty}`"
+                    ),
+                );
+            }
+            if let Ok(glue_mod) = ident::plain_ident(&ident::plain_snake(type_name), "type module")
+                && let Some(prev) = iface_glue_mods.insert(glue_mod.clone(), type_name.clone())
+                && !prev.eq_ignore_ascii_case(type_name)
+            {
+                refuse_collision(
+                    out,
+                    &location,
+                    format!(
+                        "types `{prev}` and `{type_name}` in `{iface_name}` both map to glue module `{glue_mod}`"
+                    ),
+                );
+            }
+
             let def = &resolve.types[type_id];
             if def.owner != TypeOwner::Interface(iface_id) {
                 continue;
             }
+            let named_opt_wrapper_kind = match &def.kind {
+                TypeDefKind::Option(payload) => match resolve_wit_alias(resolve, payload) {
+                    Type::Id(inner_id) => match &resolve.types[*inner_id].kind {
+                        TypeDefKind::List(elem) if !is_wit_u8(resolve, elem) => Some(false),
+                        TypeDefKind::Option(_) => Some(true),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            };
             let produces_proto_type = matches!(
                 def.kind,
                 TypeDefKind::Record(_)
@@ -1216,14 +1295,13 @@ fn check_package_generated_collisions(
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Result(_)
-            );
+            ) || named_opt_wrapper_kind.is_some();
             if !produces_proto_type {
                 continue;
             }
             let proto_name = ident::proto_type_name(iface_name, type_name);
             let prost_name = ident::prost_type_ident(&proto_name);
             let source = format!("type {iface_name}/{type_name}");
-            let location = format!("{pkg}/{iface_name}/{type_name}");
             if let Some(prev) = proto_types.insert(proto_name.clone(), source.clone()) {
                 refuse_collision(
                     out,
@@ -1239,7 +1317,9 @@ fn check_package_generated_collisions(
                     ),
                 );
             }
-            if matches!(def.kind, TypeDefKind::Variant(_) | TypeDefKind::Result(_)) {
+            if matches!(def.kind, TypeDefKind::Variant(_) | TypeDefKind::Result(_))
+                || named_opt_wrapper_kind == Some(true)
+            {
                 let oneof_mod = ident::prost_oneof_module(&proto_name);
                 if let Some(prev) = prost_oneof_mods.insert(oneof_mod.clone(), source.clone()) {
                     refuse_collision(
@@ -1249,6 +1329,40 @@ fn check_package_generated_collisions(
                             "prost oneof module `{oneof_mod}` is produced by both {prev} and {source}"
                         ),
                     );
+                }
+            }
+            if let TypeDefKind::Variant(variant) = &def.kind {
+                let mut rust_cases: BTreeMap<String, String> = BTreeMap::new();
+                let mut prost_cases: BTreeMap<String, String> = BTreeMap::new();
+                for case in &variant.cases {
+                    if let Ok(rust_case) =
+                        ident::plain_ident(&ident::plain_pascal(&case.name), "variant case")
+                        && let Some(prev) = rust_cases.insert(rust_case.clone(), case.name.clone())
+                        && !prev.eq_ignore_ascii_case(&case.name)
+                    {
+                        refuse_collision(
+                            out,
+                            format!("{location}.{}", case.name),
+                            format!(
+                                "variant `{iface_name}/{type_name}`: cases `{prev}` and `{}` both map to Rust variant `{rust_case}`",
+                                case.name
+                            ),
+                        );
+                    }
+                    let prost_var =
+                        ident::prost_oneof_variant(&ident::proto_field_name(&case.name));
+                    if let Some(prev) = prost_cases.insert(prost_var.clone(), case.name.clone())
+                        && !prev.eq_ignore_ascii_case(&case.name)
+                    {
+                        refuse_collision(
+                            out,
+                            format!("{location}.{}", case.name),
+                            format!(
+                                "variant `{iface_name}/{type_name}`: cases `{prev}` and `{}` both map to prost variant `{prost_var}`",
+                                case.name
+                            ),
+                        );
+                    }
                 }
             }
             if let TypeDefKind::Record(record) = &def.kind {
@@ -1267,6 +1381,7 @@ fn check_package_generated_collisions(
             }
             if let TypeDefKind::Enum(enum_def) = &def.kind {
                 let zero = ident::proto_enum_zero_value(&proto_name);
+                let mut rust_cases: BTreeMap<String, String> = BTreeMap::new();
                 let mut enum_prost_variants: BTreeMap<String, String> = BTreeMap::new();
                 enum_prost_variants
                     .insert(ident::prost_enum_variant(&proto_name, &zero), zero.clone());
@@ -1280,6 +1395,20 @@ fn check_package_generated_collisions(
                     );
                 }
                 for case in &enum_def.cases {
+                    if let Ok(rust_case) =
+                        ident::plain_ident(&ident::plain_pascal(&case.name), "enum case")
+                        && let Some(prev) = rust_cases.insert(rust_case.clone(), case.name.clone())
+                        && !prev.eq_ignore_ascii_case(&case.name)
+                    {
+                        refuse_collision(
+                            out,
+                            format!("{location}.{}", case.name),
+                            format!(
+                                "enum `{iface_name}/{type_name}`: cases `{prev}` and `{}` both map to Rust variant `{rust_case}`",
+                                case.name
+                            ),
+                        );
+                    }
                     let val = ident::proto_enum_value_name(&proto_name, &case.name);
                     let case_source = format!("enum {iface_name}/{type_name}.{}", case.name);
                     if let Some(prev) = proto_enum_vals.insert(val.clone(), case_source.clone()) {
