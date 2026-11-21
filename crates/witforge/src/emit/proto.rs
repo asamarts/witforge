@@ -313,6 +313,7 @@ impl<'a> Emitter<'a> {
             .collect();
         let mut field_names = BTreeSet::new();
         let mut prost_fields = BTreeMap::new();
+        let mut prost_accessors = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         for field in fields {
             let field_name = field_name(&field.name)?;
@@ -335,6 +336,17 @@ impl<'a> Emitter<'a> {
                     def.name,
                     field.name
                 );
+            }
+            let accessor_kind = self.prost_field_accessor_kind(None, &field.ty)?;
+            for accessor in ident::prost_field_accessors(&field_name, accessor_kind) {
+                if let Some(previous) = prost_accessors.insert(accessor.clone(), field.name.clone())
+                {
+                    contract_bail!(
+                        "record `{interface}/{}`: fields `{previous}` and `{}` both generate prost accessor `{accessor}`",
+                        def.name,
+                        field.name
+                    );
+                }
             }
             let number = self.number(interface, &def.name, &field.name)?;
             if !numbers.insert(number) {
@@ -572,6 +584,7 @@ impl<'a> Emitter<'a> {
         writeln!(out, "message {request_name} {{")?;
         let mut field_names = BTreeSet::new();
         let mut prost_fields = BTreeMap::new();
+        let mut prost_accessors = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         let reserved = self.reserved_params(interface, &function.name);
         let reserved_names: BTreeSet<String> =
@@ -598,6 +611,17 @@ impl<'a> Emitter<'a> {
                     function.name,
                     param.name
                 );
+            }
+            let accessor_kind = self.prost_field_accessor_kind(None, &param.ty)?;
+            for accessor in ident::prost_field_accessors(&name, accessor_kind) {
+                if let Some(previous) = prost_accessors.insert(accessor.clone(), param.name.clone())
+                {
+                    contract_bail!(
+                        "function `{interface}#{}`: parameters `{previous}` and `{}` both generate prost accessor `{accessor}`",
+                        function.name,
+                        param.name
+                    );
+                }
             }
             let number = self.parameter_number(interface, &function.name, &param.name)?;
             if !numbers.insert(number) {
@@ -1031,6 +1055,130 @@ impl<'a> Emitter<'a> {
     fn foreign_shape(&self, name: &QualifiedName) -> Result<Shape> {
         let resolved = self.resolve_type(None, name)?;
         self.foreign_shape_kind(resolved.dependency, &resolved.def.kind)
+    }
+
+    fn resolves_to_enum_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<bool> {
+        match ty {
+            TypeExpr::Named(name) => {
+                let resolved = self.resolve_type(context, name)?;
+                match &resolved.def.kind {
+                    TypeDefKind::Alias(target) => {
+                        self.resolves_to_enum_in(resolved.dependency, target)
+                    }
+                    TypeDefKind::Enum(_) => Ok(true),
+                    _ => Ok(false),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn resolves_to_scalar_or_bytes_in(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<bool> {
+        match ty {
+            TypeExpr::Bool
+            | TypeExpr::U8
+            | TypeExpr::U16
+            | TypeExpr::U32
+            | TypeExpr::U64
+            | TypeExpr::S8
+            | TypeExpr::S16
+            | TypeExpr::S32
+            | TypeExpr::S64
+            | TypeExpr::F32
+            | TypeExpr::F64
+            | TypeExpr::String => Ok(true),
+            TypeExpr::List(element) => Ok(self.model.resolves_to_u8_in(context, element)),
+            TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(false),
+            TypeExpr::Named(name) => {
+                let resolved = self.resolve_type(context, name)?;
+                match &resolved.def.kind {
+                    TypeDefKind::Alias(target) => {
+                        self.resolves_to_scalar_or_bytes_in(resolved.dependency, target)
+                    }
+                    TypeDefKind::List(element) => {
+                        Ok(self.model.resolves_to_u8_in(resolved.dependency, element))
+                    }
+                    _ => Ok(false),
+                }
+            }
+        }
+    }
+
+    fn prost_field_accessor_kind(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<ident::ProstFieldAccessorKind> {
+        match ty {
+            TypeExpr::Bool
+            | TypeExpr::U8
+            | TypeExpr::U16
+            | TypeExpr::U32
+            | TypeExpr::U64
+            | TypeExpr::S8
+            | TypeExpr::S16
+            | TypeExpr::S32
+            | TypeExpr::S64
+            | TypeExpr::F32
+            | TypeExpr::F64
+            | TypeExpr::String => Ok(ident::ProstFieldAccessorKind::OptionalScalar),
+            TypeExpr::List(element) => {
+                if self.model.resolves_to_u8_in(context, element) {
+                    Ok(ident::ProstFieldAccessorKind::OptionalScalar)
+                } else if self.resolves_to_enum_in(context, element)? {
+                    Ok(ident::ProstFieldAccessorKind::RepeatedEnum)
+                } else {
+                    Ok(ident::ProstFieldAccessorKind::None)
+                }
+            }
+            TypeExpr::Option(payload) => {
+                if self.resolves_to_enum_in(context, payload)? {
+                    Ok(ident::ProstFieldAccessorKind::OptionalEnum)
+                } else if self.resolves_to_scalar_or_bytes_in(context, payload)? {
+                    Ok(ident::ProstFieldAccessorKind::OptionalScalar)
+                } else {
+                    Ok(ident::ProstFieldAccessorKind::None)
+                }
+            }
+            TypeExpr::Result(_) => Ok(ident::ProstFieldAccessorKind::None),
+            TypeExpr::Named(name) => {
+                let resolved = self.resolve_type(context, name)?;
+                match &resolved.def.kind {
+                    TypeDefKind::Alias(target) => {
+                        self.prost_field_accessor_kind(resolved.dependency, target)
+                    }
+                    TypeDefKind::Enum(_) => Ok(ident::ProstFieldAccessorKind::OptionalEnum),
+                    TypeDefKind::List(element) => {
+                        if self.model.resolves_to_u8_in(resolved.dependency, element) {
+                            Ok(ident::ProstFieldAccessorKind::OptionalScalar)
+                        } else if self.resolves_to_enum_in(resolved.dependency, element)? {
+                            Ok(ident::ProstFieldAccessorKind::RepeatedEnum)
+                        } else {
+                            Ok(ident::ProstFieldAccessorKind::None)
+                        }
+                    }
+                    TypeDefKind::Option(payload) => {
+                        if self.resolves_to_enum_in(resolved.dependency, payload)? {
+                            Ok(ident::ProstFieldAccessorKind::OptionalEnum)
+                        } else if self
+                            .resolves_to_scalar_or_bytes_in(resolved.dependency, payload)?
+                        {
+                            Ok(ident::ProstFieldAccessorKind::OptionalScalar)
+                        } else {
+                            Ok(ident::ProstFieldAccessorKind::None)
+                        }
+                    }
+                    TypeDefKind::Record(_)
+                    | TypeDefKind::Variant(_)
+                    | TypeDefKind::Flags(_)
+                    | TypeDefKind::Result(_) => Ok(ident::ProstFieldAccessorKind::None),
+                }
+            }
+        }
     }
 
     fn foreign_shape_kind(

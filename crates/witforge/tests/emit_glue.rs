@@ -1045,3 +1045,398 @@ interface api { record xr { a: u32 } }\n",
 
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn prost_keyword_escaping_accessor_collisions_and_keyword_dep_paths() {
+    let out = std::env::temp_dir().join(format!(
+        "witforge-glue-prost-keywords-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out);
+    let wit_root = out.join("wit");
+    let v01 = wit_root.join("v0.1");
+
+    // Every Rust 2015, 2018, 2021, and 2024 lowercase keyword (strict, reserved, and weak `union`),
+    // matching `prost-build` 0.14's escaping table plus plain Rust's `union`.
+    let rust_keywords = [
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod",
+        "move", "mut", "pub", "ref", "return", "self", "static", "struct", "super", "trait",
+        "true", "type", "unsafe", "use", "where", "while", "abstract", "become", "box", "do",
+        "final", "macro", "override", "priv", "try", "typeof", "union", "unsized", "virtual",
+        "yield",
+    ];
+    let wit_fields: Vec<String> = rust_keywords
+        .iter()
+        .map(|kw| format!("%{kw}: u32"))
+        .collect();
+    let (flag_kw_a, flag_kw_b) = rust_keywords.split_at(26);
+    let wit_flags_a: Vec<String> = flag_kw_a.iter().map(|kw| format!("%{kw}")).collect();
+    let wit_flags_b: Vec<String> = flag_kw_b.iter().map(|kw| format!("%{kw}")).collect();
+    let wit_params: Vec<String> = [
+        "extern", "self", "super", "crate", "gen", "type", "union", "async", "await", "try",
+    ]
+    .iter()
+    .map(|kw| format!("%{kw}: u32"))
+    .collect();
+
+    // Dependencies whose namespace or package segments are Rust keywords (raw, suffixed, and weak).
+    let keyword_deps = [
+        ("dep-gen", "example:gen", "gen-item"),
+        ("dep-extern", "example:extern", "extern-item"),
+        ("dep-type", "example:%type", "type-item"),
+        ("dep-self-super", "self:super", "self-item"),
+        ("dep-crate-union", "crate:union", "union-item"),
+    ];
+    for (dir, pkg, item) in &keyword_deps {
+        let dep_dir = v01.join("deps").join(dir);
+        fs::create_dir_all(&dep_dir).unwrap();
+        fs::write(
+            dep_dir.join("types.wit"),
+            format!(
+                "package {pkg}@0.1.0;\n\
+                 interface types {{\n\
+                   record {item} {{ extern: u32, %type: string, gen: bool, union: u32 }}\n\
+                 }}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let contract_wit = format!(
+        "package example:keywords@0.1.0;\n\n\
+interface types {{\n\
+  use example:gen/types@0.1.0.{{gen-item}};\n\
+  use example:extern/types@0.1.0.{{extern-item}};\n\
+  use example:%type/types@0.1.0.{{type-item}};\n\
+  use self:super/types@0.1.0.{{self-item}};\n\
+  use crate:union/types@0.1.0.{{union-item}};\n\
+  enum mode {{ a, b, SELF }}\n\
+  record inner {{ value: u32 }}\n\
+  record all-keywords {{ {fields} }}\n\
+  flags flag-keywords-a {{ {flags_a} }}\n\
+  flags flag-keywords-b {{ {flags_b} }}\n\
+  record dep-holder {{\n\
+    g: gen-item,\n\
+    e: extern-item,\n\
+    t: type-item,\n\
+    s: self-item,\n\
+    u: union-item,\n\
+  }}\n\
+  record ok-accessors {{\n\
+    mode: mode,\n\
+    set-mode: inner,\n\
+    modes: list<mode>,\n\
+    push-modes: list<u32>,\n\
+    extern: mode,\n\
+    set-extern: bool,\n\
+  }}\n\
+  flags flag-accessors {{ mode, set-mode }}\n\
+  call-keywords: func({params}) -> u32;\n\
+}}\n",
+        fields = wit_fields.join(", "),
+        flags_a = wit_flags_a.join(", "),
+        flags_b = wit_flags_b.join(", "),
+        params = wit_params.join(", "),
+    );
+    fs::write(v01.join("contract.wit"), contract_wit).unwrap();
+
+    let contract = load(&v01).unwrap();
+    let diags = witforge::subset::check_diagnostics(&contract);
+    assert!(diags.is_empty(), "unexpected subset diagnostics: {diags:?}");
+    let (_, lock) = setup_contract(&v01);
+    fs::write(v01.join("wire.lock"), lock.render()).unwrap();
+
+    rust::plan(&wit_root)
+        .unwrap()
+        .write(&out.join("plain"))
+        .unwrap();
+    glue::plan(&wit_root, "crate::plain", "crate::proto")
+        .unwrap()
+        .write(&out.join("glue"))
+        .unwrap();
+    proto::plan(&wit_root)
+        .unwrap()
+        .write(&out.join("proto-work"))
+        .unwrap();
+
+    // Compile all `.proto` files with `protox` + `prost-build` and let `prost-build` generate
+    // `proto/mod.rs` itself so every keyword package segment is proven against prost's own tree.
+    let proto_files = [
+        out.join("proto-work/v0.proto"),
+        out.join("proto-work/example.gen.v0.proto"),
+        out.join("proto-work/example.extern.v0.proto"),
+        out.join("proto-work/example.type.v0.proto"),
+        out.join("proto-work/self.super.v0.proto"),
+        out.join("proto-work/crate.union.v0.proto"),
+    ];
+    let descriptors = protox::compile(proto_files, [out.join("proto-work")]).unwrap();
+    let prost_out = out.join("proto");
+    fs::create_dir_all(&prost_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .include_file("mod.rs")
+        .compile_fds(descriptors)
+        .unwrap();
+
+    // Build field literals for `AllKeywords` and `AllFlagKeywords` using plain Rust escaping.
+    let plain_escape = |kw: &str| match kw {
+        "crate" | "self" | "super" | "Self" => format!("{kw}_"),
+        _ => format!("r#{kw}"),
+    };
+    let kw_struct_fields = rust_keywords
+        .iter()
+        .enumerate()
+        .map(|(i, kw)| format!("        {}: {},", plain_escape(kw), i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let kw_flag_fields_a = flag_kw_a
+        .iter()
+        .enumerate()
+        .map(|(i, kw)| format!("        {}: {},", plain_escape(kw), i % 2 == 0))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let kw_flag_fields_b = flag_kw_b
+        .iter()
+        .enumerate()
+        .map(|(i, kw)| format!("        {}: {},", plain_escape(kw), i % 2 == 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    fs::write(
+        out.join("main.rs"),
+        format!(
+            r#"
+mod glue;
+mod plain;
+mod proto;
+
+fn main() {{
+    use plain::v0_1::types;
+    use plain::witforge_deps::{{
+        crate_union::types::UnionItem,
+        example_extern::types::ExternItem,
+        example_gen::types::GenItem,
+        example_type::types::TypeItem,
+        self_super::types::SelfItem,
+    }};
+
+    let all_kw = types::AllKeywords {{
+{kw_struct_fields}    }};
+    let kw_proto = glue::v0::types::all_keywords::to_proto(&all_kw);
+    assert_eq!(kw_proto.extern_, Some(11));
+    assert_eq!(kw_proto.union, Some(49));
+    assert_eq!(kw_proto.r#gen, Some(15));
+    assert_eq!(kw_proto.self_, Some(28));
+    assert_eq!(glue::v0::types::all_keywords::from_proto(kw_proto).unwrap(), all_kw);
+
+    let flags_a = types::FlagKeywordsA {{
+{kw_flag_fields_a}    }};
+    let flags_a_proto = glue::v0::types::flag_keywords_a::to_proto(&flags_a);
+    assert_eq!(glue::v0::types::flag_keywords_a::from_proto(flags_a_proto).unwrap(), flags_a);
+
+    let flags_b = types::FlagKeywordsB {{
+{kw_flag_fields_b}    }};
+    let flags_b_proto = glue::v0::types::flag_keywords_b::to_proto(&flags_b);
+    assert_eq!(glue::v0::types::flag_keywords_b::from_proto(flags_b_proto).unwrap(), flags_b);
+
+    let holder = types::DepHolder {{
+        g: GenItem {{ r#extern: 1, r#type: "g".into(), r#gen: true, r#union: 2 }},
+        e: ExternItem {{ r#extern: 3, r#type: "e".into(), r#gen: false, r#union: 4 }},
+        t: TypeItem {{ r#extern: 5, r#type: "t".into(), r#gen: true, r#union: 6 }},
+        s: SelfItem {{ r#extern: 7, r#type: "s".into(), r#gen: false, r#union: 8 }},
+        u: UnionItem {{ r#extern: 9, r#type: "u".into(), r#gen: true, r#union: 10 }},
+    }};
+    let holder_proto = glue::v0::types::dep_holder::to_proto(&holder);
+    assert_eq!(glue::v0::types::dep_holder::from_proto(holder_proto).unwrap(), holder);
+
+    let ok_acc = types::OkAccessors {{
+        mode: types::Mode::Self_,
+        set_mode: types::Inner {{ value: 42 }},
+        modes: vec![types::Mode::A, types::Mode::B],
+        push_modes: vec![1, 2, 3],
+        r#extern: types::Mode::B,
+        set_extern: true,
+    }};
+    let ok_acc_proto = glue::v0::types::ok_accessors::to_proto(&ok_acc);
+    assert_eq!(glue::v0::types::ok_accessors::from_proto(ok_acc_proto).unwrap(), ok_acc);
+
+    let flag_acc = types::FlagAccessors {{ mode: true, set_mode: false }};
+    let flag_acc_proto = glue::v0::types::flag_accessors::to_proto(&flag_acc);
+    assert_eq!(glue::v0::types::flag_accessors::from_proto(flag_acc_proto).unwrap(), flag_acc);
+
+    let req = glue::v0::types::functions::call_keywords::to_request(
+        &1, &2, &3, &4, &5, &6, &7, &8, &9, &10,
+    );
+    assert_eq!(req.extern_, Some(1));
+    assert_eq!(req.self_, Some(2));
+    assert_eq!(req.super_, Some(3));
+    assert_eq!(req.crate_, Some(4));
+    assert_eq!(req.r#gen, Some(5));
+    assert_eq!(req.r#type, Some(6));
+    assert_eq!(req.union, Some(7));
+    assert_eq!(
+        glue::v0::types::functions::call_keywords::from_request(req).unwrap(),
+        (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    );
+}}
+"#
+        ),
+    )
+    .unwrap();
+
+    run_cargo_program(
+        &out,
+        "prost = \"0.14\"\n",
+        "prost keyword escaping and keyword dependency path glue compile/run",
+    );
+
+    // Every generated prost accessor collision class must be refused by `check` (WF1003), `proto`,
+    // and `glue`, naming both fields and the shared generated accessor.
+    let collision_cases: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "enum-set-bool",
+            "package example:acc1@0.1.0;\n\
+             interface types {\n\
+               enum mode { a, b }\n\
+               record cfg { mode: mode, set-mode: bool }\n\
+             }\n",
+            "mode",
+            "set-mode",
+            "set_mode",
+        ),
+        (
+            "opt-enum-set-str",
+            "package example:acc2@0.1.0;\n\
+             interface types {\n\
+               enum mode { a, b }\n\
+               record cfg { mode: option<mode>, set-mode: string }\n\
+             }\n",
+            "mode",
+            "set-mode",
+            "set_mode",
+        ),
+        (
+            "list-enum-push-bool",
+            "package example:acc3@0.1.0;\n\
+             interface types {\n\
+               enum mode { a, b }\n\
+               record cfg { modes: list<mode>, push-modes: bool }\n\
+             }\n",
+            "modes",
+            "push-modes",
+            "push_modes",
+        ),
+        (
+            "raw-kw-enum-set",
+            "package example:acc4@0.1.0;\n\
+             interface types {\n\
+               enum mode { a, b }\n\
+               record cfg { %type: mode, set-type: list<u8> }\n\
+             }\n",
+            "type",
+            "set-type",
+            "set_type",
+        ),
+        (
+            "alias-enum-and-bytes",
+            "package example:acc5@0.1.0;\n\
+             interface types {\n\
+               enum mode { a, b }\n\
+               type mode-alias = mode;\n\
+               type byte = u8;\n\
+               type blob = list<byte>;\n\
+               record cfg { mode: mode-alias, set-mode: blob }\n\
+             }\n",
+            "mode",
+            "set-mode",
+            "set_mode",
+        ),
+        (
+            "func-param-enum-set",
+            "package example:acc6@0.1.0;\n\
+             interface api {\n\
+               enum mode { a, b }\n\
+               apply: func(mode: mode, set-mode: bool);\n\
+             }\n",
+            "mode",
+            "set-mode",
+            "set_mode",
+        ),
+        (
+            "func-param-list-enum-push",
+            "package example:acc7@0.1.0;\n\
+             interface api {\n\
+               enum mode { a, b }\n\
+               apply: func(modes: list<mode>, push-modes: u32);\n\
+             }\n",
+            "modes",
+            "push-modes",
+            "push_modes",
+        ),
+    ];
+
+    for (name, wit, first_field, second_field, accessor) in collision_cases {
+        let case_root = out.join(format!("clash-{name}"));
+        let case_v01 = case_root.join("v0.1");
+        fs::create_dir_all(&case_v01).unwrap();
+        fs::write(case_v01.join("contract.wit"), wit).unwrap();
+        let c = load(&case_v01).unwrap();
+        let diagnostics = witforge::subset::check_diagnostics(&c);
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == "WF1003"
+                    && d.message.contains(first_field)
+                    && d.message.contains(second_field)
+                    && d.message.contains(accessor)
+            }),
+            "{name}: expected WF1003 naming `{first_field}`, `{second_field}`, `{accessor}`, got {diagnostics:?}"
+        );
+        let proto_err = proto::plan(&case_root).unwrap_err();
+        assert!(
+            witforge::is_contract_error(&proto_err) && format!("{proto_err:#}").contains(accessor),
+            "{name}: unexpected proto error: {proto_err:#}"
+        );
+        let glue_err = glue::plan(&case_root, "crate::plain", "crate::proto").unwrap_err();
+        assert!(
+            witforge::is_contract_error(&glue_err) && format!("{glue_err:#}").contains(accessor),
+            "{name}: unexpected glue error: {glue_err:#}"
+        );
+    }
+
+    // Accessor collision inside a dependency package is also refused by `check`.
+    let dep_clash_root = out.join("clash-dep-acc");
+    let dep_clash_v01 = dep_clash_root.join("v0.1");
+    fs::create_dir_all(dep_clash_v01.join("deps/bad")).unwrap();
+    fs::write(
+        dep_clash_v01.join("deps/bad/types.wit"),
+        "package example:baddep@0.1.0;\n\
+         interface types {\n\
+           enum mode { a, b }\n\
+           record cfg { mode: mode, set-mode: bool }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        dep_clash_v01.join("contract.wit"),
+        "package example:usesbad@0.1.0;\n\
+         interface types {\n\
+           use example:baddep/types@0.1.0.{cfg};\n\
+           record holder { c: cfg }\n\
+         }\n",
+    )
+    .unwrap();
+    let dep_diags = witforge::subset::check_diagnostics(&load(&dep_clash_v01).unwrap());
+    assert!(
+        dep_diags.iter().any(|d| {
+            d.code == "WF1003"
+                && d.message.contains("mode")
+                && d.message.contains("set-mode")
+                && d.message.contains("set_mode")
+        }),
+        "expected dependency WF1003 for set_mode, got {dep_diags:?}"
+    );
+
+    fs::remove_dir_all(&out).unwrap();
+}

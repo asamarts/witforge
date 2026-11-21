@@ -40,6 +40,13 @@ have it.
   or `non_camel_case_types` warnings (for example `URL` -> `url`, `HTTP-api` -> `http_api` /
   `HttpApi`, `foo-BAR` -> `foo_bar` / `FooBar`, `HTTP` -> `Http`, `interface API` -> `mod api`
   and `trait Api`), and `--serde` JSON keys follow those plain Rust spellings when regenerated.
+- Glue now matches `prost-build` 0.14's exact keyword escaping table for prost fields, flags,
+  function parameters, and proto package module segments (including `extern` -> `extern_`,
+  `union` -> `union`, Edition 2024 `gen` -> `r#gen`, and keyword dependency package segments such
+  as `example:gen` and `self:super`), and `check` (`WF1003`), `proto`, and `glue` refuse records
+  and functions whose fields collide on a `prost-derive` 0.14 generated accessor (such as
+  `mode: my-enum` beside `set-mode: bool` sharing `set_mode`, or `modes: list<my-enum>` beside
+  `push-modes: bool` sharing `push_modes`).
 - `glue` now requires absolute module paths for `--plain-root` and `--proto-root` (and the
   matching `witforge.toml` keys): `crate`, `crate::...`, `::crate_name::...`, or an external
   crate name (`other::...`). Relative paths starting with `self` or `super`, and unprefixed

@@ -341,6 +341,43 @@ pub(crate) fn prost_package_segment(wit_segment: &str) -> String {
     prost_to_snake(&proto_package_segment(wit_segment))
 }
 
+/// The kind of `prost` field emitted for a protobuf field, used to compute the exact inherent
+/// accessor methods `prost-derive` 0.14 (`field/scalar.rs`) generates on the struct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProstFieldAccessorKind {
+    /// No inherent accessor methods (`Field::Message`, `Field::Oneof`, plain proto3 `bool` in
+    /// `flags`, or `repeated` non-enum).
+    None,
+    /// Proto3 `optional` scalar, `string`, or `bytes`: generates `pub fn <ident>(&self)`.
+    OptionalScalar,
+    /// Proto3 `optional` enum (required or optional WIT enum): generates `pub fn <ident>(&self)`
+    /// and `pub fn set_<ident_without_r#>(&mut self, ...)`.
+    OptionalEnum,
+    /// Proto3 `repeated` enum (`list<enum>`): generates `pub fn <ident>(&self)` and
+    /// `pub fn push_<ident_without_r#>(&mut self, ...)`.
+    RepeatedEnum,
+}
+
+/// Return the inherent accessor method names `prost-derive` 0.14 (`field/scalar.rs`) generates for
+/// a message field whose `.proto` name is `proto_field` and whose field kind is `kind`.
+pub(crate) fn prost_field_accessors(
+    proto_field: &str,
+    kind: ProstFieldAccessorKind,
+) -> Vec<String> {
+    let ident = prost_field_ident(proto_field);
+    let raw_stripped = ident.strip_prefix("r#").unwrap_or(&ident);
+    match kind {
+        ProstFieldAccessorKind::None => Vec::new(),
+        ProstFieldAccessorKind::OptionalScalar => vec![ident],
+        ProstFieldAccessorKind::OptionalEnum => {
+            vec![ident.clone(), format!("set_{raw_stripped}")]
+        }
+        ProstFieldAccessorKind::RepeatedEnum => {
+            vec![ident.clone(), format!("push_{raw_stripped}")]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +452,32 @@ mod tests {
         assert_eq!(prost_sanitize_ident("gen"), "r#gen");
         assert_eq!(prost_sanitize_ident("union"), "union");
         assert_eq!(plain_ident("union", "field").unwrap(), "r#union");
+
+        // prost-derive 0.14 inherent accessors
+        assert!(prost_field_accessors("msg", ProstFieldAccessorKind::None).is_empty());
+        assert_eq!(
+            prost_field_accessors("set_mode", ProstFieldAccessorKind::OptionalScalar),
+            vec!["set_mode"]
+        );
+        assert_eq!(
+            prost_field_accessors("mode", ProstFieldAccessorKind::OptionalEnum),
+            vec!["mode", "set_mode"]
+        );
+        assert_eq!(
+            prost_field_accessors("type", ProstFieldAccessorKind::OptionalEnum),
+            vec!["r#type", "set_type"]
+        );
+        assert_eq!(
+            prost_field_accessors("extern", ProstFieldAccessorKind::OptionalEnum),
+            vec!["extern_", "set_extern_"]
+        );
+        assert_eq!(
+            prost_field_accessors("modes", ProstFieldAccessorKind::RepeatedEnum),
+            vec!["modes", "push_modes"]
+        );
+        assert_eq!(
+            prost_field_accessors("type", ProstFieldAccessorKind::RepeatedEnum),
+            vec!["r#type", "push_type"]
+        );
     }
 }

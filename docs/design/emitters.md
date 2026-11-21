@@ -202,8 +202,27 @@ final, macro, override, priv, try, typeof, union, unsized, virtual, yield
 ```
 
 Raw identifiers are used for every name in that table except `crate`, `self`, `super`, and
-`Self`, which use a trailing underscore. `_` is not a legal WIT name and is refused. The table
-is tested against the compiler with a compile test so a new Rust edition keyword is not missed.
+`Self`, which use a trailing underscore. A trailing underscore cannot collide with another WIT
+name because WIT identifiers cannot contain underscores. `_` is not a legal WIT name and is
+refused. The table is tested against the compiler with a compile test so a new Rust edition
+keyword is not missed.
+
+`prost-build` 0.14 uses its own escaping table for protobuf fields, oneofs, and package module
+segments: every 2015, 2018, and 2024 Rust keyword (including `gen`) becomes a raw identifier
+(`r#...`), except `_`, `super`, `self`, `Self`, `extern`, and `crate`, which receive a trailing
+underscore (`extern_`, `self_`, `super_`, `crate_`), while `union` is left unescaped. Glue
+applies `prost-build`'s table to prost fields, flags, request parameters, and proto package
+module segments (such as `example:gen` -> `example::r#gen`, `example:extern` ->
+`example::extern_`, `self:super` -> `self_::super_`) and translates between plain Rust and prost
+spellings where they differ (`r#extern` <-> `extern_`, `r#union` <-> `union`).
+
+`prost-derive` 0.14 also generates inherent accessor methods on message structs for scalar and
+enum fields (`<field>` for proto3 `optional` scalars/strings/bytes/enums, `set_<field>` for
+`optional` enums, and `<field>` + `push_<field>` for `repeated` enums, stripping a leading `r#`
+before adding `set_`/`push_`). When two fields of one record or two parameters of one function
+would generate the same prost accessor (for example `mode: my-enum` beside `set-mode: bool`, or
+`modes: list<my-enum>` beside `push-modes: bool`), `check` (`WF1003`), `proto`, and `glue` refuse
+the contract, naming both fields and the shared accessor.
 
 ### 3.3 Derives
 
