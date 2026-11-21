@@ -395,11 +395,23 @@ fn resolve_paths(
 /// Exit codes: `0` success; `1` a contract, lockfile, or generated-output violation; `2` a
 /// usage, I/O, parse, released-directory, or internal error.
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let code = u8::try_from(err.exit_code()).unwrap_or(2);
+            if err.use_stderr() {
+                diagnostics::write_stderr_str(&err.to_string());
+            } else if let Err(write_err) = diagnostics::write_stdout_str(&err.to_string()) {
+                diagnostics::write_stderr_line(&format!("witforge: {write_err:#}"));
+                return ExitCode::from(2);
+            }
+            return ExitCode::from(code);
+        }
+    };
     match run(cli) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("witforge: {err:#}");
+            diagnostics::write_stderr_line(&format!("witforge: {err:#}"));
             ExitCode::from(if is_contract_error(&err) { 1 } else { 2 })
         }
     }
@@ -658,8 +670,8 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         }
         return Ok(ExitCode::from(1));
     }
-    report_lock_notes(&report, reporter);
     lock.write_atomic(&lock_path)?;
+    report_lock_notes(&report, reporter);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -827,13 +839,11 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
     if options.json {
         // `--json` is the diff report; it takes precedence over the diagnostic envelope.
         reporter.suppress();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&diff_json(&analysis))
-                .context("failed to render the diff as JSON")?
-        );
+        let rendered = serde_json::to_string_pretty(&diff_json(&analysis))
+            .context("failed to render the diff as JSON")?;
+        reporter.write_stdout_line(&rendered);
     } else if reporter.human() {
-        println!("{}", render_diff(report));
+        reporter.write_stdout_line(&render_diff(report));
     } else {
         for change in &report.changes {
             let (code, severity) = if change.is_breaking() {
@@ -897,10 +907,10 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
     }
     if options.check && report.summary.breaking > 0 {
         if reporter.human() {
-            eprintln!(
+            diagnostics::write_stderr_line(&format!(
                 "diff: {} breaking change(s); --check failed",
                 report.summary.breaking
-            );
+            ));
         }
         return Ok(ExitCode::from(1));
     }

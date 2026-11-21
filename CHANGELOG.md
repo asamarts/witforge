@@ -57,6 +57,10 @@ have it.
 
 ### Fixed
 
+- `witforge lock` now writes `wire.lock` atomically before reporting its changes, and CLI stdout
+  and stderr writes no longer panic when piped to a reader that exits early (`head`, `grep -q`)
+  or redirected to a full device: a closed stdout pipe preserves the command's exit status, while
+  a non-pipe stdout write error (such as `/dev/full`) exits `2` after any file write completes.
 - Subset validation now reports every dependency package under `deps/` (referenced or not) whose
   version is missing or not `<major>.<minor>.0` as a subset diagnostic (`WF1001`, exit `1`) naming
   the package, version, and `deps/` entry instead of failing `model::build` with exit `2`. Named

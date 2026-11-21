@@ -2632,3 +2632,284 @@ fn a_draft_removal_of_a_released_member_can_be_restored() {
     );
     fs::remove_dir_all(&root).unwrap();
 }
+
+fn closed_pipe_writer() -> std::process::Stdio {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    std::process::Stdio::from(writer)
+}
+
+fn write_large_contract(dir: &Path, version: &str, count: usize) {
+    use std::fmt::Write as _;
+    fs::create_dir_all(dir).unwrap();
+    let mut source = format!("package ex:pipe@{version};\ninterface api {{\n  record big {{\n");
+    for index in 0..count {
+        let _ = writeln!(source, "    field{index}: option<u32>,");
+    }
+    source.push_str("  }\n}\n");
+    fs::write(dir.join("contract.wit"), source).unwrap();
+}
+
+#[test]
+fn lock_writes_before_reporting_and_survives_closed_stdout_and_stderr() {
+    use std::io::Read as _;
+    let root = std::env::temp_dir().join(format!("witforge-cli-pipe-lock-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let v01 = root.join("v0.1");
+    write_large_contract(&v01, "0.1.0", 400);
+
+    // Reader leaves immediately (`head -0`).
+    let output = witforge()
+        .args(["lock", v01.to_str().unwrap(), "--first"])
+        .stdout(closed_pipe_writer())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(v01.join("wire.lock").is_file());
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("panicked"),
+        "{output:?}"
+    );
+
+    // Reader takes a few bytes and leaves early (`head -1` on 400-member output).
+    fs::remove_file(v01.join("wire.lock")).unwrap();
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    let child = witforge()
+        .args(["lock", v01.to_str().unwrap(), "--first"])
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut sample = [0u8; 16];
+    let _ = reader.read(&mut sample);
+    drop(reader);
+    let early = child.wait_with_output().unwrap();
+    assert_eq!(early.status.code(), Some(0), "{early:?}");
+    let v01_lock = fs::read_to_string(v01.join("wire.lock")).unwrap();
+    assert!(v01_lock.contains("ex:pipe/api/big.field399 = 400 field option<u32>"));
+
+    // `--against`, default `lock`, and JSON/SARIF modes all write before printing.
+    let v02 = root.join("v0.2");
+    write_large_contract(&v02, "0.2.0", 405);
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    let against = witforge()
+        .args([
+            "lock",
+            v02.to_str().unwrap(),
+            "--against",
+            v01.join("wire.lock").to_str().unwrap(),
+        ])
+        .stdout(closed_pipe_writer())
+        .output()
+        .unwrap();
+    assert_eq!(against.status.code(), Some(0), "{against:?}");
+    assert!(
+        fs::read_to_string(v02.join("wire.lock"))
+            .unwrap()
+            .contains("ex:pipe/api/big.field404 = 405 field option<u32>")
+    );
+
+    write_large_contract(&v02, "0.2.0", 406);
+    for extra in [
+        &[][..],
+        &["--format", "json"][..],
+        &["--format", "sarif"][..],
+    ] {
+        let mut cmd = witforge();
+        cmd.args(["lock", v02.to_str().unwrap()]).args(extra);
+        let res = cmd
+            .stdout(closed_pipe_writer())
+            .stderr(closed_pipe_writer())
+            .status()
+            .unwrap();
+        assert_eq!(res.code(), Some(0), "{extra:?}: {res:?}");
+    }
+    assert!(
+        fs::read_to_string(v02.join("wire.lock"))
+            .unwrap()
+            .contains("ex:pipe/api/big.field405 = 406 field option<u32>")
+    );
+
+    // `check` preserves exit 0 and exit 1 even when both stdout and stderr are closed.
+    let ok = witforge()
+        .args(["check", v01.to_str().unwrap()])
+        .stdout(closed_pipe_writer())
+        .stderr(closed_pipe_writer())
+        .status()
+        .unwrap();
+    assert_eq!(ok.code(), Some(0));
+    write_large_contract(&v02, "0.2.0", 407);
+    let drift = witforge()
+        .args(["check", v02.to_str().unwrap()])
+        .stdout(closed_pipe_writer())
+        .stderr(closed_pipe_writer())
+        .status()
+        .unwrap();
+    assert_eq!(drift.code(), Some(1));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_and_generators_handle_closed_stdout_without_panicking() {
+    let base = versions("pipe-diff-gen");
+    let wit = base.join("wit");
+    let v01 = wit.join("v0.1");
+    let v02 = wit.join("v0.2");
+
+    // Human, `--json`, `--format json`, and `--format sarif` diff with closed stdout.
+    for extra in [
+        &[][..],
+        &["--json"][..],
+        &["--format", "json"][..],
+        &["--format", "sarif"][..],
+    ] {
+        let out = witforge()
+            .args(["diff", v01.to_str().unwrap(), v02.to_str().unwrap()])
+            .args(extra)
+            .stdout(closed_pipe_writer())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{extra:?}: {out:?}");
+        assert!(
+            !String::from_utf8_lossy(&out.stderr).contains("panicked"),
+            "{extra:?}: {out:?}"
+        );
+    }
+
+    // `diff --check` preserves exit 1 on breaking changes with closed stdout and stderr.
+    let breaking = witforge()
+        .args([
+            "diff",
+            v01.to_str().unwrap(),
+            v02.to_str().unwrap(),
+            "--check",
+        ])
+        .stdout(closed_pipe_writer())
+        .stderr(closed_pipe_writer())
+        .status()
+        .unwrap();
+    assert_eq!(breaking.code(), Some(1));
+
+    // Generator with JSON/SARIF into closed stdout writes its files and exits 0.
+    let gen_out = base.join("rust-out");
+    for fmt in ["json", "sarif"] {
+        let res = witforge()
+            .args([
+                "rust",
+                wit.to_str().unwrap(),
+                "--out",
+                gen_out.to_str().unwrap(),
+                "--format",
+                fmt,
+            ])
+            .stdout(closed_pipe_writer())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(res.status.code(), Some(0), "{fmt}: {res:?}");
+        assert!(gen_out.join("mod.rs").is_file());
+    }
+
+    // `--help` into a closed pipe does not panic.
+    let help = witforge()
+        .arg("--help")
+        .stdout(closed_pipe_writer())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(help.status.code(), Some(0), "{help:?}");
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn full_stdout_device_writes_outputs_and_exits_two() {
+    let dev_full = || {
+        fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap()
+    };
+    let root = std::env::temp_dir().join(format!("witforge-cli-dev-full-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let wit = root.join("wit");
+    let v01 = wit.join("v0.1");
+    let v02 = wit.join("v0.2");
+    write_large_contract(&v01, "0.1.0", 6);
+    write_large_contract(&v02, "0.2.0", 7);
+
+    // `lock --first > /dev/full`: writes `wire.lock`, reports to stderr, exits 2 without panic.
+    let lock_first = witforge()
+        .args(["lock", v01.to_str().unwrap(), "--first"])
+        .stdout(dev_full())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(lock_first.status.code(), Some(2), "{lock_first:?}");
+    assert!(v01.join("wire.lock").is_file());
+    let stderr = String::from_utf8_lossy(&lock_first.stderr);
+    assert!(stderr.contains("stdout"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+
+    // `lock --against > /dev/full` with closed stderr also writes `wire.lock` and exits 2.
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    let lock_against = witforge()
+        .args([
+            "lock",
+            v02.to_str().unwrap(),
+            "--against",
+            v01.join("wire.lock").to_str().unwrap(),
+        ])
+        .stdout(dev_full())
+        .stderr(closed_pipe_writer())
+        .status()
+        .unwrap();
+    assert_eq!(lock_against.code(), Some(2));
+    assert!(
+        fs::read_to_string(v02.join("wire.lock"))
+            .unwrap()
+            .contains("ex:pipe/api/big.field6 = 7 field option<u32>")
+    );
+
+    // `diff` (human, `--json`, `--format json`, `--format sarif`) to `/dev/full`: exits 2.
+    for extra in [
+        &[][..],
+        &["--json"][..],
+        &["--format", "json"][..],
+        &["--format", "sarif"][..],
+    ] {
+        let diff_out = witforge()
+            .args(["diff", v01.to_str().unwrap(), v02.to_str().unwrap()])
+            .args(extra)
+            .stdout(dev_full())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(diff_out.status.code(), Some(2), "{extra:?}: {diff_out:?}");
+        assert!(
+            !String::from_utf8_lossy(&diff_out.stderr).is_empty(),
+            "{extra:?}"
+        );
+    }
+
+    // Generator (`rust --format json > /dev/full`): writes files first, then exits 2.
+    let gen_out = root.join("rust-out");
+    let gen_res = witforge()
+        .args([
+            "rust",
+            wit.to_str().unwrap(),
+            "--out",
+            gen_out.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .stdout(dev_full())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(gen_res.status.code(), Some(2), "{gen_res:?}");
+    assert!(gen_out.join("mod.rs").is_file());
+    fs::remove_dir_all(&root).unwrap();
+}

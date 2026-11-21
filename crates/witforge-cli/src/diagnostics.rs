@@ -1,12 +1,40 @@
 //! CLI diagnostic rendering and collection.
 
 use std::collections::BTreeSet;
+use std::io::{self, Write};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::ValueEnum;
 use serde_json::{Value, json};
 
 use witforge::diagnostic::{Diagnostic, Severity};
+
+/// Write `text` to stdout and flush, ignoring a closed pipe and returning any other I/O error.
+pub(crate) fn write_stdout_str(text: &str) -> Result<bool> {
+    let mut stdout = io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+        Err(err) => Err(anyhow!("failed to write to stdout: {err}")),
+    }
+}
+
+/// Write `text` to stderr without panicking if stderr is closed or unwritable.
+pub(crate) fn write_stderr_str(text: &str) {
+    let mut stderr = io::stderr().lock();
+    let _ = stderr.write_all(text.as_bytes());
+    let _ = stderr.flush();
+}
+
+/// Write one line to stderr without panicking if stderr is closed or unwritable.
+pub(crate) fn write_stderr_line(line: &str) {
+    let mut stderr = io::stderr().lock();
+    let _ = writeln!(stderr, "{line}");
+    let _ = stderr.flush();
+}
 
 /// The diagnostic output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -23,6 +51,8 @@ pub(crate) struct Reporter {
     format: Format,
     diagnostics: Vec<Diagnostic>,
     suppressed: bool,
+    stdout_closed: bool,
+    stdout_error: Option<io::Error>,
 }
 
 impl Reporter {
@@ -31,6 +61,8 @@ impl Reporter {
             format,
             diagnostics: Vec::new(),
             suppressed: false,
+            stdout_closed: false,
+            stdout_error: None,
         }
     }
 
@@ -42,9 +74,23 @@ impl Reporter {
         self.suppressed = true;
     }
 
+    pub(crate) fn write_stdout_line(&mut self, line: &str) {
+        if self.stdout_closed || self.stdout_error.is_some() {
+            return;
+        }
+        let mut stdout = io::stdout().lock();
+        if let Err(err) = writeln!(stdout, "{line}") {
+            if err.kind() == io::ErrorKind::BrokenPipe {
+                self.stdout_closed = true;
+            } else {
+                self.stdout_error = Some(err);
+            }
+        }
+    }
+
     pub(crate) fn push(&mut self, diagnostic: Diagnostic) {
         if self.human() {
-            eprintln!("error: {}", diagnostic.message);
+            write_stderr_line(&format!("error: {}", diagnostic.message));
         } else {
             self.diagnostics.push(diagnostic);
         }
@@ -71,7 +117,7 @@ impl Reporter {
     ) {
         let location = location.into();
         if self.human() {
-            eprintln!("error: {location}: {}", message.into());
+            write_stderr_line(&format!("error: {location}: {}", message.into()));
         } else {
             self.diagnostics
                 .push(Diagnostic::error(code, message).with_path(location));
@@ -86,28 +132,38 @@ impl Reporter {
         path: String,
     ) {
         if self.human() {
-            println!("{human}");
+            self.write_stdout_line(human);
         } else {
             self.diagnostics
                 .push(Diagnostic::new(code, Severity::Note, message).with_path(path));
         }
     }
 
-    pub(crate) fn finish(&self) -> Result<()> {
-        if self.suppressed || self.human() {
-            return Ok(());
-        }
-        match self.format {
-            Format::Human => Ok(()),
-            Format::Json => {
-                println!("{}", diagnostic_json(&self.diagnostics)?);
-                Ok(())
-            }
-            Format::Sarif => {
-                println!("{}", sarif_json(&self.diagnostics)?);
-                Ok(())
+    pub(crate) fn finish(&mut self) -> Result<()> {
+        if !self.suppressed && !self.human() {
+            let rendered = match self.format {
+                Format::Human => None,
+                Format::Json => Some(diagnostic_json(&self.diagnostics)?),
+                Format::Sarif => Some(sarif_json(&self.diagnostics)?),
+            };
+            if let Some(text) = rendered {
+                self.write_stdout_line(&text);
             }
         }
+        if !self.stdout_closed && self.stdout_error.is_none() {
+            let mut stdout = io::stdout().lock();
+            if let Err(err) = stdout.flush() {
+                if err.kind() == io::ErrorKind::BrokenPipe {
+                    self.stdout_closed = true;
+                } else {
+                    self.stdout_error = Some(err);
+                }
+            }
+        }
+        if let Some(err) = self.stdout_error.take() {
+            return Err(anyhow!("failed to write to stdout: {err}"));
+        }
+        Ok(())
     }
 }
 
