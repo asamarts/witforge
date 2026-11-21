@@ -261,3 +261,80 @@ serde = true
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn config_refuses_coinciding_nested_or_symlinked_output_roots() {
+    let root = project("overlapping-outs");
+
+    let cases = [
+        (
+            "equal-in-one-project",
+            "version = 1\n[project.demo]\nroot = \"wit\"\n[project.demo.rust]\nout = \"generated/shared\"\n[project.demo.proto]\nout = \"generated/shared\"\n",
+            &["rust", "--config"][..],
+        ),
+        (
+            "nested-in-one-project",
+            "version = 1\n[project.demo]\nroot = \"wit\"\n[project.demo.rust]\nout = \"generated\"\n[project.demo.proto]\nout = \"generated/proto\"\n",
+            &["proto", "--config"][..],
+        ),
+        (
+            "shared-across-two-projects",
+            "version = 1\n[project.v1]\nroot = \"wit\"\n[project.v1.rust]\nout = \"generated/rust\"\n[project.v2]\nroot = \"wit\"\n[project.v2.rust]\nout = \"generated/rust\"\n",
+            &["rust", "--project", "v1", "--config"][..],
+        ),
+    ];
+
+    for (label, text, args) in cases {
+        let config = write_config(&root, text);
+        let output = witforge()
+            .current_dir(&root)
+            .args(args)
+            .arg(&config)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{label}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("overlap"),
+            "{label}: {output:?}"
+        );
+    }
+
+    // CLI `--out` override colliding with another configured emitter is also refused.
+    let override_cfg = write_config(
+        &root,
+        "version = 1\n[project.demo]\nroot = \"wit\"\n[project.demo.rust]\nout = \"generated/rust\"\n[project.demo.proto]\nout = \"generated/proto\"\n",
+    );
+    let override_err = witforge()
+        .current_dir(&root)
+        .args(["rust", "--config"])
+        .arg(&override_cfg)
+        .args(["--out", "generated/proto"])
+        .output()
+        .unwrap();
+    assert_eq!(override_err.status.code(), Some(2), "{override_err:?}");
+
+    #[cfg(unix)]
+    {
+        fs::create_dir_all(root.join("generated/real")).unwrap();
+        std::os::unix::fs::symlink(root.join("generated/real"), root.join("generated/alias"))
+            .unwrap();
+        let sym_cfg = write_config(
+            &root,
+            "version = 1\n[project.demo]\nroot = \"wit\"\n[project.demo.rust]\nout = \"generated/real\"\n[project.demo.proto]\nout = \"generated/alias\"\n",
+        );
+        let sym_err = witforge()
+            .current_dir(&root)
+            .args(["rust", "--config"])
+            .arg(&sym_cfg)
+            .output()
+            .unwrap();
+        assert_eq!(sym_err.status.code(), Some(2), "{sym_err:?}");
+        assert!(
+            String::from_utf8_lossy(&sym_err.stderr).contains("overlap"),
+            "{sym_err:?}"
+        );
+    }
+
+    assert!(!root.join("generated/shared").exists());
+    fs::remove_dir_all(&root).unwrap();
+}

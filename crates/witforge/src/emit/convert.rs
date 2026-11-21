@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result, bail};
 
 use crate::emit::defaults::default_expr;
-use crate::emit::rust::{HEADER, version_module_name};
+use crate::emit::rust::{header_for, version_module_name};
 use crate::emit::versions::Version;
 use crate::emit::{
     TypeRenderStyle, pascal_case, render_type, rust_ident, snake_case, type_kind_name,
@@ -41,7 +41,7 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
         .model
         .package;
     let mut out = String::new();
-    writeln!(out, "{HEADER}")?;
+    writeln!(out, "{}", header_for(&package.namespace, &package.name))?;
     writeln!(out, "// source: {}:{}", package.namespace, package.name)?;
     writeln!(out)?;
     write_error(&mut out)?;

@@ -355,6 +355,7 @@ fn resolve_paths(
             base.join(path)
         }
     };
+    validate_configured_outputs(&config, &name, emitter, out.as_deref(), &from_config)?;
     let root = root.unwrap_or_else(|| from_config(&project.root));
     let out = out.or_else(|| match emitter {
         Emitter::Rust => project.rust.as_ref().map(|config| from_config(&config.out)),
@@ -390,6 +391,61 @@ fn resolve_paths(
         proto_root,
         serde,
     })
+}
+
+fn validate_configured_outputs(
+    config: &ConfigFile,
+    selected_project: &str,
+    selected_emitter: Emitter,
+    out_override: Option<&Path>,
+    from_config: &impl Fn(&Path) -> PathBuf,
+) -> Result<()> {
+    let mut configured: Vec<(String, PathBuf)> = Vec::new();
+    let mut saw_selected = false;
+    for (proj_name, proj) in &config.project {
+        for (kind, slot, path) in [
+            (
+                Emitter::Rust,
+                "rust",
+                proj.rust.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Proto,
+                "proto",
+                proj.proto.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Schema,
+                "schema",
+                proj.schema.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Glue,
+                "glue",
+                proj.glue.as_ref().map(|c| c.out.as_path()),
+            ),
+        ] {
+            let is_selected = proj_name == selected_project
+                && std::mem::discriminant(&kind) == std::mem::discriminant(&selected_emitter);
+            if is_selected && let Some(override_out) = out_override {
+                configured.push(("--out".to_string(), override_out.to_path_buf()));
+                saw_selected = true;
+            } else if let Some(out_path) = path {
+                configured.push((
+                    format!("project.{proj_name}.{slot}.out"),
+                    from_config(out_path),
+                ));
+            }
+        }
+    }
+    if !saw_selected && let Some(override_out) = out_override {
+        configured.push(("--out".to_string(), override_out.to_path_buf()));
+    }
+    let refs: Vec<(&str, &Path)> = configured
+        .iter()
+        .map(|(label, path)| (label.as_str(), path.as_path()))
+        .collect();
+    emit::output::ensure_distinct_output_roots(&refs)
 }
 
 /// Exit codes: `0` success; `1` a contract, lockfile, or generated-output violation; `2` a
