@@ -7,8 +7,6 @@ package example.ingest.v0;
 
 message Empty {}
 
-// Shared ingestion values.
-
 // One item submitted to the ingester.
 message TypesItem {
   // Stable item id.
@@ -43,11 +41,11 @@ message TypesEvent {
   }
 }
 
-// The ingestion interface.
-
+// Shared ingestion values.
 enum TypesMethod {
   TYPES_METHOD_UNSPECIFIED = 0;
 }
+
 // Submit one item and receive the resulting event.
 message IngestSubmitRequest {
   TypesItem item = 1;
@@ -57,6 +55,7 @@ message IngestSubmitResponse {
   TypesEvent result = 1;
 }
 
+// The ingestion interface.
 enum IngestMethod {
   INGEST_METHOD_UNSPECIFIED = 0;
   INGEST_METHOD_SUBMIT = 1;

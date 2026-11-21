@@ -14,6 +14,10 @@ pub struct World {
 /// World metadata for `v0_1`.
 pub mod v0_1 {
     /// The worlds of 0.1.0.
+    ///
+    /// World `ingestion`:
+    ///
+    /// A world that imports shared values and exports the ingester.
     pub const WORLDS: &[super::World] = &[
         super::World { name: "ingestion", imports: &["types"], exports: &["ingest"] },
     ];

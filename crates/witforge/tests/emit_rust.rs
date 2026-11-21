@@ -757,3 +757,323 @@ fn generation_leaves_previous_output_when_a_write_fails() {
     assert_eq!(temporaries, 0);
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn hostile_wit_doc_comments_pass_cargo_doc_and_doctests() {
+    use witforge::emit::{glue, proto};
+    use witforge::lock::{LockMode, WireLock};
+
+    let base = std::env::temp_dir().join(format!("witforge-hostile-docs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let v01 = wit_root.join("v0.1");
+    let dep_dir = v01.join("deps/shared");
+    fs::create_dir_all(&dep_dir).unwrap();
+
+    let long_line = "L".repeat(160);
+
+    // Dependency package with package, interface, type, field, case, and function docs containing
+    // hostile Markdown, block comments, bare URLs, HTML-like tags, and broken link syntax.
+    let dep_wit = "/**\n\
+         \x20* Dependency package docs with list<string>, [tags], and https://example.com/dep.\n\
+         \x20*\n\
+         \x20*     fn dep_doctest_must_not_run() { compile_error!(\"boom\"); }\n\
+         \x20*/\n\
+         package example:shared@0.1.0;\n\
+         \n\
+         /// Dependency interface docs with option<T>, [a][b], and <br>.\n\
+         /// /leading-slash\n\
+         /// !leading-bang\n\
+         interface common {\n\
+             /**\n\
+              \x20* Dependency record with block asterisks.\n\
+              \x20*\n\
+              \x20* ```rust\n\
+              \x20* compile_error!(\"dep fenced rust\");\n\
+              \x20* ```\n\
+              \x20*/\n\
+             record token {\n\
+                 /// Field with bare URL http://example.org/token(1). and real [link](https://example.com/ok).\n\
+                 raw: string,\n\
+             }\n\
+             /// Dependency function with trailing backslash \\\n\
+             /// and unbalanced `backtick.\n\
+             check-token: func(t: token) -> bool;\n\
+         }\n";
+    fs::write(dep_dir.join("shared.wit"), dep_wit).unwrap();
+
+    // Root package exercising every hostile doc construct from W10-066.
+    // Includes CRLF, bare CR, vertical tab, form feed, U+0085, U+2028, and U+2029.
+    let root_wit = format!(
+        "/// Package header with list<string>, [tags], and https://example.com/pkg\r\n\
+         /// Real link [witforge docs](https://example.com/docs) stays a link.\n\
+         /// Autolink <https://example.com/auto> stays valid.\n\
+         /// {long_line}\n\
+         package example:hostile@0.1.0;\n\
+         \n\
+         /// Interface types docs with option<T>, <br>, [a][b], and bare URL https://example.com/if.\n\
+         ///\n\
+         ///     let indented_four = compile_error!(\"four spaces\");\n\
+         ///\n\
+         ///\tlet indented_tab = compile_error!(\"tab\");\n\
+         interface types {{\n\
+             use example:shared/common@0.1.0.{{token}};\n\
+         \n\
+             /// Record with fenced blocks:\n\
+             /// ```\n\
+             /// compile_error!(\"unlabelled fence\");\n\
+             /// ```\n\
+             /// ```rust\n\
+             /// compile_error!(\"rust fence\");\n\
+             /// ```\n\
+             /// ~~~rust\n\
+             /// compile_error!(\"tilde fence\");\n\
+             /// ~~~\n\
+             /// >     compile_error!(\"blockquote indented\");\n\
+             /// > ```rust\n\
+             /// > compile_error!(\"blockquote fenced\");\n\
+             /// > ```\n\
+             /// ```rust\n\
+             /// compile_error!(\"unclosed fence\");\n\
+             record payload {{\n\
+                 /// Field with unbalanced `backtick and trailing \\\n\
+                 /// /slash\n\
+                 /// //double\n\
+                 /// !bang\n\
+                 /// //!inner\n\
+                 /// Line separators: before\u{2028}ls\u{2029}ps.\n\
+                 /// Bare CR:\rstill same comment.\n\
+                 name: string,\n\
+                 /// Wrapped dependency token: `https://example.com/code` and \\[escaped] and \\\\[tags].\n\
+                 tok: token,\n\
+             }}\n\
+         \n\
+             /** Inline block comment with list<u8> and [ref]. */\n\
+             enum status {{\n\
+                 /// Case with <script>alert(1)</script> and [foo](NotARealItem).\n\
+                 ok,\n\
+                 /// Case with ``` inside indented block:\n\
+                 ///\n\
+                 ///     ```rust\n\
+                 ///     compile_error!(\"nested ticks\");\n\
+                 ///     ```\n\
+                 fail,\n\
+             }}\n\
+         \n\
+             /** First-line block comment\n * Second line with [x][y] and option<string>.\n */\n\
+             variant event {{\n\
+                 /// Variant case with list<payload>.\n\
+                 data(payload),\n\
+                 /// Payload-less case with bare https://example.com/empty.\n\
+                 empty,\n\
+             }}\n\
+         \n\
+             /// Flags doc with <T>.\n\
+             flags opts {{\n\
+                 /// Flag doc with [flag].\n\
+                 verbose,\n\
+             }}\n\
+         }}\n\
+         \n\
+         /// Service interface comment with list<string> and [service].\n\
+         interface api {{\n\
+             use types.{{payload, event}};\n\
+         \n\
+             /// Function doc with indented doctest:\n\
+             ///\n\
+             ///     assert_eq!(1, 2);\n\
+             ///\n\
+             /// And real [spec](https://example.com/spec).\n\
+             submit: func(item: payload) -> event;\n\
+         }}\n\
+         \n\
+         /// World doc with list<string>, [world], https://example.com/world, and:\n\
+         ///\n\
+         ///     compile_error!(\"world doctest\");\n\
+         world app {{\n\
+             import example:shared/common@0.1.0;\n\
+             export api;\n\
+         }}\n"
+    );
+    fs::write(v01.join("contract.wit"), root_wit).unwrap();
+
+    let contract = load(&v01).unwrap();
+    let mut model = model::build(&contract).unwrap();
+    let members = model.members().unwrap();
+    let mut lock = WireLock::default();
+    lock.reconcile_with(&members, LockMode::First).unwrap();
+    fs::write(v01.join("wire.lock"), lock.render()).unwrap();
+
+    // Also verify NUL and bare CR directly in a Model cannot leak into Rust, proto, or glue.
+    model.package.docs =
+        "pkg\0nul\rcr\u{000B}vt\u{000C}ff\u{0085}nel\u{2028}ls\u{2029}ps".to_string();
+    let direct_rust = rust::emit_version(&model).unwrap();
+    let direct_proto = proto::emit_major(&model, &lock).unwrap();
+    let direct_glue = glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap();
+    for (label, text) in [
+        ("rust", &direct_rust),
+        ("proto", &direct_proto),
+        ("glue", &direct_glue),
+    ] {
+        for bad in [
+            '\0', '\r', '\u{000B}', '\u{000C}', '\u{0085}', '\u{2028}', '\u{2029}',
+        ] {
+            assert!(
+                !text.contains(bad),
+                "{label} output contained unnormalised control character {bad:?}"
+            );
+        }
+        assert!(text.contains("pkgnul"), "{label} dropped text around NUL");
+    }
+
+    // Generate plain Rust, proto, prost, and glue into a scratch library crate and run BOTH
+    // `cargo test --doc` and `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps`.
+    let crate_dir = base.join("crate");
+    let src = crate_dir.join("src");
+    let plain_dir = src.join("plain");
+    let proto_dir = base.join("proto");
+    let prost_dir = src.join("proto");
+    let glue_dir = src.join("glue");
+    fs::create_dir_all(&src).unwrap();
+    fs::create_dir_all(&prost_dir).unwrap();
+
+    rust::generate(&wit_root, &plain_dir).unwrap();
+    proto::generate(&wit_root, &proto_dir).unwrap();
+    glue::generate(&wit_root, &glue_dir, "crate::plain", "crate::proto").unwrap();
+
+    // Check key invariants directly on the emitted Rust files.
+    let v01_rs = fs::read_to_string(plain_dir.join("v0_1.rs")).unwrap();
+    assert!(
+        v01_rs.contains(
+            "//! Package header with list\\<string\\>, \\[tags\\], and <https://example.com/pkg>"
+        ),
+        "{v01_rs}"
+    );
+    assert!(
+        v01_rs.contains("//! Real link [witforge docs](https://example.com/docs) stays a link."),
+        "{v01_rs}"
+    );
+    assert!(
+        v01_rs.contains(&format!("//! {long_line}\n")),
+        "long line was re-wrapped:\n{v01_rs}"
+    );
+    assert!(v01_rs.contains("/// /slash"), "{v01_rs}");
+    assert!(v01_rs.contains("/// !bang"), "{v01_rs}");
+    assert!(
+        !v01_rs.contains("////"),
+        "comment turned into ////:\n{v01_rs}"
+    );
+    assert!(!v01_rs.contains('\r'), "bare CR leaked into Rust");
+
+    let deps_rs = fs::read_to_string(plain_dir.join("witforge_deps.rs")).unwrap();
+    assert!(
+        deps_rs.contains("/// Dependency package docs with list\\<string\\>"),
+        "{deps_rs}"
+    );
+    assert!(
+        deps_rs.contains("/// Dependency interface docs with option\\<T\\>"),
+        "{deps_rs}"
+    );
+    assert!(
+        deps_rs.contains("/// Dependency record with block asterisks."),
+        "{deps_rs}"
+    );
+
+    let worlds_rs = fs::read_to_string(plain_dir.join("worlds.rs")).unwrap();
+    assert!(
+        worlds_rs.contains("/// World `app`:"),
+        "world doc missing from worlds.rs:\n{worlds_rs}"
+    );
+    assert!(
+        worlds_rs.contains(
+            "/// World doc with list\\<string\\>, \\[world\\], <https://example.com/world>"
+        ),
+        "{worlds_rs}"
+    );
+
+    // Compile the generated .proto files with protox + prost-build so prost-generated rustdoc
+    // comments are also checked by `cargo test --doc` and `cargo doc -D warnings`.
+    let proto_paths: Vec<PathBuf> = fs::read_dir(&proto_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "proto"))
+        .collect();
+    let descriptors = protox::compile(proto_paths, [&proto_dir]).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_dir)
+        .compile_fds(descriptors)
+        .unwrap();
+    fs::write(
+        prost_dir.join("mod.rs"),
+        "pub mod example {\n\
+            pub mod hostile {\n\
+                pub mod v0 { include!(\"example.hostile.v0.rs\"); }\n\
+            }\n\
+            pub mod shared {\n\
+                pub mod v0 { include!(\"example.shared.v0.rs\"); }\n\
+            }\n\
+        }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("lib.rs"),
+        "pub mod plain;\npub mod proto;\npub mod glue;\n",
+    )
+    .unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"witforge-hostile-docs-test\"\n\
+         version = \"0.0.0\"\n\
+         edition = \"2024\"\n\
+         rust-version = \"1.88\"\n\
+         publish = false\n\
+         \n\
+         [dependencies]\n\
+         prost = \"0.14\"\n\
+         \n\
+         [workspace]\n\
+         resolver = \"3\"\n",
+    )
+    .unwrap();
+
+    let target = base.join("cargo-target");
+    let doc_test = Command::new(env!("CARGO"))
+        .args(["test", "--doc", "--offline", "--manifest-path"])
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        doc_test.status.success(),
+        "cargo test --doc failed on hostile comments:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&doc_test.stdout),
+        String::from_utf8_lossy(&doc_test.stderr)
+    );
+    let doc_stdout = String::from_utf8_lossy(&doc_test.stdout);
+    assert!(
+        doc_stdout.contains("0 passed; 0 failed"),
+        "expected zero doctests to execute, got:\n{doc_stdout}"
+    );
+
+    let doc_build = Command::new(env!("CARGO"))
+        .args(["doc", "--no-deps", "--offline", "--manifest-path"])
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env("RUSTDOCFLAGS", "-D warnings")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        doc_build.status.success(),
+        "cargo doc -D warnings failed on hostile comments:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&doc_build.stdout),
+        String::from_utf8_lossy(&doc_build.stderr)
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

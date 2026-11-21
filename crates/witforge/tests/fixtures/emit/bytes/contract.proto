@@ -3,6 +3,7 @@
 
 syntax = "proto3";
 
+// Byte lists spelled through aliases, named lists, and nesting.
 package example.byte_lists.v0;
 
 message Empty {}
@@ -40,6 +41,7 @@ message TypesAll {
   TypesChoice choice = 11;
   WitforgeResultOfListOfU8AndString outcome = 12;
 }
+
 // A parameter and a result using byte lists.
 message TypesGetRequest {
   optional bytes input = 1;
@@ -48,6 +50,7 @@ message TypesGetRequest {
 message TypesGetResponse {
   optional bytes result = 1;
 }
+
 // A nested parameter and result.
 message TypesNestedRequest {
   repeated bytes input = 1;

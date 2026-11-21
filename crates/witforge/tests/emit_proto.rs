@@ -938,3 +938,67 @@ interface a {\n\
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn interface_and_package_docs_attach_to_the_right_proto_declarations() {
+    let dir =
+        std::env::temp_dir().join(format!("witforge-proto-doc-attach-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "/// Package doc with list<string> and <https://example.com>.\n\
+         package example:doc-attach@0.1.0;\n\
+         \n\
+         /// Types interface doc.\n\
+         interface types {\n\
+           /// Item doc.\n\
+           record item { id: u32 }\n\
+         }\n\
+         \n\
+         /// Service interface doc.\n\
+         interface service {\n\
+           use types.{item};\n\
+           /// Submit doc.\n\
+           submit: func(item: item) -> item;\n\
+         }\n",
+    )
+    .unwrap();
+    let mut model = model::build(&load(&dir).unwrap()).unwrap();
+    model.interfaces[0].docs = "Types interface\0doc.\rSecond\u{000B}third\u{000C}fourth\u{0085}fifth\u{2028}sixth\u{2029}seventh".to_string();
+    let schema = proto::emit_major(&model, &lock_for(&model)).unwrap();
+
+    // Package docs sit directly above the `package` statement, with autolinks unwrapped for
+    // prost-build's URL sanitizer.
+    assert!(
+        schema.contains(
+            "// Package doc with list\\<string\\> and https://example.com.\npackage example.doc_attach.v0;\n"
+        ),
+        "{schema}"
+    );
+    // Each interface's doc comment sits directly above its `<Interface>Method` enum, never above
+    // another interface's types or method enum.
+    assert!(
+        schema.contains(
+            "// Types interfacedoc.\n// Second\n// third\n// fourth\n// fifth\n// sixth\n// seventh\nenum TypesMethod {\n"
+        ),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("// Submit doc.\nmessage ServiceSubmitRequest {\n"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("// Service interface doc.\nenum ServiceMethod {\n"),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("message Empty {}\n\n// Item doc.\nmessage TypesItem {"),
+        "interface comment leaked before TypesItem:\n{schema}"
+    );
+
+    let proto_path = dir.join("v0.proto");
+    fs::write(&proto_path, &schema).unwrap();
+    compile_proto(&proto_path);
+    fs::remove_dir_all(&dir).unwrap();
+}

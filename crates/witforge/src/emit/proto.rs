@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::ContractError;
+use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
@@ -212,10 +213,6 @@ impl<'a> Emitter<'a> {
         writeln!(body, "message {EMPTY} {{}}")?;
 
         for interface in &self.model.interfaces {
-            if !interface.docs.is_empty() {
-                writeln!(body)?;
-                write_docs(&mut body, 0, &interface.docs)?;
-            }
             for def in &interface.types {
                 self.emit_type(&mut body, &interface.name, def)?;
             }
@@ -249,6 +246,7 @@ impl<'a> Emitter<'a> {
         writeln!(out)?;
         writeln!(out, "syntax = \"proto3\";")?;
         writeln!(out)?;
+        write_docs(&mut out, 0, &self.model.package.docs)?;
         writeln!(out, "package {};", self.package)?;
         writeln!(out)?;
         for import in &self.used_imports {
@@ -581,6 +579,7 @@ impl<'a> Emitter<'a> {
         function: &Function,
     ) -> Result<()> {
         let request_name = self.function_name(interface, function, "Request")?;
+        writeln!(out)?;
         write_docs(out, 0, &function.docs)?;
         writeln!(out, "message {request_name} {{")?;
         let mut field_names = BTreeSet::new();
@@ -654,6 +653,9 @@ impl<'a> Emitter<'a> {
         let zero_value = ident::proto_method_enum_zero_value(interface);
         let prefix = ident::proto_upper_snake(&ident::proto_pascal(interface));
         writeln!(out)?;
+        if let Some(interface_def) = self.model.interface(interface) {
+            write_docs(out, 0, &interface_def.docs)?;
+        }
         writeln!(out, "enum {name} {{")?;
         self.register_enum_value(&zero_value)?;
         let mut prost_variants = BTreeMap::new();
@@ -2259,19 +2261,7 @@ const PROTO_KEYWORDS: &[&str] = &[
 ];
 
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
-    if docs.is_empty() {
-        return Ok(());
-    }
-    let prefix = " ".repeat(indent);
-    for line in docs.lines() {
-        let trimmed = line.trim_end();
-        if trimmed.is_empty() {
-            writeln!(out, "{prefix}//")?;
-        } else {
-            writeln!(out, "{prefix}// {trimmed}")?;
-        }
-    }
-    Ok(())
+    docs::write_proto(out, indent, docs)
 }
 
 #[cfg(test)]

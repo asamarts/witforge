@@ -125,6 +125,13 @@ fn emit_version_with_header(model: &Model, header: &str) -> Result<String> {
             model.package.namespace, model.package.name, model.package.version
         ))
     )?;
+    if !model.package.docs.is_empty() {
+        writeln!(
+            out,
+            "  \"description\": {},",
+            json_string(&model.package.docs)
+        )?;
+    }
     writeln!(out, "  \"definitions\": {{")?;
     let mut definitions = Vec::new();
     for interface in &model.interfaces {
@@ -366,7 +373,7 @@ fn json_string(value: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{08}' => out.push_str("\\b"),
             '\u{0c}' => out.push_str("\\f"),
-            ch if ch < '\u{20}' => {
+            ch if ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}') => {
                 let _ = write!(out, "\\u{:04x}", u32::from(ch));
             }
             ch => out.push(ch),

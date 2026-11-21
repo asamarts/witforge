@@ -3,11 +3,10 @@
 
 syntax = "proto3";
 
+// Protobuf mapping coverage.
 package example.mapping.v2;
 
 message Empty {}
-
-// Every mapping row, named structural type, and wrapper shape.
 
 // Every primitive.
 message TypesPrimitives {
@@ -228,21 +227,17 @@ message TypesRepeated {
   repeated WitforgeOptionOfTypesSmall options = 4;
 }
 
-// A service exercising request, response, and method ids.
-
-// A keyword-escaped interface and function.
-
 // A keyword-escaped record.
 message TypeWhere {
   // A keyword-escaped field.
   optional uint32 self = 1;
 }
 
-// An interface proving aliases resolve to their defining types.
-
+// Every mapping row, named structural type, and wrapper shape.
 enum TypesMethod {
   TYPES_METHOD_UNSPECIFIED = 0;
 }
+
 // A function with every parameter shape and a result.
 message ServiceCallRequest {
   TypesSmall value = 1;
@@ -256,6 +251,7 @@ message ServiceCallRequest {
 message ServiceCallResponse {
   WitforgeResultOfListOfTypesSmallAndString result = 1;
 }
+
 // A function with no result.
 message ServiceNoResultRequest {
   optional bool value = 1;
@@ -263,6 +259,7 @@ message ServiceNoResultRequest {
 
 message ServiceNoResultResponse {
 }
+
 // A function with no parameters.
 message ServicePingRequest {
 }
@@ -271,12 +268,14 @@ message ServicePingResponse {
   optional string result = 1;
 }
 
+// A service exercising request, response, and method ids.
 enum ServiceMethod {
   SERVICE_METHOD_UNSPECIFIED = 0;
   SERVICE_METHOD_CALL = 1;
   SERVICE_METHOD_NO_RESULT = 2;
   SERVICE_METHOD_PING = 3;
 }
+
 // A keyword-escaped function.
 message TypeFuncRequest {
   optional uint32 self = 1;
@@ -286,10 +285,12 @@ message TypeFuncResponse {
   TypeWhere result = 1;
 }
 
+// A keyword-escaped interface and function.
 enum TypeMethod {
   TYPE_METHOD_UNSPECIFIED = 0;
   TYPE_METHOD_FUNC = 1;
 }
+
 // A function using interface-local aliases.
 message AliasCallRequest {
   TypesSmall value = 1;
@@ -300,6 +301,7 @@ message AliasCallResponse {
   TypesSmall result = 1;
 }
 
+// An interface proving aliases resolve to their defining types.
 enum AliasMethod {
   ALIAS_METHOD_UNSPECIFIED = 0;
   ALIAS_METHOD_CALL = 1;

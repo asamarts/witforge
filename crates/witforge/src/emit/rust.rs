@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::ContractError;
+use crate::emit::docs;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::emit::{pascal_case, rust_ident, snake_case};
@@ -205,6 +206,9 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
         )?;
     }
     writeln!(out)?;
+    if docs::write_rust_inner(&mut out, &model.package.docs)? {
+        writeln!(out)?;
+    }
 
     let mut modules = BTreeMap::new();
     let mut traits = BTreeMap::new();
@@ -318,10 +322,12 @@ fn emit_dependency_bindings(
                 dependency.package.name
             );
         }
+        write_docs(&mut out, 0, &dependency.package.docs)?;
         writeln!(out, "pub mod {module} {{")?;
         for interface in &dependency.interfaces {
             let interface_module =
                 rust_ident(&snake_case(&interface.name), "dependency interface module")?;
+            write_docs(&mut out, 4, &interface.docs)?;
             writeln!(out, "    pub mod {interface_module} {{")?;
             let mut body = String::new();
             emit_interface(
@@ -684,6 +690,21 @@ fn emit_worlds(versions: &[Version]) -> Result<String> {
             "    /// The worlds of {}.",
             version.model.package.version
         )?;
+        for world in &version.model.worlds {
+            let world_lines = docs::sanitize_rust_lines(&world.docs);
+            if !world_lines.is_empty() {
+                writeln!(out, "    ///")?;
+                writeln!(out, "    /// World `{}`:", world.name)?;
+                writeln!(out, "    ///")?;
+                for line in world_lines {
+                    if line.is_empty() {
+                        writeln!(out, "    ///")?;
+                    } else {
+                        writeln!(out, "    /// {line}")?;
+                    }
+                }
+            }
+        }
         writeln!(out, "    pub const WORLDS: &[super::World] = &[")?;
         for world in &version.model.worlds {
             let imports = world
@@ -711,19 +732,7 @@ fn emit_worlds(versions: &[Version]) -> Result<String> {
 }
 
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
-    if docs.is_empty() {
-        return Ok(());
-    }
-    let prefix = " ".repeat(indent);
-    for line in docs.lines() {
-        let trimmed = line.trim_end();
-        if trimmed.is_empty() {
-            writeln!(out, "{prefix}///")?;
-        } else {
-            writeln!(out, "{prefix}/// {trimmed}")?;
-        }
-    }
-    Ok(())
+    docs::write_rust_outer(out, indent, docs)
 }
 
 fn insert_name(

@@ -9,6 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
@@ -228,6 +229,7 @@ fn emit_dependency_glue(
         lock.reconcile(&members)?;
         let emitter = Emitter::new_dependency(&model, &lock, plain_root, proto_root, dependency)?;
         let body = emitter.emit_body()?;
+        write_docs(&mut out, 0, &dependency.package.docs)?;
         writeln!(out, "pub mod {module} {{")?;
         for line in body.lines() {
             if line.is_empty() {
@@ -607,6 +609,9 @@ impl<'a> Emitter<'a> {
             self.model.package.namespace, self.model.package.name, self.model.package.version
         )?;
         writeln!(out)?;
+        if docs::write_rust_inner(&mut out, &self.model.package.docs)? {
+            writeln!(out)?;
+        }
         out.push_str(&self.emit_body()?);
         if !out.ends_with('\n') {
             out.push('\n');
@@ -1682,19 +1687,7 @@ enum Identity {
 }
 
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
-    if docs.is_empty() {
-        return Ok(());
-    }
-    let prefix = " ".repeat(indent);
-    for line in docs.lines() {
-        let trimmed = line.trim_end();
-        if trimmed.is_empty() {
-            writeln!(out, "{prefix}///")?;
-        } else {
-            writeln!(out, "{prefix}/// {trimmed}")?;
-        }
-    }
-    Ok(())
+    docs::write_rust_outer(out, indent, docs)
 }
 
 impl Emitter<'_> {

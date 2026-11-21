@@ -50,9 +50,51 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
 - Formatting is produced by the emitter, not by running `rustfmt` or `protoc`. Rust uses four
   spaces; proto uses two; JSON uses two-space indentation and compact nested schemas. Output must
   be valid and compile/parse without a formatting pass.
-- Docs from WIT `///` comments are carried to Rust `///` and proto `//` comments. Empty docs are
-  omitted. `@unstable` and `@since` are metadata in the current 0.x line: they are carried in the model but do
-  not change generated code. Docs and stability are not wire identity and may change.
+- Docs from WIT `///` and `/** ... */` comments are normalised and escaped before emission rather
+  than wrapped in a whole-comment code fence, so prose keeps its Markdown formatting while
+  generated code cannot start a doctest or fail `rustdoc -D warnings`:
+  - Line endings and Unicode line/paragraph separators (`\r\n`, bare `\r`, vertical tab `U+000B`,
+    form feed `U+000C`, `U+0085`, `U+2028`, `U+2029`) are normalised to LF; NUL and other C0/C1
+    control characters (except `\n` and `\t`) are stripped; trailing whitespace is trimmed and empty
+    doc lines carry no trailing space; long lines are never re-wrapped.
+  - Decorative leading `*` gutters left over from WIT `/** ... */` block comments are stripped
+    without disturbing Markdown bullet lists.
+  - Every code block—fenced with backticks or tildes (labelled or unlabelled) or indented by four
+    or more columns (spaces or tabs, including inside blockquotes)—is emitted as a closed fenced
+    block marked `text` so rustdoc never compiles it as a doctest; unclosed fences are closed.
+  - Outside fenced code blocks and balanced inline code spans, `<` and `>` are escaped as `\<` and
+    `\>` (preserving `<http(s)://...>` autolinks in Rust and unwrapping them in protobuf so
+    `prost-build`'s URL wrapper does not double-wrap them), non-external `[...]` links (`[tags]`,
+    `[a][b]`, intra-doc targets) are escaped as `\[` and `\]` while real external `[text](url)`
+    links (`http://`, `https://`, `mailto:`) keep working, bare `http://`/`https://` URLs are
+    wrapped in `<...>` in Rust (and kept bare in protobuf for `prost-build`), unbalanced backticks
+    are escaped as `` \` ``, and a lone trailing `\` on a line is escaped as `\\`.
+  - Every non-empty emitted comment line places a single space after `///`, `//!`, or `//`, so a
+    line starting with `/` or `!` cannot turn a doc comment into another comment kind.
+  - JSON Schema `description` fields preserve the comment text and escape all JSON control
+    characters (`U+0000`–`U+001F`, `U+007F`, `U+0080`–`U+009F`) plus `U+2028` and `U+2029`.
+  - Where each WIT comment attaches:
+    - **Package**: inner `//!` doc comment at the top of Rust `v<major>_<minor>.rs` and glue
+      `v<major>.rs`, outer `///` doc comment on `pub mod <dep>` in `witforge_deps.rs`, `//`
+      comment immediately above `package ...;` in `.proto`, and top-level `"description"` in JSON
+      Schema.
+    - **Interface**: `///` on `pub mod <interface>` in Rust (including `witforge_deps.rs`) and
+      glue; `//` immediately above `enum <Interface>Method` in `.proto` (the declaration that
+      represents the interface in protobuf).
+    - **Type**: `///` on the Rust `struct`/`enum`/`type`, `///` on the glue `pub mod <type>`,
+      `//` on the protobuf `message`/`enum` (records, variants, enums, flags, named results), and
+      `"description"` on the JSON Schema definition.
+    - **Field / flag / variant case / enum case**: `///` on the Rust member and `//` on the
+      protobuf field or enum value.
+    - **Function**: `///` on the Rust trait method, `///` on the glue `functions::<fn>` module,
+      and `//` on the protobuf `<Interface><Fn>Request` message. (WIT syntax does not attach
+      documentation comments to function parameters.)
+    - **World**: `///` entries on `pub const WORLDS` in `worlds.rs`.
+    - **Dependency items**: follow the same rules in `witforge_deps.rs`, dependency `.proto`, and
+      dependency `.schema.json`.
+  Empty docs are omitted. `@unstable` and `@since` are metadata in the current 0.x line: they are
+  carried in the model but do not change generated code. Docs and stability are not wire identity
+  and may change.
 - `use` aliases and `type a = b` aliases are emitted as Rust type aliases in the interface that
   names them. Neither creates a protobuf type or a lockfile member; canonical types and proto
   references resolve through the alias to the defining type.

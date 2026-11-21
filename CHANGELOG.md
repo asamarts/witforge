@@ -30,6 +30,16 @@ have it.
 
 ### Changed
 
+- WIT documentation comments (`///` and `/** ... */`) are now normalised and escaped for rustdoc
+  and protobuf before emission: control characters and Unicode line separators (`\r`, NUL, VT, FF,
+  `U+0085`, `U+2028`, `U+2029`) are normalised (and escaped in JSON Schema `description`),
+  indented and fenced code blocks become closed `text` fences so they never run as Rust doctests,
+  HTML-like `<...>` and non-external `[...]` links are escaped while real `[text](url)` links keep
+  working, bare URLs are wrapped in `<...>` in Rust, and package, world, and dependency-interface
+  comments are now carried to generated output. In `.proto` output, interface comments now attach
+  directly above `enum <Interface>Method` instead of floating above the next declaration.
+  **Migration:** generated files whose WIT sources carry package, world, dependency-interface,
+  interface, or Markdown-special comments change once when regenerated.
 - Plain Rust, protobuf, and glue now derive all identifiers from one shared conversion module
   that reproduces `prost-build` 0.14's default naming (case conversion, `strip_enum_prefix`,
   oneof module names, and method enum zero values) directly from the stable `.proto` names.

@@ -7,8 +7,6 @@ package example.tasks.v0;
 
 message Empty {}
 
-// Shared task values.
-
 // One task.
 message TypesTask {
   // Stable task id.
@@ -23,11 +21,11 @@ message TypesTask {
   repeated string tags = 5;
 }
 
-// Task operations.
-
+// Shared task values.
 enum TypesMethod {
   TYPES_METHOD_UNSPECIFIED = 0;
 }
+
 // Create a task with the given title.
 message ServiceCreateRequest {
   optional string title = 1;
@@ -37,6 +35,7 @@ message ServiceCreateResponse {
   TypesTask result = 1;
 }
 
+// Task operations.
 enum ServiceMethod {
   SERVICE_METHOD_UNSPECIFIED = 0;
   SERVICE_METHOD_CREATE = 1;

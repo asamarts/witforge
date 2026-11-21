@@ -3,11 +3,10 @@
 
 syntax = "proto3";
 
+// Reserved-member coverage.
 package example.reserved_proto.v0;
 
 message Empty {}
-
-// Types with reserved descendants.
 
 // A record with a reserved field.
 message TypesKept {
@@ -44,11 +43,11 @@ message TypesChoice {
   reserved "old";
 }
 
-// A service with a reserved method and parameter.
-
+// Types with reserved descendants.
 enum TypesMethod {
   TYPES_METHOD_UNSPECIFIED = 0;
 }
+
 // A live function.
 message ServiceCallRequest {
   optional string live = 1;
@@ -60,6 +59,7 @@ message ServiceCallResponse {
   optional string result = 1;
 }
 
+// A service with a reserved method and parameter.
 enum ServiceMethod {
   SERVICE_METHOD_UNSPECIFIED = 0;
   SERVICE_METHOD_CALL = 1;

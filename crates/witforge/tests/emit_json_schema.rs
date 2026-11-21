@@ -265,3 +265,26 @@ fn a_trailing_space_or_crlf_is_not_canonical() {
     );
     fs::remove_dir_all(out.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn description_escapes_all_control_characters_and_line_separators() {
+    let mut model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
+    let hostile =
+        "line1\r\nline2\rline3\0nul\u{000B}vt\u{000C}ff\u{007F}del\u{0085}nel\u{2028}ls\u{2029}ps";
+    model.package.docs = hostile.to_string();
+    model.interfaces[0].types[0].docs = hostile.to_string();
+
+    let rendered = json_schema::emit_version(&model).unwrap();
+    for bad in [
+        '\0', '\r', '\u{000B}', '\u{000C}', '\u{007F}', '\u{0085}', '\u{2028}', '\u{2029}',
+    ] {
+        assert!(
+            !rendered.contains(bad),
+            "raw JSON Schema contained unescaped control character {bad:?}"
+        );
+    }
+    let parsed: Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(parsed["description"], hostile);
+    assert_eq!(parsed["definitions"]["types/span"]["description"], hostile);
+    jsonschema::validator_for(&parsed).unwrap();
+}

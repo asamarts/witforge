@@ -14,6 +14,10 @@ pub struct World {
 /// World metadata for `v0_1`.
 pub mod v0_1 {
     /// The worlds of 0.1.0.
+    ///
+    /// World `task-service`:
+    ///
+    /// The task service world.
     pub const WORLDS: &[super::World] = &[
         super::World { name: "task-service", imports: &["types"], exports: &["service"] },
     ];
@@ -22,6 +26,10 @@ pub mod v0_1 {
 /// World metadata for `v0_2`.
 pub mod v0_2 {
     /// The worlds of 0.2.0.
+    ///
+    /// World `task-service`:
+    ///
+    /// The task service world.
     pub const WORLDS: &[super::World] = &[
         super::World { name: "task-service", imports: &["types"], exports: &["service"] },
     ];
