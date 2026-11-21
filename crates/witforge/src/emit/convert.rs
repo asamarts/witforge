@@ -61,6 +61,23 @@ fn write_error(out: &mut String) -> Result<()> {
         out,
         "/// A version-to-version conversion that cannot reconstruct the target value."
     )?;
+    writeln!(out, "///")?;
+    writeln!(
+        out,
+        "/// `#[non_exhaustive]` prevents exhaustive matching in crates downstream of the crate"
+    )?;
+    writeln!(
+        out,
+        "/// that includes this generated module. Inside the including crate itself it has no"
+    )?;
+    writeln!(
+        out,
+        "/// effect, so a `match` on `ConversionError` there should include a wildcard arm and"
+    )?;
+    writeln!(
+        out,
+        "/// struct patterns should include `..` to stay compatible with future generator releases."
+    )?;
     writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq)]")?;
     writeln!(out, "#[non_exhaustive]")?;
     writeln!(out, "pub enum ConversionError {{")?;
@@ -69,6 +86,16 @@ fn write_error(out: &mut String) -> Result<()> {
         "    /// The target version requires a member that the source version does not have."
     )?;
     writeln!(out, "    MissingMember {{")?;
+    writeln!(
+        out,
+        "        /// The source contract version, such as `0.2.0`."
+    )?;
+    writeln!(out, "        from: &'static str,")?;
+    writeln!(
+        out,
+        "        /// The target contract version, such as `0.1.0`."
+    )?;
+    writeln!(out, "        to: &'static str,")?;
     writeln!(
         out,
         "        /// The canonical WIT member path, such as `types/user.name`."
@@ -80,6 +107,16 @@ fn write_error(out: &mut String) -> Result<()> {
         "    /// The source value has a case that the target version does not have."
     )?;
     writeln!(out, "    UnknownCase {{")?;
+    writeln!(
+        out,
+        "        /// The source contract version, such as `0.2.0`."
+    )?;
+    writeln!(out, "        from: &'static str,")?;
+    writeln!(
+        out,
+        "        /// The target contract version, such as `0.1.0`."
+    )?;
+    writeln!(out, "        to: &'static str,")?;
     writeln!(
         out,
         "        /// The canonical WIT type path, such as `types/event`."
@@ -98,11 +135,11 @@ fn write_error(out: &mut String) -> Result<()> {
     writeln!(out, "        match self {{")?;
     writeln!(
         out,
-        "            Self::MissingMember {{ path }} => write!(formatter, \"cannot reconstruct `{{path}}` from the source version\"),"
+        "            Self::MissingMember {{ from, to, path }} => write!(formatter, \"conversion {{from}} -> {{to}}: cannot reconstruct `{{path}}` from the source version\"),"
     )?;
     writeln!(
         out,
-        "            Self::UnknownCase {{ path, case }} => write!(formatter, \"`{{path}}` case `{{case}}` does not exist in the target version\"),"
+        "            Self::UnknownCase {{ from, to, path, case }} => write!(formatter, \"conversion {{from}} -> {{to}}: `{{path}}` case `{{case}}` does not exist in the target version\"),"
     )?;
     writeln!(out, "        }}")?;
     writeln!(out, "    }}")?;
@@ -121,28 +158,44 @@ fn emit_pair(
 ) -> Result<()> {
     let source_module = version_module_name(&source.model);
     let target_module = version_module_name(&target.model);
+    let mut shared_interfaces = Vec::new();
+    for source_interface in &source.model.interfaces {
+        let Some(target_interface) = target.model.interface(&source_interface.name) else {
+            continue;
+        };
+        let functions = shared_functions(source, target, source_interface, target_interface)?;
+        if !functions.is_empty() {
+            shared_interfaces.push((source_interface, target_interface, functions));
+        }
+    }
+
     writeln!(
         out,
         "/// Conversions from `{source_module}` to `{target_module}`."
     )?;
+    if matches!(direction, Direction::Reverse) {
+        writeln!(out, "///")?;
+        writeln!(
+            out,
+            "/// Fields and flags added after `{}` are dropped without reporting them.",
+            target.model.package.version
+        )?;
+    }
+    if shared_interfaces.is_empty() {
+        writeln!(out, "pub mod {source_module}_to_{target_module} {{}}")?;
+        return Ok(());
+    }
     writeln!(out, "pub mod {source_module}_to_{target_module} {{")?;
     // The aliases cannot collide with a WIT interface module: WIT identifiers start with a
-    // letter, while these start with `_`.
-    writeln!(out, "    #[allow(unused_imports)]")?;
+    // letter, while these start with `_`. Both aliases are used by every generated conversion
+    // function signature in this module.
     writeln!(
         out,
         "    use super::super::{{ {source_module} as __witforge_from, {target_module} as __witforge_to }};"
     )?;
     writeln!(out)?;
 
-    for source_interface in &source.model.interfaces {
-        let Some(target_interface) = target.model.interface(&source_interface.name) else {
-            continue;
-        };
-        let functions = shared_functions(source_interface, target_interface)?;
-        if functions.is_empty() {
-            continue;
-        }
+    for (source_interface, target_interface, functions) in shared_interfaces {
         let interface_module = rust_ident(&snake_case(&source_interface.name), "interface module")?;
         writeln!(
             out,
@@ -171,6 +224,8 @@ fn emit_pair(
 
 /// The types defined by both versions of one interface, in the old version's source order.
 fn shared_functions<'a>(
+    source: &Version,
+    target: &Version,
     old: &'a Interface,
     new: &'a Interface,
 ) -> Result<Vec<(&'a TypeDef, &'a TypeDef)>> {
@@ -187,8 +242,10 @@ fn shared_functions<'a>(
         let name = rust_ident(&snake_case(&old_def.name), "conversion function")?;
         if let Some(previous) = names.insert(name.clone(), old_def.name.clone()) {
             contract_bail!(
-                "interface `{}`: conversion functions `{previous}` and `{}` both map to Rust \
-                 function `{name}`",
+                "conversion {} -> {}: interface `{}`: conversion functions `{previous}` and `{}` \
+                 both map to Rust function `{name}`",
+                source.model.package.version,
+                target.model.package.version,
                 old.name,
                 old_def.name
             );
@@ -202,6 +259,57 @@ fn shared_functions<'a>(
 enum Direction {
     Forward,
     Reverse,
+}
+
+struct Converted {
+    expr: String,
+    fallible: bool,
+    /// When `expr` is a direct call `<callee>(<arg>)`, the callee path so `.map(<callee>)` avoids
+    /// `clippy::redundant_closure`.
+    direct_callee: Option<String>,
+}
+
+impl Converted {
+    fn infallible(expr: String) -> Self {
+        Self {
+            expr,
+            fallible: false,
+            direct_callee: None,
+        }
+    }
+
+    fn fallible(expr: String) -> Self {
+        Self {
+            expr,
+            fallible: true,
+            direct_callee: None,
+        }
+    }
+
+    fn direct_call(callee: String, arg: &str) -> Self {
+        let expr = format!("{callee}({arg})");
+        Self {
+            expr,
+            fallible: true,
+            direct_callee: Some(callee),
+        }
+    }
+
+    fn into_value_expr(self) -> String {
+        if self.fallible {
+            format!("{}?", self.expr)
+        } else {
+            self.expr
+        }
+    }
+
+    fn into_result_expr(self) -> String {
+        if self.fallible {
+            self.expr
+        } else {
+            format!("::core::result::Result::<_, {ERROR}>::Ok({})", self.expr)
+        }
+    }
 }
 
 fn copied(expression: &str) -> String {
@@ -236,6 +344,14 @@ fn emit_function(
         source.model.package.version,
         target.model.package.version
     )?;
+    if matches!(direction, Direction::Reverse) {
+        writeln!(out, "        ///")?;
+        writeln!(
+            out,
+            "        /// Fields and flags added after {} are dropped without reporting them.",
+            target.model.package.version
+        )?;
+    }
     writeln!(out, "        ///")?;
     writeln!(out, "        /// # Errors")?;
     writeln!(out, "        ///")?;
@@ -297,6 +413,8 @@ fn conversion_body(
             target_cases,
         ),
         (TypeDefKind::Enum(source_cases), TypeDefKind::Enum(target_cases)) => enum_body(
+            source,
+            target,
             source_interface,
             target_interface,
             source_def,
@@ -306,7 +424,7 @@ fn conversion_body(
         (TypeDefKind::Flags(source_flags), TypeDefKind::Flags(target_flags)) => {
             flags_body(target_interface, source_def, source_flags, target_flags)
         }
-        (TypeDefKind::Alias(source_target), TypeDefKind::Alias(target_target)) => convert_expr(
+        (TypeDefKind::Alias(source_target), TypeDefKind::Alias(target_target)) => Ok(convert_expr(
             source,
             target,
             source_interface,
@@ -315,8 +433,9 @@ fn conversion_body(
             target_target,
             "value",
             &format!("{}/{}", source_interface.name, source_def.name),
-        ),
-        (TypeDefKind::List(source_target), TypeDefKind::List(target_target)) => convert_expr(
+        )?
+        .into_result_expr()),
+        (TypeDefKind::List(source_target), TypeDefKind::List(target_target)) => Ok(convert_expr(
             source,
             target,
             source_interface,
@@ -325,29 +444,38 @@ fn conversion_body(
             &TypeExpr::List(Box::new(target_target.clone())),
             "value",
             &format!("{}/{}", source_interface.name, source_def.name),
-        ),
-        (TypeDefKind::Option(source_target), TypeDefKind::Option(target_target)) => convert_expr(
-            source,
-            target,
-            source_interface,
-            target_interface,
-            &TypeExpr::Option(Box::new(source_target.clone())),
-            &TypeExpr::Option(Box::new(target_target.clone())),
-            "value",
-            &format!("{}/{}", source_interface.name, source_def.name),
-        ),
-        (TypeDefKind::Result(source_result), TypeDefKind::Result(target_result)) => result_expr(
-            source,
-            target,
-            source_interface,
-            target_interface,
-            source_result,
-            target_result,
-            "value",
-            &format!("{}/{}", source_interface.name, source_def.name),
-        ),
+        )?
+        .into_result_expr()),
+        (TypeDefKind::Option(source_target), TypeDefKind::Option(target_target)) => {
+            Ok(convert_expr(
+                source,
+                target,
+                source_interface,
+                target_interface,
+                &TypeExpr::Option(Box::new(source_target.clone())),
+                &TypeExpr::Option(Box::new(target_target.clone())),
+                "value",
+                &format!("{}/{}", source_interface.name, source_def.name),
+            )?
+            .into_result_expr())
+        }
+        (TypeDefKind::Result(source_result), TypeDefKind::Result(target_result)) => {
+            Ok(result_expr(
+                source,
+                target,
+                source_interface,
+                target_interface,
+                source_result,
+                target_result,
+                "value",
+                &format!("{}/{}", source_interface.name, source_def.name),
+            )?
+            .into_result_expr())
+        }
         _ => contract_bail!(
-            "{}/{} changes kind from {} to {}; evolution requires a new type",
+            "conversion {} -> {}: {}/{} changes kind from {} to {}; evolution requires a new type",
+            source.model.package.version,
+            target.model.package.version,
             source_interface.name,
             source_def.name,
             type_kind_name(&source_def.kind),
@@ -371,6 +499,8 @@ fn record_body(
         rust_ident(&snake_case(&target_interface.name), "interface module")?;
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let type_path = format!("{}/{}", source_interface.name, source_def.name);
+    let from_ver = source.model.package.version;
+    let to_ver = target.model.package.version;
 
     // Validate shared fields even when a removed required field makes the reverse conversion
     // impossible: a retyped shared field is still a contract error of its own.
@@ -409,16 +539,14 @@ fn record_body(
     if let Some(missing) = missing {
         match direction {
             Direction::Forward => contract_bail!(
-                "{type_path}.{} is required in {} but absent from {}; make it `option<T>` or \
-                 `list<T>` so an older value can be defaulted, or add a new member instead of \
-                 changing this one",
+                "conversion {from_ver} -> {to_ver}: {type_path}.{} is required in {to_ver} but \
+                 absent from {from_ver}; make it `option<T>` or `list<T>` so an older value can \
+                 be defaulted, or add a new member instead of changing this one",
                 missing.name,
-                target.model.package.version,
-                source.model.package.version
             ),
             Direction::Reverse => {
                 return Ok(format!(
-                    "::core::result::Result::Err({ERROR}::MissingMember {{ path: \"{type_path}.{}\" }})",
+                    "::core::result::Result::Err({ERROR}::MissingMember {{ from: \"{from_ver}\", to: \"{to_ver}\", path: \"{type_path}.{}\" }})",
                     missing.name
                 ));
             }
@@ -433,7 +561,7 @@ fn record_body(
             .find(|source_field| source_field.name == target_field.name);
         if let Some(source_field) = value {
             let source_name = rust_ident(&snake_case(&source_field.name), "record field")?;
-            let expression = convert_expr(
+            let converted = convert_expr(
                 source,
                 target,
                 source_interface,
@@ -443,7 +571,7 @@ fn record_body(
                 &format!("&value.{source_name}"),
                 &format!("{type_path}.{}", source_field.name),
             )?;
-            writeln!(fields, "{target_name}: {expression}?,")?;
+            writeln!(fields, "{target_name}: {},", converted.into_value_expr())?;
         } else {
             let Some(default) = default_expr(&target.model, &target_field.ty)? else {
                 // The required-field check above gives the better diagnostic; this arm is the
@@ -485,6 +613,8 @@ fn variant_body(
     let source_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let type_path = format!("{}/{}", source_interface.name, source_def.name);
+    let from_ver = source.model.package.version;
+    let to_ver = target.model.package.version;
     let mut out = String::new();
     writeln!(out, "match value {{")?;
     for source_case in source_cases {
@@ -495,7 +625,8 @@ fn variant_body(
         if let Some(target_case) = target_case {
             match (&source_case.payload, &target_case.payload) {
                 (Some(_), None) | (None, Some(_)) => contract_bail!(
-                    "{type_path} case `{}` changes payload shape; evolution requires a new case",
+                    "conversion {from_ver} -> {to_ver}: {type_path} case `{}` changes payload \
+                     shape; evolution requires a new case",
                     source_case.name
                 ),
                 _ => {}
@@ -512,7 +643,7 @@ fn variant_body(
         };
         let arm = match (target_case, &source_case.payload) {
             (None, _) => format!(
-                "::core::result::Result::Err({ERROR}::UnknownCase {{ path: \"{type_path}\", case: \"{}\" }}),",
+                "::core::result::Result::Err({ERROR}::UnknownCase {{ from: \"{from_ver}\", to: \"{to_ver}\", path: \"{type_path}\", case: \"{}\" }}),",
                 source_case.name
             ),
             (Some(target_case), Some(source_payload)) => {
@@ -521,7 +652,7 @@ fn variant_body(
                     .payload
                     .as_ref()
                     .expect("payload presence was checked above");
-                let expression = convert_expr(
+                let converted = convert_expr(
                     source,
                     target,
                     source_interface,
@@ -532,7 +663,8 @@ fn variant_body(
                     &format!("{type_path}.{}", source_case.name),
                 )?;
                 format!(
-                    "::core::result::Result::Ok(super::__witforge_to::{target_interface_module}::{target_type}::{target_case_name}({expression}?)),"
+                    "::core::result::Result::Ok(super::__witforge_to::{target_interface_module}::{target_type}::{target_case_name}({})),",
+                    converted.into_value_expr()
                 )
             }
             (Some(target_case), None) => {
@@ -557,6 +689,8 @@ fn variant_body(
 
 #[allow(clippy::too_many_arguments)]
 fn enum_body(
+    source: &Version,
+    target: &Version,
     source_interface: &Interface,
     target_interface: &Interface,
     source_def: &TypeDef,
@@ -570,6 +704,8 @@ fn enum_body(
     let source_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let type_path = format!("{}/{}", source_interface.name, source_def.name);
+    let from_ver = source.model.package.version;
+    let to_ver = target.model.package.version;
     let mut out = String::new();
     writeln!(out, "match value {{")?;
     for source_case in source_cases {
@@ -585,7 +721,7 @@ fn enum_body(
             )
         } else {
             format!(
-                "::core::result::Result::Err({ERROR}::UnknownCase {{ path: \"{type_path}\", case: \"{}\" }}),",
+                "::core::result::Result::Err({ERROR}::UnknownCase {{ from: \"{from_ver}\", to: \"{to_ver}\", path: \"{type_path}\", case: \"{}\" }}),",
                 source_case.name
             )
         };
@@ -740,7 +876,9 @@ fn convert_expr(
     target_type: &TypeExpr,
     expression: &str,
     path: &str,
-) -> Result<String> {
+) -> Result<Converted> {
+    let from_ver = source.model.package.version;
+    let to_ver = target.model.package.version;
     let source_type = resolve_expr(
         &source.model,
         None,
@@ -766,13 +904,10 @@ fn convert_expr(
         | (TypeExpr::S32, TypeExpr::S32)
         | (TypeExpr::S64, TypeExpr::S64)
         | (TypeExpr::F32, TypeExpr::F32)
-        | (TypeExpr::F64, TypeExpr::F64) => Ok(format!(
-            "::core::result::Result::Ok({})",
-            copied(expression)
-        )),
-        (TypeExpr::String, TypeExpr::String) => Ok(format!(
-            "::core::result::Result::Ok(::core::clone::Clone::clone({expression}))"
-        )),
+        | (TypeExpr::F64, TypeExpr::F64) => Ok(Converted::infallible(copied(expression))),
+        (TypeExpr::String, TypeExpr::String) => Ok(Converted::infallible(format!(
+            "::core::clone::Clone::clone({expression})"
+        ))),
         (TypeExpr::Named(source_name), TypeExpr::Named(target_name))
             if source_name == target_name =>
         {
@@ -781,26 +916,27 @@ fn convert_expr(
             }
             if target.model.type_def(target_name).is_none() {
                 contract_bail!(
-                    "{path} names `{target_name}`, which is missing from the target version; \
-                     evolution requires a new type instead of removing a referenced type"
+                    "conversion {from_ver} -> {to_ver}: {path} names `{target_name}`, which is \
+                     missing from the target version; evolution requires a new type instead of \
+                     removing a referenced type"
                 );
             }
             if source_name.is_foreign() || target_name.is_foreign() {
                 // Dependency packages are pinned and frozen with the version directory; the
                 // same package-qualified name is the same value across these versions.
-                return Ok(format!(
-                    "::core::result::Result::Ok(::core::clone::Clone::clone({expression}))"
-                ));
+                return Ok(Converted::infallible(format!(
+                    "::core::clone::Clone::clone({expression})"
+                )));
             }
             let interface_module =
                 rust_ident(&snake_case(&source_name.interface), "interface module")?;
             let function = rust_ident(&snake_case(&source_name.name), "conversion function")?;
-            Ok(format!(
-                "super::{interface_module}::{function}({expression})"
+            Ok(Converted::direct_call(
+                format!("super::{interface_module}::{function}"),
+                expression,
             ))
         }
         (TypeExpr::List(source_element), TypeExpr::List(target_element)) => {
-            let target_element_type = rust_type_expr(target, target_element, "__witforge_to")?;
             let inner = convert_expr(
                 source,
                 target,
@@ -811,10 +947,25 @@ fn convert_expr(
                 "item",
                 path,
             )?;
-            Ok(format!(
-                "{}.iter().map(|item| {inner}).collect::<::core::result::Result<::std::vec::Vec<{target_element_type}>, {ERROR}>>()",
-                borrowed(expression)
-            ))
+            if !inner.fallible {
+                return Ok(Converted::infallible(format!(
+                    "::core::clone::Clone::clone({expression})"
+                )));
+            }
+            let target_element_type =
+                rust_type_expr(source, target, target_element, "__witforge_to", path)?;
+            if let Some(callee) = inner.direct_callee {
+                Ok(Converted::fallible(format!(
+                    "{}.iter().map({callee}).collect::<::core::result::Result<::std::vec::Vec<{target_element_type}>, {ERROR}>>()",
+                    borrowed(expression)
+                )))
+            } else {
+                Ok(Converted::fallible(format!(
+                    "{}.iter().map(|item| {}).collect::<::core::result::Result<::std::vec::Vec<{target_element_type}>, {ERROR}>>()",
+                    borrowed(expression),
+                    inner.into_result_expr()
+                )))
+            }
         }
         (TypeExpr::Option(source_payload), TypeExpr::Option(target_payload)) => {
             let inner = convert_expr(
@@ -827,12 +978,25 @@ fn convert_expr(
                 "item",
                 path,
             )?;
-            Ok(format!(
-                "match {expression} {{ \
-                 ::core::option::Option::Some(item) => ::core::result::Result::Ok(::core::option::Option::Some({inner}?)), \
-                 ::core::option::Option::None => ::core::result::Result::Ok(::core::option::Option::None), \
-                 }}"
-            ))
+            if !inner.fallible {
+                return Ok(Converted::infallible(format!(
+                    "::core::clone::Clone::clone({expression})"
+                )));
+            }
+            if let Some(callee) = inner.direct_callee {
+                Ok(Converted::fallible(format!(
+                    "{}.as_ref().map({callee}).transpose()",
+                    borrowed(expression)
+                )))
+            } else {
+                Ok(Converted::fallible(format!(
+                    "match {expression} {{ \
+                     ::core::option::Option::Some(item) => ::core::result::Result::<_, {ERROR}>::Ok(::core::option::Option::Some({})), \
+                     ::core::option::Option::None => ::core::result::Result::<_, {ERROR}>::Ok(::core::option::Option::None), \
+                     }}",
+                    inner.into_value_expr()
+                )))
+            }
         }
         (TypeExpr::Result(source_result), TypeExpr::Result(target_result)) => result_expr(
             source,
@@ -845,7 +1009,8 @@ fn convert_expr(
             path,
         ),
         _ => contract_bail!(
-            "{} changes type from `{}` to `{}`; evolution requires a new member",
+            "conversion {from_ver} -> {to_ver}: {} changes type from `{}` to `{}`; evolution \
+             requires a new member",
             path,
             render_type(&source_type, TypeRenderStyle::Spaced),
             render_type(&target_type, TypeRenderStyle::Spaced)
@@ -863,7 +1028,9 @@ fn result_expr(
     target_result: &ResultExpr,
     expression: &str,
     path: &str,
-) -> Result<String> {
+) -> Result<Converted> {
+    let from_ver = source.model.package.version;
+    let to_ver = target.model.package.version;
     let ok = match (&source_result.ok, &target_result.ok) {
         (Some(source_ok), Some(target_ok)) => convert_expr(
             source,
@@ -875,9 +1042,12 @@ fn result_expr(
             "ok",
             path,
         )?,
-        (None, None) => "::core::result::Result::Ok(())".to_string(),
+        (None, None) => Converted::infallible("()".to_string()),
         _ => {
-            contract_bail!("{path} changes its result success shape; evolution requires a new type")
+            contract_bail!(
+                "conversion {from_ver} -> {to_ver}: {path} changes its result success shape; \
+                 evolution requires a new type"
+            )
         }
     };
     let err = match (&source_result.err, &target_result.err) {
@@ -891,9 +1061,17 @@ fn result_expr(
             "err",
             path,
         )?,
-        (None, None) => "::core::result::Result::Ok(())".to_string(),
-        _ => contract_bail!("{path} changes its result error shape; evolution requires a new type"),
+        (None, None) => Converted::infallible("()".to_string()),
+        _ => contract_bail!(
+            "conversion {from_ver} -> {to_ver}: {path} changes its result error shape; evolution \
+             requires a new type"
+        ),
     };
+    if !ok.fallible && !err.fallible {
+        return Ok(Converted::infallible(format!(
+            "::core::clone::Clone::clone({expression})"
+        )));
+    }
     let ok_binding = if source_result.ok.is_some() {
         "ok"
     } else {
@@ -904,12 +1082,14 @@ fn result_expr(
     } else {
         "_err"
     };
-    Ok(format!(
+    Ok(Converted::fallible(format!(
         "match {expression} {{ \
-         ::core::result::Result::Ok({ok_binding}) => ::core::result::Result::Ok(::core::result::Result::Ok({ok}?)), \
-         ::core::result::Result::Err({err_binding}) => ::core::result::Result::Ok(::core::result::Result::Err({err}?)), \
-         }}"
-    ))
+         ::core::result::Result::Ok({ok_binding}) => ::core::result::Result::<_, {ERROR}>::Ok(::core::result::Result::Ok({})), \
+         ::core::result::Result::Err({err_binding}) => ::core::result::Result::<_, {ERROR}>::Ok(::core::result::Result::Err({})), \
+         }}",
+        ok.into_value_expr(),
+        err.into_value_expr()
+    )))
 }
 
 /// A Rust type path for `ty` in `version`, relative to the pair module that imports that
@@ -922,7 +1102,13 @@ fn rust_type(interface: &Interface, name: &str, version_alias: &str) -> Result<S
     ))
 }
 
-fn rust_type_expr(version: &Version, ty: &TypeExpr, version_alias: &str) -> Result<String> {
+fn rust_type_expr(
+    source: &Version,
+    version: &Version,
+    ty: &TypeExpr,
+    version_alias: &str,
+    path: &str,
+) -> Result<String> {
     match ty {
         TypeExpr::Bool => Ok("bool".to_string()),
         TypeExpr::U8 => Ok("u8".to_string()),
@@ -939,8 +1125,10 @@ fn rust_type_expr(version: &Version, ty: &TypeExpr, version_alias: &str) -> Resu
         TypeExpr::Named(name) => {
             if version.model.type_def(name).is_none() {
                 contract_bail!(
-                    "type `{name}` is missing from the target version; evolution requires a new \
-                     type instead of removing a referenced type"
+                    "conversion {} -> {}: {path}: type `{name}` is missing from the target \
+                     version; evolution requires a new type instead of removing a referenced type",
+                    source.model.package.version,
+                    version.model.package.version,
                 );
             }
             if let Some((namespace, package)) = name.package() {
@@ -962,19 +1150,19 @@ fn rust_type_expr(version: &Version, ty: &TypeExpr, version_alias: &str) -> Resu
         }
         TypeExpr::List(element) => Ok(format!(
             "::std::vec::Vec<{}>",
-            rust_type_expr(version, element, version_alias)?
+            rust_type_expr(source, version, element, version_alias, path)?
         )),
         TypeExpr::Option(payload) => Ok(format!(
             "::core::option::Option<{}>",
-            rust_type_expr(version, payload, version_alias)?
+            rust_type_expr(source, version, payload, version_alias, path)?
         )),
         TypeExpr::Result(result) => {
             let ok = match &result.ok {
-                Some(ty) => rust_type_expr(version, ty, version_alias)?,
+                Some(ty) => rust_type_expr(source, version, ty, version_alias, path)?,
                 None => "()".to_string(),
             };
             let err = match &result.err {
-                Some(ty) => rust_type_expr(version, ty, version_alias)?,
+                Some(ty) => rust_type_expr(source, version, ty, version_alias, path)?,
                 None => "()".to_string(),
             };
             Ok(format!("::core::result::Result<{ok}, {err}>"))

@@ -191,9 +191,9 @@ an optional priority and a list of tags; old values receive their WIT-safe defau
 pub fn task(value: &super::__witforge_from::types::Task) -> ::core::result::Result<super::__witforge_to::types::Task, super::super::ConversionError> {
     let _ = value;
     ::core::result::Result::Ok(super::__witforge_to::types::Task {
-        id: ::core::result::Result::Ok(value.id)?,
-        title: ::core::result::Result::Ok(::core::clone::Clone::clone(&value.title))?,
-        done: ::core::result::Result::Ok(value.done)?,
+        id: value.id,
+        title: ::core::clone::Clone::clone(&value.title),
+        done: value.done,
         priority: ::core::option::Option::None,
         tags: ::std::vec::Vec::new(),
     })

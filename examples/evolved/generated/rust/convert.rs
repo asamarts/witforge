@@ -2,16 +2,29 @@
 // source: example:tasks
 
 /// A version-to-version conversion that cannot reconstruct the target value.
+///
+/// `#[non_exhaustive]` prevents exhaustive matching in crates downstream of the crate
+/// that includes this generated module. Inside the including crate itself it has no
+/// effect, so a `match` on `ConversionError` there should include a wildcard arm and
+/// struct patterns should include `..` to stay compatible with future generator releases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConversionError {
     /// The target version requires a member that the source version does not have.
     MissingMember {
+        /// The source contract version, such as `0.2.0`.
+        from: &'static str,
+        /// The target contract version, such as `0.1.0`.
+        to: &'static str,
         /// The canonical WIT member path, such as `types/user.name`.
         path: &'static str,
     },
     /// The source value has a case that the target version does not have.
     UnknownCase {
+        /// The source contract version, such as `0.2.0`.
+        from: &'static str,
+        /// The target contract version, such as `0.1.0`.
+        to: &'static str,
         /// The canonical WIT type path, such as `types/event`.
         path: &'static str,
         /// The WIT case name.
@@ -22,8 +35,8 @@ pub enum ConversionError {
 impl ::core::fmt::Display for ConversionError {
     fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         match self {
-            Self::MissingMember { path } => write!(formatter, "cannot reconstruct `{path}` from the source version"),
-            Self::UnknownCase { path, case } => write!(formatter, "`{path}` case `{case}` does not exist in the target version"),
+            Self::MissingMember { from, to, path } => write!(formatter, "conversion {from} -> {to}: cannot reconstruct `{path}` from the source version"),
+            Self::UnknownCase { from, to, path, case } => write!(formatter, "conversion {from} -> {to}: `{path}` case `{case}` does not exist in the target version"),
         }
     }
 }
@@ -32,7 +45,6 @@ impl ::std::error::Error for ConversionError {}
 
 /// Conversions from `v0_1` to `v0_2`.
 pub mod v0_1_to_v0_2 {
-    #[allow(unused_imports)]
     use super::super::{ v0_1 as __witforge_from, v0_2 as __witforge_to };
 
     /// Conversions for interface `types`.
@@ -45,9 +57,9 @@ pub mod v0_1_to_v0_2 {
         pub fn task(value: &super::__witforge_from::types::Task) -> ::core::result::Result<super::__witforge_to::types::Task, super::super::ConversionError> {
             let _ = value;
             ::core::result::Result::Ok(super::__witforge_to::types::Task {
-                id: ::core::result::Result::Ok(value.id)?,
-                title: ::core::result::Result::Ok(::core::clone::Clone::clone(&value.title))?,
-                done: ::core::result::Result::Ok(value.done)?,
+                id: value.id,
+                title: ::core::clone::Clone::clone(&value.title),
+                done: value.done,
                 priority: ::core::option::Option::None,
                 tags: ::std::vec::Vec::new(),
             })
@@ -72,13 +84,16 @@ pub mod v0_1_to_v0_2 {
 }
 
 /// Conversions from `v0_2` to `v0_1`.
+///
+/// Fields and flags added after `0.1.0` are dropped without reporting them.
 pub mod v0_2_to_v0_1 {
-    #[allow(unused_imports)]
     use super::super::{ v0_2 as __witforge_from, v0_1 as __witforge_to };
 
     /// Conversions for interface `types`.
     pub mod types {
         /// Convert `types/task` from 0.2.0 to 0.1.0.
+        ///
+        /// Fields and flags added after 0.1.0 are dropped without reporting them.
         ///
         /// # Errors
         ///
@@ -86,9 +101,9 @@ pub mod v0_2_to_v0_1 {
         pub fn task(value: &super::__witforge_from::types::Task) -> ::core::result::Result<super::__witforge_to::types::Task, super::super::ConversionError> {
             let _ = value;
             ::core::result::Result::Ok(super::__witforge_to::types::Task {
-                id: ::core::result::Result::Ok(value.id)?,
-                title: ::core::result::Result::Ok(::core::clone::Clone::clone(&value.title))?,
-                done: ::core::result::Result::Ok(value.done)?,
+                id: value.id,
+                title: ::core::clone::Clone::clone(&value.title),
+                done: value.done,
             })
         }
 
@@ -97,6 +112,8 @@ pub mod v0_2_to_v0_1 {
     /// Conversions for interface `service`.
     pub mod service {
         /// Convert `service/task` from 0.2.0 to 0.1.0.
+        ///
+        /// Fields and flags added after 0.1.0 are dropped without reporting them.
         ///
         /// # Errors
         ///

@@ -1278,12 +1278,11 @@ boundary, the emitter writes one module per direction:
 
 ```rust
 pub enum ConversionError {
-    MissingMember { path: &'static str },
-    UnknownCase { path: &'static str, case: &'static str },
+    MissingMember { from: &'static str, to: &'static str, path: &'static str },
+    UnknownCase { from: &'static str, to: &'static str, path: &'static str, case: &'static str },
 }
 
 pub mod v0_1_to_v0_2 {
-    #[allow(unused_imports)]
     use super::super::{ v0_1 as __witforge_from, v0_2 as __witforge_to };
 
     pub mod types {
@@ -1298,18 +1297,24 @@ The reverse direction has its own module, `v0_2_to_v0_1`, and the same functions
 target swapped. A function is named with the Rust snake_case conversion of the source type's WIT
 name. A function-name collision in one interface is a contract error. Only interfaces and named
 types present in both versions get functions; a removed interface or type has no adapter, and
-the host must drop it or use a different type.
+the host must drop it or use a different type. A version pair with no shared convertible types
+emits an empty module without unused imports.
 
 Every conversion takes a reference and returns
 `Result<Target, ConversionError>`. Conversions are fallible in both directions because a later
-version may remove a case or a required member. `MissingMember` names the canonical WIT member
-path that the source version cannot supply, such as `types/user.old-field`; `UnknownCase` names
-the type and case that the target version does not have. Both carry `'static` canonical WIT
-identities. `ConversionError` implements `Display` and `std::error::Error`. It is
-`#[non_exhaustive]`, which binds only crates downstream of the one that includes the generated
-module. Inside that crate, which is where generated code normally lives, the attribute has no
-effect: an exhaustive `match` compiles today and stops compiling when a conversion rule adds a
-variant, so a `match` on `ConversionError` there needs a wildcard arm.
+version may remove a case or a required member. Both `MissingMember` and `UnknownCase` carry
+`from` and `to` naming the source and target contract versions (`"0.2.0"`, `"0.1.0"`) so a
+chained multi-hop conversion identifies which hop failed; generation refusals likewise name both
+versions, the direction, and the member. `MissingMember` names the canonical WIT member path
+that the source version cannot supply, such as `types/user.old-field`; `UnknownCase` names the
+type and case that the target version does not have. All error fields carry `'static` identities.
+Generated conversions never rely on untyped `Ok(...)?` expressions, so consumer-defined `From`
+impls on `ConversionError` cannot break type inference, and generated code is free of default-level
+Clippy warnings. `ConversionError` implements `Display` and `std::error::Error`. Its generated doc
+comment notes what `#[non_exhaustive]` does and does not do: it binds only crates downstream of
+the one that includes the generated module, whereas inside the including crate it has no effect,
+so a `match` on `ConversionError` there needs a wildcard arm and struct patterns should include
+`..`.
 
 ### 9.2 Old-to-new rules
 
@@ -1342,15 +1347,16 @@ The source is the older version and the target is the newer one.
 The source is the newer version and the target is the older one.
 
 - A field present in both versions converts recursively under the same type-identity rule.
-- A field added by the newer version and absent from the older version is dropped; the older
-  type has nowhere to put it.
+- A field added by the newer version and absent from the older version is dropped without
+  reporting it; the older type has nowhere to put it. The generated reverse-conversion modules and
+  functions document this explicitly.
 - An older field removed by the newer version is defaulted when its type is defaultable
   (`option<T>` to `None`, `list<T>` to empty). If it is required, the conversion returns
   `MissingMember` with that field's canonical path; it never invents a scalar or message value.
 - A variant or enum case added by the newer version makes that source value `UnknownCase`. A case
   removed by the newer version is unreachable in this direction.
-- A flag added by the newer version is dropped; an older flag removed by the newer version is
-  `false`.
+- A flag added by the newer version is dropped without reporting it; an older flag removed by the
+  newer version is `false`.
 - Aliases, named structural types, and nested payloads follow the same recursive rules. An alias
   and its target are one type, so either spelling converts through the same identity expression;
   a changed alias target is a type change. Kind, payload-shape, and type changes are contract

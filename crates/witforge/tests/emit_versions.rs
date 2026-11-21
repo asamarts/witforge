@@ -307,6 +307,7 @@ fn a_required_addition_is_refused() {
     let error = rust::plan(&root).unwrap_err();
     let message = format!("{error:#}");
     assert!(is_contract_error(&error), "{message}");
+    assert!(message.contains("0.1.0 -> 0.2.0"), "{message}");
     assert!(message.contains("types/user.new-field"), "{message}");
     assert!(message.contains("option<T>"), "{message}");
     fs::remove_dir_all(&base).unwrap();
@@ -332,6 +333,7 @@ fn a_retyped_alias_is_refused() {
     let error = rust::plan(&root).unwrap_err();
     let message = format!("{error:#}");
     assert!(is_contract_error(&error), "{message}");
+    assert!(message.contains("0.1.0 -> 0.2.0"), "{message}");
     assert!(message.contains("types/id"), "{message}");
     assert!(message.contains("changes type"), "{message}");
     fs::remove_dir_all(&base).unwrap();
@@ -362,9 +364,16 @@ fn main() {
     let error = generated::convert::v0_2_to_v0_1::types::user(&new).unwrap_err();
     assert!(matches!(
         error,
-        generated::convert::ConversionError::MissingMember { path }
-            if path == "types/user.old-field"
+        generated::convert::ConversionError::MissingMember {
+            from: "0.2.0",
+            to: "0.1.0",
+            path: "types/user.old-field",
+            ..
+        }
     ));
+    let rendered = format!("{error}");
+    assert!(rendered.contains("0.2.0 -> 0.1.0"), "{rendered}");
+    assert!(rendered.contains("types/user.old-field"), "{rendered}");
 }
 "#,
     )
@@ -452,4 +461,364 @@ fn a_recursive_alias_is_refused_before_conversion_generation() {
     let message = format!("{error:#}");
     assert!(message.contains("depends on itself"), "{message}");
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn convert_hardening_consumer_from_impls_clippy_empty_pair_and_hop_errors() {
+    use witforge::lock::LockMode;
+
+    let base = temp("hardening");
+    let wit_root = base.join("wit");
+
+    // v0.1 -> v0.2 -> v0.3 form a three-version chain with nested records/lists/options/results,
+    // dropped fields/flags, removed required member, and removed variant case; v1.0 has no
+    // shared types with v0.3 so v0.3 <-> v1.0 exercises an empty conversion pair.
+    let v01 = wit_root.join("v0.1");
+    fs::create_dir_all(&v01).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:chain@0.1.0;\n\
+         interface types {\n\
+           record leaf { id: u32, label: string }\n\
+           enum status { ok, legacy }\n\
+           variant event { leaf(leaf), legacy, done }\n\
+           flags opts { fast }\n\
+           record envelope {\n\
+             title: string,\n\
+             leaves: list<leaf>,\n\
+             maybe-leaf: option<leaf>,\n\
+             maybe-leaves: list<option<leaf>>,\n\
+             outcome: result<leaf, status>,\n\
+             bare: result,\n\
+             ev: event,\n\
+             opts: opts,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    let m01 = model::build(&load(&v01).unwrap()).unwrap();
+    let mut l01 = WireLock::default();
+    l01.reconcile_with(&m01.members().unwrap(), LockMode::First)
+        .unwrap();
+    fs::write(v01.join("wire.lock"), l01.render()).unwrap();
+
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(&v02).unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:chain@0.2.0;\n\
+         interface types {\n\
+           record leaf { id: u32, label: string, extra: option<string> }\n\
+           enum status { ok, legacy, middle }\n\
+           variant event { leaf(leaf), legacy, middle, done }\n\
+           flags opts { fast, strict }\n\
+           record envelope {\n\
+             title: string,\n\
+             leaves: list<leaf>,\n\
+             maybe-leaf: option<leaf>,\n\
+             maybe-leaves: list<option<leaf>>,\n\
+             outcome: result<leaf, status>,\n\
+             bare: result,\n\
+             ev: event,\n\
+             opts: opts,\n\
+             note: option<string>,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    let m02 = model::build(&load(&v02).unwrap()).unwrap();
+    let mut l02 = l01.clone();
+    l02.reconcile_with(&m02.members().unwrap(), LockMode::Against(&l01))
+        .unwrap();
+    fs::write(v02.join("wire.lock"), l02.render()).unwrap();
+
+    let v03 = wit_root.join("v0.3");
+    fs::create_dir_all(&v03).unwrap();
+    fs::write(
+        v03.join("contract.wit"),
+        "package ex:chain@0.3.0;\n\
+         interface types {\n\
+           record leaf { id: u32, extra: option<string> }\n\
+           enum status { ok, middle }\n\
+           variant event { leaf(leaf), middle, done }\n\
+           flags opts { fast, strict }\n\
+           record envelope {\n\
+             title: string,\n\
+             leaves: list<leaf>,\n\
+             maybe-leaf: option<leaf>,\n\
+             maybe-leaves: list<option<leaf>>,\n\
+             outcome: result<leaf, status>,\n\
+             bare: result,\n\
+             ev: event,\n\
+             opts: opts,\n\
+             note: option<string>,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    let m03 = model::build(&load(&v03).unwrap()).unwrap();
+    let mut l03 = l02.clone();
+    l03.reconcile_with(&m03.members().unwrap(), LockMode::Against(&l02))
+        .unwrap();
+    fs::write(v03.join("wire.lock"), l03.render()).unwrap();
+
+    let v10 = wit_root.join("v1.0");
+    fs::create_dir_all(&v10).unwrap();
+    fs::write(
+        v10.join("contract.wit"),
+        "package ex:chain@1.0.0;\n\
+         interface fresh {\n\
+           record unrelated { count: u64 }\n\
+         }\n",
+    )
+    .unwrap();
+    let m10 = model::build(&load(&v10).unwrap()).unwrap();
+    let mut l10 = WireLock::default();
+    l10.reconcile_with(&m10.members().unwrap(), LockMode::First)
+        .unwrap();
+    fs::write(v10.join("wire.lock"), l10.render()).unwrap();
+
+    let crate_dir = base.join("crate");
+    let src = crate_dir.join("src");
+    let generated_dir = src.join("generated");
+    fs::create_dir_all(&src).unwrap();
+    rust::generate(&wit_root, &generated_dir).unwrap();
+
+    let convert_rs = fs::read_to_string(generated_dir.join("convert.rs")).unwrap();
+    assert!(
+        convert_rs.contains("pub mod v0_3_to_v1_0 {}"),
+        "empty version pair left unused imports:\n{convert_rs}"
+    );
+    assert!(
+        convert_rs.contains("pub mod v1_0_to_v0_3 {}"),
+        "empty reverse version pair left unused imports:\n{convert_rs}"
+    );
+    assert!(
+        convert_rs.contains("dropped without reporting them"),
+        "missing drop doc comment on reverse conversions:\n{convert_rs}"
+    );
+    assert!(
+        convert_rs.contains("Inside the including crate itself it has no"),
+        "missing #[non_exhaustive] scope doc comment:\n{convert_rs}"
+    );
+    assert!(
+        !convert_rs.contains("Result::Ok(value."),
+        "found untyped Result::Ok(value...):\n{convert_rs}"
+    );
+    assert!(
+        !convert_rs.contains("Result::Ok(::core::clone::Clone::clone"),
+        "found untyped Result::Ok(Clone::clone...):\n{convert_rs}"
+    );
+
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"witforge-convert-hardening\"\n\
+         version = \"0.0.0\"\n\
+         edition = \"2024\"\n\
+         rust-version = \"1.88\"\n\
+         publish = false\n\
+         \n\
+         [workspace]\n\
+         resolver = \"3\"\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("lib.rs"),
+        r#"
+pub mod generated;
+
+use generated::convert::ConversionError;
+
+// Consumer-defined From impls on ConversionError plus From<ConversionError> for a consumer error.
+impl From<std::io::Error> for ConversionError {
+    fn from(_: std::io::Error) -> Self {
+        ConversionError::MissingMember {
+            from: "consumer",
+            to: "consumer",
+            path: "io",
+        }
+    }
+}
+
+impl From<std::fmt::Error> for ConversionError {
+    fn from(_: std::fmt::Error) -> Self {
+        ConversionError::MissingMember {
+            from: "consumer",
+            to: "consumer",
+            path: "fmt",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ConsumerError {
+    Convert(ConversionError),
+}
+
+impl From<ConversionError> for ConsumerError {
+    fn from(err: ConversionError) -> Self {
+        Self::Convert(err)
+    }
+}
+
+pub fn chain_v01_to_v03(
+    input: &generated::v0_1::types::Envelope,
+) -> Result<generated::v0_3::types::Envelope, ConsumerError> {
+    let mid = generated::convert::v0_1_to_v0_2::types::envelope(input)?;
+    let out = generated::convert::v0_2_to_v0_3::types::envelope(&mid)?;
+    Ok(out)
+}
+
+pub fn chain_v03_to_v01(
+    input: &generated::v0_3::types::Envelope,
+) -> Result<generated::v0_1::types::Envelope, ConsumerError> {
+    let mid = generated::convert::v0_3_to_v0_2::types::envelope(input)?;
+    let out = generated::convert::v0_2_to_v0_1::types::envelope(&mid)?;
+    Ok(out)
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        src.join("main.rs"),
+        r#"
+use witforge_convert_hardening::{
+    ConsumerError, chain_v01_to_v03, chain_v03_to_v01, generated,
+};
+use generated::convert::ConversionError;
+
+fn main() {
+    use generated::v0_1::types as v1;
+    use generated::v0_3::types as v3;
+
+    // Valid chain v0.1 -> v0.2 -> v0.3 succeeds.
+    let ok_v1 = v1::Envelope {
+        title: "hello".to_string(),
+        leaves: vec![v1::Leaf {
+            id: 1,
+            label: "a".to_string(),
+        }],
+        maybe_leaf: Some(v1::Leaf {
+            id: 2,
+            label: "b".to_string(),
+        }),
+        maybe_leaves: vec![
+            None,
+            Some(v1::Leaf {
+                id: 3,
+                label: "c".to_string(),
+            }),
+        ],
+        outcome: Ok(v1::Leaf {
+            id: 4,
+            label: "d".to_string(),
+        }),
+        bare: Ok(()),
+        ev: v1::Event::Done,
+        opts: v1::Opts { fast: true },
+    };
+    let ok_v3 = chain_v01_to_v03(&ok_v1).unwrap();
+    assert_eq!(ok_v3.leaves[0].id, 1);
+    assert_eq!(ok_v3.leaves[0].extra, None);
+
+    // Chained forward failure on the second hop names 0.2.0 -> 0.3.0.
+    let legacy_v1 = v1::Envelope {
+        ev: v1::Event::Legacy,
+        ..ok_v1
+    };
+    let ConsumerError::Convert(err) = chain_v01_to_v03(&legacy_v1).unwrap_err();
+    assert_eq!(
+        err,
+        ConversionError::UnknownCase {
+            from: "0.2.0",
+            to: "0.3.0",
+            path: "types/event",
+            case: "legacy",
+        }
+    );
+    assert!(format!("{err}").contains("0.2.0 -> 0.3.0"), "{err}");
+
+    // Chained reverse failure on the first hop (missing required `label` removed in v0.3)
+    // names 0.3.0 -> 0.2.0.
+    let v3_val = v3::Envelope {
+        title: "hello".to_string(),
+        leaves: vec![v3::Leaf { id: 1, extra: Some("dropped".to_string()) }],
+        maybe_leaf: None,
+        maybe_leaves: vec![],
+        outcome: Err(v3::Status::Ok),
+        bare: Err(()),
+        ev: v3::Event::Done,
+        opts: v3::Opts { fast: true, strict: true },
+        note: Some("dropped".to_string()),
+    };
+    let ConsumerError::Convert(err) = chain_v03_to_v01(&v3_val).unwrap_err();
+    assert_eq!(
+        err,
+        ConversionError::MissingMember {
+            from: "0.3.0",
+            to: "0.2.0",
+            path: "types/leaf.label",
+        }
+    );
+    assert!(format!("{err}").contains("0.3.0 -> 0.2.0"), "{err}");
+
+    // New-to-old drops added fields and flags without reporting them when all required fields
+    // remain present.
+    let v2_val = generated::v0_2::types::Envelope {
+        title: "keep".to_string(),
+        leaves: vec![],
+        maybe_leaf: None,
+        maybe_leaves: vec![],
+        outcome: Err(generated::v0_2::types::Status::Ok),
+        bare: Ok(()),
+        ev: generated::v0_2::types::Event::Done,
+        opts: generated::v0_2::types::Opts {
+            fast: true,
+            strict: true,
+        },
+        note: Some("dropped-without-error".to_string()),
+    };
+    let back_v1 = generated::convert::v0_2_to_v0_1::types::envelope(&v2_val).unwrap();
+    assert_eq!(back_v1.title, "keep");
+    assert!(back_v1.opts.fast);
+}
+"#,
+    )
+    .unwrap();
+
+    let target = base.join("cargo-target");
+    let clippy = Command::new(env!("CARGO"))
+        .args(["clippy", "--offline", "--all-targets", "--manifest-path"])
+        .arg(crate_dir.join("Cargo.toml"))
+        .args(["--", "-D", "warnings"])
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        clippy.status.success(),
+        "clippy failed on generated convert.rs:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&clippy.stdout),
+        String::from_utf8_lossy(&clippy.stderr)
+    );
+
+    let run = Command::new(env!("CARGO"))
+        .args(["run", "--quiet", "--offline", "--manifest-path"])
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "convert hardening binary failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    fs::remove_dir_all(&base).unwrap();
 }

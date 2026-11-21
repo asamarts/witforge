@@ -30,6 +30,15 @@ have it.
 
 ### Changed
 
+- Generated `convert.rs` adapters no longer emit untyped `Result::Ok(...)?` expressions or
+  redundant closures, so adding consumer `From<...> for ConversionError` impls in the including
+  crate compiles cleanly and generated code passes Clippy at the default level. Empty version
+  pairs omit unused imports, reverse-conversion doc comments state that added fields and flags are
+  dropped without reporting them, `ConversionError`'s doc comment explains the scope of
+  `#[non_exhaustive]`, and both `ConversionError` (`from` and `to` `'static` fields) and
+  conversion-generation refusals now name both versions and the direction. **Migration:** in
+  crates that include `convert.rs`, patterns destructuring `ConversionError::MissingMember { path }`
+  or `ConversionError::UnknownCase { path, case }` must add `from`, `to`, or `..`.
 - Draft 7 JSON Schema now represents every `result` form (`result<T, E>`, `result<T>`,
   `result<_, E>`, and bare `result`) as a `oneOf` of closed single-key `{"ok": ...}` and
   `{"err": ...}` objects where a payload-less side has schema `{"type":"null"}` (matching
