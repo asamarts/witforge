@@ -60,12 +60,16 @@ package's types:
 - Rust: `super::super::witforge_deps::<namespace>_<package>::<interface>::<Type>`.
   Inside a dependency's own generated module, a reference to another dependency is
   `super::super::<namespace>_<package>::<interface>::<Type>`.
-- Protobuf: `<namespace>.<package>.v<major>.<Interface><Type>`, with `-` replaced by `_` in
-  package and file names.
+- Protobuf: `.namespace.name.v<major>.<Interface><Type>` (with a leading dot so innermost-first
+  protobuf name resolution cannot shadow a dependency package when a root package shares a
+  segment, and `-` replaced by `_` in package and file names). Intra-package references stay
+  relative.
 
 The Rust emitter writes dependency modules into `witforge_deps.rs`; the protobuf emitter writes
-one `<namespace>.<package>.v<major>.proto` file per dependency and imports the schemas a file
-actually references. World metadata uses the package-qualified interface name. A dependency
+one `<namespace>.<package>.v<major>.proto` file per dependency and emits sorted `import` lines
+only for dependency schemas that an emitted message, field, oneof, wrapper, request, or response
+actually references (dependencies reached only through a world import/export or through an
+inlined scalar/byte alias emit their own `.proto` file without an unused `import`). World metadata uses the package-qualified interface name. A dependency
 may use a type from another package under the same `deps/` directory; that import is emitted
 from the dependency's schema as well. Alias, list, option, and result shapes resolve through
 their dependency definitions, so a foreign alias maps to its underlying message or scalar

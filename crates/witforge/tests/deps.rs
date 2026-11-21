@@ -36,9 +36,9 @@ fn dependency_types_are_qualified_and_emitted_distinctly() {
     );
     let lock = WireLock::parse(&fs::read_to_string(root.join("v0.1/wire.lock")).unwrap()).unwrap();
     let proto = proto::emit_major(&model, &lock).unwrap();
-    assert!(proto.contains("example.shared.v0.TypesItem"), "{proto}");
+    assert!(proto.contains(".example.shared.v0.TypesItem"), "{proto}");
     assert!(
-        proto.contains("example.shared.v0.TypesItem result = 1;"),
+        proto.contains(".example.shared.v0.TypesItem result = 1;"),
         "{proto}"
     );
 }
@@ -336,7 +336,7 @@ fn advanced_dependency_bindings_are_complete() {
     proto::plan(&root).unwrap().write(&out).unwrap();
     let root_proto = fs::read_to_string(out.join("v0.proto")).unwrap();
     assert!(
-        root_proto.contains("example.shared.v0.TypesThing result = 1;"),
+        root_proto.contains(".example.shared.v0.TypesThing result = 1;"),
         "{root_proto}"
     );
     assert!(
@@ -344,7 +344,7 @@ fn advanced_dependency_bindings_are_complete() {
         "{root_proto}"
     );
     assert!(
-        root_proto.contains("optional example.shared.v0.TypesChoice result = 1;"),
+        root_proto.contains("optional .example.shared.v0.TypesChoice result = 1;"),
         "{root_proto}"
     );
     assert!(
@@ -352,7 +352,7 @@ fn advanced_dependency_bindings_are_complete() {
         "{root_proto}"
     );
     assert!(
-        root_proto.contains("my_ns.my_dep.v0.TypesHyphenThing result = 1;"),
+        root_proto.contains(".my_ns.my_dep.v0.TypesHyphenThing result = 1;"),
         "{root_proto}"
     );
     let shared = fs::read_to_string(out.join("example.shared.v0.proto")).unwrap();
@@ -361,7 +361,7 @@ fn advanced_dependency_bindings_are_complete() {
         "{shared}"
     );
     assert!(
-        shared.contains("example.other.v0.TypesOtherThing other = 1;"),
+        shared.contains(".example.other.v0.TypesOtherThing other = 1;"),
         "{shared}"
     );
     assert!(out.join("my_ns.my_dep.v0.proto").is_file());
@@ -425,10 +425,13 @@ fn foreign_world_interfaces_keep_package_identity() {
         schema.contains("import \"example.shared.v0.proto\";"),
         "{schema}"
     );
+    // `example:other` is only exported by the world and has no proto type reference in `v0.proto`,
+    // so it still gets its own `.proto` file without an unused import in `v0.proto`.
     assert!(
-        schema.contains("import \"example.other.v0.proto\";"),
+        !schema.contains("import \"example.other.v0.proto\";"),
         "{schema}"
     );
+    assert!(proto_out.join("example.other.v0.proto").is_file());
     protox::compile([proto_out.join("v0.proto")], [&proto_out]).unwrap();
     fs::remove_dir_all(&proto_out).unwrap();
 }

@@ -745,3 +745,196 @@ fn proto_plan_uses_highest_minor_and_layout_check_ownership() {
     assert!(proto::generate(&root, &root.join("inside")).is_err());
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn cross_package_proto_references_use_leading_dot_and_only_used_imports() {
+    let base = std::env::temp_dir().join(format!("witforge-proto-fq-refs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let root = base.join("wit");
+    let v01 = root.join("v0.1");
+    for dep in [
+        "deps/example-shared",
+        "deps/example-acme",
+        "deps/unused-pkg",
+        "deps/world-only",
+        "deps/scalar-only",
+    ] {
+        fs::create_dir_all(v01.join(dep)).unwrap();
+    }
+    // Root package `acme:example` shares a segment with `example:shared` (dependency namespace)
+    // and `example:acme` (dependency package name equals root namespace).
+    fs::write(
+        v01.join("deps/example-shared/types.wit"),
+        "package example:shared@0.1.0;\n\
+interface types {\n\
+  record thing { id: u32 }\n\
+  enum kind { a, b }\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("deps/example-acme/types.wit"),
+        "package example:acme@0.1.0;\n\
+interface types {\n\
+  record tag { name: string }\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("deps/unused-pkg/types.wit"),
+        "package zed:unused@0.1.0;\n\
+interface types {\n\
+  record orphan { id: u32 }\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("deps/world-only/types.wit"),
+        "package worldonly:pkg@0.1.0;\n\
+interface types {\n\
+  record exposed { id: u32 }\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("deps/scalar-only/types.wit"),
+        "package scalaronly:pkg@0.1.0;\n\
+interface types {\n\
+  type id = u32;\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package acme:example@0.1.0;\n\n\
+interface acme {\n\
+  record x { id: u32 }\n\
+}\n\n\
+interface a {\n\
+  record cme { id: u32 }\n\
+}\n\n\
+interface api {\n\
+  use acme.{x};\n\
+  use a.{cme};\n\
+  use example:shared/types@0.1.0.{thing, kind};\n\
+  use example:acme/types@0.1.0.{tag};\n\
+  use scalaronly:pkg/types@0.1.0.{id};\n\
+  record holder {\n\
+    t: thing,\n\
+    k: kind,\n\
+    tg: tag,\n\
+    scalar: id,\n\
+    local-x: x,\n\
+    local-acme: cme,\n\
+    nested-list: list<list<thing>>,\n\
+    nested-opt: option<option<tag>>,\n\
+  }\n\
+  variant choice {\n\
+    shared(thing),\n\
+    tagged(tag),\n\
+  }\n\
+  call: func(input: thing) -> tag;\n\
+}\n\n\
+world plugin {\n\
+  import worldonly:pkg/types@0.1.0;\n\
+}\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&v01).unwrap()).unwrap();
+    fs::write(v01.join("wire.lock"), lock_for(&model).render()).unwrap();
+
+    let out = base.join("proto");
+    proto::plan(&root).unwrap().write(&out).unwrap();
+    let schema = fs::read_to_string(out.join("v0.proto")).unwrap();
+
+    // Only the two dependencies with emitted type references are imported, in sorted order.
+    let imports: Vec<&str> = schema
+        .lines()
+        .filter(|line| line.starts_with("import "))
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            "import \"example.acme.v0.proto\";",
+            "import \"example.shared.v0.proto\";",
+        ],
+        "{schema}"
+    );
+    // Unused, world-only, and scalar-alias-only dependencies still emit their own `.proto` files.
+    for dep_file in [
+        "example.acme.v0.proto",
+        "example.shared.v0.proto",
+        "zed.unused.v0.proto",
+        "worldonly.pkg.v0.proto",
+        "scalaronly.pkg.v0.proto",
+    ] {
+        assert!(out.join(dep_file).is_file(), "missing {dep_file}");
+    }
+
+    // Every cross-package position uses a leading dot; intra-package refs stay relative.
+    for expected in [
+        "  .example.shared.v0.TypesThing t = 1;",
+        "  optional .example.shared.v0.TypesKind k = 2;",
+        "  .example.acme.v0.TypesTag tg = 3;",
+        "  optional uint32 scalar = 4;",
+        "  AcmeX local_x = 5;",
+        "  ACme local_acme = 6;",
+        "    .example.shared.v0.TypesThing shared = 1;",
+        "    .example.acme.v0.TypesTag tagged = 2;",
+        "  .example.shared.v0.TypesThing input = 1;",
+        "  .example.acme.v0.TypesTag result = 1;",
+        "  repeated .example.shared.v0.TypesThing values = 1;",
+        "    .example.acme.v0.TypesTag some = 2;",
+    ] {
+        assert!(
+            schema.contains(expected),
+            "missing `{expected}` in:\n{schema}"
+        );
+    }
+
+    // Compiles with both protox and prost-build (confirming innermost-first scoping does not
+    // misresolve `example` inside `package acme.example.v0;`).
+    let proto_paths: Vec<PathBuf> = fs::read_dir(&out)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "proto"))
+        .collect();
+    let descriptors = protox::compile(proto_paths, [&out]).unwrap();
+    let prost_out = base.join("prost");
+    fs::create_dir_all(&prost_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .compile_fds(descriptors)
+        .unwrap();
+
+    // Intra-package relative reference to a message whose name equals a package segment (`AB` in
+    // `package AB.bar.v0;`) compiles cleanly.
+    let same_seg = base.join("same-seg");
+    fs::create_dir_all(&same_seg).unwrap();
+    fs::write(
+        same_seg.join("contract.wit"),
+        "package AB:bar@0.1.0;\n\
+interface a {\n\
+  record b { id: u32 }\n\
+  record holder { item: b }\n\
+}\n",
+    )
+    .unwrap();
+    let seg_model = model::build(&load(&same_seg).unwrap()).unwrap();
+    let seg_proto = proto::emit_major(&seg_model, &lock_for(&seg_model)).unwrap();
+    assert!(seg_proto.contains("package AB.bar.v0;"), "{seg_proto}");
+    assert!(seg_proto.contains("message AB {"), "{seg_proto}");
+    assert!(seg_proto.contains("  AB item = 1;"), "{seg_proto}");
+    let seg_path = same_seg.join("v0.proto");
+    fs::write(&seg_path, &seg_proto).unwrap();
+    let seg_fds = protox::compile([&seg_path], [&same_seg]).unwrap();
+    let seg_prost = same_seg.join("prost");
+    fs::create_dir_all(&seg_prost).unwrap();
+    prost_build::Config::new()
+        .out_dir(&seg_prost)
+        .compile_fds(seg_fds)
+        .unwrap();
+
+    fs::remove_dir_all(&base).unwrap();
+}

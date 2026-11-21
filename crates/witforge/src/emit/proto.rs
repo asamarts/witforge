@@ -150,6 +150,8 @@ struct Emitter<'a> {
     /// The source type that produced each synthesized wrapper, for collision diagnostics.
     wrapper_sources: BTreeMap<String, String>,
     live_keys: BTreeSet<String>,
+    /// Dependency `.proto` files referenced by at least one emitted cross-package type reference.
+    used_imports: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -185,10 +187,42 @@ impl<'a> Emitter<'a> {
             wrappers: BTreeMap::new(),
             wrapper_sources: BTreeMap::new(),
             live_keys,
+            used_imports: BTreeSet::new(),
         })
     }
 
     fn emit(mut self, header: &str) -> Result<String> {
+        let mut body = String::new();
+        writeln!(body, "message {EMPTY} {{}}")?;
+
+        for interface in &self.model.interfaces {
+            if !interface.docs.is_empty() {
+                writeln!(body)?;
+                write_docs(&mut body, 0, &interface.docs)?;
+            }
+            for def in &interface.types {
+                self.emit_type(&mut body, &interface.name, def)?;
+            }
+        }
+
+        for interface in &self.model.interfaces {
+            for function in &interface.functions {
+                self.emit_function(&mut body, &interface.name, function)?;
+            }
+            self.emit_method_enum(&mut body, &interface.name)?;
+        }
+        // A removed interface keeps its method ids reserved because the per-major file is
+        // shared by every minor of that major. Its request and response messages are gone, but
+        // the method enum stays so the numbers and names are never reused.
+        for interface in self.removed_interface_methods() {
+            self.emit_method_enum(&mut body, &interface)?;
+        }
+
+        for wrapper in self.wrappers.values() {
+            writeln!(body)?;
+            body.push_str(wrapper);
+        }
+
         let mut out = String::new();
         writeln!(out, "{header}")?;
         writeln!(
@@ -201,49 +235,13 @@ impl<'a> Emitter<'a> {
         writeln!(out)?;
         writeln!(out, "package {};", self.package)?;
         writeln!(out)?;
-        let referenced = self.referenced_dependencies();
-        let mut wrote_import = false;
-        for dependency in &self.model.dependencies {
-            if referenced.contains(&(
-                dependency.package.namespace.clone(),
-                dependency.package.name.clone(),
-            )) {
-                writeln!(out, "import \"{}\";", dependency_file_name(dependency))?;
-                wrote_import = true;
-            }
+        for import in &self.used_imports {
+            writeln!(out, "import \"{import}\";")?;
         }
-        if wrote_import {
+        if !self.used_imports.is_empty() {
             writeln!(out)?;
         }
-        writeln!(out, "message {EMPTY} {{}}")?;
-
-        for interface in &self.model.interfaces {
-            if !interface.docs.is_empty() {
-                writeln!(out)?;
-                write_docs(&mut out, 0, &interface.docs)?;
-            }
-            for def in &interface.types {
-                self.emit_type(&mut out, &interface.name, def)?;
-            }
-        }
-
-        for interface in &self.model.interfaces {
-            for function in &interface.functions {
-                self.emit_function(&mut out, &interface.name, function)?;
-            }
-            self.emit_method_enum(&mut out, &interface.name)?;
-        }
-        // A removed interface keeps its method ids reserved because the per-major file is
-        // shared by every minor of that major. Its request and response messages are gone, but
-        // the method enum stays so the numbers and names are never reused.
-        for interface in self.removed_interface_methods() {
-            self.emit_method_enum(&mut out, &interface)?;
-        }
-
-        for body in self.wrappers.values() {
-            writeln!(out)?;
-            out.push_str(body);
-        }
+        out.push_str(&body);
         if !out.ends_with('\n') {
             out.push('\n');
         }
@@ -741,31 +739,6 @@ impl<'a> Emitter<'a> {
             .collect()
     }
 
-    fn referenced_dependencies(&self) -> BTreeSet<(String, String)> {
-        let mut names = BTreeSet::new();
-        for interface in &self.model.interfaces {
-            for def in &interface.types {
-                collect_type_dependencies(&def.kind, &mut names);
-            }
-            for function in &interface.functions {
-                for param in &function.params {
-                    collect_expr_dependencies(&param.ty, &mut names);
-                }
-                if let Some(result) = &function.result {
-                    collect_expr_dependencies(result, &mut names);
-                }
-            }
-        }
-        for world in &self.model.worlds {
-            for interface in world.imports.iter().chain(&world.exports) {
-                if let Some(package) = &interface.package {
-                    names.insert((package.namespace.clone(), package.name.clone()));
-                }
-            }
-        }
-        names
-    }
-
     fn resolve_owned(
         &self,
         context: Option<&Dependency>,
@@ -838,8 +811,9 @@ impl<'a> Emitter<'a> {
             && (dependency.package.namespace != self.model.package.namespace
                 || dependency.package.name != self.model.package.name)
         {
+            self.used_imports.insert(dependency_file_name(dependency));
             return Ok(format!(
-                "{}.{}{}",
+                ".{}.{}{}",
                 dependency_proto_package(dependency),
                 pascal_case(name.interface_name()),
                 pascal_case(&name.name)
@@ -1640,62 +1614,6 @@ enum Shape {
     Message,
     List,
     Option,
-}
-
-fn collect_type_dependencies(kind: &TypeDefKind, names: &mut BTreeSet<(String, String)>) {
-    match kind {
-        TypeDefKind::Record(fields) => {
-            for field in fields {
-                collect_expr_dependencies(&field.ty, names);
-            }
-        }
-        TypeDefKind::Variant(cases) => {
-            for case in cases {
-                if let Some(payload) = &case.payload {
-                    collect_expr_dependencies(payload, names);
-                }
-            }
-        }
-        TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
-        TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
-            collect_expr_dependencies(ty, names);
-        }
-        TypeDefKind::Result(result) => {
-            for ty in [&result.ok, &result.err].into_iter().flatten() {
-                collect_expr_dependencies(ty, names);
-            }
-        }
-    }
-}
-
-fn collect_expr_dependencies(ty: &TypeExpr, names: &mut BTreeSet<(String, String)>) {
-    match ty {
-        TypeExpr::Named(name) => {
-            if let Some((namespace, package)) = name.package() {
-                names.insert((namespace.to_string(), package.to_string()));
-            }
-        }
-        TypeExpr::List(element) | TypeExpr::Option(element) => {
-            collect_expr_dependencies(element, names);
-        }
-        TypeExpr::Result(result) => {
-            for ty in [&result.ok, &result.err].into_iter().flatten() {
-                collect_expr_dependencies(ty, names);
-            }
-        }
-        TypeExpr::Bool
-        | TypeExpr::U8
-        | TypeExpr::U16
-        | TypeExpr::U32
-        | TypeExpr::U64
-        | TypeExpr::S8
-        | TypeExpr::S16
-        | TypeExpr::S32
-        | TypeExpr::S64
-        | TypeExpr::F32
-        | TypeExpr::F64
-        | TypeExpr::String => {}
-    }
 }
 
 fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {

@@ -72,6 +72,12 @@ have it.
 
 ### Fixed
 
+- `proto` now writes cross-package protobuf type references with a leading dot
+  (`.namespace.name.v<major>.<Type>`) so innermost-first resolution cannot shadow a dependency
+  whose namespace matches a segment of the root package, and emits sorted `import` lines only
+  for dependency files referenced by an emitted type (dropping unused imports for world-only or
+  inlined-scalar dependencies). **Migration:** text-only change in dependency `.proto` files;
+  compiled protobuf descriptors and `prost-build` output are unchanged.
 - `proto` now synthesizes the wrapper messages needed by every named `list`, `option`, and
   `result` type whether or not any field, case, or function refers to it, keeping `proto` and
   `glue` in step for unreferenced named structural types.
