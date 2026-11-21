@@ -16,7 +16,7 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 | `fixtures/emit/rust/all/contract.wit` | every Rust mapping row, including nested wrappers, aliases, named structural types, and a function with every parameter shape |
 | `fixtures/emit/proto/mapping/contract.wit` | every protobuf mapping row, wrappers, oneofs, method ids, and reserved members |
 | `fixtures/emit/glue/contract/contract.wit` | every glue type, request/response helper, presence rule, closed enum, and round-trip case |
-| `fixtures/emit/json/all.schema.json` | every JSON Schema mapping row: the golden Draft 7 output for `fixtures/emit/rust/all/contract.wit`, whose definitions `tests/emit_json_schema.rs` also compiles and validates instances against |
+| `fixtures/emit/json/all.schema.json` | every JSON Schema mapping row—including all four `result` forms (`result<T, E>`, `result<T>`, `result<_, E>`, and bare `result`) and integer/`f32` bounds: the golden Draft 7 output for `fixtures/emit/rust/all/contract.wit`, whose definitions `tests/emit_json_schema.rs` also compiles and validates instances against |
 
 ## Version and evolution surface
 

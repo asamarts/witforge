@@ -30,6 +30,18 @@ have it.
 
 ### Changed
 
+- Draft 7 JSON Schema now represents every `result` form (`result<T, E>`, `result<T>`,
+  `result<_, E>`, and bare `result`) as a `oneOf` of closed single-key `{"ok": ...}` and
+  `{"err": ...}` objects where a payload-less side has schema `{"type":"null"}` (matching
+  payload-less variant cases), so every `Ok(())` and `Err(())` value has a unique valid document.
+  `f32` schemas now include finite bounds (`"minimum":-3.4028235e38,"maximum":3.4028235e38`), and
+  `docs/design/emitters.md` section 10.2 documents the `f32` precision limit, the 2^53 IEEE 754
+  double caveat on 64-bit integers, Draft 7's `integer`/`1.0` rule, and `option<option<T>>`'s
+  shared `null`. **Migration:** `result<T>`, `result<_, E>`, bare `result`, and `f32` schemas
+  change on regeneration. To find affected contracts, search your `.wit` files for `result<_,`,
+  single-argument `result<T>` (no comma), bare `result`, or `f32`, or inspect the diff of
+  regenerated `*.schema.json` files (previous schemas emitted `{"maxProperties":0}` for bare
+  `result` or a single-branch object without `oneOf` for one-sided results).
 - WIT documentation comments (`///` and `/** ... */`) are now normalised and escaped for rustdoc
   and protobuf before emission: control characters and Unicode line separators (`\r`, NUL, VT, FF,
   `U+0085`, `U+2028`, `U+2029`) are normalised (and escaped in JSON Schema `description`),

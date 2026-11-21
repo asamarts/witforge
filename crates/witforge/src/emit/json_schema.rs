@@ -244,7 +244,10 @@ fn type_schema(model: &Model, interface: &Interface, ty: &TypeExpr) -> Result<St
             u64::from(i32::MAX.unsigned_abs()),
         )),
         TypeExpr::S64 => Ok(integer_schema(i64::MIN, i64::MAX.unsigned_abs())),
-        TypeExpr::F32 | TypeExpr::F64 => Ok("{\"type\":\"number\"}".to_string()),
+        TypeExpr::F32 => Ok(
+            "{\"type\":\"number\",\"minimum\":-3.4028235e38,\"maximum\":3.4028235e38}".to_string(),
+        ),
+        TypeExpr::F64 => Ok("{\"type\":\"number\"}".to_string()),
         TypeExpr::String => Ok("{\"type\":\"string\"}".to_string()),
         TypeExpr::Named(name) => {
             if let Some((namespace, package)) = name.package() {
@@ -299,33 +302,22 @@ fn option_schema(model: &Model, interface: &Interface, payload: &TypeExpr) -> Re
 }
 
 fn result_schema(model: &Model, interface: &Interface, result: &ResultExpr) -> Result<String> {
-    let mut variants = Vec::new();
-    if let Some(ok) = &result.ok {
-        variants.push(result_variant(model, interface, "ok", ok)?);
-    }
-    if let Some(err) = &result.err {
-        variants.push(result_variant(model, interface, "err", err)?);
-    }
-    match variants.len() {
-        0 => Ok(
-            "{\"type\":\"object\",\"maxProperties\":0,\"additionalProperties\":false}".to_string(),
-        ),
-        1 => Ok(variants.remove(0)),
-        _ => Ok(format!("{{\"oneOf\":[{}]}}", variants.join(","))),
-    }
+    let ok = result_variant(model, interface, "ok", result.ok.as_deref())?;
+    let err = result_variant(model, interface, "err", result.err.as_deref())?;
+    Ok(format!("{{\"oneOf\":[{ok},{err}]}}"))
 }
 
 fn result_variant(
     model: &Model,
     interface: &Interface,
     name: &str,
-    payload: &TypeExpr,
+    payload: Option<&TypeExpr>,
 ) -> Result<String> {
-    let property = format!(
-        "{}:{}",
-        json_string(name),
-        type_schema(model, interface, payload)?
-    );
+    let value = match payload {
+        Some(payload) => type_schema(model, interface, payload)?,
+        None => "{\"type\":\"null\"}".to_string(),
+    };
+    let property = format!("{}:{value}", json_string(name));
     Ok(format!(
         "{{\"type\":\"object\",\"properties\":{{{property}}},\"required\":[{}],\"additionalProperties\":false}}",
         json_string(name)

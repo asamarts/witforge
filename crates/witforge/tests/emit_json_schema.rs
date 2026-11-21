@@ -98,7 +98,7 @@ fn validates_nested_values_and_required_members() {
         "result-field": {"ok": 7},
         "result-ok": {"ok": 8},
         "result-err": {"err": "bad"},
-        "result-bare": {},
+        "result-bare": {"ok": null},
         "variant-field": {"no-payload": null},
     });
     assert!(validates(&schema, "values/record-value", record.clone()));
@@ -287,4 +287,271 @@ fn description_escapes_all_control_characters_and_line_separators() {
     assert_eq!(parsed["description"], hostile);
     assert_eq!(parsed["definitions"]["types/span"]["description"], hostile);
     jsonschema::validator_for(&parsed).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn every_result_form_validates_every_value_uniquely_in_every_position() {
+    let dir = temp("results-all-positions");
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:results@0.1.0;\n\
+         interface types {\n\
+           type res-both = result<u32, string>;\n\
+           type res-ok = result<u32>;\n\
+           type res-err = result<_, string>;\n\
+           type res-bare = result;\n\
+           type res-opt-ok = result<option<u32>, string>;\n\
+           type res-nested-both = result<result<u32>, result<_, string>>;\n\
+           type res-nested-bare = result<result>;\n\
+           record holder {\n\
+             f-both: result<u32, string>,\n\
+             f-ok: result<u32>,\n\
+             f-err: result<_, string>,\n\
+             f-bare: result,\n\
+             l-both: list<result<u32, string>>,\n\
+             l-ok: list<result<u32>>,\n\
+             l-err: list<result<_, string>>,\n\
+             l-bare: list<result>,\n\
+             o-both: option<result<u32, string>>,\n\
+             o-ok: option<result<u32>>,\n\
+             o-err: option<result<_, string>>,\n\
+             o-bare: option<result>,\n\
+           }\n\
+           variant choice {\n\
+             v-both(result<u32, string>),\n\
+             v-ok(result<u32>),\n\
+             v-err(result<_, string>),\n\
+             v-bare(result),\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let schema: Value = serde_json::from_str(&json_schema::emit_version(&model).unwrap()).unwrap();
+    jsonschema::validator_for(&schema).unwrap();
+
+    // Named definitions: every valid value accepted, every malformed document rejected.
+    let cases: &[(&str, &[Value], &[Value])] = &[
+        (
+            "types/res-both",
+            &[json!({"ok": 1}), json!({"err": "boom"})],
+            &[
+                json!({}),
+                json!({"ok": 1, "err": "boom"}),
+                json!({"ok": null}),
+                json!({"err": null}),
+                json!({"other": 1}),
+                json!(null),
+            ],
+        ),
+        (
+            "types/res-ok",
+            &[json!({"ok": 42}), json!({"err": null})],
+            &[
+                json!({}),
+                json!({"ok": 42, "err": null}),
+                json!({"ok": null}),
+                json!({"err": 1}),
+                json!({"other": null}),
+                json!(null),
+            ],
+        ),
+        (
+            "types/res-err",
+            &[json!({"ok": null}), json!({"err": "boom"})],
+            &[
+                json!({}),
+                json!({"ok": null, "err": "boom"}),
+                json!({"ok": 1}),
+                json!({"err": null}),
+                json!({"other": null}),
+                json!(null),
+            ],
+        ),
+        (
+            "types/res-bare",
+            &[json!({"ok": null}), json!({"err": null})],
+            &[
+                json!({}),
+                json!({"ok": null, "err": null}),
+                json!({"ok": 1}),
+                json!({"err": "x"}),
+                json!({"other": null}),
+                json!(null),
+            ],
+        ),
+        (
+            // `{"ok": null}` is `Ok(None)` and is unambiguous because the key carries the side.
+            "types/res-opt-ok",
+            &[json!({"ok": 7}), json!({"ok": null}), json!({"err": "e"})],
+            &[
+                json!({}),
+                json!({"ok": null, "err": "e"}),
+                json!({"err": null}),
+                json!(null),
+            ],
+        ),
+        (
+            "types/res-nested-both",
+            &[
+                json!({"ok": {"ok": 5}}),
+                json!({"ok": {"err": null}}),
+                json!({"err": {"ok": null}}),
+                json!({"err": {"err": "deep"}}),
+            ],
+            &[
+                json!({}),
+                json!({"ok": {}}),
+                json!({"err": {}}),
+                json!({"ok": {"ok": 5}, "err": {"ok": null}}),
+            ],
+        ),
+        (
+            "types/res-nested-bare",
+            &[
+                json!({"ok": {"ok": null}}),
+                json!({"ok": {"err": null}}),
+                json!({"err": null}),
+            ],
+            &[json!({}), json!({"ok": {}}), json!({"err": {"ok": null}})],
+        ),
+    ];
+
+    for (def, accept, reject) in cases {
+        for value in *accept {
+            assert!(
+                validates(&schema, def, value.clone()),
+                "{def} rejected valid document {value}"
+            );
+        }
+        for value in *reject {
+            assert!(
+                !validates(&schema, def, value.clone()),
+                "{def} accepted invalid document {value}"
+            );
+        }
+    }
+
+    // Record field, list element, and option payload positions.
+    let holder = json!({
+        "f-both": {"ok": 1},
+        "f-ok": {"err": null},
+        "f-err": {"ok": null},
+        "f-bare": {"err": null},
+        "l-both": [{"ok": 1}, {"err": "x"}],
+        "l-ok": [{"ok": 2}, {"err": null}],
+        "l-err": [{"ok": null}, {"err": "y"}],
+        "l-bare": [{"ok": null}, {"err": null}],
+        "o-both": null,
+        "o-ok": {"err": null},
+        "o-err": {"ok": null},
+        "o-bare": {"ok": null},
+    });
+    assert!(validates(&schema, "types/holder", holder.clone()));
+    let mut bad_holder = holder;
+    bad_holder["f-bare"] = json!({});
+    assert!(!validates(&schema, "types/holder", bad_holder));
+
+    // Variant payload positions for all four result forms.
+    for valid_variant in [
+        json!({"v-both": {"err": "e"}}),
+        json!({"v-ok": {"err": null}}),
+        json!({"v-err": {"ok": null}}),
+        json!({"v-bare": {"ok": null}}),
+        json!({"v-bare": {"err": null}}),
+    ] {
+        assert!(
+            validates(&schema, "types/choice", valid_variant.clone()),
+            "rejected valid variant {valid_variant}"
+        );
+    }
+    for bad_variant in [
+        json!({"v-bare": {}}),
+        json!({"v-ok": {"ok": 1, "err": null}}),
+        json!({"v-err": null}),
+    ] {
+        assert!(
+            !validates(&schema, "types/choice", bad_variant.clone()),
+            "accepted invalid variant {bad_variant}"
+        );
+    }
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[allow(clippy::cast_possible_truncation)]
+#[test]
+fn numeric_bounds_validate_64_bit_integers_and_f32_limits() {
+    let model = model::build(&load(&fixture("emit/rust/all")).unwrap()).unwrap();
+    let schema: Value = serde_json::from_str(&json_schema::emit_version(&model).unwrap()).unwrap();
+
+    // Verify exact 64-bit bounds and finite f32 bounds are written into the schema.
+    let props = &schema["definitions"]["values/record-value"]["properties"];
+    assert_eq!(props["u64-field"]["minimum"], json!(0));
+    assert_eq!(props["u64-field"]["maximum"], json!(u64::MAX));
+    assert_eq!(props["s64-field"]["minimum"], json!(i64::MIN));
+    assert_eq!(props["s64-field"]["maximum"], json!(i64::MAX));
+    assert_eq!(props["f32-field"]["minimum"], json!(-3.402_823_5e38_f64));
+    assert_eq!(props["f32-field"]["maximum"], json!(3.402_823_5e38_f64));
+    assert!(props["f64-field"].get("minimum").is_none());
+    assert!(props["f64-field"].get("maximum").is_none());
+
+    // Confirm the bound matches Rust's serialized f32::MIN/f32::MAX and rejects f32 overflow.
+    assert!((3.402_823_5e38_f64 as f32).is_finite());
+    assert!(!(3.402_823_6e38_f64 as f32).is_finite());
+    let f32_max_serialized: Value =
+        serde_json::from_str(&serde_json::to_string(&f32::MAX).unwrap()).unwrap();
+    let f32_min_serialized: Value =
+        serde_json::from_str(&serde_json::to_string(&f32::MIN).unwrap()).unwrap();
+
+    let base_record = json!({
+        "bool-field": true,
+        "u8-field": 0,
+        "u16-field": 0,
+        "u32-field": 0,
+        "u64-field": u64::MAX,
+        "s8-field": 0,
+        "s16-field": 0,
+        "s32-field": 0,
+        "s64-field": i64::MIN,
+        "f32-field": f32_max_serialized,
+        "f64-field": 1e100_f64,
+        "string-field": "ok",
+        "bytes-field": [],
+        "list-field": [],
+        "nested-field": [],
+        "option-field": null,
+        "option-payload": null,
+        "result-field": {"ok": 0},
+        "result-ok": {"err": null},
+        "result-err": {"ok": null},
+        "result-bare": {"ok": null},
+        "variant-field": {"no-payload": null},
+    });
+    assert!(validates(
+        &schema,
+        "values/record-value",
+        base_record.clone()
+    ));
+
+    let mut min_f32 = base_record.clone();
+    min_f32["f32-field"] = f32_min_serialized;
+    assert!(validates(&schema, "values/record-value", min_f32));
+
+    let mut overflow_f32 = base_record.clone();
+    overflow_f32["f32-field"] = json!(3.402_823_6e38_f64);
+    assert!(!validates(&schema, "values/record-value", overflow_f32));
+
+    let mut underflow_f32 = base_record.clone();
+    underflow_f32["f32-field"] = json!(-3.402_823_6e38_f64);
+    assert!(!validates(&schema, "values/record-value", underflow_f32));
+
+    let mut negative_u64 = base_record.clone();
+    negative_u64["u64-field"] = json!(-1);
+    assert!(!validates(&schema, "values/record-value", negative_u64));
+
+    let mut over_s64 = base_record;
+    over_s64["s64-field"] = json!(u64::MAX);
+    assert!(!validates(&schema, "values/record-value", over_s64));
 }

@@ -198,6 +198,7 @@ fn the_committed_conformance_matrix_names_every_fixture() {
         "fixtures/emit/rust/all/contract.wit",
         "fixtures/emit/proto/mapping/contract.wit",
         "fixtures/emit/glue/contract/contract.wit",
+        "fixtures/emit/json/all.schema.json",
         "fixtures/versions/wit",
         "fixtures/versions/convert",
         "fixtures/deps-full/wit",
@@ -262,5 +263,32 @@ fn dependency_and_serde_fixtures_cover_every_emitter() {
         rust::emit_version_with_serde(&serde_model, true)
             .unwrap()
             .contains("::serde::Serialize")
+    );
+
+    // The JSON Schema conformance fixture exercises all four WIT result forms.
+    let json_fixture = model::build(&load(&fixture("emit/rust/all")).unwrap()).unwrap();
+    let mut saw_both = false;
+    let mut saw_ok_only = false;
+    let mut saw_err_only = false;
+    let mut saw_bare = false;
+    for interface in &json_fixture.interfaces {
+        for def in &interface.types {
+            if let TypeDefKind::Record(fields) = &def.kind {
+                for field in fields {
+                    if let TypeExpr::Result(result) = &field.ty {
+                        match (result.ok.is_some(), result.err.is_some()) {
+                            (true, true) => saw_both = true,
+                            (true, false) => saw_ok_only = true,
+                            (false, true) => saw_err_only = true,
+                            (false, false) => saw_bare = true,
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_both && saw_ok_only && saw_err_only && saw_bare,
+        "JSON Schema conformance fixture must hold all four result forms"
     );
 }

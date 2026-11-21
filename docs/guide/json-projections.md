@@ -36,8 +36,22 @@ Rust integer types serialize as JSON numbers, including `u64` and `s64`.
 
 The schema preserves the WIT member spelling, including `start-byte`. Every record property is
 required and records set `additionalProperties: false`. `option<T>` permits `null` as the
-property's value; it does not make the property omittable. Integer schemas use the WIT type's
-numeric minimum and maximum.
+property's value; it does not make the property omittable (`option<option<T>>` shares `null` for
+`None` and `Some(None)`, as in Serde). Integer schemas use the WIT type's exact numeric `minimum`
+and `maximum` (JSON parsers using IEEE 754 doubles are exact only up to `±2^53`, and Draft 7
+`integer` accepts `1.0`). `f32` carries its finite bounds (`-3.4028235e38` to `3.4028235e38`)
+while accepting in-range decimals that round to `f32`; `NaN` and `±Infinity` have no JSON form.
+
+Every WIT `result`—including `result<T>`, `result<_, E>`, and bare `result`—is a closed single-key
+object with `"ok"` or `"err"`, using `null` for a side without a payload (matching payload-less
+variant cases):
+
+| WIT value | Generated Rust `--serde` | Draft 7 JSON Schema |
+|---|---|---|
+| `result<u32, string>` (`Ok(7)` / `Err("e")`) | `{"Ok":7}` / `{"Err":"e"}` | `{"ok":7}` / `{"err":"e"}` |
+| `result<u32>` (`Ok(7)` / `Err(())`) | `{"Ok":7}` / `{"Err":null}` | `{"ok":7}` / `{"err":null}` |
+| `result<_, string>` (`Ok(())` / `Err("e")`) | `{"Ok":null}` / `{"Err":"e"}` | `{"ok":null}` / `{"err":"e"}` |
+| bare `result` (`Ok(())` / `Err(())`) | `{"Ok":null}` / `{"Err":null}` | `{"ok":null}` / `{"err":null}` |
 
 The schema describes a WIT-shaped JSON value. It does not describe Serde's Rust-identifier shape
 or protobuf's JSON mapping.

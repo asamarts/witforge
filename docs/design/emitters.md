@@ -1428,7 +1428,8 @@ The rest of the document is conventional JSON:
 | `bool` | `{"type":"boolean"}` |
 | `u8`, `u16`, `u32`, `u64` | `{"type":"integer","minimum":0,"maximum":...}` |
 | `s8`, `s16`, `s32`, `s64` | `{"type":"integer","minimum":...,"maximum":...}` |
-| `f32`, `f64` | `{"type":"number"}` |
+| `f32` | `{"type":"number","minimum":-3.4028235e38,"maximum":3.4028235e38}` |
+| `f64` | `{"type":"number"}` |
 | `string` | `{"type":"string"}` |
 | `list<T>` | `{"type":"array","items":<T>}` |
 | `option<T>` | `{"anyOf":[<T>,{"type":"null"}]}` |
@@ -1436,7 +1437,7 @@ The rest of the document is conventional JSON:
 | variant | `oneOf` of case objects; a case is one property named after the case, required, with its payload schema or `{"type":"null"}` |
 | enum | `{"type":"string","enum":[...]}`; closed |
 | flags | object with one required boolean property per flag and `additionalProperties:false` |
-| `result<ok, err>` | `oneOf` of `{"ok":...}` and `{"err":...}` objects, or the one present side; `result` with no sides is an empty object |
+| `result<ok, err>` / `result<ok>` / `result<_, err>` / `result` | `oneOf` of `{"ok":<ok or null>}` and `{"err":<err or null>}` closed single-key objects; a side without a payload has schema `{"type":"null"}` |
 | named `list`/`option`/`result` | the corresponding wrapper schema, stored under its definition |
 | alias and `use` alias | the target schema; a named target is a `$ref` |
 
@@ -1444,9 +1445,30 @@ A list whose resolved element type is `u8` is an array of the `u8` integer schem
 element's spelling; JSON Schema has no byte-string form, so `list<u8>`, `list<byte>`, and their
 alias spellings produce the same schema. Record fields are always required, even when their type
 is `option<T>`; an optional field is present with `null` rather than absent. A record, result
-object, and flags object reject unknown
-properties. A variant/result case object rejects the other case and unknown properties, so
-`oneOf` enforces exactly one case. A result side with no payload has no property.
+object, and flags object reject unknown properties. A variant or result case object rejects the
+other case and unknown properties, so `oneOf` enforces exactly one case.
+
+Every result form—`result<T, E>`, `result<T>`, `result<_, E>`, and bare `result`—is a closed
+single-key object with either `"ok"` or `"err"`. A payload-less side carries `null` (matching
+payload-less variant cases), so every value of every result type has a distinct valid document
+(for example, bare `result` is `{"ok":null}` or `{"err":null}`, and `result<option<T>, E>`'s
+`Ok(None)` is `{"ok":null}`, unambiguous because the key identifies the side). For comparison,
+derived Rust `--serde` uses capitalised keys (`{"Ok":...}` / `{"Err":null}`); see
+[`docs/guide/json-projections.md`](../guide/json-projections.md).
+
+Numeric and option boundaries in Draft 7 JSON Schema:
+
+- `u64` and `s64` carry their exact 64-bit `minimum`/`maximum` bounds as JSON integers; consumers
+  whose JSON parser represents numbers as IEEE 754 doubles are exact only up to `±2^53`
+  (`±9007199254740992`).
+- Draft 7 defines `integer` as any JSON number with a zero fractional part, so `1.0` validates as
+  an `integer` under Draft 7 validators.
+- `f32` carries its finite shortest-roundtrip bounds (`-3.4028235e38` to `3.4028235e38`), so
+  serialized `f32::MIN`/`f32::MAX` validate while values that overflow `f32` are rejected; JSON
+  `number` does not restrict mantissa precision, so the schema accepts in-range decimals that round
+  when narrowed to `f32`. Neither `f32` nor `f64` has a JSON form for `NaN` or `±Infinity`.
+- `option<option<T>>` nests `anyOf` with `{"type":"null"}`, so `None` and `Some(None)` both have
+  the document `null`.
 
 ### 10.3 Dependencies and testing
 
