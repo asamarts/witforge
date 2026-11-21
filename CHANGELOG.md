@@ -72,6 +72,9 @@ have it.
 
 ### Fixed
 
+- `proto` now synthesizes the wrapper messages needed by every named `list`, `option`, and
+  `result` type whether or not any field, case, or function refers to it, keeping `proto` and
+  `glue` in step for unreferenced named structural types.
 - Multi-file version directories and multi-file `deps/` packages now load their `*.wit` files in
   ascending file-name byte order rather than raw OS directory-enumeration order, making generated
   output deterministic across file systems and platforms. **Migration:** single-file contracts,

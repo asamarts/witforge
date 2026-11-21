@@ -595,3 +595,145 @@ fn glue_refuses_a_contract_the_protobuf_schema_refuses() {
     }
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn unreferenced_named_structural_types_compile_and_roundtrip() {
+    let out = std::env::temp_dir().join(format!(
+        "witforge-glue-unreferenced-wrappers-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out);
+    let wit_root = out.join("wit");
+    let v01 = wit_root.join("v0.1");
+    fs::create_dir_all(&v01).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package example:unreferenced@0.1.0;\n\n\
+interface types {\n\
+  type matrix = list<list<string>>;\n\
+  type cube = list<list<list<u16>>>;\n\
+  type maybe-list = option<list<string>>;\n\
+  type maybe-matrix = option<list<list<string>>>;\n\
+  type maybe-maybe = option<option<string>>;\n\
+  type maybe-maybe-maybe = option<option<option<u32>>>;\n\
+  type list-of-maybe-list = list<maybe-list>;\n\
+  type nested-result = result<list<list<u32>>, option<option<string>>>;\n\
+}\n",
+    )
+    .unwrap();
+    let (_, lock) = setup_contract(&v01);
+    fs::write(v01.join("wire.lock"), lock.render()).unwrap();
+
+    rust::plan(&wit_root)
+        .unwrap()
+        .write(&out.join("plain"))
+        .unwrap();
+    glue::plan(&wit_root, "crate::plain", "crate::proto")
+        .unwrap()
+        .write(&out.join("glue"))
+        .unwrap();
+    proto::plan(&wit_root)
+        .unwrap()
+        .write(&out.join("proto-work"))
+        .unwrap();
+
+    let descriptors =
+        protox::compile([out.join("proto-work/v0.proto")], [out.join("proto-work")]).unwrap();
+    let prost_out = out.join("proto-work/out");
+    fs::create_dir_all(&prost_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .compile_fds(descriptors)
+        .unwrap();
+    let generated = fs::read_dir(&prost_out)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .expect("prost generated a Rust file");
+    fs::create_dir_all(out.join("proto")).unwrap();
+    fs::copy(generated, out.join("proto/v0.rs")).unwrap();
+    fs::write(
+        out.join("proto/mod.rs"),
+        "pub mod v0 { include!(\"v0.rs\"); }\n",
+    )
+    .unwrap();
+    fs::write(
+        out.join("main.rs"),
+        r#"
+mod glue;
+mod plain;
+mod proto;
+
+fn main() {
+    let matrix = vec![vec!["a".to_string(), "b".to_string()], vec![]];
+    let p = glue::v0::types::matrix::to_proto(&matrix);
+    assert_eq!(glue::v0::types::matrix::from_proto(p).unwrap(), matrix);
+
+    let cube = vec![vec![vec![1_u16, 2_u16], vec![]]];
+    let p = glue::v0::types::cube::to_proto(&cube);
+    assert_eq!(glue::v0::types::cube::from_proto(p).unwrap(), cube);
+
+    let maybe_list = Some(vec!["x".to_string()]);
+    let p = glue::v0::types::maybe_list::to_proto(&maybe_list);
+    assert_eq!(glue::v0::types::maybe_list::from_proto(p).unwrap(), maybe_list);
+
+    let maybe_matrix = Some(matrix.clone());
+    let p = glue::v0::types::maybe_matrix::to_proto(&maybe_matrix);
+    assert_eq!(glue::v0::types::maybe_matrix::from_proto(p).unwrap(), maybe_matrix);
+
+    let maybe_maybe = Some(Some("hi".to_string()));
+    let p = glue::v0::types::maybe_maybe::to_proto(&maybe_maybe);
+    assert_eq!(glue::v0::types::maybe_maybe::from_proto(p).unwrap(), maybe_maybe);
+
+    let maybe3: Option<Option<Option<u32>>> = Some(Some(None));
+    let p = glue::v0::types::maybe_maybe_maybe::to_proto(&maybe3);
+    assert_eq!(glue::v0::types::maybe_maybe_maybe::from_proto(p).unwrap(), maybe3);
+
+    let chained = vec![Some(vec!["k".to_string()]), None];
+    let p = glue::v0::types::list_of_maybe_list::to_proto(&chained);
+    assert_eq!(glue::v0::types::list_of_maybe_list::from_proto(p).unwrap(), chained);
+
+    let ok_res: Result<Vec<Vec<u32>>, Option<Option<String>>> = Ok(vec![vec![7]]);
+    let p = glue::v0::types::nested_result::to_proto(&ok_res);
+    assert_eq!(glue::v0::types::nested_result::from_proto(p).unwrap(), ok_res);
+
+    let err_res: Result<Vec<Vec<u32>>, Option<Option<String>>> = Err(Some(None));
+    let p = glue::v0::types::nested_result::to_proto(&err_res);
+    assert_eq!(glue::v0::types::nested_result::from_proto(p).unwrap(), err_res);
+}
+"#,
+    )
+    .unwrap();
+    run_cargo_program(
+        &out,
+        "prost = \"0.14\"\n",
+        "unreferenced named structural types glue compile/run",
+    );
+
+    // A wrapper synthesized for an unreferenced type still collides with a user type of the same
+    // proto name and is refused by both proto and glue.
+    let clash_root = out.join("clash");
+    let clash_v01 = clash_root.join("v0.1");
+    fs::create_dir_all(&clash_v01).unwrap();
+    fs::write(
+        clash_v01.join("contract.wit"),
+        "package example:clash-unreferenced@0.1.0;\n\
+interface witforge { record list-of-string { value: string } }\n\
+interface api { type matrix = list<list<string>>; }\n",
+    )
+    .unwrap();
+    let (_, clash_lock) = setup_contract(&clash_v01);
+    fs::write(clash_v01.join("wire.lock"), clash_lock.render()).unwrap();
+    for error in [
+        proto::plan(&clash_root).unwrap_err(),
+        glue::plan(&clash_root, "crate::plain", "crate::proto").unwrap_err(),
+    ] {
+        assert!(witforge::is_contract_error(&error), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("WitforgeListOfString"),
+            "{error:#}"
+        );
+    }
+    fs::remove_dir_all(&out).unwrap();
+}

@@ -592,6 +592,11 @@ Naming rules for named types:
   wrapper; their singular form is an anonymous option wrapper around the mapped payload type,
   named structurally from that payload.
 - Anonymous shapes always use the `Witforge...` names.
+- The protobuf emitter synthesizes the direct and nested wrappers needed by every named `list`,
+  `option`, and `result` type declared in the contract, whether or not any field, case, or
+  function refers to that type. That keeps the protobuf schema in step with the glue modules
+  emitted for every named type (section 7.1) and keeps each dependency's `.proto` file
+  independent of what a root contract happens to reference.
 - A wrapper is looked up by the type it wraps, not by its generated name alone. The wrapper body
   (`values`, `none`/`some`, or `ok`/`err`) is the identity: two spellings that resolve to the
   same projection share one wrapper, including aliases and the byte-list spellings of `W10-046`.
@@ -857,7 +862,8 @@ and the later version-conversion layer.
 
 - Glue covers every named type in the highest minor of each major, including records, variants,
   enums, flags, aliases, `use` aliases, named `list`/`option`/`result`, and named structural
-  forms.
+  forms—whether or not any member or function references them, matching the wrappers synthesized
+  by the protobuf emitter (section 4.4).
 - Glue covers every interface function in that version, and every dependency type and interface
   function under the shared dependency glue module.
 - Older minors get no glue module; they are not the proto schema’s source version.

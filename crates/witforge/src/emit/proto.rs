@@ -257,7 +257,26 @@ impl<'a> Emitter<'a> {
             TypeDefKind::Enum(cases) => self.emit_enum(out, interface, def, cases),
             TypeDefKind::Flags(flags) => self.emit_flags(out, interface, def, flags),
             TypeDefKind::Result(result) => self.emit_result(out, interface, def, result),
-            TypeDefKind::Alias(_) | TypeDefKind::List(_) | TypeDefKind::Option(_) => Ok(()),
+            TypeDefKind::List(element) => {
+                // Glue covers every named type whether or not a member refers to it, so
+                // synthesize any wrappers the named list needs even when unreferenced.
+                let _ = self.direct(&TypeExpr::List(Box::new(element.clone())), true)?;
+                Ok(())
+            }
+            TypeDefKind::Option(payload) => {
+                let name = QualifiedName {
+                    interface: interface.to_string(),
+                    name: def.name.clone(),
+                };
+                let _ = self.direct_named_option(&name, payload)?;
+                Ok(())
+            }
+            TypeDefKind::Alias(target) => {
+                if !matches!(target, TypeExpr::Named(name) if name.is_foreign()) {
+                    let _ = self.direct(target, true)?;
+                }
+                Ok(())
+            }
         }
     }
 
