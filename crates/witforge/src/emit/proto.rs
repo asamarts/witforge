@@ -7,9 +7,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::ContractError;
+use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
-use crate::emit::{pascal_case, snake_case};
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
     Case, Dependency, Field, Function, MAX_WRAPPER_NAME_BYTES, MemberKind, Model, QualifiedName,
@@ -145,6 +145,8 @@ struct Emitter<'a> {
     lock: &'a WireLock,
     package: String,
     top_names: BTreeMap<String, String>,
+    prost_top_names: BTreeMap<String, String>,
+    prost_oneof_modules: BTreeMap<String, String>,
     enum_values: BTreeMap<String, String>,
     wrappers: BTreeMap<String, String>,
     /// The source type that produced each synthesized wrapper, for collision diagnostics.
@@ -168,11 +170,22 @@ struct ResolvedType<'a> {
 
 impl<'a> Emitter<'a> {
     fn new(model: &'a Model, lock: &'a WireLock) -> Result<Self> {
-        let namespace = proto_ident(&model.package.namespace.replace('-', "_"), "namespace")?;
-        let name = proto_ident(&model.package.name.replace('-', "_"), "package")?;
+        let namespace = proto_ident(
+            &ident::proto_package_segment(&model.package.namespace),
+            "namespace",
+        )?;
+        let name = proto_ident(
+            &ident::proto_package_segment(&model.package.name),
+            "package",
+        )?;
         let package = format!("{namespace}.{name}.v{}", model.package.version.major);
         let mut top_names = BTreeMap::new();
         top_names.insert(EMPTY.to_string(), "shared Empty message".to_string());
+        let mut prost_top_names = BTreeMap::new();
+        prost_top_names.insert(
+            ident::prost_type_ident(EMPTY),
+            "shared Empty message".to_string(),
+        );
         let live_keys = model
             .members()?
             .into_iter()
@@ -183,6 +196,8 @@ impl<'a> Emitter<'a> {
             lock,
             package,
             top_names,
+            prost_top_names,
+            prost_oneof_modules: BTreeMap::new(),
             enum_values: BTreeMap::new(),
             wrappers: BTreeMap::new(),
             wrapper_sources: BTreeMap::new(),
@@ -292,11 +307,17 @@ impl<'a> Emitter<'a> {
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
+        let reserved_prost: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::prost_field_ident(name))
+            .collect();
         let mut field_names = BTreeSet::new();
+        let mut prost_fields = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         for field in fields {
             let field_name = field_name(&field.name)?;
-            if reserved_names.contains(&field_name) {
+            let prost_field = ident::prost_field_ident(&field_name);
+            if reserved_names.contains(&field_name) || reserved_prost.contains(&prost_field) {
                 contract_bail!(
                     "record `{interface}/{}`: field `{field_name}` collides with a reserved name",
                     def.name
@@ -306,6 +327,13 @@ impl<'a> Emitter<'a> {
                 contract_bail!(
                     "record `{interface}/{}`: duplicate proto field `{field_name}`",
                     def.name
+                );
+            }
+            if let Some(previous) = prost_fields.insert(prost_field.clone(), field.name.clone()) {
+                contract_bail!(
+                    "record `{interface}/{}`: fields `{previous}` and `{}` both map to prost field `{prost_field}`",
+                    def.name,
+                    field.name
                 );
             }
             let number = self.number(interface, &def.name, &field.name)?;
@@ -332,6 +360,7 @@ impl<'a> Emitter<'a> {
         cases: &[Case],
     ) -> Result<()> {
         let name = self.user_name(interface, &def.name)?;
+        self.register_oneof_module(&name, format!("variant {interface}/{}", def.name))?;
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
         writeln!(out, "message {name} {{")?;
@@ -339,11 +368,17 @@ impl<'a> Emitter<'a> {
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
+        let reserved_prost: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::prost_oneof_variant(name))
+            .collect();
         let mut field_names = BTreeSet::new();
+        let mut prost_variants = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         for case in cases {
             let case_name = field_name(&case.name)?;
-            if reserved_names.contains(&case_name) {
+            let prost_variant = ident::prost_oneof_variant(&case_name);
+            if reserved_names.contains(&case_name) || reserved_prost.contains(&prost_variant) {
                 contract_bail!(
                     "variant `{interface}/{}`: case `{case_name}` collides with a reserved name",
                     def.name
@@ -359,6 +394,14 @@ impl<'a> Emitter<'a> {
                 contract_bail!(
                     "variant `{interface}/{}`: duplicate proto field `{case_name}`",
                     def.name
+                );
+            }
+            if let Some(previous) = prost_variants.insert(prost_variant.clone(), case.name.clone())
+            {
+                contract_bail!(
+                    "variant `{interface}/{}`: cases `{previous}` and `{}` both map to prost variant `{prost_variant}`",
+                    def.name,
+                    case.name
                 );
             }
             let number = self.number(interface, &def.name, &case.name)?;
@@ -389,18 +432,23 @@ impl<'a> Emitter<'a> {
         cases: &[Case],
     ) -> Result<()> {
         let name = self.user_name(interface, &def.name)?;
-        let prefix = upper_snake(&name);
+        let zero_value = ident::proto_enum_zero_value(&name);
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
         writeln!(out, "enum {name} {{")?;
-        self.register_enum_value(&format!("{prefix}_UNSPECIFIED"))?;
-        writeln!(out, "  {prefix}_UNSPECIFIED = 0;")?;
+        self.register_enum_value(&zero_value)?;
+        let mut prost_variants = BTreeMap::new();
+        prost_variants.insert(
+            ident::prost_enum_variant(&name, &zero_value),
+            zero_value.clone(),
+        );
+        writeln!(out, "  {zero_value} = 0;")?;
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
         for case in cases {
-            let case_name = upper_snake(&case.name);
-            let value = format!("{prefix}_{case_name}");
+            let case_name = ident::proto_upper_snake(&case.name);
+            let value = ident::proto_enum_value_name(&name, &case.name);
             if reserved_names.contains(&value) {
                 contract_bail!(
                     "enum `{interface}/{}`: case `{case_name}` collides with a reserved name",
@@ -411,6 +459,13 @@ impl<'a> Emitter<'a> {
                 contract_bail!("enum `{interface}/{}`: case maps to UNSPECIFIED", def.name);
             }
             self.register_enum_value(&value)?;
+            let prost_variant = ident::prost_enum_variant(&name, &value);
+            if let Some(previous) = prost_variants.insert(prost_variant.clone(), value.clone()) {
+                contract_bail!(
+                    "enum `{interface}/{}`: proto values `{previous}` and `{value}` both map to prost variant `{prost_variant}`",
+                    def.name
+                );
+            }
             let number = self.number(interface, &def.name, &case.name)?;
             write_docs(out, 2, &case.docs)?;
             writeln!(out, "  {value} = {number};")?;
@@ -434,11 +489,17 @@ impl<'a> Emitter<'a> {
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
+        let reserved_prost: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::prost_field_ident(name))
+            .collect();
         let mut field_names = BTreeSet::new();
+        let mut prost_fields = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         for flag in flags {
             let field_name = field_name(&flag.name)?;
-            if reserved_names.contains(&field_name) {
+            let prost_field = ident::prost_field_ident(&field_name);
+            if reserved_names.contains(&field_name) || reserved_prost.contains(&prost_field) {
                 contract_bail!(
                     "flags `{interface}/{}`: field `{field_name}` collides with a reserved name",
                     def.name
@@ -448,6 +509,13 @@ impl<'a> Emitter<'a> {
                 contract_bail!(
                     "flags `{interface}/{}`: duplicate proto field `{field_name}`",
                     def.name
+                );
+            }
+            if let Some(previous) = prost_fields.insert(prost_field.clone(), flag.name.clone()) {
+                contract_bail!(
+                    "flags `{interface}/{}`: flags `{previous}` and `{}` both map to prost field `{prost_field}`",
+                    def.name,
+                    flag.name
                 );
             }
             let number = self.number(interface, &def.name, &flag.name)?;
@@ -473,6 +541,7 @@ impl<'a> Emitter<'a> {
         result: &ResultExpr,
     ) -> Result<()> {
         let name = self.user_name(interface, &def.name)?;
+        self.register_oneof_module(&name, format!("result {interface}/{}", def.name))?;
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
         writeln!(out, "message {name} {{")?;
@@ -502,16 +571,32 @@ impl<'a> Emitter<'a> {
         write_docs(out, 0, &function.docs)?;
         writeln!(out, "message {request_name} {{")?;
         let mut field_names = BTreeSet::new();
+        let mut prost_fields = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         let reserved = self.reserved_params(interface, &function.name);
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
+        let reserved_prost: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::prost_field_ident(name))
+            .collect();
         for param in &function.params {
             let name = field_name(&param.name)?;
-            if reserved_names.contains(&name) || !field_names.insert(name.clone()) {
+            let prost_field = ident::prost_field_ident(&name);
+            if reserved_names.contains(&name)
+                || reserved_prost.contains(&prost_field)
+                || !field_names.insert(name.clone())
+            {
                 contract_bail!(
                     "function `{interface}#{}`: proto field `{name}` collides with another or a reserved name",
                     function.name
+                );
+            }
+            if let Some(previous) = prost_fields.insert(prost_field.clone(), param.name.clone()) {
+                contract_bail!(
+                    "function `{interface}#{}`: parameters `{previous}` and `{}` both map to prost field `{prost_field}`",
+                    function.name,
+                    param.name
                 );
             }
             let number = self.parameter_number(interface, &function.name, &param.name)?;
@@ -539,14 +624,19 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_method_enum(&mut self, out: &mut String, interface: &str) -> Result<()> {
-        let name = proto_ident(&format!("{}Method", pascal_case(interface)), "method enum")?;
+        let name = proto_ident(&ident::proto_method_enum_name(interface), "method enum")?;
         self.register_top(&name, format!("method enum {interface}"))?;
-        let enum_prefix = upper_snake(&name);
-        let prefix = upper_snake(&pascal_case(interface));
+        let zero_value = ident::proto_method_enum_zero_value(interface);
+        let prefix = ident::proto_upper_snake(&ident::proto_pascal(interface));
         writeln!(out)?;
         writeln!(out, "enum {name} {{")?;
-        self.register_enum_value(&format!("{enum_prefix}_UNSPECIFIED"))?;
-        writeln!(out, "  {enum_prefix}_UNSPECIFIED = 0;")?;
+        self.register_enum_value(&zero_value)?;
+        let mut prost_variants = BTreeMap::new();
+        prost_variants.insert(
+            ident::prost_enum_variant(&name, &zero_value),
+            zero_value.clone(),
+        );
+        writeln!(out, "  {zero_value} = 0;")?;
         let reserved = self.reserved_methods(interface);
         if self.model.interface(interface).is_none() && reserved.is_empty() {
             bail!("interface `{interface}` is missing from the model");
@@ -556,8 +646,8 @@ impl<'a> Emitter<'a> {
         let mut numbers = BTreeSet::new();
         if let Some(interface_def) = self.model.interface(interface) {
             for function in &interface_def.functions {
-                let value = upper_snake(&function.name);
-                if value == "UNSPECIFIED" || reserved_names.contains(&value) {
+                let raw_value = ident::proto_upper_snake(&function.name);
+                if raw_value == "UNSPECIFIED" || reserved_names.contains(&raw_value) {
                     contract_bail!(
                         "function `{interface}.{}` maps to a reserved or UNSPECIFIED method value",
                         function.name
@@ -567,8 +657,15 @@ impl<'a> Emitter<'a> {
                 if !numbers.insert(number) {
                     contract_bail!("interface `{interface}`: duplicate method number {number}");
                 }
-                let value = format!("{prefix}_METHOD_{value}");
+                let value = ident::proto_method_enum_value(interface, &function.name);
                 self.register_enum_value(&value)?;
+                let prost_variant = ident::prost_enum_variant(&name, &value);
+                if let Some(previous) = prost_variants.insert(prost_variant.clone(), value.clone())
+                {
+                    contract_bail!(
+                        "interface `{interface}`: method values `{previous}` and `{value}` both map to prost variant `{prost_variant}`"
+                    );
+                }
                 writeln!(out, "  {value} = {number};")?;
             }
         }
@@ -612,11 +709,7 @@ impl<'a> Emitter<'a> {
         function: &Function,
         suffix: &str,
     ) -> Result<String> {
-        let name = format!(
-            "{}{}{suffix}",
-            pascal_case(interface),
-            pascal_case(&function.name)
-        );
+        let name = ident::proto_function_message_name(interface, &function.name, suffix);
         let name = proto_ident(&name, "function message")?;
         self.register_top(
             &name,
@@ -654,7 +747,7 @@ impl<'a> Emitter<'a> {
         type_proto_name: &str,
     ) -> Result<Vec<(u32, String)>> {
         let mut reserved = Vec::new();
-        let enum_prefix = upper_snake(type_proto_name);
+        let enum_prefix = ident::proto_upper_snake(type_proto_name);
         for (key, entry) in self.lock.entries() {
             if !entry.reserved {
                 continue;
@@ -679,7 +772,7 @@ impl<'a> Emitter<'a> {
             // variant case, or flag used its message field name. A kind change therefore keeps
             // both the old number and the old name reserved in the new message or enum.
             let name = if entry.kind == MemberKind::EnumCase {
-                format!("{enum_prefix}_{}", upper_snake(member))
+                format!("{enum_prefix}_{}", ident::proto_upper_snake(member))
             } else {
                 field_name(member)?
             };
@@ -714,7 +807,7 @@ impl<'a> Emitter<'a> {
                     function,
                     ..
                 } if entry.reserved && i == interface => {
-                    Some((entry.number, upper_snake(function)))
+                    Some((entry.number, ident::proto_upper_snake(function)))
                 }
                 _ => None,
             })
@@ -813,10 +906,9 @@ impl<'a> Emitter<'a> {
         {
             self.used_imports.insert(dependency_file_name(dependency));
             return Ok(format!(
-                ".{}.{}{}",
+                ".{}.{}",
                 dependency_proto_package(dependency),
-                pascal_case(name.interface_name()),
-                pascal_case(&name.name)
+                ident::proto_type_name(name.interface_name(), &name.name)
             ));
         }
         self.user_name(name.interface_name(), &name.name)
@@ -1154,6 +1246,7 @@ impl<'a> Emitter<'a> {
                 name.len()
             );
         }
+        let has_oneof = matches!(kind, WrapperKind::OptionValue(_) | WrapperKind::Result(_));
         let body = (|| -> Result<String> {
             Ok(match kind {
                 WrapperKind::List(element) => {
@@ -1194,6 +1287,9 @@ impl<'a> Emitter<'a> {
             );
         }
         self.register_top(&name, source.clone())?;
+        if has_oneof {
+            self.register_oneof_module(&name, source.clone())?;
+        }
         self.wrappers.insert(name.clone(), body);
         self.wrapper_sources.insert(name, source);
         Ok(())
@@ -1411,6 +1507,7 @@ impl<'a> Emitter<'a> {
                 name.len()
             );
         }
+        let has_oneof = matches!(kind, WrapperKind::OptionValue(_) | WrapperKind::Result(_));
         let body = (|| -> Result<String> {
             Ok(match kind {
                 WrapperKind::List(element) => {
@@ -1451,6 +1548,9 @@ impl<'a> Emitter<'a> {
             );
         }
         self.register_top(&name, source.clone())?;
+        if has_oneof {
+            self.register_oneof_module(&name, source.clone())?;
+        }
         self.wrappers.insert(name.clone(), body);
         self.wrapper_sources.insert(name.clone(), source);
         Ok(name)
@@ -1530,11 +1630,9 @@ impl<'a> Emitter<'a> {
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Enum(_)
-                    | TypeDefKind::Flags(_) => Ok(format!(
-                        "{}{}",
-                        pascal_case(&name.interface),
-                        pascal_case(&name.name)
-                    )),
+                    | TypeDefKind::Flags(_) => {
+                        Ok(ident::proto_type_name(&name.interface, &name.name))
+                    }
                 }
             }
         }
@@ -1562,10 +1660,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn type_ident(interface: &str, ty: &str) -> Result<String> {
-        proto_ident(
-            &format!("{}{}", pascal_case(interface), pascal_case(ty)),
-            "type",
-        )
+        proto_ident(&ident::proto_type_name(interface, ty), "type")
     }
 
     fn user_name(&mut self, interface: &str, ty: &str) -> Result<String> {
@@ -1581,7 +1676,31 @@ impl<'a> Emitter<'a> {
             }
             contract_bail!("proto name `{name}` is produced by both {previous} and {source}");
         }
+        let prost_name = ident::prost_type_ident(name);
+        if let Some(previous) = self.prost_top_names.get(&prost_name) {
+            if previous != &source {
+                contract_bail!(
+                    "prost type name `{prost_name}` is produced by both {previous} and {source}"
+                );
+            }
+        } else {
+            self.prost_top_names.insert(prost_name, source.clone());
+        }
         self.top_names.insert(name.to_string(), source);
+        Ok(())
+    }
+
+    fn register_oneof_module(&mut self, proto_message: &str, source: String) -> Result<()> {
+        let module = ident::prost_oneof_module(proto_message);
+        if let Some(previous) = self.prost_oneof_modules.get(&module) {
+            if previous == &source {
+                return Ok(());
+            }
+            contract_bail!(
+                "prost oneof module `{module}` is produced by both {previous} and {source}"
+            );
+        }
+        self.prost_oneof_modules.insert(module, source);
         Ok(())
     }
 
@@ -1651,20 +1770,19 @@ fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
 }
 
 fn dependency_shape_name(dependency: &Dependency, name: &QualifiedName) -> String {
-    format!(
-        "{}{}{}{}",
-        pascal_case(&dependency.package.namespace),
-        pascal_case(&dependency.package.name),
-        pascal_case(name.interface_name()),
-        pascal_case(&name.name)
+    ident::proto_dependency_shape_name(
+        &dependency.package.namespace,
+        &dependency.package.name,
+        name.interface_name(),
+        &name.name,
     )
 }
 
 fn dependency_proto_package(dependency: &Dependency) -> String {
     format!(
         "{}.{}.v{}",
-        dependency.package.namespace.replace('-', "_"),
-        dependency.package.name.replace('-', "_"),
+        ident::proto_package_segment(&dependency.package.namespace),
+        ident::proto_package_segment(&dependency.package.name),
         dependency.package.version.major
     )
 }
@@ -1682,7 +1800,7 @@ fn optional(ty: &str, required: bool) -> String {
 }
 
 fn field_name(name: &str) -> Result<String> {
-    let name = snake_case(name);
+    let name = ident::proto_field_name(name);
     if name.is_empty()
         || name == "."
         || name == ".."
@@ -1755,27 +1873,6 @@ const PROTO_KEYWORDS: &[&str] = &[
     "true",
     "false",
 ];
-
-fn upper_snake(name: &str) -> String {
-    let mut out = String::new();
-    let mut previous_lower = false;
-    for ch in name.chars() {
-        if ch == '-' || ch == '_' {
-            out.push('_');
-            previous_lower = false;
-        } else if ch.is_ascii_uppercase() {
-            if previous_lower {
-                out.push('_');
-            }
-            out.push(ch);
-            previous_lower = false;
-        } else {
-            out.push(ch.to_ascii_uppercase());
-            previous_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
-        }
-    }
-    out
-}
 
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
     if docs.is_empty() {

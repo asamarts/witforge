@@ -148,18 +148,64 @@ fn byte_list_aliases_generate_vec_u8_and_compile() {
 }
 
 #[test]
-fn root_module_and_trait_collisions_are_rejected() {
-    let dir = std::env::temp_dir().join(format!("witforge-emit-root-{}", std::process::id()));
+fn upper_case_wit_identifiers_produce_idiomatic_rust_with_no_case_warnings() {
+    let dir = std::env::temp_dir().join(format!("witforge-emit-upper-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("contract.wit"),
-        "package example:upper@0.1.0;\ninterface FOO { record value { x: u32 } }\n",
+        "package example:upper@0.1.0;\n\
+interface API {\n\
+  record URL-entry { URL: string, foo-BAR: u32, foo2-bar: u32, a1: u32 }\n\
+  enum HTTP-kind { HTTP, x-kind, other }\n\
+  get-x-y: func(URL: string) -> URL-entry;\n\
+}\n\
+interface HTTP-api {\n\
+  record x-y { x: u32, y: u32 }\n\
+}\n",
     )
     .unwrap();
     let model = model::build(&load(&dir).unwrap()).unwrap();
-    let error = rust::emit_version(&model).unwrap_err();
-    assert!(format!("{error:#}").contains("FOO"));
+    let code = rust::emit_version(&model).unwrap();
+    for expected in [
+        "pub mod api {",
+        "pub trait Api {",
+        "pub struct UrlEntry {",
+        "pub url: ::std::string::String,",
+        "pub foo_bar: u32,",
+        "pub foo2_bar: u32,",
+        "pub a1: u32,",
+        "pub enum HttpKind {",
+        "Http,",
+        "XKind,",
+        "pub mod http_api {",
+        "pub trait HttpApi {",
+    ] {
+        assert!(code.contains(expected), "missing `{expected}` in:\n{code}");
+    }
+    let source = dir.join("generated.rs");
+    let output = dir.join("generated.rmeta");
+    fs::write(&source, &code).unwrap();
+    let out = Command::new("rustc")
+        .args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "-D",
+            "non_snake_case",
+            "-D",
+            "non_camel_case_types",
+            "--emit=metadata",
+            "-o",
+        ])
+        .arg(&output)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "plain Rust had case warnings or failed to compile:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     fs::remove_dir_all(&dir).unwrap();
 }
 

@@ -9,6 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::emit::{RUST_KEYWORDS, pascal_case, rust_ident, snake_case};
@@ -391,12 +392,11 @@ fn collect_plan_module_names(
 }
 
 fn dependency_shape_name(dependency: &Dependency, name: &QualifiedName) -> String {
-    format!(
-        "{}{}{}{}",
-        pascal_case(&dependency.package.namespace),
-        pascal_case(&dependency.package.name),
-        pascal_case(name.interface_name()),
-        pascal_case(&name.name)
+    ident::proto_dependency_shape_name(
+        &dependency.package.namespace,
+        &dependency.package.name,
+        name.interface_name(),
+        &name.name,
     )
 }
 
@@ -410,8 +410,8 @@ fn dependency_module_name(namespace: &str, package: &str) -> Result<String> {
 fn dependency_proto_base(proto_root: &str, namespace: &str, package: &str, major: u64) -> String {
     format!(
         "{proto_root}::{}::{}::v{major}",
-        snake_case(namespace),
-        snake_case(package)
+        ident::prost_package_segment(namespace),
+        ident::prost_package_segment(package)
     )
 }
 
@@ -523,12 +523,11 @@ impl<'a> Emitter<'a> {
         let proto_base_override = if model.dependencies.is_empty() {
             None
         } else {
-            Some(format!(
-                "{}::{}::{}::v{}",
+            Some(dependency_proto_base(
                 proto_root,
-                snake_case(&model.package.namespace),
-                snake_case(&model.package.name),
-                model.package.version.major
+                &model.package.namespace,
+                &model.package.name,
+                model.package.version.major,
             ))
         };
         Ok(Self {
@@ -789,7 +788,7 @@ impl<'a> Emitter<'a> {
             | TypeDefKind::Flags(_)
             | TypeDefKind::Result(_) => {
                 let dependency = context.context("foreign type has no dependency context")?;
-                self.dependency_proto_type(name, dependency)
+                Ok(self.dependency_proto_type(name, dependency))
             }
         }
     }
@@ -857,21 +856,21 @@ impl<'a> Emitter<'a> {
                     "WitforgeListOf{}",
                     self.foreign_shape_name_ty(context, element)?
                 );
-                self.proto_user_type_path(&name)
+                Ok(self.proto_user_type_path(&name))
             }
             TypeDefKind::Option(payload) => {
                 let name = format!(
                     "WitforgeOptionOf{}",
                     self.foreign_shape_name_ty(context, payload)?
                 );
-                self.proto_user_type_path(&name)
+                Ok(self.proto_user_type_path(&name))
             }
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
             | TypeDefKind::Result(_) => {
                 let dependency = context.context("foreign type has no dependency context")?;
-                self.dependency_proto_type(name, dependency)
+                Ok(self.dependency_proto_type(name, dependency))
             }
         }
     }
@@ -900,14 +899,14 @@ impl<'a> Emitter<'a> {
                     "WitforgeListOf{}",
                     self.foreign_shape_name_ty(context, element)?
                 );
-                self.proto_user_type_path(&name)
+                Ok(self.proto_user_type_path(&name))
             }
             TypeExpr::Option(payload) => {
                 let name = format!(
                     "WitforgeOptionOf{}",
                     self.foreign_shape_name_ty(context, payload)?
                 );
-                self.proto_user_type_path(&name)
+                Ok(self.proto_user_type_path(&name))
             }
             TypeExpr::Bool => Ok("bool".to_string()),
             TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
@@ -1006,22 +1005,18 @@ impl<'a> Emitter<'a> {
         Ok(format!("ResultOf{ok}And{err}"))
     }
 
-    fn dependency_proto_type(
-        &self,
-        name: &QualifiedName,
-        dependency: &Dependency,
-    ) -> Result<String> {
-        let interface = rust_ident(&pascal_case(name.interface_name()), "proto interface")?;
-        let ty = rust_ident(&pascal_case(&name.name), "proto type")?;
-        Ok(format!(
-            "{}::{interface}{ty}",
+    fn dependency_proto_type(&self, name: &QualifiedName, dependency: &Dependency) -> String {
+        let proto_name = ident::proto_type_name(name.interface_name(), &name.name);
+        let rust_name = ident::prost_type_ident(&proto_name);
+        format!(
+            "{}::{rust_name}",
             dependency_proto_base(
                 &self.proto_root,
                 &dependency.package.namespace,
                 &dependency.package.name,
                 dependency.package.version.major
             )
-        ))
+        )
     }
 
     fn foreign_form(&self, name: &QualifiedName) -> Result<Form> {
@@ -1154,7 +1149,9 @@ impl<'a> Emitter<'a> {
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
-                    | TypeDefKind::Result(_) => self.proto_user_type(&name.interface, &name.name),
+                    | TypeDefKind::Result(_) => {
+                        Ok(self.proto_user_type(&name.interface, &name.name))
+                    }
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
                     TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         Ok("::std::vec::Vec<u8>".to_string())
@@ -1165,7 +1162,7 @@ impl<'a> Emitter<'a> {
                     )),
                     TypeDefKind::Option(payload) => {
                         let inner = if matches!(self.form(payload)?, Form::List | Form::Option) {
-                            self.proto_direct_wrapper(name)?
+                            self.proto_direct_wrapper(name)
                         } else {
                             self.proto_singular_type(payload)?
                         };
@@ -1191,11 +1188,11 @@ impl<'a> Emitter<'a> {
             }
             TypeExpr::List(element) => {
                 let name = format!("WitforgeListOf{}", self.shape_name(element)?);
-                self.proto_user_type_path(&name)
+                Ok(self.proto_user_type_path(&name))
             }
             TypeExpr::Option(payload) => {
                 let name = format!("WitforgeOptionOf{}", self.shape_name(payload)?);
-                self.proto_user_type_path(&name)
+                Ok(self.proto_user_type_path(&name))
             }
             TypeExpr::Result(_) => self.proto_wrapper_name(ty),
             TypeExpr::Named(name) => {
@@ -1208,50 +1205,45 @@ impl<'a> Emitter<'a> {
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
-                    | TypeDefKind::Result(_) => self.proto_user_type(&name.interface, &name.name),
+                    | TypeDefKind::Result(_) => {
+                        Ok(self.proto_user_type(&name.interface, &name.name))
+                    }
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
                     TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         Ok("::std::vec::Vec<u8>".to_string())
                     }
                     TypeDefKind::List(element) => {
                         let name = format!("WitforgeListOf{}", self.shape_name(element)?);
-                        self.proto_user_type_path(&name)
+                        Ok(self.proto_user_type_path(&name))
                     }
                     TypeDefKind::Option(payload) => {
                         let name = if matches!(self.form(payload)?, Form::List | Form::Option) {
-                            format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name)?)
+                            format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name))
                         } else {
                             format!("WitforgeOptionOf{}", self.shape_name(payload)?)
                         };
-                        self.proto_user_type_path(&name)
+                        Ok(self.proto_user_type_path(&name))
                     }
                 }
             }
         }
     }
 
-    fn proto_user_type(&self, interface: &str, ty: &str) -> Result<String> {
-        let name = format!("{}{}", pascal_case(interface), pascal_case(ty));
-        self.proto_user_type_path(&name)
+    fn proto_user_type(&self, interface: &str, ty: &str) -> String {
+        let proto_name = ident::proto_type_name(interface, ty);
+        self.proto_user_type_path(&proto_name)
     }
 
-    fn proto_user_type_path(&self, name: &str) -> Result<String> {
-        let name = rust_ident(name, "proto type")?;
-        Ok(format!("{}::{name}", self.proto_base()))
+    fn proto_user_type_path(&self, proto_name: &str) -> String {
+        let rust_name = ident::prost_type_ident(proto_name);
+        format!("{}::{rust_name}", self.proto_base())
     }
 
-    fn proto_direct_wrapper_name(name: &QualifiedName) -> Result<String> {
-        rust_ident(
-            &format!(
-                "{}{}",
-                pascal_case(&name.interface),
-                pascal_case(&name.name)
-            ),
-            "proto type",
-        )
+    fn proto_direct_wrapper_name(name: &QualifiedName) -> String {
+        ident::proto_type_name(&name.interface, &name.name)
     }
 
-    fn proto_direct_wrapper(&self, name: &QualifiedName) -> Result<String> {
+    fn proto_direct_wrapper(&self, name: &QualifiedName) -> String {
         self.proto_user_type(&name.interface, &name.name)
     }
 
@@ -1266,16 +1258,16 @@ impl<'a> Emitter<'a> {
             }
             _ => bail!("type `{ty:?}` has no anonymous proto wrapper"),
         };
-        self.proto_user_type_path(&name)
+        Ok(self.proto_user_type_path(&name))
     }
 
-    fn proto_oneof(&self, message: &str, oneof: &str) -> Result<String> {
-        let module = rust_ident(&pascal_to_snake(message), "proto oneof module")?;
-        let oneof = rust_ident(&pascal_case(&oneof.replace('_', "-")), "proto oneof")?;
-        Ok(format!("{}::{module}::{oneof}", self.proto_base()))
+    fn proto_oneof(&self, proto_message: &str, proto_oneof: &str) -> String {
+        let module = ident::prost_oneof_module(proto_message);
+        let oneof = ident::prost_oneof_enum(proto_oneof);
+        format!("{}::{module}::{oneof}", self.proto_base())
     }
 
-    fn proto_empty(&self) -> Result<String> {
+    fn proto_empty(&self) -> String {
         self.proto_user_type_path("Empty")
     }
 
@@ -1361,11 +1353,9 @@ impl<'a> Emitter<'a> {
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Enum(_)
-                    | TypeDefKind::Flags(_) => Ok(format!(
-                        "{}{}",
-                        pascal_case(&name.interface),
-                        pascal_case(&name.name)
-                    )),
+                    | TypeDefKind::Flags(_) => {
+                        Ok(ident::proto_type_name(&name.interface, &name.name))
+                    }
                 }
             }
         }
@@ -1410,27 +1400,6 @@ enum Form {
 enum Identity {
     Copy,
     Clone,
-}
-
-fn pascal_to_snake(name: &str) -> String {
-    let mut out = String::new();
-    let mut previous_lower = false;
-    for ch in name.chars() {
-        if ch == '_' || ch == '-' {
-            out.push('_');
-            previous_lower = false;
-        } else if ch.is_ascii_uppercase() {
-            if previous_lower {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-            previous_lower = false;
-        } else {
-            out.push(ch);
-            previous_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
-        }
-    }
-    out
 }
 
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
@@ -1507,7 +1476,7 @@ impl Emitter<'_> {
         type_name: &str,
         fields: &[Field],
     ) -> Result<()> {
-        let proto = self.proto_user_type(interface, type_name)?;
+        let proto = self.proto_user_type(interface, type_name);
         writeln!(out)?;
         writeln!(
             out,
@@ -1515,9 +1484,10 @@ impl Emitter<'_> {
         )?;
         writeln!(out, "            {proto} {{")?;
         for field in fields {
-            let field_name = rust_ident(&snake_case(&field.name), "record field")?;
-            let value = self.encode_field(&format!("&value.{field_name}"), &field.ty)?;
-            writeln!(out, "                {field_name}: {value},")?;
+            let plain_field = rust_ident(&snake_case(&field.name), "record field")?;
+            let prost_field = ident::prost_field_ident(&ident::proto_field_name(&field.name));
+            let value = self.encode_field(&format!("&value.{plain_field}"), &field.ty)?;
+            writeln!(out, "                {prost_field}: {value},")?;
         }
         writeln!(out, "            }}")?;
         writeln!(out, "        }}")?;
@@ -1528,10 +1498,11 @@ impl Emitter<'_> {
         )?;
         writeln!(out, "            Ok({plain} {{")?;
         for field in fields {
-            let field_name = rust_ident(&snake_case(&field.name), "record field")?;
+            let plain_field = rust_ident(&snake_case(&field.name), "record field")?;
+            let prost_field = ident::prost_field_ident(&ident::proto_field_name(&field.name));
             let identity = format!("{interface}/{type_name}.{}", field.name);
-            let value = self.decode_field(&format!("value.{field_name}"), &field.ty, &identity)?;
-            writeln!(out, "                {field_name}: {value},")?;
+            let value = self.decode_field(&format!("value.{prost_field}"), &field.ty, &identity)?;
+            writeln!(out, "                {plain_field}: {value},")?;
         }
         writeln!(out, "            }})")?;
         writeln!(out, "        }}")?;
@@ -1547,35 +1518,36 @@ impl Emitter<'_> {
         type_name: &str,
         cases: &[Case],
     ) -> Result<()> {
-        let proto = self.proto_user_type(interface, type_name)?;
+        let proto = self.proto_user_type(interface, type_name);
         let oneof = self.proto_oneof(
-            &format!("{}{}", pascal_case(interface), pascal_case(type_name)),
+            &ident::proto_type_name(interface, type_name),
             "witforge_value",
-        )?;
-        let empty = self.proto_empty()?;
+        );
+        let empty = self.proto_empty();
         writeln!(out)?;
         writeln!(
             out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
         )?;
-        let oneof_field = rust_ident("witforge_value", "oneof field")?;
+        let oneof_field = ident::prost_field_ident("witforge_value");
         writeln!(out, "            {proto} {{")?;
         writeln!(
             out,
             "                {oneof_field}: ::core::option::Option::Some(match value {{"
         )?;
         for case in cases {
-            let variant = rust_ident(&pascal_case(&case.name), "variant case")?;
+            let plain_variant = rust_ident(&pascal_case(&case.name), "variant case")?;
+            let prost_variant = ident::prost_oneof_variant(&ident::proto_field_name(&case.name));
             if let Some(payload) = &case.payload {
                 let value = self.encode_singular("payload", payload)?;
                 writeln!(
                     out,
-                    "                    {plain}::{variant}(payload) => {oneof}::{variant}({value}),"
+                    "                    {plain}::{plain_variant}(payload) => {oneof}::{prost_variant}({value}),"
                 )?;
             } else {
                 writeln!(
                     out,
-                    "                    {plain}::{variant} => {oneof}::{variant}({empty} {{}}),"
+                    "                    {plain}::{plain_variant} => {oneof}::{prost_variant}({empty} {{}}),"
                 )?;
             }
         }
@@ -1590,17 +1562,18 @@ impl Emitter<'_> {
         let identity = format!("{interface}/{type_name}");
         writeln!(out, "            match value.{oneof_field} {{")?;
         for case in cases {
-            let variant = rust_ident(&pascal_case(&case.name), "variant case")?;
+            let plain_variant = rust_ident(&pascal_case(&case.name), "variant case")?;
+            let prost_variant = ident::prost_oneof_variant(&ident::proto_field_name(&case.name));
             if let Some(payload) = &case.payload {
                 let value = self.decode_singular("payload", payload, &identity)?;
                 writeln!(
                     out,
-                    "                ::core::option::Option::Some({oneof}::{variant}(payload)) => ::core::result::Result::Ok({plain}::{variant}({value})),"
+                    "                ::core::option::Option::Some({oneof}::{prost_variant}(payload)) => ::core::result::Result::Ok({plain}::{plain_variant}({value})),"
                 )?;
             } else {
                 writeln!(
                     out,
-                    "                ::core::option::Option::Some({oneof}::{variant}(_)) => ::core::result::Result::Ok({plain}::{variant}),"
+                    "                ::core::option::Option::Some({oneof}::{prost_variant}(_)) => ::core::result::Result::Ok({plain}::{plain_variant}),"
                 )?;
             }
         }
@@ -1622,15 +1595,18 @@ impl Emitter<'_> {
         type_name: &str,
         cases: &[Case],
     ) -> Result<()> {
-        let proto = self.proto_user_type(interface, type_name)?;
+        let proto_enum = ident::proto_type_name(interface, type_name);
+        let proto = self.proto_user_type(interface, type_name);
         writeln!(out)?;
         writeln!(out, "        pub fn to_proto(value: &{plain}) -> i32 {{")?;
         writeln!(out, "            match value {{")?;
         for case in cases {
-            let variant = rust_ident(&pascal_case(&case.name), "enum case")?;
+            let plain_variant = rust_ident(&pascal_case(&case.name), "enum case")?;
+            let proto_val = ident::proto_enum_value_name(&proto_enum, &case.name);
+            let prost_variant = ident::prost_enum_variant(&proto_enum, &proto_val);
             writeln!(
                 out,
-                "                {plain}::{variant} => {proto}::{variant} as i32,"
+                "                {plain}::{plain_variant} => {proto}::{prost_variant} as i32,"
             )?;
         }
         writeln!(out, "            }}")?;
@@ -1642,11 +1618,11 @@ impl Emitter<'_> {
         )?;
         writeln!(out, "            match value {{")?;
         for case in cases {
-            let variant = rust_ident(&pascal_case(&case.name), "enum case")?;
+            let plain_variant = rust_ident(&pascal_case(&case.name), "enum case")?;
             let number = self.number(interface, type_name, &case.name)?;
             writeln!(
                 out,
-                "                {number} => ::core::result::Result::Ok({plain}::{variant}),"
+                "                {number} => ::core::result::Result::Ok({plain}::{plain_variant}),"
             )?;
         }
         let identity = format!("{interface}/{type_name}");
@@ -1669,7 +1645,7 @@ impl Emitter<'_> {
         type_name: &str,
         flags: &[Flag],
     ) -> Result<()> {
-        let proto = self.proto_user_type(interface, type_name)?;
+        let proto = self.proto_user_type(interface, type_name);
         writeln!(out)?;
         writeln!(
             out,
@@ -1677,8 +1653,9 @@ impl Emitter<'_> {
         )?;
         writeln!(out, "            {proto} {{")?;
         for flag in flags {
-            let flag_name = rust_ident(&snake_case(&flag.name), "flag")?;
-            writeln!(out, "                {flag_name}: value.{flag_name},")?;
+            let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
+            let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
+            writeln!(out, "                {prost_flag}: value.{plain_flag},")?;
         }
         writeln!(out, "            }}")?;
         writeln!(out, "        }}")?;
@@ -1689,8 +1666,9 @@ impl Emitter<'_> {
         )?;
         writeln!(out, "            ::core::result::Result::Ok({plain} {{")?;
         for flag in flags {
-            let flag_name = rust_ident(&snake_case(&flag.name), "flag")?;
-            writeln!(out, "                {flag_name}: value.{flag_name},")?;
+            let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
+            let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
+            writeln!(out, "                {plain_flag}: value.{prost_flag},")?;
         }
         writeln!(out, "            }})")?;
         writeln!(out, "        }}")?;
@@ -1808,7 +1786,7 @@ impl Emitter<'_> {
         let proto = self.proto_type(&TypeExpr::Named(qualified.clone()))?;
         let label = format!("{interface}/{type_name}");
         let form = self.form(payload)?;
-        let wrapper = self.proto_direct_wrapper(&qualified)?;
+        let wrapper = self.proto_direct_wrapper(&qualified);
         writeln!(out)?;
         writeln!(
             out,
@@ -1839,11 +1817,9 @@ impl Emitter<'_> {
             }
             Form::Option => {
                 let inner = self.option_payload(payload)?;
-                let oneof = self.proto_oneof(
-                    &format!("{}{}", pascal_case(interface), pascal_case(type_name)),
-                    "value",
-                )?;
-                let empty = self.proto_empty()?;
+                let oneof =
+                    self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
+                let empty = self.proto_empty();
                 writeln!(out, "            match value {{")?;
                 writeln!(
                     out,
@@ -1913,10 +1889,8 @@ impl Emitter<'_> {
             }
             Form::Option => {
                 let inner = self.option_payload(payload)?;
-                let oneof = self.proto_oneof(
-                    &format!("{}{}", pascal_case(interface), pascal_case(type_name)),
-                    "value",
-                )?;
+                let oneof =
+                    self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
                 writeln!(
                     out,
                     "            ::core::result::Result::Ok(value.map(|value| match value.value {{"
@@ -1961,13 +1935,10 @@ impl Emitter<'_> {
         type_name: &str,
         result: &ResultExpr,
     ) -> Result<()> {
-        let message = self.proto_user_type(interface, type_name)?;
-        let oneof = self.proto_oneof(
-            &format!("{}{}", pascal_case(interface), pascal_case(type_name)),
-            "value",
-        )?;
+        let message = self.proto_user_type(interface, type_name);
+        let oneof = self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
         let label = format!("{interface}/{type_name}");
-        let empty = self.proto_empty()?;
+        let empty = self.proto_empty();
         writeln!(out)?;
         writeln!(
             out,
@@ -2064,18 +2035,22 @@ impl Emitter<'_> {
         function: &crate::model::Function,
     ) -> Result<()> {
         let interface_name = &interface.name;
-        let function_pascal = pascal_case(&function.name);
-        let request = self.proto_user_type_path(&format!(
-            "{}{function_pascal}Request",
-            pascal_case(interface_name)
-        ))?;
-        let response = self.proto_user_type_path(&format!(
-            "{}{function_pascal}Response",
-            pascal_case(interface_name)
-        ))?;
-        let method =
-            self.proto_user_type_path(&format!("{}Method", pascal_case(interface_name)))?;
-        let method_variant = rust_ident(&function_pascal, "method variant")?;
+        let request = self.proto_user_type_path(&ident::proto_function_message_name(
+            interface_name,
+            &function.name,
+            "Request",
+        ));
+        let response = self.proto_user_type_path(&ident::proto_function_message_name(
+            interface_name,
+            &function.name,
+            "Response",
+        ));
+        let proto_method_enum = ident::proto_method_enum_name(interface_name);
+        let method = self.proto_user_type_path(&proto_method_enum);
+        let method_variant = ident::prost_enum_variant(
+            &proto_method_enum,
+            &ident::proto_method_enum_value(interface_name, &function.name),
+        );
         writeln!(out)?;
         writeln!(
             out,
@@ -2107,9 +2082,10 @@ impl Emitter<'_> {
         } else {
             writeln!(out, "                {request} {{")?;
             for param in &function.params {
-                let name = rust_ident(&snake_case(&param.name), "parameter")?;
-                let value = self.encode_field(&name, &param.ty)?;
-                writeln!(out, "                    {name}: {value},")?;
+                let plain_param = rust_ident(&snake_case(&param.name), "parameter")?;
+                let prost_param = ident::prost_field_ident(&ident::proto_field_name(&param.name));
+                let value = self.encode_field(&plain_param, &param.ty)?;
+                writeln!(out, "                    {prost_param}: {value},")?;
             }
             writeln!(out, "                }}")?;
         }
@@ -2139,16 +2115,17 @@ impl Emitter<'_> {
         } else {
             let decoded = if function.params.len() == 1 {
                 let param = &function.params[0];
-                let name = rust_ident(&snake_case(&param.name), "parameter")?;
+                let prost_param = ident::prost_field_ident(&ident::proto_field_name(&param.name));
                 let identity = format!("{interface_name}#{}.{}", function.name, param.name);
-                self.decode_field(&format!("value.{name}"), &param.ty, &identity)?
+                self.decode_field(&format!("value.{prost_param}"), &param.ty, &identity)?
             } else {
                 let mut values = Vec::new();
                 for param in &function.params {
-                    let name = rust_ident(&snake_case(&param.name), "parameter")?;
+                    let prost_param =
+                        ident::prost_field_ident(&ident::proto_field_name(&param.name));
                     let identity = format!("{interface_name}#{}.{}", function.name, param.name);
                     values.push(self.decode_field(
-                        &format!("value.{name}"),
+                        &format!("value.{prost_param}"),
                         &param.ty,
                         &identity,
                     )?);
@@ -2311,10 +2288,10 @@ impl Emitter<'_> {
                 Ok(format!("{wrapper} {{ values: {values} }}"))
             }
             TypeExpr::Option(payload) => {
-                let wrapper = self.proto_singular_type(ty)?;
-                let oneof =
-                    self.proto_oneof(wrapper.rsplit("::").next().unwrap_or_default(), "value")?;
-                let empty = self.proto_empty()?;
+                let proto_wrapper = format!("WitforgeOptionOf{}", self.shape_name(payload)?);
+                let wrapper = self.proto_user_type_path(&proto_wrapper);
+                let oneof = self.proto_oneof(&proto_wrapper, "value");
+                let empty = self.proto_empty();
                 Ok(format!(
                     "match {expr} {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some({})) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}",
                     self.encode_singular("value", payload)?
@@ -2340,13 +2317,14 @@ impl Emitter<'_> {
                             ));
                         }
                         TypeDefKind::Option(payload) => {
+                            let proto_wrapper = format!(
+                                "WitforgeOptionOf{}",
+                                self.foreign_shape_name_ty(Some(dependency), payload)?
+                            );
                             let payload = qualify_type(Some(dependency), payload);
-                            let wrapper = self.foreign_proto_singular(name)?;
-                            let oneof = self.proto_oneof(
-                                wrapper.rsplit("::").next().unwrap_or_default(),
-                                "value",
-                            )?;
-                            let empty = self.proto_empty()?;
+                            let wrapper = self.proto_user_type_path(&proto_wrapper);
+                            let oneof = self.proto_oneof(&proto_wrapper, "value");
+                            let empty = self.proto_empty();
                             return Ok(format!(
                                 "match {expr} {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some({})) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}",
                                 self.encode_singular("value", &payload)?
@@ -2382,11 +2360,15 @@ impl Emitter<'_> {
                     }
                     TypeDefKind::Option(payload) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        let wrapper = self.proto_singular_type(ty)?;
-                        let wrapper_name = wrapper.rsplit("::").next().unwrap_or_default();
-                        let oneof = self.proto_oneof(wrapper_name, "value")?;
-                        let empty = self.proto_empty()?;
-                        let _ = payload;
+                        let proto_wrapper =
+                            if matches!(self.form(payload)?, Form::List | Form::Option) {
+                                format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name))
+                            } else {
+                                format!("WitforgeOptionOf{}", self.shape_name(payload)?)
+                            };
+                        let wrapper = self.proto_user_type_path(&proto_wrapper);
+                        let oneof = self.proto_oneof(&proto_wrapper, "value");
+                        let empty = self.proto_empty();
                         Ok(format!(
                             "match {module}::to_proto({expr}) {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some(value)) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}"
                         ))
@@ -2483,9 +2465,8 @@ impl Emitter<'_> {
                 )),
             },
             TypeExpr::Option(payload) => {
-                let wrapper = self.proto_singular_type(ty)?;
-                let wrapper_name = wrapper.rsplit("::").next().unwrap_or_default();
-                let oneof = self.proto_oneof(wrapper_name, "value")?;
+                let proto_wrapper = format!("WitforgeOptionOf{}", self.shape_name(payload)?);
+                let oneof = self.proto_oneof(&proto_wrapper, "value");
                 Ok(format!(
                     "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => ::core::option::Option::Some({}), ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}",
                     self.decode_singular("value", payload, identity)?
@@ -2510,12 +2491,12 @@ impl Emitter<'_> {
                             ));
                         }
                         TypeDefKind::Option(payload) => {
+                            let proto_wrapper = format!(
+                                "WitforgeOptionOf{}",
+                                self.foreign_shape_name_ty(Some(dependency), payload)?
+                            );
                             let payload = qualify_type(Some(dependency), payload);
-                            let wrapper = self.foreign_proto_singular(name)?;
-                            let oneof = self.proto_oneof(
-                                wrapper.rsplit("::").next().unwrap_or_default(),
-                                "value",
-                            )?;
+                            let oneof = self.proto_oneof(&proto_wrapper, "value");
                             return Ok(format!(
                                 "match {expr}.value {{ ::core::option::Option::Some({oneof}::Some(value)) => ::core::option::Option::Some({}), ::core::option::Option::Some({oneof}::None(_)) | ::core::option::Option::None => ::core::option::Option::None }}",
                                 self.decode_singular("value", &payload, identity)?
@@ -2551,10 +2532,13 @@ impl Emitter<'_> {
                     },
                     TypeDefKind::Option(payload) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        let wrapper = self.proto_singular_type(ty)?;
-                        let wrapper_name = wrapper.rsplit("::").next().unwrap_or_default();
-                        let oneof = self.proto_oneof(wrapper_name, "value")?;
-                        let _ = payload;
+                        let proto_wrapper =
+                            if matches!(self.form(payload)?, Form::List | Form::Option) {
+                                format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name))
+                            } else {
+                                format!("WitforgeOptionOf{}", self.shape_name(payload)?)
+                            };
+                        let oneof = self.proto_oneof(&proto_wrapper, "value");
                         Ok(format!(
                             "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => {module}::from_proto(::core::option::Option::Some(value))?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}"
                         ))
@@ -2592,9 +2576,10 @@ impl Emitter<'_> {
 
     fn encode_inline_result(&self, expr: &str, result: &ResultExpr) -> Result<String> {
         let shape = self.shape_name(&TypeExpr::Result(result.clone()))?;
-        let message = self.proto_user_type_path(&format!("Witforge{shape}"))?;
-        let oneof = self.proto_oneof(&format!("Witforge{shape}"), "value")?;
-        let empty = self.proto_empty()?;
+        let proto_name = format!("Witforge{shape}");
+        let message = self.proto_user_type_path(&proto_name);
+        let oneof = self.proto_oneof(&proto_name, "value");
+        let empty = self.proto_empty();
         let mut out = String::new();
         writeln!(out, "match {expr} {{")?;
         for (side, variant) in [("Ok", "Ok"), ("Err", "Err")] {
@@ -2632,7 +2617,7 @@ impl Emitter<'_> {
                 self.shape_name(&TypeExpr::Result(result.clone()))?
             ),
             "value",
-        )?;
+        );
         let mut out = String::new();
         writeln!(out, "match {expr}.value {{")?;
         for (side, variant) in [("Ok", "Ok"), ("Err", "Err")] {

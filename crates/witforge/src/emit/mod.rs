@@ -14,6 +14,7 @@ macro_rules! contract_bail {
 mod convert;
 pub(crate) mod defaults;
 pub mod glue;
+pub(crate) mod ident;
 pub mod json_schema;
 pub mod output;
 pub mod proto;
@@ -22,50 +23,10 @@ pub(crate) mod versions;
 
 use crate::model::{TypeDefKind, TypeExpr};
 
-/// The Rust keyword list shared by the Rust and glue emitters.
-pub(crate) const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
-    "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
-    "override", "priv", "try", "typeof", "union", "unsized", "virtual", "yield",
-];
-
-/// Convert a WIT name to its Rust module or member spelling.
-pub(crate) fn snake_case(name: &str) -> String {
-    name.replace('-', "_")
-}
-
-/// Convert a WIT name to its Rust type or trait spelling.
-pub(crate) fn pascal_case(name: &str) -> String {
-    let mut out = String::new();
-    for part in name.split('-') {
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            out.push(first.to_ascii_uppercase());
-            out.extend(chars);
-        }
-    }
-    out
-}
-
-/// Escape a Rust identifier, rejecting names that cannot be represented.
-pub(crate) fn rust_ident(name: &str, what: &str) -> anyhow::Result<String> {
-    if name.is_empty() || name == "_" {
-        contract_bail!("{what} has no Rust-compatible name");
-    }
-    if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-        contract_bail!("{what} `{name}` starts with a digit");
-    }
-    let suffix = ["crate", "self", "super", "Self"];
-    if suffix.contains(&name) {
-        Ok(format!("{name}_"))
-    } else if RUST_KEYWORDS.contains(&name) {
-        Ok(format!("r#{name}"))
-    } else {
-        Ok(name.to_string())
-    }
-}
+pub(crate) use ident::{
+    RUST_KEYWORDS, plain_ident as rust_ident, plain_pascal as pascal_case,
+    plain_snake as snake_case,
+};
 
 /// How a type expression is rendered in diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

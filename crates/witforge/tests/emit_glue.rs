@@ -737,3 +737,311 @@ interface api { type matrix = list<list<string>>; }\n",
     }
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn one_letter_upper_case_and_digit_names_compile_and_roundtrip_against_prost() {
+    let out = std::env::temp_dir().join(format!(
+        "witforge-glue-ident-conversion-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out);
+    let wit_root = out.join("wit");
+    let v01 = wit_root.join("v0.1");
+    fs::create_dir_all(v01.join("deps/dep")).unwrap();
+    fs::write(
+        v01.join("deps/dep/types.wit"),
+        "package ex:API@0.1.0;\n\n\
+interface x {\n\
+  record y-z { foo-BAR: u32, a1: string }\n\
+  enum HTTP-code { HTTP, ok2 }\n\
+  get-a-b: func(foo2-bar: u32) -> y-z;\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package example:idents@0.1.0;\n\n\
+interface types {\n\
+  use ex:API/x@0.1.0.{y-z, HTTP-code};\n\
+  enum x-kind { foo, bar-baz }\n\
+  enum e { HTTP, other }\n\
+  variant x-kind-v { x-y(u32), foo-BAR(string), a1 }\n\
+  record r { foo-BAR: u32, URL: string, foo2-bar: u32, a1: u32, dep: y-z, code: HTTP-code }\n\
+}\n\n\
+interface api {\n\
+  record x-y { a1: u32, foo2-bar: string }\n\
+  get-x-y: func(foo-BAR: u32, a1: string) -> x-y;\n\
+}\n\n\
+interface a {\n\
+  ping: func(x-y: u32) -> u32;\n\
+  get-x-y: func(foo-BAR: string) -> string;\n\
+}\n\n\
+interface HTTP-api {\n\
+  record HTTP-item { HTTP-url: string }\n\
+}\n",
+    )
+    .unwrap();
+    let contract = load(&v01).unwrap();
+    assert!(
+        witforge::subset::check_diagnostics(&contract).is_empty(),
+        "unexpected subset diagnostics: {:?}",
+        witforge::subset::check_diagnostics(&contract)
+    );
+    let (_, lock) = setup_contract(&v01);
+    fs::write(v01.join("wire.lock"), lock.render()).unwrap();
+
+    rust::plan(&wit_root)
+        .unwrap()
+        .write(&out.join("plain"))
+        .unwrap();
+    glue::plan(&wit_root, "crate::plain", "crate::proto")
+        .unwrap()
+        .write(&out.join("glue"))
+        .unwrap();
+    proto::plan(&wit_root)
+        .unwrap()
+        .write(&out.join("proto-work"))
+        .unwrap();
+
+    // Plain Rust output must compile cleanly with zero non_snake_case or non_camel_case_types.
+    let plain_check = std::process::Command::new("rustc")
+        .args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "-D",
+            "non_snake_case",
+            "-D",
+            "non_camel_case_types",
+            "--emit=metadata",
+            "-o",
+        ])
+        .arg(out.join("plain.rmeta"))
+        .arg(out.join("plain/mod.rs"))
+        .output()
+        .unwrap();
+    assert!(
+        plain_check.status.success(),
+        "plain Rust had case warnings:\n{}",
+        String::from_utf8_lossy(&plain_check.stderr)
+    );
+
+    // Compile `.proto` with protox + prost-build (default naming).
+    let proto_files = [
+        out.join("proto-work/v0.proto"),
+        out.join("proto-work/ex.API.v0.proto"),
+    ];
+    let descriptors = protox::compile(proto_files, [out.join("proto-work")]).unwrap();
+    let prost_out = out.join("proto-work/out");
+    fs::create_dir_all(&prost_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .compile_fds(descriptors)
+        .unwrap();
+
+    fs::create_dir_all(out.join("proto/example/idents")).unwrap();
+    fs::create_dir_all(out.join("proto/ex/api")).unwrap();
+    fs::copy(
+        prost_out.join("example.idents.v0.rs"),
+        out.join("proto/example/idents/v0.rs"),
+    )
+    .unwrap();
+    fs::copy(
+        prost_out.join("ex.api.v0.rs"),
+        out.join("proto/ex/api/v0.rs"),
+    )
+    .unwrap();
+    fs::write(
+        out.join("proto/mod.rs"),
+        "pub mod example { pub mod idents { pub mod v0 { include!(\"example/idents/v0.rs\"); } } }\n\
+         pub mod ex { pub mod api { pub mod v0 { include!(\"ex/api/v0.rs\"); } } }\n",
+    )
+    .unwrap();
+
+    fs::write(
+        out.join("main.rs"),
+        r#"
+mod glue;
+mod plain;
+mod proto;
+
+fn main() {
+    use plain::v0_1::{api, http_api, types};
+    use plain::witforge_deps::ex_api::x::{HttpCode, YZ};
+
+    // enum x-kind { foo } -> prost TypesXKind::TypesXkindFoo
+    let k = types::XKind::Foo;
+    let kp = glue::v0::types::x_kind::to_proto(&k);
+    assert_eq!(glue::v0::types::x_kind::from_proto(kp).unwrap(), k);
+
+    // enum e { HTTP, other } -> prost TypesE::Http
+    let e = types::E::Http;
+    let ep = glue::v0::types::e::to_proto(&e);
+    assert_eq!(glue::v0::types::e::from_proto(ep).unwrap(), e);
+
+    // variant x-kind-v -> oneof module types_x_kind_v
+    for v in [
+        types::XKindV::XY(7),
+        types::XKindV::FooBar("hi".to_string()),
+        types::XKindV::A1,
+    ] {
+        let vp = glue::v0::types::x_kind_v::to_proto(&v);
+        assert_eq!(glue::v0::types::x_kind_v::from_proto(vp).unwrap(), v);
+    }
+
+    // record with foo-BAR, URL, foo2-bar, a1, and dependency types
+    let r = types::R {
+        foo_bar: 1,
+        url: "https://example.test".to_string(),
+        foo2_bar: 2,
+        a1: 3,
+        dep: YZ { foo_bar: 4, a1: "dep".to_string() },
+        code: HttpCode::Http,
+    };
+    let rp = glue::v0::types::r::to_proto(&r);
+    assert_eq!(glue::v0::types::r::from_proto(rp).unwrap(), r);
+
+    // api/x-y and get-x-y -> prost ApiXy, ApiGetXyRequest, ApiMethod::GetXY
+    let _m = glue::v0::api::functions::get_x_y::METHOD;
+    let req = glue::v0::api::functions::get_x_y::to_request(&9, &"ok".to_string());
+    assert_eq!(
+        glue::v0::api::functions::get_x_y::from_request(req).unwrap(),
+        (9, "ok".to_string())
+    );
+    let xy = api::XY { a1: 5, foo2_bar: "xy".to_string() };
+    let resp = glue::v0::api::functions::get_x_y::to_response(&xy);
+    assert_eq!(glue::v0::api::functions::get_x_y::from_response(resp).unwrap(), xy);
+
+    // One-letter interface `a` -> AMethod with AMETHOD_UNSPECIFIED and A_METHOD_PING
+    let _am1 = glue::v0::a::functions::ping::METHOD;
+    let _am2 = glue::v0::a::functions::get_x_y::METHOD;
+    let req = glue::v0::a::functions::ping::to_request(&42);
+    assert_eq!(glue::v0::a::functions::ping::from_request(req).unwrap(), 42);
+
+    // Upper-case interface HTTP-api
+    let h = http_api::HttpItem { http_url: "u".to_string() };
+    let hp = glue::v0::http_api::http_item::to_proto(&h);
+    assert_eq!(glue::v0::http_api::http_item::from_proto(hp).unwrap(), h);
+
+    // Dependency function get-a-b
+    let dreq = glue::witforge_deps::ex_api::x::functions::get_a_b::to_request(&11);
+    assert_eq!(
+        glue::witforge_deps::ex_api::x::functions::get_a_b::from_request(dreq).unwrap(),
+        11
+    );
+}
+"#,
+    )
+    .unwrap();
+    run_cargo_program(
+        &out,
+        "prost = \"0.14\"\n",
+        "unified ident conversion glue compile/run",
+    );
+
+    // Two WIT names mapping to one prost identifier (`api-x/r` vs `api/xr` -> `ApiXr`) are
+    // refused by `check` (WF1003), `proto`, and `glue`.
+    let clash_root = out.join("clash-prost");
+    let clash_v01 = clash_root.join("v0.1");
+    fs::create_dir_all(&clash_v01).unwrap();
+    fs::write(
+        clash_v01.join("contract.wit"),
+        "package example:clash-prost@0.1.0;\n\
+interface api-x { record r { a: u32 } }\n\
+interface api { record xr { a: u32 } }\n",
+    )
+    .unwrap();
+    let clash_contract = load(&clash_v01).unwrap();
+    let diagnostics = witforge::subset::check_diagnostics(&clash_contract);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == "WF1003" && d.message.contains("ApiXr")),
+        "{diagnostics:?}"
+    );
+    let model_err = model::build(&clash_contract).unwrap_err();
+    assert!(format!("{model_err:#}").contains("ApiXr"), "{model_err:#}");
+    let proto_err = proto::plan(&clash_root).unwrap_err();
+    assert!(witforge::is_contract_error(&proto_err), "{proto_err:#}");
+    assert!(format!("{proto_err:#}").contains("ApiXr"), "{proto_err:#}");
+
+    // A new minor that adds a field colliding only in case with a removed field is refused at
+    // lock reconciliation.
+    let minor_root = out.join("minor-reserved-clash");
+    let minor_v01 = minor_root.join("v0.1");
+    let minor_v02 = minor_root.join("v0.2");
+    fs::create_dir_all(&minor_v01).unwrap();
+    fs::create_dir_all(&minor_v02).unwrap();
+    fs::write(
+        minor_v01.join("contract.wit"),
+        "package example:minor-clash@0.1.0;\ninterface types { record r { foo-BAR: u32 } }\n",
+    )
+    .unwrap();
+    let first_minor_model = model::build(&load(&minor_v01).unwrap()).unwrap();
+    let first_minor_lock = lock_for(&first_minor_model);
+    fs::write(minor_v01.join("wire.lock"), first_minor_lock.render()).unwrap();
+
+    fs::write(
+        minor_v02.join("contract.wit"),
+        "package example:minor-clash@0.2.0;\ninterface types { record r { foo-bar: u32 } }\n",
+    )
+    .unwrap();
+    let second_minor_model = model::build(&load(&minor_v02).unwrap()).unwrap();
+    let mut second_minor_lock = first_minor_lock;
+    let lock_err = second_minor_lock
+        .reconcile(&second_minor_model.members().unwrap())
+        .unwrap_err();
+    assert!(
+        format!("{lock_err:#}").contains("reserved member `foo-BAR`"),
+        "{lock_err:#}"
+    );
+
+    // A new minor that adds a type colliding with a removed interface's reserved method enum in
+    // the major's shared proto file is refused at that minor by both `proto` and `glue`.
+    let major_root = out.join("major-shared-clash");
+    let major_v01 = major_root.join("v0.1");
+    let major_v02 = major_root.join("v0.2");
+    fs::create_dir_all(&major_v01).unwrap();
+    fs::create_dir_all(&major_v02).unwrap();
+    fs::write(
+        major_v01.join("contract.wit"),
+        "package example:major-clash@0.1.0;\ninterface api-x { ping: func(); }\n",
+    )
+    .unwrap();
+    let major_first_model = model::build(&load(&major_v01).unwrap()).unwrap();
+    let major_first_lock = lock_for(&major_first_model);
+    fs::write(major_v01.join("wire.lock"), major_first_lock.render()).unwrap();
+
+    fs::write(
+        major_v02.join("contract.wit"),
+        "package example:major-clash@0.2.0;\ninterface api { record x-method { a: u32 } }\n",
+    )
+    .unwrap();
+    let major_second_model = model::build(&load(&major_v02).unwrap()).unwrap();
+    let mut major_second_lock = major_first_lock;
+    major_second_lock
+        .reconcile(&major_second_model.members().unwrap())
+        .unwrap();
+    fs::write(major_v02.join("wire.lock"), major_second_lock.render()).unwrap();
+
+    let minor_proto_err = proto::plan(&major_root).unwrap_err();
+    assert!(
+        witforge::is_contract_error(&minor_proto_err),
+        "{minor_proto_err:#}"
+    );
+    assert!(
+        format!("{minor_proto_err:#}").contains("ApiXMethod"),
+        "{minor_proto_err:#}"
+    );
+    let minor_glue_err = glue::plan(&major_root, "crate::plain", "crate::proto").unwrap_err();
+    assert!(
+        witforge::is_contract_error(&minor_glue_err),
+        "{minor_glue_err:#}"
+    );
+    assert!(
+        format!("{minor_glue_err:#}").contains("ApiXMethod"),
+        "{minor_glue_err:#}"
+    );
+
+    fs::remove_dir_all(&out).unwrap();
+}

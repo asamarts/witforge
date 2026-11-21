@@ -30,6 +30,16 @@ have it.
 
 ### Changed
 
+- Plain Rust, protobuf, and glue now derive all identifiers from one shared conversion module
+  that reproduces `prost-build` 0.14's default naming (case conversion, `strip_enum_prefix`,
+  oneof module names, and method enum zero values) directly from the stable `.proto` names.
+  `check` (`WF1003`) and `proto`/`glue` refuse pairs of WIT names that map to one generated
+  identifier (such as `api-x/r` beside `api/xr` both becoming `ApiXr`). **Migration:** `.proto`
+  message, field, and enum-value names (and JSON Schema names) do not change; plain Rust
+  identifiers for upper-case WIT words now fold to idiomatic Rust casing without `non_snake_case`
+  or `non_camel_case_types` warnings (for example `URL` -> `url`, `HTTP-api` -> `http_api` /
+  `HttpApi`, `foo-BAR` -> `foo_bar` / `FooBar`, `HTTP` -> `Http`, `interface API` -> `mod api`
+  and `trait Api`), and `--serde` JSON keys follow those plain Rust spellings when regenerated.
 - `glue` now requires absolute module paths for `--plain-root` and `--proto-root` (and the
   matching `witforge.toml` keys): `crate`, `crate::...`, `::crate_name::...`, or an external
   crate name (`other::...`). Relative paths starting with `self` or `super`, and unprefixed

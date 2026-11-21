@@ -166,19 +166,26 @@ pub use analyzer::Analyzer;
 
 ### 3.2 Name conversion
 
-- Type, interface, alias, and enum/variant case names: PascalCase. Split on `-`, capitalize
-  each segment, concatenate (`edit-file` -> `EditFile`).
-- Field, function, parameter, flags-member, and interface-module names: snake_case. Replace
-  `-` with `_` (`edit-file` -> `edit_file`).
+Plain Rust, protobuf, and glue take all of their identifiers from one shared conversion module:
+
+- Type, interface trait, alias, and enum/variant case names: `UpperCamelCase` using the same
+  word-boundary rules as `prost-build` (`edit-file` -> `EditFile`, `HTTP-api` -> `HttpApi`,
+  `HTTP` -> `Http`, `x-kind` -> `XKind`, `foo2-bar` -> `Foo2Bar`, `a1` -> `A1`).
+- Field, function, parameter, flags-member, and interface-module names: `lower_snake_case` using
+  the same word-boundary rules (`edit-file` -> `edit_file`, `URL` -> `url`, `HTTP-api` ->
+  `http_api`, `foo-BAR` -> `foo_bar`, `foo2-bar` -> `foo2_bar`). Plain Rust therefore emits no
+  `non_snake_case` or `non_camel_case_types` warnings, and upper-case interface names such as
+  `API` map to distinct module (`api`) and trait (`Api`) identifiers.
 - Use raw identifiers where Rust allows them: `type` -> `r#type`, `where` -> `r#where`.
 - Names that cannot be raw get a trailing underscore: `self` -> `self_`, `Self` -> `Self_`,
   `crate` -> `crate_`, `super` -> `super_`.
 - A name that would start with a digit or be empty is a contract error.
-- After conversion, collisions are detected within each Rust scope: types and the interface trait
-  within an interface module, members within a type, functions within a trait, traits/modules at
-  the version root. A collision is a hard error naming the colliding WIT items. Names are never
-  silently mangled. For example, a type named `analyzer` in interface `analyzer` collides with
-  the generated `Analyzer` trait and is refused.
+- After conversion, collisions are detected within each scope (plain Rust, protobuf, and `prost`
+  identifiers, including cross-interface collisions such as `api-x/r` beside `api/xr` both
+  becoming `ApiXr`). Two WIT names that map to one generated identifier are refused by `check`
+  (`WF1003`) and every generator, naming both colliding WIT items. Names are never silently
+  mangled. For example, a type named `analyzer` in interface `analyzer` collides with the
+  generated `Analyzer` trait and is refused.
 - Generated code uses fully qualified standard-library paths (`::std::string::String`,
   `::std::vec::Vec`, `::std::option::Option`, `::std::result::Result`) so a contract type named
   `String`, `Vec`, `Option`, or `Result` cannot shadow them.
@@ -867,13 +874,17 @@ and the later version-conversion layer.
 - Glue covers every interface function in that version, and every dependency type and interface
   function under the shared dependency glue module.
 - Older minors get no glue module; they are not the proto schema’s source version.
-- The emitter uses the same model, canonical types, collision rules, and naming conversion as
-  the Rust and proto emitters. It converts to and from the prost types generated from the
-  protobuf schema, so it refuses every contract the proto emitter refuses, with the same
-  diagnostic and exit `1`: a record `f-request` beside a function `f`, whose request message is
-  also `IFRequest`, fails `glue` as it fails `proto`, although glue's own names do not collide.
-  WIT docs are carried to glue module/function docs where they describe the type or function;
-  synthesized helpers get a short doc comment.
+- The emitter uses the same model, canonical types, collision rules, and shared identifier
+  conversion module as the Rust and proto emitters. `.proto` names stay unchanged; glue derives
+  `prost` type, field, enum-variant (including `strip_enum_prefix`), oneof-module, and package
+  module names by applying `prost-build` 0.14's default naming rules directly to the `.proto`
+  names. Consumers MUST leave `prost-build`'s default identifier naming (including
+  `strip_enum_prefix`) enabled when compiling generated `.proto` files for witforge glue. It
+  converts to and from the prost types generated from the protobuf schema, so it refuses every
+  contract the proto emitter refuses, with the same diagnostic and exit `1`: a record `f-request`
+  beside a function `f`, whose request message is also `IFRequest`, fails `glue` as it fails
+  `proto`, although glue's own names do not collide. WIT docs are carried to glue module/function
+  docs where they describe the type or function; synthesized helpers get a short doc comment.
 - A type or function that the subset checker refuses never reaches glue.
 
 ### 7.2 CLI, output layout, and module paths
