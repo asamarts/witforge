@@ -1187,7 +1187,7 @@ fn emit_convert_value(
         (TypeExpr::Option(source_payload), TypeExpr::Option(target_payload)) => {
             if is_infallible_pair(source_payload, target_payload) {
                 return Ok(ValueExpr {
-                    expr: format!("::core::clone::Clone::clone({expression})"),
+                    expr: copy_or_clone(source_payload, expression),
                     returns_result: false,
                 });
             }
@@ -1337,8 +1337,12 @@ fn emit_result_value(
         ),
     }
     if check_ok_infallible && check_err_infallible {
+        let resolved_result = TypeExpr::Result(ResultExpr {
+            ok: source_result.ok.clone(),
+            err: source_result.err.clone(),
+        });
         return Ok(ValueExpr {
-            expr: format!("::core::clone::Clone::clone({expression})"),
+            expr: copy_or_clone(&resolved_result, expression),
             returns_result: false,
         });
     }
@@ -1419,6 +1423,41 @@ fn emit_result_value(
         expr: out_var,
         returns_result: false,
     })
+}
+
+/// Whether an already-resolved WIT type expression maps to a `Copy` Rust type.
+///
+/// Only primitives (except `string`), unit `()` (empty result sides), `Option<T>` where `T: Copy`,
+/// and `Result<O, E>` where `O: Copy` and `E: Copy` implement `Copy`; generated records, variants,
+/// enums, and flags derive `Clone` without `Copy`, and `list<T>` / `string` own heap allocations.
+fn is_copy_resolved(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::Bool
+        | TypeExpr::U8
+        | TypeExpr::U16
+        | TypeExpr::U32
+        | TypeExpr::U64
+        | TypeExpr::S8
+        | TypeExpr::S16
+        | TypeExpr::S32
+        | TypeExpr::S64
+        | TypeExpr::F32
+        | TypeExpr::F64 => true,
+        TypeExpr::String | TypeExpr::Named(_) | TypeExpr::List(_) => false,
+        TypeExpr::Option(inner) => is_copy_resolved(inner),
+        TypeExpr::Result(result) => {
+            result.ok.as_deref().is_none_or(is_copy_resolved)
+                && result.err.as_deref().is_none_or(is_copy_resolved)
+        }
+    }
+}
+
+fn copy_or_clone(resolved: &TypeExpr, expression: &str) -> String {
+    if is_copy_resolved(resolved) {
+        copied(expression)
+    } else {
+        format!("::core::clone::Clone::clone({expression})")
+    }
 }
 
 /// A Rust type path for `ty` in `version`, relative to the pair module that imports that

@@ -523,17 +523,17 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 }
 
 fn paths_overlap_for_platform(left: &Path, right: &Path) -> bool {
-    if paths_overlap(left, right) {
-        return true;
-    }
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    {
-        paths_overlap_ascii_case_insensitive(left, right)
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        false
-    }
+    paths_overlap(left, right) || paths_overlap_case_insensitive_on_platform(left, right)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn paths_overlap_case_insensitive_on_platform(left: &Path, right: &Path) -> bool {
+    paths_overlap_ascii_case_insensitive(left, right)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn paths_overlap_case_insensitive_on_platform(_left: &Path, _right: &Path) -> bool {
+    false
 }
 
 #[cfg(any(test, target_os = "windows", target_os = "macos"))]

@@ -2990,6 +2990,7 @@ fn output_root_guard_protects_released_directories() {
     let manifest = archive.join("released");
     fs::write(&manifest, "v0.1\n").unwrap();
 
+    #[allow(unused_mut)]
     let mut bad_outs = vec![
         archive.join("v0.1"),
         archive.join("v0.1/nested"),

@@ -610,6 +610,10 @@ fn convert_hardening_consumer_from_impls_clippy_empty_pair_and_hop_errors() {
         !convert_rs.contains("Result::Ok(::core::clone::Clone::clone"),
         "found untyped Result::Ok(Clone::clone...):\n{convert_rs}"
     );
+    assert!(
+        !convert_rs.contains("Clone::clone(&value.bare)"),
+        "Copy `result` field must be copied directly, not cloned:\n{convert_rs}"
+    );
 
     fs::write(
         crate_dir.join("Cargo.toml"),
