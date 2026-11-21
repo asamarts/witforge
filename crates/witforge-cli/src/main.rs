@@ -356,6 +356,7 @@ fn resolve_paths(
         }
     };
     validate_configured_outputs(&config, &name, emitter, out.as_deref(), &from_config)?;
+    validate_configured_module_roots(&config)?;
     let root = root.unwrap_or_else(|| from_config(&project.root));
     let out = out.or_else(|| match emitter {
         Emitter::Rust => project.rust.as_ref().map(|config| from_config(&config.out)),
@@ -446,6 +447,23 @@ fn validate_configured_outputs(
         .map(|(label, path)| (label.as_str(), path.as_path()))
         .collect();
     emit::output::ensure_distinct_output_roots(&refs)
+}
+
+fn validate_configured_module_roots(config: &ConfigFile) -> Result<()> {
+    for (proj_name, proj) in &config.project {
+        let Some(glue) = &proj.glue else {
+            continue;
+        };
+        if let Some(plain_root) = &glue.plain_root {
+            emit::glue::validate_module_root(plain_root)
+                .with_context(|| format!("invalid project.{proj_name}.glue.plain-root"))?;
+        }
+        if let Some(proto_root) = &glue.proto_root {
+            emit::glue::validate_module_root(proto_root)
+                .with_context(|| format!("invalid project.{proj_name}.glue.proto-root"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Exit codes: `0` success; `1` a contract, lockfile, or generated-output violation; `2` a

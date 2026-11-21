@@ -886,9 +886,16 @@ witforge glue <wit-root> --out <dir> \
   `<proto-root>::v<major>`; with dependencies it is
   `<proto-root>::<root-namespace>::<root-package>::v<major>`.
 - Both roots are required. The tool does not guess them.
-- Each root MUST be a valid Rust module path: `crate`, `self`, `super`, or identifiers (including
-  raw identifiers) separated by `::`; empty segments, trailing `::`, generics, and whitespace are
-  errors.
+- Each root MUST be a valid absolute Rust module path: `crate`, `crate::...`, `::name::...`, or
+  an external crate name (`other::...`) of identifiers (including raw identifiers) separated by
+  `::`. Generated glue pastes the root into nested modules at several depths, so relative roots
+  starting with `self` or `super` are refused as usage errors (exit `2`), as is an unprefixed
+  first segment that matches a module or item generated at that level (`v<major>`,
+  `witforge_deps`, `functions`, `GlueError`, or a generated interface/type/function/dependency
+  module name; prefix an external crate with `::` when its name collides). Modules inside the
+  consumer's own crate MUST be written with `crate::...`. Empty segments, trailing `::`,
+  generics, bare Rust keywords, and whitespace are errors. `plain-root` and `proto-root` in
+  `witforge.toml` go through the same validation, as do command-line overrides.
 - Generated references:
   - plain local: `<plain-root>::v<major>_<minor>::...`
   - plain dependency: `<plain-root>::witforge_deps::<namespace>_<package>::...`

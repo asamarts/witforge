@@ -3,7 +3,7 @@
 //! Glue converts between the plain Rust types emitted by [`crate::emit::rust`] and the
 //! `prost`/`pbjson` types generated from [`crate::emit::proto`] output.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -120,6 +120,9 @@ pub(crate) fn plan_versions(
     for version in versions {
         highest.insert(version.major, version);
     }
+    let generated_modules = collect_plan_module_names(&highest, dependencies);
+    validate_module_root_against_generated(plain_root, &generated_modules)?;
+    validate_module_root_against_generated(proto_root, &generated_modules)?;
     let first = versions
         .first()
         .context("no version directories found under WIT root")?;
@@ -238,10 +241,15 @@ fn emit_dependency_glue(
 
 /// Validate a Rust module path used as a generated reference root.
 ///
+/// Generated glue pastes `--plain-root` and `--proto-root` into nested modules at several depths,
+/// so relative roots starting with `self` or `super` are refused. Accepted forms are `crate`,
+/// `crate::...`, `::crate_name::...`, or an external crate name (`other::...`).
+///
 /// # Errors
 ///
-/// Returns an error for an empty path, empty or trailing segments, whitespace, generics, an
-/// invalid identifier, or a bare Rust keyword.
+/// Returns an error for an empty path, a relative root (`self` or `super`), a reserved generated
+/// module root, empty or trailing segments, whitespace, generics, an invalid identifier, or a
+/// bare Rust keyword.
 pub fn validate_module_root(root: &str) -> Result<()> {
     if root.is_empty() {
         bail!("module root is empty");
@@ -249,21 +257,34 @@ pub fn validate_module_root(root: &str) -> Result<()> {
     if root.trim() != root || root.chars().any(char::is_whitespace) {
         bail!("module root `{root}` contains whitespace");
     }
-    let segments: Vec<&str> = root.split("::").collect();
+    let (global, rest) = root
+        .strip_prefix("::")
+        .map_or((false, root), |stripped| (true, stripped));
+    if rest.is_empty() {
+        bail!("module root `{root}` has an empty segment");
+    }
+    let segments: Vec<&str> = rest.split("::").collect();
     if segments.iter().any(|segment| segment.is_empty()) {
         bail!("module root `{root}` has an empty segment");
     }
-    let mut first_super = false;
     for (index, raw_segment) in segments.iter().enumerate() {
         let segment = *raw_segment;
-        let special = matches!(segment, "crate" | "self" | "super");
-        if special {
+        if matches!(segment, "crate" | "self" | "super") {
             if index == 0 {
-                first_super = segment == "super";
-                continue;
-            }
-            if first_super && segment == "super" {
-                continue;
+                if global {
+                    bail!(
+                        "module root `{root}` cannot start with `::{segment}`; use `crate::...`, \
+                         `::crate_name::...`, or an external crate name"
+                    );
+                }
+                if segment == "crate" {
+                    continue;
+                }
+                bail!(
+                    "module root `{root}` is relative (`{segment}` cannot resolve identically at \
+                     every generated module depth); use `crate::...`, `::crate_name::...`, or an \
+                     external crate name"
+                );
             }
             bail!("module root `{root}` has `{segment}` outside the leading module path");
         }
@@ -286,8 +307,87 @@ pub fn validate_module_root(root: &str) -> Result<()> {
         if segment != identifier && matches!(identifier, "crate" | "self" | "super" | "Self") {
             bail!("module root `{root}` has invalid raw identifier `{segment}`");
         }
+        if index == 0 && !global && matches!(segment, "witforge_deps" | "functions" | "GlueError") {
+            bail!(
+                "module root `{root}` starts with generated item `{segment}`; prefix an external \
+                 crate with `::` (for example `::{root}`) or use `crate::...`"
+            );
+        }
     }
     Ok(())
+}
+
+fn validate_module_root_against_generated(
+    root: &str,
+    generated_modules: &BTreeSet<String>,
+) -> Result<()> {
+    validate_module_root(root)?;
+    if root.starts_with("::") {
+        return Ok(());
+    }
+    let first = root.split("::").next().unwrap_or_default();
+    if first != "crate" && generated_modules.contains(first) {
+        bail!(
+            "module root `{root}` starts with generated module `{first}`; prefix an external \
+             crate with `::` (for example `::{root}`) or use `crate::...`"
+        );
+    }
+    Ok(())
+}
+
+fn collect_interface_module_names(interfaces: &[Interface], out: &mut BTreeSet<String>) {
+    for interface in interfaces {
+        if let Ok(module) = rust_ident(&snake_case(&interface.name), "interface module") {
+            out.insert(module);
+        }
+        for def in &interface.types {
+            if let Ok(module) = rust_ident(&snake_case(&def.name), "type module") {
+                out.insert(module);
+            }
+        }
+        for function in &interface.functions {
+            if let Ok(module) = rust_ident(&snake_case(&function.name), "function module") {
+                out.insert(module);
+            }
+        }
+    }
+}
+
+fn collect_model_module_names(model: &Model, out: &mut BTreeSet<String>) {
+    out.insert(format!("v{}", model.package.version.major));
+    out.insert("witforge_deps".to_string());
+    out.insert("functions".to_string());
+    collect_interface_module_names(&model.interfaces, out);
+    for dependency in &model.dependencies {
+        if let Ok(module) =
+            dependency_module_name(&dependency.package.namespace, &dependency.package.name)
+        {
+            out.insert(module);
+        }
+        collect_interface_module_names(&dependency.interfaces, out);
+    }
+}
+
+fn collect_plan_module_names(
+    highest: &BTreeMap<u64, &Version>,
+    dependencies: &[Dependency],
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    names.insert("witforge_deps".to_string());
+    names.insert("functions".to_string());
+    for (&major, version) in highest {
+        names.insert(format!("v{major}"));
+        collect_model_module_names(&version.model, &mut names);
+    }
+    for dependency in dependencies {
+        if let Ok(module) =
+            dependency_module_name(&dependency.package.namespace, &dependency.package.name)
+        {
+            names.insert(module);
+        }
+        collect_interface_module_names(&dependency.interfaces, &mut names);
+    }
+    names
 }
 
 fn dependency_shape_name(dependency: &Dependency, name: &QualifiedName) -> String {
@@ -416,18 +516,16 @@ impl<'a> Emitter<'a> {
         plain_root: &str,
         proto_root: &str,
     ) -> Result<Self> {
-        if plain_root.trim().is_empty() {
-            bail!("plain root module path is empty");
-        }
-        if proto_root.trim().is_empty() {
-            bail!("proto root module path is empty");
-        }
+        let mut generated_modules = BTreeSet::new();
+        collect_model_module_names(model, &mut generated_modules);
+        validate_module_root_against_generated(plain_root, &generated_modules)?;
+        validate_module_root_against_generated(proto_root, &generated_modules)?;
         let proto_base_override = if model.dependencies.is_empty() {
             None
         } else {
             Some(format!(
                 "{}::{}::{}::v{}",
-                proto_root.trim(),
+                proto_root,
                 snake_case(&model.package.namespace),
                 snake_case(&model.package.name),
                 model.package.version.major
@@ -436,8 +534,8 @@ impl<'a> Emitter<'a> {
         Ok(Self {
             model,
             lock,
-            plain_root: plain_root.trim().to_string(),
-            proto_root: proto_root.trim().to_string(),
+            plain_root: plain_root.to_string(),
+            proto_root: proto_root.to_string(),
             major: model.package.version.major,
             minor: model.package.version.minor,
             type_prefix: "super::super".to_string(),

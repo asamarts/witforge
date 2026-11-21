@@ -3249,3 +3249,121 @@ fn generators_adopt_legacy_shared_header_and_preserve_unowned_files() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn glue_refuses_relative_and_colliding_module_roots_on_cli_and_in_config() {
+    let base = versions("absolute-module-roots");
+    let wit = base.join("wit");
+    let glue_out = base.join("glue-out");
+
+    for (plain_root, proto_root, expected) in [
+        ("self::plain", "crate::proto", "relative"),
+        ("crate::plain", "super::super::proto", "relative"),
+        ("v0::plain", "crate::proto", "starts with generated module"),
+        (
+            "crate::plain",
+            "types::proto",
+            "starts with generated module",
+        ),
+        (
+            "witforge_deps::plain",
+            "crate::proto",
+            "starts with generated item",
+        ),
+    ] {
+        let output = witforge()
+            .args([
+                "glue",
+                wit.to_str().unwrap(),
+                "--out",
+                glue_out.to_str().unwrap(),
+                "--plain-root",
+                plain_root,
+                "--proto-root",
+                proto_root,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{plain_root} / {proto_root}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!glue_out.exists());
+    }
+
+    // Invalid roots in `witforge.toml` are refused even when overridden on the CLI or when
+    // another emitter runs against the config file.
+    let bad_config = base.join("witforge.toml");
+    fs::write(
+        &bad_config,
+        "version = 1\n\n\
+         [project.app]\n\
+         root = \"wit\"\n\n\
+         [project.app.rust]\n\
+         out = \"rust-out\"\n\n\
+         [project.app.glue]\n\
+         out = \"glue-out\"\n\
+         plain-root = \"super::plain\"\n\
+         proto-root = \"crate::proto\"\n",
+    )
+    .unwrap();
+    let overridden = witforge()
+        .args([
+            "glue",
+            "--config",
+            bad_config.to_str().unwrap(),
+            "--plain-root",
+            "crate::plain",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(overridden.status.code(), Some(2), "{overridden:?}");
+    assert!(
+        String::from_utf8_lossy(&overridden.stderr).contains("plain-root"),
+        "{overridden:?}"
+    );
+    let other_emitter = witforge()
+        .args(["rust", "--config", bad_config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(other_emitter.status.code(), Some(2), "{other_emitter:?}");
+
+    // Valid absolute forms (`crate::...`, `::other::...`, `other::...`) succeed, while a CLI
+    // override to a relative root over a valid config is still refused.
+    fs::write(
+        &bad_config,
+        "version = 1\n\n\
+         [project.app]\n\
+         root = \"wit\"\n\n\
+         [project.app.rust]\n\
+         out = \"rust-out\"\n\n\
+         [project.app.glue]\n\
+         out = \"glue-out\"\n\
+         plain-root = \"::other_plain::r#gen\"\n\
+         proto-root = \"other_proto::wire\"\n",
+    )
+    .unwrap();
+    let bad_override = witforge()
+        .args([
+            "glue",
+            "--config",
+            bad_config.to_str().unwrap(),
+            "--proto-root",
+            "super::proto",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_override.status.code(), Some(2), "{bad_override:?}");
+
+    let ok = witforge()
+        .args(["glue", "--config", bad_config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{ok:?}");
+    assert!(glue_out.join("v0.rs").is_file());
+    fs::remove_dir_all(&base).unwrap();
+}

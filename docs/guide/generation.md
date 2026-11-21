@@ -16,7 +16,7 @@ witforge glue wit --out generated/glue \
   --proto-root crate::proto
 ```
 
-`--plain-root` and `--proto-root` are Rust module paths used by generated glue. They are not filesystem paths.
+`--plain-root` and `--proto-root` are absolute Rust module paths used by generated glue (not filesystem paths). Accepted forms are `crate`, `crate::...`, `::crate_name::...`, or an external crate name (`other::...`). Relative paths starting with `self` or `super` are refused because glue references the roots from nested modules at multiple depths; write `crate::...` for modules inside your own crate, and prefix an external crate with `::` if its name matches a generated module. The same rules apply to `plain-root` and `proto-root` in `witforge.toml`.
 
 ## Configuration
 

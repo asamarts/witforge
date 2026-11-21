@@ -344,17 +344,30 @@ fn plan_uses_highest_minor_and_validates_module_roots() {
     for valid in [
         "crate",
         "crate::generated",
-        "self::plain",
-        "super::proto",
-        "super::super::nested",
+        "::other::proto",
+        "other::proto",
+        "other",
         "crate::r#type",
+        "::r#type::plain",
     ] {
         glue::validate_module_root(valid).unwrap_or_else(|error| panic!("{valid}: {error}"));
     }
     for invalid in [
         "",
+        "::",
         "crate::",
         "::crate",
+        "::self::plain",
+        "::super::proto",
+        "self",
+        "self::plain",
+        "super",
+        "super::proto",
+        "super::super::nested",
+        "witforge_deps",
+        "witforge_deps::plain",
+        "functions::plain",
+        "GlueError::plain",
         "crate:::plain",
         "crate::foo::",
         "crate::foo::bar<T>",
@@ -372,6 +385,112 @@ fn plan_uses_highest_minor_and_validates_module_roots() {
             "accepted invalid module root `{invalid}`"
         );
     }
+    // A first segment matching a generated module (`v0`, `types`, ...) is refused as a usage
+    // error, while `::v0::...` / `::types::...` explicitly targets an external crate.
+    for colliding in ["v0::plain", "v0", "types::plain", "user::plain"] {
+        let error = glue::plan(&root, colliding, "crate::proto").unwrap_err();
+        assert!(!witforge::is_contract_error(&error), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("starts with generated module"),
+            "{colliding}: {error:#}"
+        );
+    }
+    glue::plan(&root, "::v0::plain", "::types::proto").unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn absolute_module_roots_compile_with_crate_global_and_extern_paths() {
+    let root = fixture("versions/wit");
+    let out = std::env::temp_dir().join(format!(
+        "witforge-glue-absolute-roots-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out);
+    fs::create_dir_all(out.join("plain_crate/src")).unwrap();
+    fs::create_dir_all(out.join("proto_crate/src")).unwrap();
+    fs::create_dir_all(out.join("proto-work")).unwrap();
+
+    // Put plain Rust types in external crate `ext_plain` (referenced via `::ext_plain`) and
+    // prost types in external crate `ext_proto` (referenced via unprefixed `ext_proto`).
+    rust::plan(&root)
+        .unwrap()
+        .write(&out.join("plain_crate/src/generated"))
+        .unwrap();
+    fs::write(
+        out.join("plain_crate/Cargo.toml"),
+        "[package]\nname = \"ext_plain\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(out.join("plain_crate/src/lib.rs"), "pub mod generated;\n").unwrap();
+
+    proto::plan(&root)
+        .unwrap()
+        .write(&out.join("proto-work"))
+        .unwrap();
+    let descriptors =
+        protox::compile([out.join("proto-work/v0.proto")], [out.join("proto-work")]).unwrap();
+    let prost_out = out.join("proto-work/out");
+    fs::create_dir_all(&prost_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .compile_fds(descriptors)
+        .unwrap();
+    let generated = fs::read_dir(&prost_out)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .expect("prost generated a Rust file");
+    fs::copy(generated, out.join("proto_crate/src/v0.rs")).unwrap();
+    fs::write(
+        out.join("proto_crate/Cargo.toml"),
+        "[package]\nname = \"ext_proto\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nprost = \"0.14\"\n",
+    )
+    .unwrap();
+    fs::write(
+        out.join("proto_crate/src/lib.rs"),
+        "pub mod wire { pub mod v0 { include!(\"v0.rs\"); } }\n",
+    )
+    .unwrap();
+
+    glue::plan(&root, "::ext_plain::generated", "ext_proto::wire")
+        .unwrap()
+        .write(&out.join("glue_ext"))
+        .unwrap();
+    glue::plan(&root, "crate::local_plain", "crate::local_proto")
+        .unwrap()
+        .write(&out.join("glue_crate"))
+        .unwrap();
+
+    fs::write(
+        out.join("main.rs"),
+        r#"
+mod glue_ext;
+mod glue_crate;
+pub use ::ext_plain::generated as local_plain;
+pub use ext_proto::wire as local_proto;
+
+fn main() {
+    let user = ::ext_plain::generated::v0_2::types::User {
+        name: "alice".to_string(),
+        new_field: Some("a@example.com".to_string()),
+        renamed: None,
+    };
+    let wire = glue_ext::v0::types::user::to_proto(&user);
+    assert_eq!(glue_ext::v0::types::user::from_proto(wire).unwrap(), user);
+    let wire2 = glue_crate::v0::types::user::to_proto(&user);
+    assert_eq!(glue_crate::v0::types::user::from_proto(wire2).unwrap(), user);
+}
+"#,
+    )
+    .unwrap();
+
+    run_cargo_program(
+        &out,
+        "prost = \"0.14\"\next_plain = { path = \"plain_crate\" }\next_proto = { path = \"proto_crate\" }\n",
+        "absolute module roots glue compile/run",
+    );
+    fs::remove_dir_all(&out).unwrap();
 }
 
 #[test]
