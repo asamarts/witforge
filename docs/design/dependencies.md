@@ -141,9 +141,15 @@ has no WIT beside it; `check` reports that the graph cannot be compared, and CI 
 generator `--check` over the WIT root and SHOULD run `diff` for a reviewed version pair.
 
 Every package loaded from the standard `deps/` directory contributes its supported generated
-surface to this graph, including a package the root does not reference. Root reachability instead
-decides which unsupported items are required and therefore refused: a local `use` reaches its
-type transitively, and a world import or export reaches the complete dependency interface.
+surface to this graph, including a package the root does not reference. Every package under
+`deps/` (referenced or not) MUST therefore declare a `<major>.<minor>.0` version; a missing
+version or a patch, pre-release, or build-metadata version is a subset diagnostic (exit `1`, code
+`WF1001`) naming the package, its version, and its `deps/` entry. Root reachability instead
+decides which unsupported items inside a dependency are required and therefore refused: a local
+`use` reaches its type transitively, and a world import or export (including an implicit import
+synthesized when a world exports or imports an interface or `use`s a type that depends on a
+dependency interface) reaches the complete dependency interface and names the world item that
+pulled it in.
 
 
 ## Lockfiles and release freezes

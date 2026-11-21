@@ -57,6 +57,7 @@ Codes are never reused for a different meaning.
 |---|---|---|
 | `WF1001` | error | WIT subset violation. The path is the logical contract location. |
 | `WF1002` | error | A lockfile belongs to another package. |
+| `WF1003` | error | Two names in one scope collide (differ only in ASCII letter case, including against a reserved lockfile member, or map to one generated identifier). |
 | `WF1100` | error | Lockfile continuity/drift evaluation failed. |
 | `WF1101` | error | A live member has no wire number. |
 | `WF1102` | error | A removed member is not reserved in the current lockfile. |

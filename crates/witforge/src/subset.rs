@@ -5,18 +5,28 @@
 //! fixed-length lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors.
 //! Types and functions live in the package's named interfaces, and a local type may reference a
 //! named type from a standard `deps/` package. Worlds may import and export interfaces defined
-//! by this package or by a standard `deps/` package. Anything the checker does not recognise is
+//! by this package or by a standard `deps/` package without renaming them or defining them
+//! inline. Only `@since`, `@unstable`, and `@deprecated` annotations are accepted. Names in one
+//! scope must be distinct ASCII case-insensitively. Anything the checker does not recognise is
 //! refused rather than passed through, so a new `wit-parser` construct cannot slip into the
 //! generated bindings.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 
 use wit_parser::{
-    Function, FunctionKind, Type, TypeDefKind, TypeId, TypeOwner, WorldId, WorldItem, WorldKey,
+    Function, FunctionKind, InterfaceId, Type, TypeDefKind, TypeId, TypeOwner, World, WorldId,
+    WorldItem, WorldKey,
 };
 
 use crate::Contract;
+use crate::diagnostic::Diagnostic;
+
+/// Diagnostic code for a WIT subset violation.
+const CODE_SUBSET: &str = "WF1001";
+/// Diagnostic code for two names in one scope that collide (ASCII case-insensitive or generated
+/// identifier collision).
+const CODE_IDENTIFIER_COLLISION: &str = "WF1003";
 
 /// One construct outside the subset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,9 +43,24 @@ impl fmt::Display for Violation {
     }
 }
 
-/// Check the root package of `contract` against the subset.
+/// Check the root package and its standard `deps/` dependencies against the subset.
 #[must_use]
 pub fn check(contract: &Contract) -> Vec<Violation> {
+    check_diagnostics(contract)
+        .into_iter()
+        .map(|diagnostic| Violation {
+            location: diagnostic.path.unwrap_or_default(),
+            message: diagnostic.message,
+        })
+        .collect()
+}
+
+/// Check the root package and its standard `deps/` dependencies and return structured
+/// diagnostics with their stable codes (`WF1001` for subset violations, `WF1003` for
+/// case-insensitive scope collisions).
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
     let resolve = &contract.resolve;
     let package = &resolve.packages[contract.package];
     let pkg = format!("{}:{}", package.name.namespace, package.name.name);
@@ -79,29 +104,93 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
         }
     }
 
+    // Every package under `deps/` contributes to the generated dependency surface, whether or
+    // not the root references it, so every dependency package's version and interface scope are
+    // checked here as subset diagnostics (exit 1).
+    let mut dependencies = contract.dependencies.clone();
+    dependencies.sort_by(|left, right| {
+        let left_name = &resolve.packages[*left].name;
+        let right_name = &resolve.packages[*right].name;
+        (&left_name.namespace, &left_name.name).cmp(&(&right_name.namespace, &right_name.name))
+    });
+    for dep_id in dependencies {
+        let dep = &resolve.packages[dep_id];
+        let dep_pkg = format!("{}:{}", dep.name.namespace, dep.name.name);
+        let entry = contract
+            .dependency_entry(dep_id)
+            .map_or_else(|| "deps/".to_string(), |path| path.display().to_string());
+        match &dep.name.version {
+            None => refuse(
+                &mut out,
+                &dep_pkg,
+                format!(
+                    "dependency package `{dep_pkg}` in `{entry}` has no version; dependency \
+                     versions must be `<major>.<minor>.0`"
+                ),
+            ),
+            Some(version)
+                if version.patch != 0
+                    || !version.pre.as_str().is_empty()
+                    || !version.build.as_str().is_empty() =>
+            {
+                refuse(
+                    &mut out,
+                    &dep_pkg,
+                    format!(
+                        "dependency package `{dep_pkg}@{version}` in `{entry}` has unsupported \
+                         version `{version}`; dependency versions must be `<major>.<minor>.0` \
+                         (patch, pre-release, and build metadata are not supported)"
+                    ),
+                );
+            }
+            Some(_) => {}
+        }
+        check_scope_case_collisions(
+            &dep_pkg,
+            "interface",
+            dep.interfaces.keys().map(String::as_str),
+            |name| format!("{dep_pkg}/{name}"),
+            &mut out,
+        );
+    }
+
+    // Package scope: interfaces and worlds share one WIT package namespace; names differing only
+    // in ASCII letter case map to one generated identifier and are refused.
+    check_package_case_collisions(&pkg, package, &mut out);
+
     for (iface_name, &iface_id) in &package.interfaces {
         let iface = &resolve.interfaces[iface_id];
+        check_interface_case_collisions(&pkg, iface_name, iface, &mut out);
         // `use` aliases are owned by the interface that names them, so they are checked here
         // too: an alias of a type from another package is refused at the `use`.
         for (type_name, &type_id) in &iface.types {
             let at = format!("{pkg}/{iface_name}/{type_name}");
-            check_def(contract, type_id, &at, &mut out);
+            check_external_id(
+                resolve.types[type_id].external_id.as_deref(),
+                &at,
+                None,
+                &mut out,
+            );
+            check_def(contract, type_id, &at, None, &mut out);
             check_dependency_def(
                 contract,
                 type_id,
                 &at,
                 &mut required_dependency_types,
+                None,
                 &mut out,
             );
         }
         for (func_name, func) in &iface.functions {
             let at = format!("{pkg}/{iface_name}#{func_name}");
-            check_function(contract, func, &at, &mut out);
+            check_external_id(func.external_id.as_deref(), &at, None, &mut out);
+            check_function(contract, func, &at, None, &mut out);
             check_dependency_function_refs(
                 contract,
                 func,
                 &at,
                 &mut required_dependency_types,
+                None,
                 &mut out,
             );
         }
@@ -119,33 +208,208 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
     out
 }
 
+fn check_package_case_collisions(
+    pkg: &str,
+    package: &wit_parser::Package,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut seen: BTreeMap<String, (&str, &str)> = BTreeMap::new();
+    let items = package
+        .interfaces
+        .keys()
+        .map(|name| ("interface", name.as_str()))
+        .chain(package.worlds.keys().map(|name| ("world", name.as_str())));
+    for (kind, name) in items {
+        let folded = name.to_ascii_lowercase();
+        if let Some((prev_kind, prev_name)) = seen.get(&folded) {
+            if *prev_name != name {
+                refuse_collision(
+                    out,
+                    format!("{pkg}/{name}"),
+                    format!(
+                        "{kind} `{name}` differs only in letter case from {prev_kind} \
+                         `{prev_name}` in `{pkg}`; give them distinct names"
+                    ),
+                );
+            }
+        } else {
+            seen.insert(folded, (kind, name));
+        }
+    }
+}
+
+fn check_interface_case_collisions(
+    pkg: &str,
+    iface_name: &str,
+    iface: &wit_parser::Interface,
+    out: &mut Vec<Diagnostic>,
+) {
+    let scope = format!("{pkg}/{iface_name}");
+    let mut seen: BTreeMap<String, (&str, &str)> = BTreeMap::new();
+    let items = iface
+        .types
+        .keys()
+        .map(|name| ("type", name.as_str()))
+        .chain(
+            iface
+                .functions
+                .keys()
+                .map(|name| ("function", name.as_str())),
+        );
+    for (kind, name) in items {
+        let folded = name.to_ascii_lowercase();
+        if let Some((prev_kind, prev_name)) = seen.get(&folded) {
+            if *prev_name != name {
+                let location = if kind == "function" {
+                    format!("{scope}#{name}")
+                } else {
+                    format!("{scope}/{name}")
+                };
+                refuse_collision(
+                    out,
+                    location,
+                    format!(
+                        "{kind} `{name}` differs only in letter case from {prev_kind} \
+                         `{prev_name}` in `{scope}`; give them distinct names"
+                    ),
+                );
+            }
+        } else {
+            seen.insert(folded, (kind, name));
+        }
+    }
+}
+
+fn check_scope_case_collisions<'a>(
+    scope: &str,
+    kind: &str,
+    names: impl Iterator<Item = &'a str>,
+    location: impl Fn(&str) -> String,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    for name in names {
+        let folded = name.to_ascii_lowercase();
+        if let Some(&prev) = seen.get(&folded) {
+            if prev != name {
+                refuse_collision(
+                    out,
+                    location(name),
+                    format!(
+                        "{kind} `{name}` differs only in letter case from {kind} `{prev}` in \
+                         `{scope}`; give them distinct names"
+                    ),
+                );
+            }
+        } else {
+            seen.insert(folded, name);
+        }
+    }
+}
+
+fn check_external_id(
+    external_id: Option<&str>,
+    at: &str,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
+) {
+    if let Some(id) = external_id {
+        refuse_with_reason(
+            out,
+            at,
+            format!(
+                "annotation `@external-id(\"{id}\")` is not supported; only `@since`, \
+                 `@unstable`, and `@deprecated` are accepted"
+            ),
+            reason,
+        );
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn check_world(
     contract: &Contract,
     world_id: WorldId,
     at: &str,
     required_dependency_types: &mut HashSet<TypeId>,
-    out: &mut Vec<Violation>,
+    out: &mut Vec<Diagnostic>,
 ) {
     let resolve = &contract.resolve;
     let world = &resolve.worlds[world_id];
-    for (verb, items) in [("imports", &world.imports), ("exports", &world.exports)] {
+    for (verb, singular, items) in [
+        ("imports", "import", &world.imports),
+        ("exports", "export", &world.exports),
+    ] {
         for (key, item) in items {
             match (key, item) {
-                (WorldKey::Name(name), WorldItem::Interface { .. }) => refuse(
-                    out,
-                    format!("{at}/{name}"),
-                    "inline interfaces are not supported; define a named interface in the \
-                     package and import or export it",
-                ),
-                (WorldKey::Interface(_), WorldItem::Interface { id, .. }) => {
+                (
+                    WorldKey::Name(name),
+                    WorldItem::Interface {
+                        id, external_id, ..
+                    },
+                ) => {
+                    let item_at = format!("{at}/{name}");
+                    check_external_id(external_id.as_deref(), &item_at, None, out);
+                    let iface = &resolve.interfaces[*id];
+                    if let Some(iface_name) = iface.name.as_deref() {
+                        let target = if iface.package == Some(contract.package) {
+                            iface_name.to_string()
+                        } else {
+                            resolve.id_of(*id).unwrap_or_else(|| iface_name.to_string())
+                        };
+                        refuse(
+                            out,
+                            item_at,
+                            format!(
+                                "named interface {singular}s are not supported \
+                                 (`{singular} {name}: {target}`); {singular} `{target}` directly \
+                                 without a local name"
+                            ),
+                        );
+                    } else {
+                        refuse(
+                            out,
+                            item_at,
+                            "inline interfaces are not supported; define a named interface in the \
+                             package and import or export it",
+                        );
+                    }
+                }
+                (
+                    WorldKey::Interface(_),
+                    WorldItem::Interface {
+                        id, external_id, ..
+                    },
+                ) => {
+                    let is_implicit = singular == "import"
+                        && !contract.is_explicit_world_import(&world.name, *id);
+                    if !is_implicit {
+                        let label = interface_display_name(contract, *id);
+                        check_external_id(
+                            external_id.as_deref(),
+                            &format!("{at}/{label}"),
+                            None,
+                            out,
+                        );
+                    }
                     let iface = &resolve.interfaces[*id];
                     if let Some(package) = iface.package {
                         if package != contract.package {
                             if contract.is_dependency(package) {
+                                let reason = if is_implicit {
+                                    implicit_import_reason(contract, world, *id)
+                                } else {
+                                    let label = interface_display_name(contract, *id);
+                                    format!(
+                                        "required by world `{}` {singular} `{label}`",
+                                        world.name
+                                    )
+                                };
                                 check_dependency_interface(
                                     contract,
                                     *id,
                                     required_dependency_types,
+                                    Some(&reason),
                                     out,
                                 );
                             } else {
@@ -165,19 +429,133 @@ fn check_world(
                         refuse(out, at, format!("{verb} an interface with no package"));
                     }
                 }
-                (_, WorldItem::Function(func)) => refuse(
-                    out,
-                    format!("{at}#{}", func.name),
-                    "functions must be defined in an interface; export the interface from the \
-                     world",
-                ),
+                (_, WorldItem::Function(func)) => {
+                    let item_at = format!("{at}#{}", func.name);
+                    check_external_id(func.external_id.as_deref(), &item_at, None, out);
+                    refuse(
+                        out,
+                        item_at,
+                        "functions must be defined in an interface; export the interface from the \
+                         world",
+                    );
+                }
                 (_, WorldItem::Type { id, .. }) => {
+                    let type_name = resolve.types[*id].name.as_deref().unwrap_or_default();
+                    check_external_id(
+                        resolve.types[*id].external_id.as_deref(),
+                        &format!("{at}/{type_name}"),
+                        None,
+                        out,
+                    );
                     check_world_type(contract, world_id, *id, at, out);
-                    check_dependency_def(contract, *id, at, required_dependency_types, out);
+                    check_dependency_def(contract, *id, at, required_dependency_types, None, out);
                 }
             }
         }
     }
+}
+
+fn interface_display_name(contract: &Contract, id: InterfaceId) -> String {
+    let resolve = &contract.resolve;
+    let iface = &resolve.interfaces[id];
+    let name = iface.name.as_deref().unwrap_or_default();
+    match iface.package {
+        Some(pkg) if pkg != contract.package => {
+            let package = &resolve.packages[pkg].name;
+            format!("{}:{}/{name}", package.namespace, package.name)
+        }
+        _ => name.to_string(),
+    }
+}
+
+/// Explain which world item caused `wit-parser` to implicitly import dependency `target`.
+fn implicit_import_reason(contract: &Contract, world: &World, target: InterfaceId) -> String {
+    let resolve = &contract.resolve;
+    for item in world.exports.values() {
+        if let WorldItem::Interface { id, .. } = item
+            && interface_reaches(resolve, *id, target)
+        {
+            let label = interface_display_name(contract, *id);
+            return format!(
+                "implicitly imported by world `{}` via exported interface `{label}`",
+                world.name
+            );
+        }
+    }
+    for (key, item) in &world.imports {
+        if let (WorldKey::Interface(_), WorldItem::Interface { id, .. }) = (key, item)
+            && *id != target
+            && contract.is_explicit_world_import(&world.name, *id)
+            && interface_reaches(resolve, *id, target)
+        {
+            let label = interface_display_name(contract, *id);
+            return format!(
+                "implicitly imported by world `{}` via imported interface `{label}`",
+                world.name
+            );
+        }
+    }
+    for (key, item) in &world.imports {
+        if let WorldItem::Type { id, .. } = item
+            && type_reaches_interface(resolve, *id, target)
+        {
+            let type_name = match key {
+                WorldKey::Name(name) => name.as_str(),
+                WorldKey::Interface(_) => resolve.types[*id].name.as_deref().unwrap_or_default(),
+            };
+            return format!(
+                "implicitly imported by world `{}` via world type `{type_name}`",
+                world.name
+            );
+        }
+    }
+    format!("implicitly imported by world `{}`", world.name)
+}
+
+fn interface_reaches(
+    resolve: &wit_parser::Resolve,
+    start: InterfaceId,
+    target: InterfaceId,
+) -> bool {
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    for dep in resolve.interface_direct_deps(start) {
+        if visited.insert(dep) {
+            queue.push_back(dep);
+        }
+    }
+    while let Some(current) = queue.pop_front() {
+        if current == target {
+            return true;
+        }
+        for dep in resolve.interface_direct_deps(current) {
+            if visited.insert(dep) {
+                queue.push_back(dep);
+            }
+        }
+    }
+    false
+}
+
+fn type_reaches_interface(
+    resolve: &wit_parser::Resolve,
+    type_id: TypeId,
+    target: InterfaceId,
+) -> bool {
+    let mut visited = HashSet::new();
+    let mut current = type_id;
+    while visited.insert(current) {
+        let def = &resolve.types[current];
+        if let TypeOwner::Interface(iface_id) = def.owner {
+            return iface_id == target || interface_reaches(resolve, iface_id, target);
+        }
+        if let TypeDefKind::Type(Type::Id(next)) = def.kind {
+            current = next;
+        } else {
+            break;
+        }
+    }
+    false
 }
 
 /// Validate every item exposed by a dependency interface and every named type it reaches.
@@ -187,9 +565,10 @@ fn check_world(
 /// one of those items would silently generate a different interface.
 fn check_dependency_interface(
     contract: &Contract,
-    interface_id: wit_parser::InterfaceId,
+    interface_id: InterfaceId,
     visited: &mut HashSet<TypeId>,
-    out: &mut Vec<Violation>,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
 ) {
     let resolve = &contract.resolve;
     let interface = &resolve.interfaces[interface_id];
@@ -203,12 +582,20 @@ fn check_dependency_interface(
         package.name.namespace, package.name.name
     );
     for (name, id) in &interface.types {
-        check_dependency_def(contract, *id, &format!("{base}/{name}"), visited, out);
+        check_dependency_def(
+            contract,
+            *id,
+            &format!("{base}/{name}"),
+            visited,
+            reason,
+            out,
+        );
     }
     for (name, function) in &interface.functions {
         let at = format!("{base}#{name}");
-        check_function(contract, function, &at, out);
-        check_dependency_function_refs(contract, function, &at, visited, out);
+        check_external_id(function.external_id.as_deref(), &at, reason, out);
+        check_function(contract, function, &at, reason, out);
+        check_dependency_function_refs(contract, function, &at, visited, reason, out);
     }
 }
 
@@ -217,7 +604,8 @@ fn check_dependency_function_refs(
     function: &Function,
     at: &str,
     visited: &mut HashSet<TypeId>,
-    out: &mut Vec<Violation>,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
 ) {
     for param in &function.params {
         check_dependency_type_refs(
@@ -225,11 +613,19 @@ fn check_dependency_function_refs(
             &param.ty,
             &format!("{at}({})", param.name),
             visited,
+            reason,
             out,
         );
     }
     if let Some(result) = &function.result {
-        check_dependency_type_refs(contract, result, &format!("{at} -> result"), visited, out);
+        check_dependency_type_refs(
+            contract,
+            result,
+            &format!("{at} -> result"),
+            visited,
+            reason,
+            out,
+        );
     }
 }
 
@@ -238,15 +634,22 @@ fn check_dependency_def(
     id: TypeId,
     at: &str,
     visited: &mut HashSet<TypeId>,
-    out: &mut Vec<Violation>,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
 ) {
     if !visited.insert(id) {
         return;
     }
     if is_dependency_def(contract, id) {
-        check_def(contract, id, at, out);
+        check_external_id(
+            contract.resolve.types[id].external_id.as_deref(),
+            at,
+            reason,
+            out,
+        );
+        check_def(contract, id, at, reason, out);
     }
-    check_dependency_def_refs(contract, id, at, visited, out);
+    check_dependency_def_refs(contract, id, at, visited, reason, out);
 }
 
 fn check_dependency_def_refs(
@@ -254,7 +657,8 @@ fn check_dependency_def_refs(
     id: TypeId,
     at: &str,
     visited: &mut HashSet<TypeId>,
-    out: &mut Vec<Violation>,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
 ) {
     match &contract.resolve.types[id].kind {
         TypeDefKind::Record(record) => {
@@ -264,6 +668,7 @@ fn check_dependency_def_refs(
                     &field.ty,
                     &format!("{at}.{}", field.name),
                     visited,
+                    reason,
                     out,
                 );
             }
@@ -276,17 +681,18 @@ fn check_dependency_def_refs(
                         ty,
                         &format!("{at}.{}", case.name),
                         visited,
+                        reason,
                         out,
                     );
                 }
             }
         }
         TypeDefKind::Option(ty) | TypeDefKind::List(ty) | TypeDefKind::Type(ty) => {
-            check_dependency_type_refs(contract, ty, at, visited, out);
+            check_dependency_type_refs(contract, ty, at, visited, reason, out);
         }
         TypeDefKind::Result(result) => {
             for ty in [&result.ok, &result.err].into_iter().flatten() {
-                check_dependency_type_refs(contract, ty, at, visited, out);
+                check_dependency_type_refs(contract, ty, at, visited, reason, out);
             }
         }
         TypeDefKind::Enum(_)
@@ -307,7 +713,8 @@ fn check_dependency_type_refs(
     ty: &Type,
     at: &str,
     visited: &mut HashSet<TypeId>,
-    out: &mut Vec<Violation>,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
 ) {
     let Type::Id(id) = ty else {
         return;
@@ -322,10 +729,11 @@ fn check_dependency_type_refs(
             *id,
             location.as_deref().unwrap_or(at),
             visited,
+            reason,
             out,
         );
     } else {
-        check_dependency_def_refs(contract, *id, at, visited, out);
+        check_dependency_def_refs(contract, *id, at, visited, reason, out);
     }
 }
 
@@ -361,7 +769,7 @@ fn check_world_type(
     world_id: WorldId,
     id: TypeId,
     at: &str,
-    out: &mut Vec<Violation>,
+    out: &mut Vec<Diagnostic>,
 ) {
     let resolve = &contract.resolve;
     let def = &resolve.types[id];
@@ -370,13 +778,13 @@ fn check_world_type(
         // Brought in by `include`: checked where it is defined, or refused if that is in
         // another package.
         _ if def.owner != TypeOwner::World(world_id) => {
-            check_type(contract, &Type::Id(id), &at, out);
+            check_type(contract, &Type::Id(id), &at, None, out);
         }
         // `use` in a world names a type defined in an interface; it defines nothing itself.
         TypeDefKind::Type(target @ Type::Id(target_id))
             if resolve.types[*target_id].name.is_some() =>
         {
-            check_type(contract, target, &at, out);
+            check_type(contract, target, &at, None, out);
         }
         _ => refuse(
             out,
@@ -386,25 +794,46 @@ fn check_world_type(
     }
 }
 
-fn check_function(contract: &Contract, func: &Function, at: &str, out: &mut Vec<Violation>) {
+fn check_function(
+    contract: &Contract,
+    func: &Function,
+    at: &str,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
+) {
     match func.kind {
         FunctionKind::Freestanding => {
+            check_scope_case_collisions(
+                at,
+                "parameter",
+                func.params.iter().map(|param| param.name.as_str()),
+                |name| format!("{at}({name})"),
+                out,
+            );
             for param in &func.params {
-                check_type(contract, &param.ty, &format!("{at}({})", param.name), out);
+                check_type(
+                    contract,
+                    &param.ty,
+                    &format!("{at}({})", param.name),
+                    reason,
+                    out,
+                );
             }
             if let Some(result) = &func.result {
-                check_type(contract, result, &format!("{at} -> result"), out);
+                check_type(contract, result, &format!("{at} -> result"), reason, out);
             }
         }
-        FunctionKind::AsyncFreestanding => refuse(
+        FunctionKind::AsyncFreestanding => refuse_with_reason(
             out,
             at,
             "`async` functions are not supported; the contract is synchronous",
+            reason,
         ),
-        FunctionKind::Getter | FunctionKind::Setter => refuse(
+        FunctionKind::Getter | FunctionKind::Setter => refuse_with_reason(
             out,
             at,
             "`get` and `set` accessors are not supported; use a function",
+            reason,
         ),
         // A resource's functions: the resource itself is refused where it is defined.
         FunctionKind::Method(_)
@@ -419,59 +848,131 @@ fn check_function(contract: &Contract, func: &Function, at: &str, out: &mut Vec<
     }
 }
 
-fn check_def(contract: &Contract, id: TypeId, at: &str, out: &mut Vec<Violation>) {
+#[allow(clippy::too_many_lines)]
+fn check_def(
+    contract: &Contract,
+    id: TypeId,
+    at: &str,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
+) {
     match &contract.resolve.types[id].kind {
         TypeDefKind::Record(r) => {
             // `wit-parser` already rejects empty records; kept in case a bump stops doing so.
             if r.fields.is_empty() {
-                refuse(
+                refuse_with_reason(
                     out,
                     at,
                     "empty records are not supported; add a field or use a variant case without payload",
+                    reason,
                 );
             }
+            check_scope_case_collisions(
+                at,
+                "field",
+                r.fields.iter().map(|field| field.name.as_str()),
+                |name| format!("{at}.{name}"),
+                out,
+            );
             for field in &r.fields {
-                check_type(contract, &field.ty, &format!("{at}.{}", field.name), out);
+                check_type(
+                    contract,
+                    &field.ty,
+                    &format!("{at}.{}", field.name),
+                    reason,
+                    out,
+                );
             }
         }
         TypeDefKind::Variant(v) => {
+            check_scope_case_collisions(
+                at,
+                "case",
+                v.cases.iter().map(|case| case.name.as_str()),
+                |name| format!("{at}.{name}"),
+                out,
+            );
             for case in &v.cases {
                 if let Some(ty) = &case.ty {
-                    check_type(contract, ty, &format!("{at}.{}", case.name), out);
+                    check_type(contract, ty, &format!("{at}.{}", case.name), reason, out);
                 }
             }
         }
-        TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
+        TypeDefKind::Enum(e) => {
+            check_scope_case_collisions(
+                at,
+                "case",
+                e.cases.iter().map(|case| case.name.as_str()),
+                |name| format!("{at}.{name}"),
+                out,
+            );
+        }
+        TypeDefKind::Flags(f) => {
+            check_scope_case_collisions(
+                at,
+                "flag",
+                f.flags.iter().map(|flag| flag.name.as_str()),
+                |name| format!("{at}.{name}"),
+                out,
+            );
+        }
         TypeDefKind::Option(ty) | TypeDefKind::List(ty) | TypeDefKind::Type(ty) => {
-            check_type(contract, ty, at, out);
+            check_type(contract, ty, at, reason, out);
         }
         TypeDefKind::Result(r) => {
             for ty in [&r.ok, &r.err].into_iter().flatten() {
-                check_type(contract, ty, at, out);
+                check_type(contract, ty, at, reason, out);
             }
         }
-        TypeDefKind::Tuple(_) => refuse(out, at, "tuples are not supported; use a named record"),
-        TypeDefKind::Resource | TypeDefKind::Handle(_) => refuse(
+        TypeDefKind::Tuple(_) => {
+            refuse_with_reason(
+                out,
+                at,
+                "tuples are not supported; use a named record",
+                reason,
+            );
+        }
+        TypeDefKind::Resource | TypeDefKind::Handle(_) => refuse_with_reason(
             out,
             at,
             "resources and handles are not supported; contract operations are pure functions over values",
+            reason,
         ),
-        TypeDefKind::Map(..) => refuse(out, at, "`map` is not supported yet; use `list<record>`"),
+        TypeDefKind::Map(..) => {
+            refuse_with_reason(
+                out,
+                at,
+                "`map` is not supported yet; use `list<record>`",
+                reason,
+            );
+        }
         TypeDefKind::FixedLengthList(..) => {
-            refuse(out, at, "fixed-length lists are not supported; use `list`");
+            refuse_with_reason(
+                out,
+                at,
+                "fixed-length lists are not supported; use `list`",
+                reason,
+            );
         }
         TypeDefKind::Future(_) | TypeDefKind::Stream(_) => {
-            refuse(
+            refuse_with_reason(
                 out,
                 at,
                 "`future` and `stream` are not supported; the contract is synchronous",
+                reason,
             );
         }
-        TypeDefKind::Unknown => refuse(out, at, "unresolved type"),
+        TypeDefKind::Unknown => refuse_with_reason(out, at, "unresolved type", reason),
     }
 }
 
-fn check_type(contract: &Contract, ty: &Type, at: &str, out: &mut Vec<Violation>) {
+fn check_type(
+    contract: &Contract,
+    ty: &Type,
+    at: &str,
+    reason: Option<&str>,
+    out: &mut Vec<Diagnostic>,
+) {
     match ty {
         // Supported primitives. Listed explicitly so a new `wit-parser` type variant is a
         // compile error rather than silently passing the subset.
@@ -487,8 +988,12 @@ fn check_type(contract: &Contract, ty: &Type, at: &str, out: &mut Vec<Violation>
         | Type::F32
         | Type::F64
         | Type::String => {}
-        Type::Char => refuse(out, at, "`char` is not supported; use `string`"),
-        Type::ErrorContext => refuse(out, at, "`error-context` is not supported"),
+        Type::Char => {
+            refuse_with_reason(out, at, "`char` is not supported; use `string`", reason);
+        }
+        Type::ErrorContext => {
+            refuse_with_reason(out, at, "`error-context` is not supported", reason);
+        }
         Type::Id(id) => {
             let def = &contract.resolve.types[*id];
             // Anonymous types (`option<T>`, `list<T>`, `result<..>`, tuples) are checked
@@ -496,15 +1001,33 @@ fn check_type(contract: &Contract, ty: &Type, at: &str, out: &mut Vec<Violation>
             // the standard deps layout; its own package is responsible for its subset and the
             // model records the qualified package identity.
             if def.name.is_none() {
-                check_def(contract, *id, at, out);
+                check_def(contract, *id, at, reason, out);
             }
         }
     }
 }
 
-fn refuse(out: &mut Vec<Violation>, location: impl Into<String>, message: impl Into<String>) {
-    out.push(Violation {
-        location: location.into(),
-        message: message.into(),
-    });
+fn refuse(out: &mut Vec<Diagnostic>, location: impl Into<String>, message: impl Into<String>) {
+    out.push(Diagnostic::error(CODE_SUBSET, message).with_path(location));
+}
+
+fn refuse_with_reason(
+    out: &mut Vec<Diagnostic>,
+    location: impl Into<String>,
+    message: impl Into<String>,
+    reason: Option<&str>,
+) {
+    let message = match reason {
+        Some(reason) => format!("{} ({reason})", message.into()),
+        None => message.into(),
+    };
+    refuse(out, location, message);
+}
+
+fn refuse_collision(
+    out: &mut Vec<Diagnostic>,
+    location: impl Into<String>,
+    message: impl Into<String>,
+) {
+    out.push(Diagnostic::error(CODE_IDENTIFIER_COLLISION, message).with_path(location));
 }

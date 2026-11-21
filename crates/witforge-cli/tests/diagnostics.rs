@@ -344,3 +344,115 @@ fn check_emits_every_released_discrepancy_as_its_own_diagnostic() {
     );
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn check_reports_dependency_version_and_case_collision_codes() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-subset-gaps-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let single_diag = |args: &[&str]| {
+        let out = output(args);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let diags = json(&out)["diagnostics"].as_array().unwrap().clone();
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        diags.into_iter().next().unwrap()
+    };
+
+    // 1. Unreferenced dependency with patch version: exit 1, WF1001, names package, version, deps/.
+    let dep_bad = root.join("dep-bad/v0.1");
+    fs::create_dir_all(dep_bad.join("deps/shared")).unwrap();
+    fs::write(
+        dep_bad.join("deps/shared/types.wit"),
+        "package ex:shared@0.1.3;\ninterface types { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        dep_bad.join("contract.wit"),
+        "package ex:root@0.1.0;\ninterface api { record local { id: u32 } }\n",
+    )
+    .unwrap();
+    let dep_diag = single_diag(&["check", dep_bad.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(dep_diag["code"], "WF1001");
+    assert_eq!(dep_diag["path"], "ex:shared");
+    let dep_msg = dep_diag["message"].as_str().unwrap();
+    assert!(dep_msg.contains("0.1.3"), "{dep_msg}");
+    assert!(
+        dep_msg.contains("deps/shared") || dep_msg.contains(r"deps\shared"),
+        "{dep_msg}"
+    );
+
+    // 2. Two interfaces differing only in ASCII letter case: exit 1, WF1003.
+    let iface_case = root.join("iface-case/v0.1");
+    fs::create_dir_all(&iface_case).unwrap();
+    fs::write(
+        iface_case.join("contract.wit"),
+        "package ex:root@0.1.0;\ninterface api { record a { x: u32 } }\ninterface API { record b { y: u32 } }\n",
+    )
+    .unwrap();
+    let iface_diag = single_diag(&["check", iface_case.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(iface_diag["code"], "WF1003");
+    assert_eq!(iface_diag["path"], "ex:root/API");
+
+    // 3. Reintroducing a reserved member in another letter case: exit 1, WF1003 for both
+    //    `check` and `lock`, and `lock` writes nothing.
+    let v1 = root.join("reserved-case/v0.1");
+    let v2 = root.join("reserved-case/v0.2");
+    fs::create_dir_all(&v1).unwrap();
+    fs::create_dir_all(&v2).unwrap();
+    fs::write(
+        v1.join("contract.wit"),
+        "package ex:root@0.1.0;\ninterface api { record r { keep: u32, foo-bar: u32 } }\n",
+    )
+    .unwrap();
+    assert!(
+        output(&["lock", v1.to_str().unwrap(), "--first"])
+            .status
+            .success()
+    );
+
+    let v1_lock = v1.join("wire.lock");
+    fs::copy(&v1_lock, v2.join("wire.lock")).unwrap();
+    fs::write(
+        v2.join("contract.wit"),
+        "package ex:root@0.2.0;\ninterface api { record r { keep: u32 } }\n",
+    )
+    .unwrap();
+    assert!(
+        output(&[
+            "lock",
+            v2.to_str().unwrap(),
+            "--against",
+            v1_lock.to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    let lock_before = fs::read_to_string(v2.join("wire.lock")).unwrap();
+
+    fs::write(
+        v2.join("contract.wit"),
+        "package ex:root@0.2.0;\ninterface api { record r { keep: u32, FOO-bar: u32 } }\n",
+    )
+    .unwrap();
+    for subcmd in ["check", "lock"] {
+        let diag = single_diag(&[
+            subcmd,
+            v2.to_str().unwrap(),
+            "--against",
+            v1_lock.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        assert_eq!(diag["code"], "WF1003", "{subcmd}: {diag}");
+        assert_eq!(diag["path"], "ex:root/api/r.FOO-bar", "{subcmd}: {diag}");
+    }
+    assert_eq!(
+        fs::read_to_string(v2.join("wire.lock")).unwrap(),
+        lock_before,
+        "refused lock must leave wire.lock untouched"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

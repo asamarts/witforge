@@ -758,3 +758,180 @@ fn generators_and_diff_refuse_dependency_graph_changes() {
         fs::remove_dir_all(&root).unwrap();
     }
 }
+
+#[test]
+fn dependency_version_violations_are_subset_diagnostics_for_every_deps_package() {
+    let cases = [
+        ("patch", Some("0.1.3"), "0.1.3"),
+        ("pre-release", Some("0.1.0-alpha"), "0.1.0-alpha"),
+        ("build", Some("0.1.0+build"), "0.1.0+build"),
+        ("unversioned", None, "has no version"),
+    ];
+    for (label, version, expected_text) in cases {
+        for referenced in [false, true] {
+            let root = temp_dir(&format!(
+                "deps-bad-version-{label}-{}",
+                if referenced { "ref" } else { "unref" }
+            ));
+            let _ = fs::remove_dir_all(&root);
+            let version_dir = root.join("v0.1");
+            let dep_dir = version_dir.join("deps/shared");
+            fs::create_dir_all(&dep_dir).unwrap();
+            let dep_header = version.map_or_else(
+                || "package ex:shared;".to_string(),
+                |ver| format!("package ex:shared@{ver};"),
+            );
+            fs::write(
+                dep_dir.join("types.wit"),
+                format!("{dep_header}\ninterface types {{ record item {{ id: u32 }} }}\n"),
+            )
+            .unwrap();
+            let root_body = if referenced {
+                let use_path = version.map_or_else(
+                    || "ex:shared/types".to_string(),
+                    |ver| format!("ex:shared/types@{ver}"),
+                );
+                format!(
+                    "package ex:root@0.1.0;\ninterface api {{ use {use_path}.{{item}}; get: func() -> item; }}\n"
+                )
+            } else {
+                "package ex:root@0.1.0;\ninterface api { record local { id: u32 } }\n".to_string()
+            };
+            fs::write(version_dir.join("contract.wit"), root_body).unwrap();
+            fs::write(version_dir.join("wire.lock"), WireLock::default().render()).unwrap();
+
+            let contract = load(&version_dir).unwrap();
+            let diagnostics = subset::check_diagnostics(&contract);
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "{label} referenced={referenced}: {diagnostics:#?}"
+            );
+            assert_eq!(diagnostics[0].code, "WF1001");
+            assert_eq!(diagnostics[0].path.as_deref(), Some("ex:shared"));
+            assert!(
+                diagnostics[0].message.contains("ex:shared"),
+                "{label} referenced={referenced}: {}",
+                diagnostics[0].message
+            );
+            assert!(
+                diagnostics[0].message.contains(expected_text),
+                "{label} referenced={referenced}: {}",
+                diagnostics[0].message
+            );
+            assert!(
+                diagnostics[0].message.contains("deps/shared")
+                    || diagnostics[0].message.contains(r"deps\shared"),
+                "{label} referenced={referenced}: {}",
+                diagnostics[0].message
+            );
+
+            for error in [
+                rust::plan(&root).unwrap_err(),
+                proto::plan(&root).unwrap_err(),
+                json_schema::plan(&root).unwrap_err(),
+                glue::plan(&root, "crate::plain", "crate::proto").unwrap_err(),
+            ] {
+                assert!(
+                    witforge::is_contract_error(&error),
+                    "{label} referenced={referenced}: {error:#}"
+                );
+            }
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+}
+
+#[test]
+fn world_implicit_import_diagnostics_name_the_world_item() {
+    let shared_wit = r"package example:shared@0.1.0;
+
+interface types {
+    record item { id: u32 }
+    resource session;
+    bad: func(c: char);
+}
+";
+    let check_case = |label: &str, contract_wit: &str| {
+        let dir = temp_dir(label);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("deps/shared")).unwrap();
+        fs::write(dir.join("deps/shared/types.wit"), shared_wit).unwrap();
+        fs::write(dir.join("contract.wit"), contract_wit).unwrap();
+        let violations = subset::check(&load(&dir).unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+        violations
+    };
+
+    // Without a world, only `item` is required and the contract passes.
+    let no_world = check_case(
+        "deps-no-world-implicit",
+        "package example:app@0.1.0;\ninterface api { use example:shared/types@0.1.0.{item}; get: func() -> item; }\n",
+    );
+    assert!(no_world.is_empty(), "{no_world:#?}");
+
+    // Exporting `api` makes `wit-parser` implicitly import `example:shared/types`.
+    let via_export = check_case(
+        "deps-world-implicit-export",
+        "package example:app@0.1.0;\ninterface api { use example:shared/types@0.1.0.{item}; get: func() -> item; }\nworld plugin { export api; }\n",
+    );
+    assert!(
+        via_export.iter().any(|v| {
+            v.location == "example:shared/types/session"
+                && v.message
+                    .contains("implicitly imported by world `plugin` via exported interface `api`")
+        }),
+        "{via_export:#?}"
+    );
+    assert!(
+        via_export.iter().any(|v| {
+            v.location == "example:shared/types#bad(c)"
+                && v.message
+                    .contains("implicitly imported by world `plugin` via exported interface `api`")
+        }),
+        "{via_export:#?}"
+    );
+
+    // Importing `api` implicitly imports `example:shared/types` via imported interface `api`.
+    let via_import = check_case(
+        "deps-world-implicit-import",
+        "package example:app@0.1.0;\ninterface api { use example:shared/types@0.1.0.{item}; get: func() -> item; }\nworld host { import api; }\n",
+    );
+    assert!(
+        via_import.iter().any(|v| {
+            v.location == "example:shared/types/session"
+                && v.message
+                    .contains("implicitly imported by world `host` via imported interface `api`")
+        }),
+        "{via_import:#?}"
+    );
+
+    // A world `use` implicitly imports the defining dependency interface via that world type.
+    let via_world_type = check_case(
+        "deps-world-implicit-type",
+        "package example:app@0.1.0;\nworld consumer { use example:shared/types@0.1.0.{item}; }\n",
+    );
+    assert!(
+        via_world_type.iter().any(|v| {
+            v.location == "example:shared/types/session"
+                && v.message
+                    .contains("implicitly imported by world `consumer` via world type `item`")
+        }),
+        "{via_world_type:#?}"
+    );
+
+    // An explicit world import names the world import and does not call it implicit.
+    let explicit = check_case(
+        "deps-world-explicit-import",
+        "package example:app@0.1.0;\nworld plugin { import example:shared/types@0.1.0; }\n",
+    );
+    assert!(
+        explicit.iter().any(|v| {
+            v.location == "example:shared/types/session"
+                && v.message
+                    .contains("required by world `plugin` import `example:shared/types`")
+                && !v.message.contains("implicitly imported")
+        }),
+        "{explicit:#?}"
+    );
+}

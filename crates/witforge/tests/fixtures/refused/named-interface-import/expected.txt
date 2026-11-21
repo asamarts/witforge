@@ -1,0 +1,2 @@
+example:bad/plugin/foo: named interface imports are not supported (`import foo: types`); import `types` directly without a local name
+example:bad/plugin/bar: named interface exports are not supported (`export bar: types`); export `types` directly without a local name

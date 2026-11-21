@@ -1,0 +1,12 @@
+package example:bad@0.1.0;
+
+interface types {
+    record span {
+        start: u64,
+    }
+}
+
+world plugin {
+    import foo: types;
+    export bar: types;
+}

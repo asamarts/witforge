@@ -27,7 +27,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `absolute` |
 | `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `DiffAnalysis`, `compare`, `compare_with_impacts` |
 | `diagnostic` | `Diagnostic`, `Position`, `Severity` |
-| `subset` | `Violation`, `check` |
+| `subset` | `Violation`, `check`, `check_diagnostics` |
 
 `diff::compare_with_impacts` returns the same `DiffReport` as `diff::compare` plus informational
 `ConversionImpact` notes. The notes do not change compatibility counts or `--check` behavior.

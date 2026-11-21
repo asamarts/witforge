@@ -16,7 +16,7 @@
 //! All commands accept `--format human|json|sarif`; `human` is the default.
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -442,12 +442,16 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     // `check` may verify a released directory; the manifest only has to be valid.
     load_released_manifest(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
-    let violations = subset::check(&contract);
+    let violations = subset::check_diagnostics(&contract);
     if !violations.is_empty() {
         // The model of a contract outside the subset is not built, so every locked member
         // would look removed; report only the violations, as `lock` does.
         for violation in &violations {
-            reporter.error_with_location("WF1001", &violation.location, &violation.message);
+            reporter.error_with_location(
+                violation.code,
+                violation.path.as_deref().unwrap_or_default(),
+                &violation.message,
+            );
         }
         return Ok(ExitCode::from(1));
     }
@@ -508,6 +512,12 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         }
     }
     let mode = lock_mode(options, previous.as_ref());
+    let case_collisions: BTreeSet<(String, String)> = lock
+        .case_collisions(&members, mode)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|diagnostic| (diagnostic.path.unwrap_or_default(), diagnostic.message))
+        .collect();
     let report = match lock.drift_report_with(&members, mode) {
         Ok(report) => report,
         Err(err) => {
@@ -555,6 +565,7 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     report_check_changes(
         &report.changes,
         &report.discrepancies,
+        &case_collisions,
         &report.restored,
         options.against.is_some(),
         &remedy,
@@ -570,9 +581,13 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
 fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_not_released(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
-    let violations = subset::check(&contract);
+    let violations = subset::check_diagnostics(&contract);
     for violation in &violations {
-        reporter.error_with_location("WF1001", &violation.location, &violation.message);
+        reporter.error_with_location(
+            violation.code,
+            violation.path.as_deref().unwrap_or_default(),
+            &violation.message,
+        );
     }
     if !violations.is_empty() {
         if reporter.human() {
@@ -602,6 +617,12 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
             .map_err(|err| ContractError::from_error(&err))?;
     }
     let mode = lock_mode(options, previous.as_ref());
+    let case_collisions: BTreeSet<(String, String)> = lock
+        .case_collisions(&members, mode)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|diagnostic| (diagnostic.path.unwrap_or_default(), diagnostic.message))
+        .collect();
     // Every refusal from reconciling is a lockfile violation, as `check` reports it.
     let report = lock
         .reconcile_report_with(&members, mode)
@@ -609,11 +630,13 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     let changes = &report.changes;
     let mut refused = false;
     for discrepancy in &report.discrepancies {
-        reporter.error(
-            "WF1100",
-            &discrepancy.message,
-            Some(discrepancy.key.clone()),
-        );
+        let code =
+            if case_collisions.contains(&(discrepancy.key.clone(), discrepancy.message.clone())) {
+                "WF1003"
+            } else {
+                "WF1100"
+            };
+        reporter.error(code, &discrepancy.message, Some(discrepancy.key.clone()));
         refused = true;
     }
     if !changes.reintroduced.is_empty() {
@@ -1317,17 +1340,26 @@ impl Remedy {
 fn report_check_changes(
     changes: &witforge::lock::Changes,
     discrepancies: &[witforge::lock::Discrepancy],
+    case_collisions: &BTreeSet<(String, String)>,
     restored: &[(String, u32)],
     against: bool,
     remedy: &Remedy,
     reporter: &mut Reporter,
 ) {
     for discrepancy in discrepancies {
-        reporter.error(
-            "WF1100",
-            format!("{}; {}", discrepancy.message, remedy.advice("")),
-            Some(discrepancy.key.clone()),
-        );
+        if case_collisions.contains(&(discrepancy.key.clone(), discrepancy.message.clone())) {
+            reporter.error(
+                "WF1003",
+                &discrepancy.message,
+                Some(discrepancy.key.clone()),
+            );
+        } else {
+            reporter.error(
+                "WF1100",
+                format!("{}; {}", discrepancy.message, remedy.advice("")),
+                Some(discrepancy.key.clone()),
+            );
+        }
     }
     for (key, _) in restored {
         reporter.error(

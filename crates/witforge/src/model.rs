@@ -738,16 +738,18 @@ pub fn build(contract: &Contract) -> Result<Model> {
     let mut dependencies = Vec::new();
     for package_id in &contract.dependencies {
         let wit_package = &resolve.packages[*package_id];
+        let dep_pkg = format!("{}:{}", wit_package.name.namespace, wit_package.name.name);
         let wit_version = wit_package
             .name
             .version
             .as_ref()
-            .context("a dependency package has no version")?;
+            .with_context(|| format!("dependency package `{dep_pkg}` has no version"))?;
         ensure!(
             wit_version.patch == 0
                 && wit_version.pre.as_str().is_empty()
                 && wit_version.build.as_str().is_empty(),
-            "dependency versions must be `<major>.<minor>.0`"
+            "dependency package `{dep_pkg}@{wit_version}` has unsupported version \
+             `{wit_version}`; dependency versions must be `<major>.<minor>.0`"
         );
         let dependency_package = Package {
             namespace: wit_package.name.namespace.clone(),
@@ -1089,7 +1091,10 @@ fn build_world_side<'a>(
     let mut out = Vec::new();
     for (key, item) in items {
         match (key, item) {
-            (WorldKey::Name(interface), WorldItem::Interface { .. }) => {
+            (WorldKey::Name(interface), WorldItem::Interface { id, .. }) => {
+                if resolve.interfaces[*id].name.is_some() {
+                    bail!("world {verb} named interface `{interface}`")
+                }
                 bail!("world {verb} inline interface `{interface}`")
             }
             (

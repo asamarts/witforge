@@ -31,13 +31,16 @@ pub mod lock;
 pub mod model;
 pub mod subset;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use wit_parser::{PackageId, PackageName, Resolve, UnresolvedPackageGroup};
+use wit_parser::{
+    AstItem, InterfaceId, PackageId, PackageName, Resolve, UnresolvedPackage,
+    UnresolvedPackageGroup, WorldId, WorldKey,
+};
 
 /// A contract, lockfile, or generated-output violation, as opposed to a usage, I/O, parse, or
 /// internal error.
@@ -84,6 +87,9 @@ pub fn is_contract_error(error: &anyhow::Error) -> bool {
         .any(<dyn std::error::Error>::is::<ContractError>)
 }
 
+/// An interface explicitly imported by a root world: `(Option<(namespace, package)>, interface)`.
+type ExplicitWorldImport = (Option<(String, String)>, String);
+
 /// A parsed WIT package together with the resolve that owns it.
 ///
 /// The fields are crate-private so that `wit-parser` types do not become part of witforge's
@@ -100,6 +106,8 @@ pub struct Contract {
     pub(crate) resolve: Resolve,
     pub(crate) package: PackageId,
     pub(crate) dependencies: Vec<PackageId>,
+    pub(crate) dependency_entries: BTreeMap<PackageId, PathBuf>,
+    pub(crate) explicit_world_imports: BTreeMap<String, BTreeSet<ExplicitWorldImport>>,
 }
 
 impl Contract {
@@ -108,6 +116,37 @@ impl Contract {
     #[must_use]
     pub(crate) fn is_dependency(&self, package: PackageId) -> bool {
         self.dependencies.contains(&package)
+    }
+
+    /// The `deps/` entry path that supplied `package`, when known.
+    #[must_use]
+    pub(crate) fn dependency_entry(&self, package: PackageId) -> Option<&Path> {
+        self.dependency_entries.get(&package).map(PathBuf::as_path)
+    }
+
+    /// Whether `interface_id` was explicitly listed as an import of root world `world_name`
+    /// (including through a local `include`) rather than synthesized by `wit-parser` world
+    /// elaboration.
+    #[must_use]
+    pub(crate) fn is_explicit_world_import(
+        &self,
+        world_name: &str,
+        interface_id: InterfaceId,
+    ) -> bool {
+        let interface = &self.resolve.interfaces[interface_id];
+        let Some(name) = interface.name.as_deref() else {
+            return true;
+        };
+        let package_key = interface
+            .package
+            .filter(|package| *package != self.package)
+            .map(|package| {
+                let pkg = &self.resolve.packages[package].name;
+                (pkg.namespace.clone(), pkg.name.clone())
+            });
+        self.explicit_world_imports
+            .get(world_name)
+            .is_some_and(|imports| imports.contains(&(package_key, name.to_string())))
     }
 }
 
@@ -125,12 +164,17 @@ pub fn load(dir: &Path) -> Result<Contract> {
     // `wit-parser` refuses two identical package names before witforge can classify the error.
     // Scan the dependency entries first so that every duplicate-package shape is a contract
     // violation (exit 1) that names the package, versions, and entries.
+    let root_group = UnresolvedPackageGroup::parse_dir(dir).ok();
     let scanned = scan_dependency_packages(dir);
     if !scanned.is_empty()
-        && let Ok(root) = UnresolvedPackageGroup::parse_dir(dir)
+        && let Some(root) = &root_group
     {
         crate::model::ensure_dependency_identity(&root.main.name, &scanned)?;
     }
+    let explicit_world_imports = root_group
+        .as_ref()
+        .map(|group| collect_explicit_world_imports(&group.main))
+        .unwrap_or_default();
 
     let mut resolve = Resolve {
         all_features: true,
@@ -151,7 +195,7 @@ pub fn load(dir: &Path) -> Result<Contract> {
                 .is_some_and(|mut paths| paths.all(|path| path.starts_with(&deps_dir)))
         })
         .collect();
-    let dependency_entries: Vec<(PackageId, PathBuf)> = dependencies
+    let dependency_entries_list: Vec<(PackageId, PathBuf)> = dependencies
         .iter()
         .filter_map(|id| {
             sources
@@ -160,16 +204,81 @@ pub fn load(dir: &Path) -> Result<Contract> {
                 .map(|source| (*id, dependency_entry_path(dir, source)))
         })
         .collect();
-    let dependency_names: Vec<(PackageName, PathBuf)> = dependency_entries
+    let dependency_names: Vec<(PackageName, PathBuf)> = dependency_entries_list
         .iter()
         .map(|(id, entry)| (resolve.packages[*id].name.clone(), entry.clone()))
         .collect();
     crate::model::ensure_dependency_identity(&resolve.packages[package].name, &dependency_names)?;
+    let dependency_entries = dependency_entries_list.into_iter().collect();
     Ok(Contract {
         resolve,
         package,
         dependencies,
+        dependency_entries,
+        explicit_world_imports,
     })
+}
+
+/// Record the interface imports explicitly written in each root world (including local `include`s)
+/// before `wit-parser` world elaboration synthesizes implicit dependency imports.
+fn collect_explicit_world_imports(
+    package: &UnresolvedPackage,
+) -> BTreeMap<String, BTreeSet<ExplicitWorldImport>> {
+    let mut foreign_interfaces: BTreeMap<InterfaceId, ((String, String), String)> = BTreeMap::new();
+    for (pkg_name, items) in &package.foreign_deps {
+        for (iface_name, (ast_item, _)) in items {
+            if let AstItem::Interface(interface_id) = ast_item {
+                foreign_interfaces.insert(
+                    *interface_id,
+                    (
+                        (pkg_name.namespace.clone(), pkg_name.name.clone()),
+                        iface_name.clone(),
+                    ),
+                );
+            }
+        }
+    }
+    let mut result = BTreeMap::new();
+    for (world_id, world) in &package.worlds {
+        let mut imports = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        collect_world_explicit_imports(
+            package,
+            world_id,
+            &foreign_interfaces,
+            &mut visited,
+            &mut imports,
+        );
+        result.insert(world.name.clone(), imports);
+    }
+    result
+}
+
+fn collect_world_explicit_imports(
+    package: &UnresolvedPackage,
+    world_id: WorldId,
+    foreign_interfaces: &BTreeMap<InterfaceId, ((String, String), String)>,
+    visited: &mut BTreeSet<WorldId>,
+    out: &mut BTreeSet<ExplicitWorldImport>,
+) {
+    if !visited.insert(world_id) {
+        return;
+    }
+    let world = &package.worlds[world_id];
+    for key in world.imports.keys() {
+        if let WorldKey::Interface(interface_id) = key {
+            if let Some((pkg, name)) = foreign_interfaces.get(interface_id) {
+                out.insert((Some(pkg.clone()), name.clone()));
+            } else if let Some(name) = package.interfaces[*interface_id].name.as_ref() {
+                out.insert((None, name.clone()));
+            }
+        }
+    }
+    for include in &world.includes {
+        // `include.id` is in `package.worlds` for both local and foreign world stubs; a foreign
+        // stub has no imports here, while a local world contributes its own explicit imports.
+        collect_world_explicit_imports(package, include.id, foreign_interfaces, visited, out);
+    }
 }
 
 /// The `deps/` entry that contains a dependency source path.

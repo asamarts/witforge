@@ -194,11 +194,23 @@ model::build(&Contract) -> Result<Model>
 - `TypeExpr::Named` preserves the name written at the reference site, including a `use` alias or
   a named list/option/result definition. Rust uses that name (and emits an alias where needed);
   canonical display expands it as described in section 4; proto inlines it.
-- Worlds MUST contain only the named interfaces they import or export. A world `use` names a
-  type and defines nothing; it is not a world item in the model. World-defined types/functions
-  are refused before construction. An imported or exported interface may belong to the root
-  package or to a standard `deps/` package; its package identity is preserved.
-- The package version MUST be `major.minor.0`; the model uses the version for module/proto names
+- Worlds MUST contain only the named interfaces they import or export directly. Named interface
+  imports and exports (`import foo: types;`, `export bar: types;`), inline interfaces
+  (`import foo: interface { ... }`), world-defined types, and world-level functions are refused
+  before construction, each with its own diagnostic. A world `use` names a type and defines
+  nothing; it is not a world item in the model. An imported or exported interface may belong to
+  the root package or to a standard `deps/` package; its package identity is preserved. When a
+  world reaches a dependency interface (explicitly or through `wit-parser`'s implicit import of a
+  dependency used by a world item), every item in that dependency interface becomes required, and
+  diagnostics for unsupported items there name the world item that pulled it in.
+- Only `@since`, `@unstable`, and `@deprecated` annotations are accepted. Any other annotation
+  (such as `@external-id`, or unknown attributes rejected by `wit-parser`) is refused.
+- Names within one scope (interfaces and worlds of a package, types and functions of an interface,
+  and live or reserved members of a lockfile parent) MUST be distinct ASCII case-insensitively;
+  names in different scopes do not collide.
+- The package version and every dependency package version under `deps/` (referenced or not) MUST
+  be `major.minor.0`; violations are reported as subset diagnostics (exit `1`) naming the
+  package, its version, and its `deps/` entry. The model uses the version for module/proto names
   and freeze checks, but never for lockfile keys.
 - The model MUST NOT contain source spans in the current 0.x line. If diagnostics need them later, add them as an
   additive field.

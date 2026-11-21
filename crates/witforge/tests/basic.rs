@@ -213,3 +213,288 @@ fn parse_rejects_bad_lockfiles() {
         assert!(WireLock::parse(&bad).is_err(), "{bad:?} should fail");
     }
 }
+
+fn temp_wit_dir(name: &str, contract: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("witforge-basic-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("contract.wit"), contract).unwrap();
+    dir
+}
+
+#[test]
+fn named_interface_imports_and_exports_get_their_own_message() {
+    let dir = temp_wit_dir(
+        "named-vs-inline",
+        r"package example:bad@0.1.0;
+
+interface types {
+    record item { id: u32 }
+}
+
+world plugin {
+    import named-in: types;
+    export named-out: types;
+    import inline-in: interface {
+        ping: func();
+    }
+    import world-fn: func();
+}
+",
+    );
+    let contract = load(&dir).unwrap();
+    let violations = subset::check(&contract);
+    assert_eq!(violations.len(), 4, "{violations:#?}");
+
+    let named_in = violations
+        .iter()
+        .find(|v| v.location == "example:bad/plugin/named-in")
+        .unwrap();
+    assert!(
+        named_in
+            .message
+            .contains("named interface imports are not supported"),
+        "{named_in}"
+    );
+    assert!(!named_in.message.contains("inline"), "{named_in}");
+
+    let named_out = violations
+        .iter()
+        .find(|v| v.location == "example:bad/plugin/named-out")
+        .unwrap();
+    assert!(
+        named_out
+            .message
+            .contains("named interface exports are not supported"),
+        "{named_out}"
+    );
+    assert!(!named_out.message.contains("inline"), "{named_out}");
+
+    let inline_in = violations
+        .iter()
+        .find(|v| v.location == "example:bad/plugin/inline-in")
+        .unwrap();
+    assert!(
+        inline_in
+            .message
+            .contains("inline interfaces are not supported"),
+        "{inline_in}"
+    );
+
+    let world_fn = violations
+        .iter()
+        .find(|v| v.location == "example:bad/plugin#world-fn")
+        .unwrap();
+    assert!(
+        world_fn
+            .message
+            .contains("functions must be defined in an interface"),
+        "{world_fn}"
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn unknown_and_unsupported_annotations_are_refused() {
+    // Known annotations (`@since`, `@unstable`, `@deprecated`) remain accepted.
+    let valid = temp_wit_dir(
+        "known-annotations",
+        r"package example:ok@0.2.0;
+
+@since(version = 0.1.0)
+interface types {
+    @since(version = 0.1.0)
+    @deprecated(version = 0.2.0)
+    record old { id: u32 }
+
+    @unstable(feature = preview)
+    ping: func();
+}
+",
+    );
+    let violations = subset::check(&load(&valid).unwrap());
+    assert!(violations.is_empty(), "{violations:#?}");
+    fs::remove_dir_all(&valid).unwrap();
+
+    // `@external-id` is parsed by `wit-parser` on types, uses, functions, and world items, and
+    // must be refused by the subset checker.
+    let external_id = temp_wit_dir(
+        "external-id-all",
+        r#"package example:bad@0.1.0;
+
+interface base {
+    record shared { id: u32 }
+}
+
+interface api {
+    @external-id("use-id")
+    use base.{shared};
+
+    @external-id("type-id")
+    record item { s: shared }
+
+    @external-id("func-id")
+    get: func() -> item;
+}
+
+world plugin {
+    @external-id("world-use-id")
+    use base.{shared};
+
+    @external-id("world-export-id")
+    export api;
+}
+"#,
+    );
+    let diagnostics = subset::check_diagnostics(&load(&external_id).unwrap());
+    assert_eq!(diagnostics.len(), 5, "{diagnostics:#?}");
+    for expected_path in [
+        "example:bad/api/shared",
+        "example:bad/api/item",
+        "example:bad/api#get",
+        "example:bad/plugin/shared",
+        "example:bad/plugin/api",
+    ] {
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == "WF1001"
+                    && d.path.as_deref() == Some(expected_path)
+                    && d.message.contains("@external-id")
+            }),
+            "missing @external-id diagnostic for {expected_path}: {diagnostics:#?}"
+        );
+    }
+    fs::remove_dir_all(&external_id).unwrap();
+
+    // Unknown annotations on an interface, a type, a function, and a world item are refused.
+    for (case, body) in [
+        (
+            "iface",
+            "package example:bad@0.1.0;\n@custom(x = 1)\ninterface types { record r { a: u32 } }\n",
+        ),
+        (
+            "type",
+            "package example:bad@0.1.0;\ninterface types { @custom(x = 1)\nrecord r { a: u32 } }\n",
+        ),
+        (
+            "func",
+            "package example:bad@0.1.0;\ninterface types { @custom(x = 1)\nping: func(); }\n",
+        ),
+        (
+            "world-item",
+            "package example:bad@0.1.0;\ninterface types { record r { a: u32 } }\nworld w { @custom(x = 1)\nexport types; }\n",
+        ),
+        (
+            "iface-external-id",
+            "package example:bad@0.1.0;\n@external-id(\"x\")\ninterface types { record r { a: u32 } }\n",
+        ),
+    ] {
+        let dir = temp_wit_dir(&format!("unknown-attr-{case}"), body);
+        assert!(load(&dir).is_err(), "{case} should be refused");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn case_insensitive_scope_collisions_are_refused() {
+    // Two interfaces in one package differing only in ASCII letter case pass `wit-parser` and
+    // must be refused by `subset::check` with `WF1003`.
+    let dup_ifaces = temp_wit_dir(
+        "case-ifaces",
+        r"package example:bad@0.1.0;
+
+interface api {
+    record a { id: u32 }
+}
+
+interface API {
+    record b { id: u32 }
+}
+",
+    );
+    let diagnostics = subset::check_diagnostics(&load(&dup_ifaces).unwrap());
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].code, "WF1003");
+    assert_eq!(diagnostics[0].path.as_deref(), Some("example:bad/API"));
+    assert!(
+        diagnostics[0].message.contains("letter case"),
+        "{diagnostics:#?}"
+    );
+    fs::remove_dir_all(&dup_ifaces).unwrap();
+
+    // Two worlds in one package differing only in ASCII letter case are refused with `WF1003`.
+    let dup_worlds = temp_wit_dir(
+        "case-worlds",
+        r"package example:bad@0.1.0;
+
+interface api {
+    ping: func();
+}
+
+world plugin {
+    export api;
+}
+
+world PLUGIN {
+    export api;
+}
+",
+    );
+    let diagnostics = subset::check_diagnostics(&load(&dup_worlds).unwrap());
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].code, "WF1003");
+    assert_eq!(diagnostics[0].path.as_deref(), Some("example:bad/PLUGIN"));
+    fs::remove_dir_all(&dup_worlds).unwrap();
+
+    // Two live members, two types, two functions, or two parameters in one scope that differ only
+    // in ASCII letter case are refused at load/check time.
+    for (case, body) in [
+        (
+            "fields",
+            "package example:bad@0.1.0;\ninterface api { record r { foo-bar: u32, FOO-bar: u32 } }\n",
+        ),
+        (
+            "types",
+            "package example:bad@0.1.0;\ninterface api { record foo { x: u32 } record FOO { y: u32 } }\n",
+        ),
+        (
+            "functions",
+            "package example:bad@0.1.0;\ninterface api { foo-bar: func(); FOO-bar: func(); }\n",
+        ),
+        (
+            "params",
+            "package example:bad@0.1.0;\ninterface api { f: func(foo-bar: u32, FOO-bar: u32); }\n",
+        ),
+    ] {
+        let dir = temp_wit_dir(&format!("case-live-{case}"), body);
+        let outcome = load(&dir).map(|contract| subset::check(&contract));
+        assert!(
+            outcome.is_err() || !outcome.unwrap().is_empty(),
+            "{case} should be refused"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Names differing in case in DIFFERENT scopes do not collide.
+    let distinct_scopes = temp_wit_dir(
+        "case-distinct-scopes",
+        r"package example:ok@0.1.0;
+
+interface alpha {
+    record item { foo-bar: u32 }
+    record other { FOO-bar: u32 }
+    f: func(foo-bar: u32);
+    g: func(FOO-bar: u32);
+}
+
+interface beta {
+    record ITEM { id: u32 }
+    F: func();
+}
+",
+    );
+    let diagnostics = subset::check_diagnostics(&load(&distinct_scopes).unwrap());
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    fs::remove_dir_all(&distinct_scopes).unwrap();
+}

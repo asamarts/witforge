@@ -209,6 +209,16 @@ impl MemberKey {
             } => format!("{package}/{interface}#{function}.{parameter}"),
         }
     }
+
+    /// The leaf member, function, or parameter name inside its parent scope.
+    #[must_use]
+    pub(crate) fn member_name(&self) -> &str {
+        match self {
+            Self::TypeMember { member, .. } => member,
+            Self::Method { function, .. } => function,
+            Self::Parameter { parameter, .. } => parameter,
+        }
+    }
 }
 
 impl fmt::Display for MemberKey {
@@ -660,9 +670,10 @@ impl WireLock {
             }
         }
 
-        // The next number for each parent is tracked once. Re-scanning every entry for every new
-        // member made a wide contract quadratic.
+        // The next number and folded member names for each parent are tracked once. Re-scanning
+        // every entry for every new member made a wide contract quadratic.
         let mut next_numbers: BTreeMap<String, u32> = BTreeMap::new();
+        let mut case_index = build_case_index(&self.entries);
         for (key, entry) in &self.entries {
             let parent = key.parent();
             let candidate = entry.number.checked_add(1).unwrap_or(PROTOBUF_MAX + 1);
@@ -738,6 +749,17 @@ impl WireLock {
                 Some(_) => continue,
                 None => {}
             }
+            let folded = (key.parent(), key.member_name().to_ascii_lowercase());
+            if let Some(existing) = case_index.get(&folded)
+                && existing.name != key.member_name()
+            {
+                push_discrepancy(
+                    &mut discrepancies,
+                    key.key(),
+                    case_collision_message(&key, existing),
+                );
+                continue;
+            }
             let number = next_number_in(&mut next_numbers, &key.parent())?;
             self.entries.insert(
                 key.clone(),
@@ -746,6 +768,14 @@ impl WireLock {
                     kind: member.kind,
                     ty: member.ty.clone(),
                     reserved: false,
+                },
+            );
+            case_index.insert(
+                folded,
+                CaseAnchor {
+                    name: key.member_name().to_string(),
+                    reserved: false,
+                    number,
                 },
             );
             changes.added.push((key.key(), number));
@@ -757,6 +787,12 @@ impl WireLock {
         // the same violation. A lockfile that already mixes kinds is refused by the same check.
         for (parent, message) in self.kind_discrepancies() {
             push_discrepancy(&mut discrepancies, parent, message);
+        }
+        // Two entries in one parent that differ only in ASCII letter case share one generated
+        // identifier namespace (including reserved entries), so refuse pre-existing or live
+        // collisions here as well.
+        for (key, message) in self.case_collision_discrepancies() {
+            push_discrepancy(&mut discrepancies, key, message);
         }
         // A reintroduced member is a contract violation; leave the lockfile (including its
         // order section) untouched so the caller cannot mistake it for a usable update.
@@ -821,6 +857,77 @@ impl WireLock {
     ) -> Result<Reconciliation> {
         let mut copy = self.clone();
         copy.reconcile_report_with(members, mode)
+    }
+
+    /// Report live or existing lockfile members in one parent that differ only in ASCII letter
+    /// case, with reserved entries included.
+    ///
+    /// Draft entries that `mode` drops do not collide. Each collision is returned as a `WF1003`
+    /// diagnostic matching the discrepancy reported by [`WireLock::reconcile_report_with`] and
+    /// [`WireLock::drift_report_with`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a member key is malformed.
+    pub fn case_collisions(
+        &self,
+        members: &[Member],
+        mode: LockMode<'_>,
+    ) -> Result<Vec<crate::diagnostic::Diagnostic>> {
+        let live: BTreeMap<MemberKey, &Member> = members
+            .iter()
+            .map(|member| Ok((MemberKey::from_member(member)?, member)))
+            .collect::<Result<_>>()?;
+        let released: BTreeMap<MemberKey, Entry> = match mode {
+            LockMode::Default => self.entries.clone(),
+            LockMode::First => BTreeMap::new(),
+            LockMode::Against(previous) => previous.entries.clone(),
+        };
+        let mut staged = self.entries.clone();
+        staged.retain(|key, entry| {
+            released.contains_key(key) || (!entry.reserved && live.contains_key(key))
+        });
+        for (key, entry) in &mut staged {
+            if released.contains_key(key) && !entry.reserved && !live.contains_key(key) {
+                entry.reserved = true;
+            }
+        }
+        let case_index = build_case_index(&staged);
+        let mut collisions = Vec::new();
+        for member in members {
+            let key = MemberKey::from_member(member)?;
+            if staged.contains_key(&key) {
+                continue;
+            }
+            let folded = (key.parent(), key.member_name().to_ascii_lowercase());
+            if let Some(existing) = case_index.get(&folded)
+                && existing.name != key.member_name()
+            {
+                let message = case_collision_message(&key, existing);
+                let path = key.key();
+                if !collisions
+                    .iter()
+                    .any(|(found_path, found_msg)| found_path == &path && found_msg == &message)
+                {
+                    collisions.push((path, message));
+                }
+            }
+        }
+        for (path, message) in entries_case_collisions(&staged) {
+            if !collisions
+                .iter()
+                .any(|(found_path, found_msg)| found_path == &path && found_msg == &message)
+            {
+                collisions.push((path, message));
+            }
+        }
+        collisions.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        Ok(collisions
+            .into_iter()
+            .map(|(path, message)| {
+                crate::diagnostic::Diagnostic::error("WF1003", message).with_path(path)
+            })
+            .collect())
     }
 
     /// Check that every entry and order fingerprint belongs to `package`, the contract's
@@ -1093,6 +1200,88 @@ impl WireLock {
         }
         discrepancies
     }
+
+    fn case_collision_discrepancies(&self) -> Vec<(String, String)> {
+        entries_case_collisions(&self.entries)
+    }
+}
+
+struct CaseAnchor {
+    name: String,
+    reserved: bool,
+    number: u32,
+}
+
+fn build_case_index(
+    entries: &BTreeMap<MemberKey, Entry>,
+) -> BTreeMap<(String, String), CaseAnchor> {
+    let mut index: BTreeMap<(String, String), CaseAnchor> = BTreeMap::new();
+    for (key, entry) in entries {
+        let folded = (key.parent(), key.member_name().to_ascii_lowercase());
+        let candidate = CaseAnchor {
+            name: key.member_name().to_string(),
+            reserved: entry.reserved,
+            number: entry.number,
+        };
+        match index.entry(folded) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(candidate);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let current = slot.get();
+                if (!candidate.reserved, candidate.number, &candidate.name)
+                    < (!current.reserved, current.number, &current.name)
+                {
+                    slot.insert(candidate);
+                }
+            }
+        }
+    }
+    index
+}
+
+fn case_collision_message(key: &MemberKey, other: &CaseAnchor) -> String {
+    let kind = if other.reserved {
+        "reserved member"
+    } else {
+        "member"
+    };
+    format!(
+        "member `{key}` differs only in letter case from {kind} `{}` (number {}) in `{}`; give \
+         it a distinct name",
+        other.name,
+        other.number,
+        key.parent()
+    )
+}
+
+fn entries_case_collisions(entries: &BTreeMap<MemberKey, Entry>) -> Vec<(String, String)> {
+    let mut groups: BTreeMap<(String, String), Vec<(&MemberKey, &Entry)>> = BTreeMap::new();
+    for (key, entry) in entries {
+        groups
+            .entry((key.parent(), key.member_name().to_ascii_lowercase()))
+            .or_default()
+            .push((key, entry));
+    }
+    let mut discrepancies = Vec::new();
+    for mut items in groups.into_values() {
+        if items.len() < 2 {
+            continue;
+        }
+        // Anchor on the earliest reserved entry (or lowest-numbered entry) so a live member that
+        // collides with a reserved one is the key reported.
+        items.sort_by_key(|(key, entry)| (!entry.reserved, entry.number, key.key()));
+        let (anchor_key, anchor_entry) = items[0];
+        let anchor = CaseAnchor {
+            name: anchor_key.member_name().to_string(),
+            reserved: anchor_entry.reserved,
+            number: anchor_entry.number,
+        };
+        for &(other_key, _) in &items[1..] {
+            discrepancies.push((other_key.key(), case_collision_message(other_key, &anchor)));
+        }
+    }
+    discrepancies
 }
 
 /// Assign the next number in `parent` from the per-parent cursors.

@@ -1689,3 +1689,114 @@ fn a_draft_member_removed_and_readded_gets_a_new_number() {
         .unwrap();
     assert_eq!(current.get("a:b/i/t.c").unwrap().number, 3);
 }
+
+#[test]
+fn case_variant_of_a_reserved_member_is_refused() {
+    let mk = |parent: &str, name: &str, kind: MemberKind, ty: Option<&str>| Member {
+        parent: parent.to_string(),
+        name: name.to_string(),
+        kind,
+        ty: ty.map(ToString::to_string),
+    };
+    let cases = [
+        ("a:b/i/r", MemberKind::Field, Some("u32")),
+        ("a:b/i/v", MemberKind::VariantCase, Some("u32")),
+        ("a:b/i/e", MemberKind::EnumCase, None),
+        ("a:b/i/f", MemberKind::Flag, None),
+        ("a:b/i", MemberKind::Method, Some("u32")),
+        ("a:b/i#op", MemberKind::Param, Some("u32")),
+    ];
+
+    for (parent, kind, ty) in cases {
+        let old_member = mk(parent, "foo-bar", kind, ty);
+        let new_member = mk(parent, "FOO-bar", kind, ty);
+
+        let mut baseline = WireLock::default();
+        baseline
+            .reconcile_report_with(&[old_member], LockMode::First)
+            .unwrap();
+
+        // One-step replacement of a released member by a case variant is refused.
+        let mut one_step = baseline.clone();
+        let report = one_step
+            .reconcile_report_with(
+                std::slice::from_ref(&new_member),
+                LockMode::Against(&baseline),
+            )
+            .unwrap();
+        assert_eq!(report.discrepancies.len(), 1, "{parent}: {report:?}");
+        assert_eq!(report.discrepancies[0].key, new_member.key());
+        assert!(
+            report.discrepancies[0].message.contains("letter case"),
+            "{parent}: {report:?}"
+        );
+        assert!(report.changes.added.is_empty(), "{parent}: {report:?}");
+        assert_eq!(one_step, baseline, "refused reconcile must not mutate lock");
+
+        let collisions = baseline
+            .case_collisions(
+                std::slice::from_ref(&new_member),
+                LockMode::Against(&baseline),
+            )
+            .unwrap();
+        assert_eq!(collisions.len(), 1, "{parent}: {collisions:#?}");
+        assert_eq!(collisions[0].code, "WF1003");
+        assert_eq!(
+            collisions[0].path.as_deref(),
+            Some(new_member.key().as_str())
+        );
+
+        // Two-step replacement: reserve `foo-bar` first, then add `FOO-bar`.
+        let mut two_step = baseline.clone();
+        two_step
+            .reconcile_report_with(&[], LockMode::Against(&baseline))
+            .unwrap();
+        let before = two_step.clone();
+        let report = two_step
+            .reconcile_report_with(
+                std::slice::from_ref(&new_member),
+                LockMode::Against(&baseline),
+            )
+            .unwrap();
+        assert_eq!(report.discrepancies.len(), 1, "{parent}: {report:?}");
+        assert!(report.changes.added.is_empty(), "{parent}: {report:?}");
+        assert_eq!(two_step, before);
+        assert!(two_step.drift(std::slice::from_ref(&new_member)).is_err());
+    }
+
+    // A pre-existing lockfile that already holds both `foo-bar` (reserved) and `FOO-bar` (live)
+    // is refused by `drift` and `case_collisions`.
+    let mixed = WireLock::parse(&format!(
+        "{HEADER}\na:b/i/r.FOO-bar = 2 field u32\na:b/i/r.foo-bar = 1 field u32 reserved\n"
+    ))
+    .unwrap();
+    let live = [mk("a:b/i/r", "FOO-bar", MemberKind::Field, Some("u32"))];
+    let report = mixed.drift_report(&live).unwrap();
+    assert_eq!(report.discrepancies.len(), 1, "{report:?}");
+    assert_eq!(report.discrepancies[0].key, "a:b/i/r.FOO-bar");
+    let collisions = mixed.case_collisions(&live, LockMode::Default).unwrap();
+    assert_eq!(collisions.len(), 1, "{collisions:#?}");
+    assert_eq!(collisions[0].code, "WF1003");
+
+    // Renaming an unreleased draft from `foo-bar` to `FOO-bar` drops the draft and succeeds.
+    let mut draft = WireLock::default();
+    let draft_old = mk("a:b/i/r", "foo-bar", MemberKind::Field, Some("u32"));
+    draft
+        .reconcile_report_with(&[draft_old], LockMode::First)
+        .unwrap();
+    let report = draft.reconcile_report_with(&live, LockMode::First).unwrap();
+    assert!(report.discrepancies.is_empty(), "{report:?}");
+    assert!(draft.get("a:b/i/r.foo-bar").is_none());
+    assert!(draft.get("a:b/i/r.FOO-bar").is_some());
+
+    // Members in different parents do not collide.
+    let other_parent = [
+        mk("a:b/i/r", "foo-bar", MemberKind::Field, Some("u32")),
+        mk("a:b/i/s", "FOO-bar", MemberKind::Field, Some("u32")),
+    ];
+    let mut separate = WireLock::default();
+    let report = separate
+        .reconcile_report_with(&other_parent, LockMode::First)
+        .unwrap();
+    assert!(report.discrepancies.is_empty(), "{report:?}");
+}

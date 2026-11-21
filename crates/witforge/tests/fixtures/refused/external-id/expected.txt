@@ -1,0 +1,3 @@
+example:bad/types/span: annotation `@external-id("ext-span")` is not supported; only `@since`, `@unstable`, and `@deprecated` are accepted
+example:bad/types#ping: annotation `@external-id("ext-ping")` is not supported; only `@since`, `@unstable`, and `@deprecated` are accepted
+example:bad/plugin/types: annotation `@external-id("ext-export")` is not supported; only `@since`, `@unstable`, and `@deprecated` are accepted

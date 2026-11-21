@@ -1,0 +1,16 @@
+package example:bad@0.1.0;
+
+interface types {
+    @external-id("ext-span")
+    record span {
+        start: u64,
+    }
+
+    @external-id("ext-ping")
+    ping: func();
+}
+
+world plugin {
+    @external-id("ext-export")
+    export types;
+}

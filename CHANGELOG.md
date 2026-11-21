@@ -57,6 +57,15 @@ have it.
 
 ### Fixed
 
+- Subset validation now reports every dependency package under `deps/` (referenced or not) whose
+  version is missing or not `<major>.<minor>.0` as a subset diagnostic (`WF1001`, exit `1`) naming
+  the package, version, and `deps/` entry instead of failing `model::build` with exit `2`. Named
+  interface imports and exports (`import foo: types;`, `export bar: types;`) are refused with their
+  own message rather than as inline interfaces, annotations other than `@since`, `@unstable`, and
+  `@deprecated` (including `@external-id`) are refused, diagnostics for unsupported dependency
+  items pulled in by a world name the world item and note implicit imports, and two names in one
+  scope that differ only in ASCII letter case (including a live member colliding with a reserved
+  lockfile entry) are refused by `check` and `lock` with code `WF1003` and exit `1`.
 - A lockfile parent whose live and reserved members have different kinds is refused by `check`,
   `lock`, and every generator with exit `1`, naming the parent and both kinds. A released type
   that changes kind (enum to record, and every other ordered pair) previously kept the old
