@@ -148,6 +148,31 @@ fn byte_list_aliases_generate_vec_u8_and_compile() {
 }
 
 #[test]
+fn root_module_and_trait_collisions_are_rejected() {
+    let dir = std::env::temp_dir().join(format!("witforge-emit-root-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:clash@0.1.0;\ninterface foo { record foo { x: u32 } ping: func(); }\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let error = rust::emit_version(&model).unwrap_err();
+    assert!(format!("{error:#}").contains("Foo"), "{error:#}");
+
+    // Two interfaces mapping to the same root module name are also rejected directly by the
+    // Rust emitter.
+    let mut duplicate_root = model.clone();
+    duplicate_root
+        .interfaces
+        .push(duplicate_root.interfaces[0].clone());
+    let dup_error = rust::emit_version(&duplicate_root).unwrap_err();
+    assert!(format!("{dup_error:#}").contains("foo"), "{dup_error:#}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn upper_case_wit_identifiers_produce_idiomatic_rust_with_no_case_warnings() {
     let dir = std::env::temp_dir().join(format!("witforge-emit-upper-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
