@@ -173,8 +173,13 @@ model::build(&Contract) -> Result<Model>
 - `model::build` MUST be the only module that converts `wit-parser` types into model types.
 - It MUST return an error for a type or function the subset should have refused, rather than
   silently dropping it.
-- It MUST preserve source order of interfaces, types, functions, members, and parameters, as
-  observed in `wit-parser`'s `IndexMap`s.
+- It MUST preserve source order of interfaces, types, functions, members, and parameters. For a
+  multi-file package (both the root version directory and each package directory under `deps/`),
+  `*.wit` files are loaded in ascending **file name byte order** (UTF-8 bytes, never locale or OS
+  directory-enumeration order), and items within each file keep their source position order.
+  Dependency entries under `deps/` are loaded by the same byte-order rule. Renaming a file in a
+  multi-file package therefore changes declaration order deterministically. Use ASCII file names
+  so case-insensitive or Unicode-normalising file systems cannot alter file-name bytes.
 - It MUST use the unmangled item name for functions, not the `[method]`-style name.
 - It MUST include every interface and world in the root package, including unused ones.
 - It MUST include `@unstable` items; all features are loaded.

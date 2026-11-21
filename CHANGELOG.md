@@ -57,6 +57,11 @@ have it.
 
 ### Fixed
 
+- Multi-file version directories and multi-file `deps/` packages now load their `*.wit` files in
+  ascending file-name byte order rather than raw OS directory-enumeration order, making generated
+  output deterministic across file systems and platforms. **Migration:** single-file contracts,
+  wire numbers, and `wire.lock` files are unaffected; an existing multi-file contract's generated
+  output may reorder declarations once into file-name byte order when regenerated.
 - The generator output-root guard now resolves existing path components canonically (following
   symlinks, dangling symlink targets, Windows junctions, and case-insensitive spellings), refuses
   `..` after a missing directory component (closing the `missing/../witlink/v0.1` bypass),

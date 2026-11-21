@@ -36,9 +36,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use wit_parser::{
-    AstItem, InterfaceId, PackageId, PackageName, Resolve, UnresolvedPackage,
+    AstItem, InterfaceId, PackageId, PackageName, Resolve, SourceMap, UnresolvedPackage,
     UnresolvedPackageGroup, WorldId, WorldKey,
 };
 
@@ -163,8 +163,11 @@ impl Contract {
 
 /// Load the WIT package in `dir`.
 ///
-/// All features are enabled, so items gated by `@unstable` are kept; otherwise they would
-/// silently disappear and the lockfile would report their members as removed.
+/// Files in `dir` and in each package directory under `deps/` are loaded in ascending file-name
+/// byte order (never raw directory-enumeration order or locale order), so source spans and model
+/// ordering are deterministic across file systems and platforms. All features are enabled, so
+/// items gated by `@unstable` are kept; otherwise they would silently disappear and the lockfile
+/// would report their members as removed.
 ///
 /// # Errors
 ///
@@ -172,55 +175,48 @@ impl Contract {
 /// [`ContractError`] when the dependency graph pins more than one version of one package or a
 /// dependency uses the root package's namespace and name.
 pub fn load(dir: &Path) -> Result<Contract> {
-    // `wit-parser` refuses two identical package names before witforge can classify the error.
-    // Scan the dependency entries first so that every duplicate-package shape is a contract
-    // violation (exit 1) that names the package, versions, and entries.
-    let root_group = UnresolvedPackageGroup::parse_dir(dir).ok();
-    let scanned = scan_dependency_packages(dir);
-    if !scanned.is_empty()
-        && let Some(root) = &root_group
-    {
-        crate::model::ensure_dependency_identity(&root.main.name, &scanned)?;
-    }
-    let (explicit_world_imports, included_foreign_worlds) = root_group
-        .as_ref()
-        .map(|group| collect_explicit_world_imports(&group.main))
-        .unwrap_or_default();
+    let load_context = || format!("failed to load the WIT package in {}", dir.display());
+    let top_pkg = parse_sorted_dir(dir)
+        .with_context(|| format!("failed to parse package: {}", dir.display()))
+        .with_context(load_context)?;
+    let (explicit_world_imports, included_foreign_worlds) =
+        collect_explicit_world_imports(&top_pkg.main);
 
     let mut resolve = Resolve {
         all_features: true,
         ..Resolve::default()
     };
-    let (package, sources) = resolve
-        .push_dir(dir)
-        .with_context(|| format!("failed to load the WIT package in {}", dir.display()))?;
-    let deps_dir = dir.join("deps");
-    let dependencies: Vec<PackageId> = resolve
-        .packages
-        .iter()
-        .map(|(id, _)| id)
-        .filter(|id| *id != package)
-        .filter(|id| {
-            sources
-                .package_paths(*id)
-                .is_some_and(|mut paths| paths.all(|path| path.starts_with(&deps_dir)))
+    let loaded_deps = load_deps_dir(&dir.join("deps"), &mut resolve).with_context(load_context)?;
+
+    // Check dependency identity before `push_groups` so duplicate package names become a
+    // `ContractError` (exit 1) naming the package, versions, and `deps/` entries rather than a
+    // `wit-parser` duplicate-package error (exit 2).
+    crate::model::ensure_dependency_identity(&top_pkg.main.name, &loaded_deps.scanned)?;
+
+    let package = resolve
+        .push_groups(top_pkg, loaded_deps.groups)
+        .map_err(|err| {
+            let err: anyhow::Error = err.into();
+            anyhow!("{}", resolve.render_error(&err))
         })
-        .collect();
-    let dependency_entries_list: Vec<(PackageId, PathBuf)> = dependencies
-        .iter()
-        .filter_map(|id| {
-            sources
-                .package_paths(*id)
-                .and_then(|mut paths| paths.next())
-                .map(|source| (*id, dependency_entry_path(dir, source)))
-        })
-        .collect();
-    let dependency_names: Vec<(PackageName, PathBuf)> = dependency_entries_list
-        .iter()
-        .map(|(id, entry)| (resolve.packages[*id].name.clone(), entry.clone()))
-        .collect();
-    crate::model::ensure_dependency_identity(&resolve.packages[package].name, &dependency_names)?;
-    let dependency_entries = dependency_entries_list.into_iter().collect();
+        .with_context(load_context)?;
+
+    let mut dependencies = Vec::new();
+    let mut dependency_entries = BTreeMap::new();
+    for (id, pkg) in &resolve.packages {
+        if id == package {
+            continue;
+        }
+        if let Some(entry) = loaded_deps
+            .binary_entries
+            .get(&id)
+            .cloned()
+            .or_else(|| loaded_deps.entries_by_package.get(&pkg.name).cloned())
+        {
+            dependencies.push(id);
+            dependency_entries.insert(id, entry);
+        }
+    }
     Ok(Contract {
         resolve,
         package,
@@ -229,6 +225,77 @@ pub fn load(dir: &Path) -> Result<Contract> {
         explicit_world_imports,
         included_foreign_worlds,
     })
+}
+
+struct LoadedDeps {
+    groups: Vec<UnresolvedPackageGroup>,
+    entries_by_package: BTreeMap<PackageName, PathBuf>,
+    binary_entries: BTreeMap<PackageId, PathBuf>,
+    scanned: Vec<(PackageName, PathBuf)>,
+}
+
+fn load_deps_dir(deps_dir: &Path, resolve: &mut Resolve) -> Result<LoadedDeps> {
+    let mut loaded = LoadedDeps {
+        groups: Vec::new(),
+        entries_by_package: BTreeMap::new(),
+        binary_entries: BTreeMap::new(),
+        scanned: Vec::new(),
+    };
+    if !deps_dir.exists() {
+        return Ok(loaded);
+    }
+    let dep_paths = sorted_directory_entries(deps_dir).with_context(|| {
+        format!(
+            "failed to parse dependency directory: {}",
+            deps_dir.display()
+        )
+    })?;
+    for entry_path in dep_paths {
+        let file_type = fs::symlink_metadata(&entry_path)
+            .with_context(|| format!("failed to inspect {}", entry_path.display()))?
+            .file_type();
+        let is_dir = file_type.is_dir()
+            || (file_type.is_symlink() && fs::metadata(&entry_path).is_ok_and(|m| m.is_dir()));
+        if is_dir {
+            let group = parse_sorted_dir(&entry_path)
+                .with_context(|| format!("failed to parse package: {}", entry_path.display()))?;
+            for pkg in std::iter::once(&group.main).chain(&group.nested) {
+                loaded.scanned.push((pkg.name.clone(), entry_path.clone()));
+                loaded
+                    .entries_by_package
+                    .insert(pkg.name.clone(), entry_path.clone());
+            }
+            loaded.groups.push(group);
+        } else {
+            match entry_path.extension().and_then(std::ffi::OsStr::to_str) {
+                Some("wit") => {
+                    let group = parse_single_wit_file(&entry_path)?;
+                    for pkg in std::iter::once(&group.main).chain(&group.nested) {
+                        loaded.scanned.push((pkg.name.clone(), entry_path.clone()));
+                        loaded
+                            .entries_by_package
+                            .insert(pkg.name.clone(), entry_path.clone());
+                    }
+                    loaded.groups.push(group);
+                }
+                Some("wat" | "wasm") => {
+                    let before: BTreeSet<PackageId> =
+                        resolve.packages.iter().map(|(id, _)| id).collect();
+                    resolve.push_file(&entry_path).with_context(|| {
+                        format!("failed to parse package: {}", entry_path.display())
+                    })?;
+                    for (id, pkg) in &resolve.packages {
+                        if !before.contains(&id) {
+                            loaded.scanned.push((pkg.name.clone(), entry_path.clone()));
+                            loaded.binary_entries.insert(id, entry_path.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(loaded)
 }
 
 /// Record the interface imports and foreign world includes explicitly written in each root world
@@ -335,55 +402,70 @@ fn collect_world_explicit_imports(
     }
 }
 
-/// The `deps/` entry that contains a dependency source path.
-fn dependency_entry_path(dir: &Path, source: &Path) -> PathBuf {
-    let deps = dir.join("deps");
-    source
-        .strip_prefix(&deps)
-        .ok()
-        .and_then(|rest| rest.components().next())
-        .map_or_else(
-            || source.to_path_buf(),
-            |component| deps.join(component.as_os_str()),
-        )
+/// Sort paths by their file name as raw bytes (UTF-8 bytes for valid UTF-8 names), never by
+/// locale or OS directory-enumeration order.
+fn sort_paths_by_filename_bytes(paths: &mut [PathBuf]) {
+    paths.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .map(std::ffi::OsStr::as_encoded_bytes)
+            .unwrap_or_default();
+        let right_name = right
+            .file_name()
+            .map(std::ffi::OsStr::as_encoded_bytes)
+            .unwrap_or_default();
+        left_name.cmp(right_name).then_with(|| {
+            left.as_os_str()
+                .as_encoded_bytes()
+                .cmp(right.as_os_str().as_encoded_bytes())
+        })
+    });
 }
 
-/// Parse the package declarations in `deps/` without resolving them.
-///
-/// This only supplies names for the duplicate-package diagnostics; `wit-parser` still owns the
-/// real parse and reports its own diagnostics for a malformed entry. Entries it cannot read or
-/// parse are skipped here and refused by `push_dir` afterwards.
-fn scan_dependency_packages(dir: &Path) -> Vec<(PackageName, PathBuf)> {
-    let deps = dir.join("deps");
-    let Ok(entries) = fs::read_dir(&deps) else {
-        return Vec::new();
-    };
-    let mut entries: Vec<_> = entries.flatten().collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    let mut packages = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        let group = if path.is_dir() {
-            UnresolvedPackageGroup::parse_dir(&path).ok()
-        } else if path
-            .extension()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("wit"))
-        {
-            fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| UnresolvedPackageGroup::parse(&path, &text).ok())
-        } else {
-            None
-        };
-        let Some(group) = group else {
-            continue;
-        };
-        for package in std::iter::once(group.main).chain(group.nested) {
-            packages.push((package.name, path.clone()));
-        }
+fn sorted_directory_entries(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("failed to read directory {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read directory {}", dir.display()))?;
+        paths.push(entry.path());
     }
-    packages
+    sort_paths_by_filename_bytes(&mut paths);
+    Ok(paths)
+}
+
+fn sorted_wit_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry_path in sorted_directory_entries(dir)? {
+        let ty = fs::symlink_metadata(&entry_path)
+            .with_context(|| format!("failed to inspect {}", entry_path.display()))?
+            .file_type();
+        if ty.is_dir() || (ty.is_symlink() && entry_path.is_dir()) {
+            continue;
+        }
+        if entry_path.extension().and_then(std::ffi::OsStr::to_str) != Some("wit") {
+            continue;
+        }
+        files.push(entry_path);
+    }
+    Ok(files)
+}
+
+fn parse_sorted_dir(dir: &Path) -> Result<UnresolvedPackageGroup> {
+    let mut map = SourceMap::new();
+    for file in sorted_wit_files(dir)? {
+        map.push_file(&file)?;
+    }
+    map.parse()
+        .map_err(|(source_map, err)| anyhow!("{}", err.render(&source_map)))
+}
+
+fn parse_single_wit_file(path: &Path) -> Result<UnresolvedPackageGroup> {
+    let mut map = SourceMap::new();
+    map.push_file(path)?;
+    map.parse()
+        .map_err(|(source_map, err)| anyhow!("{}", err.render(&source_map)))
+        .with_context(|| format!("failed to parse package: {}", path.display()))
 }
 
 /// Refuse two models whose pinned dependency graphs cannot share one generated binding surface.
@@ -837,4 +919,72 @@ fn canonical_number(digits: &str) -> bool {
     !digits.is_empty()
         && digits.bytes().all(|byte| byte.is_ascii_digit())
         && (digits == "0" || !digits.starts_with('0'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sort_paths_by_filename_bytes_is_deterministic_byte_order() {
+        let mut shuffled = vec![
+            PathBuf::from("dir/z.wit"),
+            PathBuf::from("dir/b.wit"),
+            PathBuf::from("dir/B.wit"),
+            PathBuf::from("dir/a.wit"),
+            PathBuf::from("dir/10.wit"),
+            PathBuf::from("dir/2.wit"),
+            PathBuf::from("dir/é.wit"),
+        ];
+        sort_paths_by_filename_bytes(&mut shuffled);
+        let names: Vec<&str> = shuffled
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        // Raw UTF-8 byte order: digits ('1' < '2'), uppercase ('B'), lowercase ('a' < 'b' < 'z'),
+        // then non-ASCII UTF-8 bytes (0xc3 ...).
+        assert_eq!(
+            names,
+            vec![
+                "10.wit", "2.wit", "B.wit", "a.wit", "b.wit", "z.wit", "é.wit"
+            ]
+        );
+    }
+
+    #[test]
+    fn sorted_load_preserves_source_positions_for_every_file() {
+        let dir =
+            std::env::temp_dir().join(format!("witforge-lib-sorted-spans-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Write `z.wit` before `a.wit`; `a.wit` must still receive earlier spans.
+        fs::write(
+            dir.join("z.wit"),
+            "package ex:spans@0.1.0;\n\ninterface zeta {\n    record z { id: u32 }\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("a.wit"),
+            "interface alpha {\n    record a { id: u32 }\n}\n",
+        )
+        .unwrap();
+        let contract = load(&dir).unwrap();
+        let pkg = &contract.resolve.packages[contract.package];
+        let alpha_span = contract.resolve.interfaces[pkg.interfaces["alpha"]].span;
+        let zeta_span = contract.resolve.interfaces[pkg.interfaces["zeta"]].span;
+        assert!(alpha_span.start() < zeta_span.start());
+        let alpha_loc = contract
+            .resolve
+            .source_map
+            .resolve_span(alpha_span)
+            .unwrap();
+        let zeta_loc = contract.resolve.source_map.resolve_span(zeta_span).unwrap();
+        assert!(alpha_loc.path.ends_with("a.wit"), "{}", alpha_loc.path);
+        assert!(zeta_loc.path.ends_with("z.wit"), "{}", zeta_loc.path);
+        let alpha_rendered = contract.resolve.render_location(alpha_span);
+        let zeta_rendered = contract.resolve.render_location(zeta_span);
+        assert!(alpha_rendered.contains("a.wit:1:"), "{alpha_rendered}");
+        assert!(zeta_rendered.contains("z.wit:3:"), "{zeta_rendered}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

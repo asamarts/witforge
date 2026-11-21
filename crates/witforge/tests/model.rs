@@ -1510,3 +1510,107 @@ fn a_doubling_contract_is_refused_before_it_grows_large() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn multi_file_version_directories_order_deterministically_across_all_emitters() {
+    use witforge::emit::{glue, json_schema, proto, rust};
+    use witforge::lock::{LockMode, WireLock};
+
+    let build_root = |label: &str, types_filename: &str, reverse_creation: bool| {
+        let root = std::env::temp_dir().join(format!(
+            "witforge-multi-file-{label}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let v01 = root.join("v0.1");
+        let dep_dir = v01.join("deps/shared");
+        fs::create_dir_all(&dep_dir).unwrap();
+
+        let mut dep_files = vec![
+            (
+                "01-base.wit",
+                "interface base {\n    record shared-id { raw: u64 }\n}\n",
+            ),
+            (
+                "02-extra.wit",
+                "package ex:shared@0.1.0;\n\ninterface extra {\n    use base.{shared-id};\n    record tag { id: shared-id }\n}\n",
+            ),
+        ];
+        let mut root_files = vec![
+            (
+                types_filename,
+                "interface alpha {\n    use ex:shared/extra@0.1.0.{tag};\n    record item { tag: tag, count: u32 }\n}\n",
+            ),
+            (
+                "02-service.wit",
+                "interface beta {\n    use alpha.{item};\n    fetch: func(id: u32) -> item;\n}\n",
+            ),
+            (
+                "99-package.wit",
+                "package ex:multi@0.1.0;\n\ninterface omega {\n    enum mode { fast, safe }\n}\n\nworld plugin {\n    export beta;\n}\n",
+            ),
+        ];
+        if reverse_creation {
+            dep_files.reverse();
+            root_files.reverse();
+        }
+        for (name, contents) in dep_files {
+            fs::write(dep_dir.join(name), contents).unwrap();
+        }
+        for (name, contents) in root_files {
+            fs::write(v01.join(name), contents).unwrap();
+        }
+
+        let model = model::build(&load(&v01).unwrap()).unwrap();
+        let mut lock = WireLock::default();
+        lock.reconcile_with(&model.members().unwrap(), LockMode::First)
+            .unwrap();
+        let lock_text = lock.render();
+        fs::write(v01.join("wire.lock"), &lock_text).unwrap();
+
+        let rust_files = rust::plan(&root).unwrap();
+        let proto_files = proto::plan(&root).unwrap();
+        let schema_files = json_schema::plan(&root).unwrap();
+        let glue_files = glue::plan(&root, "crate::plain", "crate::proto").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        (
+            model,
+            lock_text,
+            rust_files,
+            proto_files,
+            schema_files,
+            glue_files,
+        )
+    };
+
+    let (m_fwd, lock_fwd, rust_fwd, proto_fwd, schema_fwd, glue_fwd) =
+        build_root("fwd", "01-types.wit", false);
+    let (m_rev, lock_rev, rust_rev, proto_rev, schema_rev, glue_rev) =
+        build_root("rev", "01-types.wit", true);
+
+    let iface_names: Vec<&str> = m_fwd.interfaces.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(iface_names, vec!["alpha", "beta", "omega"]);
+    let dep_iface_names: Vec<&str> = m_fwd.dependencies[0]
+        .interfaces
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
+    assert_eq!(dep_iface_names, vec!["base", "extra"]);
+
+    assert_eq!(m_fwd, m_rev);
+    assert_eq!(lock_fwd, lock_rev);
+    assert_eq!(rust_fwd, rust_rev);
+    assert_eq!(proto_fwd, proto_rev);
+    assert_eq!(schema_fwd, schema_rev);
+    assert_eq!(glue_fwd, glue_rev);
+
+    // Renaming a file moves its interface deterministically without changing wire.lock.
+    let (m_renamed, lock_renamed, _, _, _, _) = build_root("renamed", "50-types.wit", false);
+    let renamed_ifaces: Vec<&str> = m_renamed
+        .interfaces
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
+    assert_eq!(renamed_ifaces, vec!["beta", "alpha", "omega"]);
+    assert_eq!(lock_renamed, lock_fwd);
+}

@@ -13,11 +13,12 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
   in [`model.md`](model.md); its conversion module is the only place that follows upstream
   changes.
 - Output is deterministic: LF line endings, a final newline, no timestamps, no tool version, no
-  absolute paths, and no dependence on hash-map iteration order. Items are emitted in WIT source
-  order; version modules, schema files, and proto files are emitted in ascending semver order.
-  Proto reserved
-  declarations use ascending numbers and lexicographically sorted names as separate `reserved`
-  statements.
+  absolute paths, and no dependence on hash-map or directory-enumeration order. Items are emitted
+  in WIT source order—within a multi-file root or `deps/` package directory, `*.wit` files are
+  ordered by file name as bytes (ASCII names are recommended) and then by source position inside
+  each file, so renaming a file changes output order deterministically; version modules, schema
+  files, and proto files are emitted in ascending semver order. Proto reserved declarations use
+  ascending numbers and lexicographically sorted names as separate `reserved` statements.
 - Every generated file starts with a stable ownership header. Rust, proto, and glue use a line
   comment; JSON Schema uses a valid JSON `$comment` prefix:
 
