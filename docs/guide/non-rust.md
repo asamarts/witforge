@@ -27,7 +27,7 @@ or a protocol with two non-Rust endpoints must enforce the same rules explicitly
 | enum | protobuf enum with `UNSPECIFIED = 0` | Reject zero and unknown numeric values; WIT enums are closed. |
 | variant or result | message with a `oneof` | Require one known case. Reject an unset or unknown case. |
 | flags | message with one `bool` per flag | Treat missing/default `false` as an unset flag. |
-| nested option/list/result wrapper | synthesized message | Reject wrapper states that the WIT shape cannot represent. |
+| nested option/list/result wrapper | synthesized message | Require the wrapper's `oneof` (`none`/`some` or `ok`/`err`) to be set; reject an unset or unknown wrapper state. |
 
 These rules apply to record fields, function parameters, and function results. They also apply
 after protobuf binary or proto3-JSON parsing. Language protobuf libraries commonly preserve an
@@ -46,7 +46,7 @@ For every independently implemented contract, keep fixtures that cover:
 - every required optional/message field both present and absent;
 - `option<T>` absent and present;
 - enum zero, every known case, and an unknown number;
-- every variant/result case and an unset `oneof`;
+- every variant/result case, an unset `oneof`, and a present option wrapper whose `oneof` is unset;
 - empty and non-empty lists, including nested wrappers;
 - protobuf binary and proto3-JSON when both transports are supported.
 

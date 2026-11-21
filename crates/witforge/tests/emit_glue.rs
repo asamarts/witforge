@@ -1440,3 +1440,445 @@ fn main() {{
 
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn unset_option_wrappers_doc_comments_and_no_trailing_whitespace() {
+    let out = std::env::temp_dir().join(format!(
+        "witforge-glue-unset-wrappers-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out);
+    let wit_root = out.join("wit");
+    let v01 = wit_root.join("v0.1");
+    fs::create_dir_all(v01.join("deps/dep")).unwrap();
+    fs::write(
+        v01.join("deps/dep/types.wit"),
+        "package example:dep@0.1.0;\n\n\
+/// Dependency types.\n\
+///\n\
+/// Second paragraph.\n\
+interface types {\n\
+  /// A foreign named option.\n\
+  ///\n\
+  /// With a blank doc line.\n\
+  type dep-opt = option<u32>;\n\
+}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package example:wrappers@0.1.0;\n\n\
+/// Root types interface.\n\
+///\n\
+/// Paragraph two.\n\
+interface types {\n\
+  use example:dep/types@0.1.0.{dep-opt};\n\n\
+  /// Local named option.\n\
+  ///\n\
+  /// Paragraph two.\n\
+  type local-opt = option<u32>;\n\
+  type nested-local = option<local-opt>;\n\
+  type nested-anon = option<option<u32>>;\n\
+  type nested-dep = option<dep-opt>;\n\n\
+  /// Variant covering all three option kinds in oneof position.\n\
+  ///\n\
+  /// Blank line above.\n\
+  variant choice {\n\
+    local(local-opt),\n\
+    anon(option<u32>),\n\
+    dep(dep-opt),\n\
+  }\n\n\
+  record holder {\n\
+    field-local: nested-local,\n\
+    field-anon: nested-anon,\n\
+    field-dep: nested-dep,\n\
+    list-local: list<local-opt>,\n\
+    list-anon: list<option<u32>>,\n\
+    list-dep: list<dep-opt>,\n\
+    choice-req: choice,\n\
+    res-local: result<local-opt, string>,\n\
+    res-anon: result<option<u32>, string>,\n\
+    res-dep: result<dep-opt, string>,\n\
+  }\n\n\
+  /// Function taking and returning options across all three paths.\n\
+  ///\n\
+  /// Second line.\n\
+  echo-local: func(a: nested-local, b: list<local-opt>, c: choice) -> list<local-opt>;\n\
+  echo-anon: func(a: nested-anon, b: list<option<u32>>) -> nested-anon;\n\
+  echo-dep: func(a: nested-dep, b: list<dep-opt>) -> list<dep-opt>;\n\
+  ping: func();\n\
+}\n",
+    )
+    .unwrap();
+
+    let (_, lock) = setup_contract(&v01);
+    fs::write(v01.join("wire.lock"), lock.render()).unwrap();
+
+    let plain_files = rust::plan(&wit_root).unwrap();
+    let proto_files_plan = proto::plan(&wit_root).unwrap();
+    let glue_files = glue::plan(&wit_root, "crate::plain", "crate::proto").unwrap();
+
+    // Every generated file across plain Rust, proto, and glue must have zero trailing whitespace,
+    // and empty WIT doc lines must emit bare `///` or `//`.
+    for (kind, files) in [
+        ("rust", plain_files.files()),
+        ("proto", proto_files_plan.files()),
+        ("glue", glue_files.files()),
+    ] {
+        for (path, content) in files {
+            for (idx, line) in content.lines().enumerate() {
+                assert!(
+                    !line.ends_with(' ') && !line.ends_with('\t'),
+                    "{kind} `{path}` line {} ends with whitespace: {line:?}",
+                    idx + 1
+                );
+            }
+        }
+    }
+    assert!(
+        plain_files.files()["v0_1.rs"].contains("\n///\n"),
+        "expected bare `///` for empty doc line in plain Rust"
+    );
+    assert!(
+        proto_files_plan.files()["v0.proto"].contains("\n//\n"),
+        "expected bare `//` for empty doc line in proto"
+    );
+    let glue_v0 = &glue_files.files()["v0.rs"];
+    assert!(
+        glue_v0.contains("\n///\n") || glue_v0.contains("\n    ///\n"),
+        "expected bare `///` for empty doc line in glue"
+    );
+    // Synthesized glue helpers carry doc comments naming their WIT type or function.
+    for expected_doc in [
+        "/// Convert `types/holder` to its protobuf representation.",
+        "/// Convert `types/holder` from its protobuf representation.",
+        "/// Convert `types/local-opt` to its protobuf representation.",
+        "/// Convert `types/local-opt` from its protobuf representation.",
+        "/// Protobuf conversion helpers for `types` functions.",
+        "/// Protobuf method identifier for `types#echo-local`.",
+        "/// Encode request parameters for `types#echo-local`.",
+        "/// Decode request parameters for `types#echo-local`.",
+        "/// Encode the response for `types#echo-local`.",
+        "/// Decode the response for `types#echo-local`.",
+        "/// Encode the response for `types#ping`.",
+        "/// Decode the response for `types#ping`.",
+    ] {
+        assert!(
+            glue_v0.contains(expected_doc),
+            "missing synthesized doc `{expected_doc}` in glue v0.rs"
+        );
+    }
+
+    plain_files.write(&out.join("plain")).unwrap();
+    proto_files_plan.write(&out.join("proto-work")).unwrap();
+    glue_files.write(&out.join("glue")).unwrap();
+
+    // Compile `.proto` with prost-build AND pbjson-build so we also test proto3 JSON `null` vs
+    // absent vs `{}` (unset wrapper oneof).
+    let descriptors = protox::compile(
+        [
+            out.join("proto-work/v0.proto"),
+            out.join("proto-work/example.dep.v0.proto"),
+        ],
+        [out.join("proto-work")],
+    )
+    .unwrap();
+    let descriptor_bytes = prost::Message::encode_to_vec(&descriptors);
+    let prost_out = out.join("proto");
+    fs::create_dir_all(&prost_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .include_file("mod.rs")
+        .compile_fds(descriptors)
+        .unwrap();
+    pbjson_build::Builder::new()
+        .register_descriptors(&descriptor_bytes)
+        .unwrap()
+        .out_dir(&prost_out)
+        .build(&[".example"])
+        .unwrap();
+    // Include the generated serde impls inside each prost module.
+    let mod_rs = fs::read_to_string(prost_out.join("mod.rs")).unwrap();
+    let patched_mod = mod_rs
+        .replace(
+            "include!(\"example.wrappers.v0.rs\");",
+            "include!(\"example.wrappers.v0.rs\");\ninclude!(\"example.wrappers.v0.serde.rs\");",
+        )
+        .replace(
+            "include!(\"example.dep.v0.rs\");",
+            "include!(\"example.dep.v0.rs\");\ninclude!(\"example.dep.v0.serde.rs\");",
+        );
+    fs::write(prost_out.join("mod.rs"), patched_mod).unwrap();
+
+    fs::write(
+        out.join("main.rs"),
+        r##"
+mod glue;
+mod plain;
+mod proto;
+
+use glue::GlueError;
+use proto::example::wrappers::v0 as p;
+
+fn valid_holder() -> p::TypesHolder {
+    glue::v0::types::holder::to_proto(&plain::v0_1::types::Holder {
+        field_local: Some(Some(1)),
+        field_anon: Some(None),
+        field_dep: None,
+        list_local: vec![Some(2), None],
+        list_anon: vec![Some(3), None],
+        list_dep: vec![Some(4), None],
+        choice_req: plain::v0_1::types::Choice::Dep(Some(5)),
+        res_local: Ok(Some(6)),
+        res_anon: Ok(None),
+        res_dep: Ok(Some(7)),
+    })
+}
+
+fn main() {
+    let base = valid_holder();
+    assert!(glue::v0::types::holder::from_proto(base.clone()).is_ok());
+
+    // 1. Direct record field: absent outer option is Ok(None), unset inner wrapper is InvalidState.
+    let mut f = base.clone();
+    f.field_local = None;
+    assert_eq!(glue::v0::types::holder::from_proto(f).unwrap().field_local, None);
+    let mut f = base.clone();
+    f.field_local = Some(p::TypesNestedLocal { value: None });
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    let mut f = base.clone();
+    f.field_anon = None;
+    assert_eq!(glue::v0::types::holder::from_proto(f).unwrap().field_anon, None);
+    let mut f = base.clone();
+    f.field_anon = Some(p::TypesNestedAnon { value: None });
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    let mut f = base.clone();
+    f.field_dep = None;
+    assert_eq!(glue::v0::types::holder::from_proto(f).unwrap().field_dep, None);
+    let mut f = base.clone();
+    f.field_dep = Some(p::TypesNestedDep { value: None });
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    // Required message field absent stays MissingField (distinct from InvalidState).
+    let mut f = base.clone();
+    f.choice_req = None;
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::MissingField { .. })));
+
+    // 2. List element: local named, anonymous, and foreign named option unset wrappers.
+    let mut f = base.clone();
+    f.list_local = vec![p::WitforgeOptionOfU32 { value: None }];
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    let mut f = base.clone();
+    f.list_anon = vec![p::WitforgeOptionOfU32 { value: None }];
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    let mut f = base.clone();
+    f.list_dep = vec![p::WitforgeOptionOfU32 { value: None }];
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    // 3. Oneof member (variant & result): local named, anonymous, and foreign named option.
+    for variant in [
+        p::types_choice::WitforgeValue::Local(p::WitforgeOptionOfU32 { value: None }),
+        p::types_choice::WitforgeValue::Anon(p::WitforgeOptionOfU32 { value: None }),
+        p::types_choice::WitforgeValue::Dep(p::WitforgeOptionOfU32 { value: None }),
+    ] {
+        let mut f = base.clone();
+        f.choice_req = Some(p::TypesChoice { witforge_value: Some(variant) });
+        assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+    }
+
+    let mut f = base.clone();
+    f.res_local = Some(p::WitforgeResultOfOptionOfU32AndString {
+        value: Some(p::witforge_result_of_option_of_u32_and_string::Value::Ok(
+            p::WitforgeOptionOfU32 { value: None },
+        )),
+    });
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    let mut f = base.clone();
+    f.res_anon = Some(p::WitforgeResultOfOptionOfU32AndString {
+        value: Some(p::witforge_result_of_option_of_u32_and_string::Value::Ok(
+            p::WitforgeOptionOfU32 { value: None },
+        )),
+    });
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    let mut f = base.clone();
+    f.res_dep = Some(p::WitforgeResultOfOptionOfU32AndString {
+        value: Some(p::witforge_result_of_option_of_u32_and_string::Value::Ok(
+            p::WitforgeOptionOfU32 { value: None },
+        )),
+    });
+    assert!(matches!(glue::v0::types::holder::from_proto(f), Err(GlueError::InvalidState { .. })));
+
+    // 4. Function parameters: local named, anonymous, and foreign named option.
+    let bad_req_local_a = p::TypesEchoLocalRequest {
+        a: Some(p::TypesNestedLocal { value: None }),
+        b: vec![],
+        c: Some(p::TypesChoice {
+            witforge_value: Some(p::types_choice::WitforgeValue::Local(
+                p::WitforgeOptionOfU32 {
+                    value: Some(p::witforge_option_of_u32::Value::None(p::Empty {})),
+                },
+            )),
+        }),
+    };
+    assert!(matches!(
+        glue::v0::types::functions::echo_local::from_request(bad_req_local_a),
+        Err(GlueError::InvalidState { .. })
+    ));
+    let bad_req_local_b = p::TypesEchoLocalRequest {
+        a: None,
+        b: vec![p::WitforgeOptionOfU32 { value: None }],
+        c: Some(p::TypesChoice {
+            witforge_value: Some(p::types_choice::WitforgeValue::Local(
+                p::WitforgeOptionOfU32 {
+                    value: Some(p::witforge_option_of_u32::Value::None(p::Empty {})),
+                },
+            )),
+        }),
+    };
+    assert!(matches!(
+        glue::v0::types::functions::echo_local::from_request(bad_req_local_b),
+        Err(GlueError::InvalidState { .. })
+    ));
+    let bad_req_local_c = p::TypesEchoLocalRequest {
+        a: None,
+        b: vec![],
+        c: Some(p::TypesChoice {
+            witforge_value: Some(p::types_choice::WitforgeValue::Dep(
+                p::WitforgeOptionOfU32 { value: None },
+            )),
+        }),
+    };
+    assert!(matches!(
+        glue::v0::types::functions::echo_local::from_request(bad_req_local_c),
+        Err(GlueError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        glue::v0::types::functions::echo_anon::from_request(p::TypesEchoAnonRequest {
+            a: Some(p::TypesNestedAnon { value: None }),
+            b: vec![],
+        }),
+        Err(GlueError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        glue::v0::types::functions::echo_anon::from_request(p::TypesEchoAnonRequest {
+            a: None,
+            b: vec![p::WitforgeOptionOfU32 { value: None }],
+        }),
+        Err(GlueError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        glue::v0::types::functions::echo_dep::from_request(p::TypesEchoDepRequest {
+            a: Some(p::TypesNestedDep { value: None }),
+            b: vec![],
+        }),
+        Err(GlueError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        glue::v0::types::functions::echo_dep::from_request(p::TypesEchoDepRequest {
+            a: None,
+            b: vec![p::WitforgeOptionOfU32 { value: None }],
+        }),
+        Err(GlueError::InvalidState { .. })
+    ));
+
+    // 5. Function results: local named, anonymous, and foreign named option.
+    assert!(matches!(
+        glue::v0::types::functions::echo_local::from_response(p::TypesEchoLocalResponse {
+            result: vec![p::WitforgeOptionOfU32 { value: None }],
+        }),
+        Err(GlueError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        glue::v0::types::functions::echo_anon::from_response(p::TypesEchoAnonResponse {
+            result: Some(p::TypesNestedAnon { value: None }),
+        }),
+        Err(GlueError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        glue::v0::types::functions::echo_dep::from_response(p::TypesEchoDepResponse {
+            result: vec![p::WitforgeOptionOfU32 { value: None }],
+        }),
+        Err(GlueError::InvalidState { .. })
+    ));
+
+    // 6. Proto3 JSON: absent and `null` wrapper mean outer `None`, while `{}` is InvalidState.
+    let json_absent: p::TypesEchoAnonResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        glue::v0::types::functions::echo_anon::from_response(json_absent).unwrap(),
+        None
+    );
+    let json_null: p::TypesEchoAnonResponse =
+        serde_json::from_str(r#"{"result": null}"#).unwrap();
+    assert_eq!(
+        glue::v0::types::functions::echo_anon::from_response(json_null).unwrap(),
+        None
+    );
+    let json_empty_wrapper: p::TypesEchoAnonResponse =
+        serde_json::from_str(r#"{"result": {}}"#).unwrap();
+    assert!(matches!(
+        glue::v0::types::functions::echo_anon::from_response(json_empty_wrapper),
+        Err(GlueError::InvalidState { .. })
+    ));
+    let json_none: p::TypesEchoAnonResponse =
+        serde_json::from_str(r#"{"result": {"none": {}}}"#).unwrap();
+    assert_eq!(
+        glue::v0::types::functions::echo_anon::from_response(json_none).unwrap(),
+        Some(None)
+    );
+    let json_some: p::TypesEchoAnonResponse =
+        serde_json::from_str(r#"{"result": {"some": 99}}"#).unwrap();
+    assert_eq!(
+        glue::v0::types::functions::echo_anon::from_response(json_some).unwrap(),
+        Some(Some(99))
+    );
+}
+"##,
+    )
+    .unwrap();
+
+    run_cargo_program(
+        &out,
+        "pbjson = \"0.9\"\nprost = \"0.14\"\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n",
+        "unset option wrapper and proto3 JSON glue compile/run",
+    );
+
+    // Scan every committed golden file and generated example file for trailing whitespace.
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let scan_roots = [
+        manifest_dir.join("tests/fixtures"),
+        repo_root.join("examples"),
+    ];
+    let mut stack: Vec<PathBuf> = scan_roots.into_iter().collect();
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| matches!(ext, "rs" | "proto" | "json" | "lock"))
+            {
+                let content = fs::read_to_string(&path).unwrap();
+                for (idx, line) in content.lines().enumerate() {
+                    assert!(
+                        !line.ends_with(' ') && !line.ends_with('\t'),
+                        "committed file `{}` line {} ends with whitespace: {line:?}",
+                        path.display(),
+                        idx + 1
+                    );
+                }
+            }
+        }
+    }
+
+    fs::remove_dir_all(&out).unwrap();
+}

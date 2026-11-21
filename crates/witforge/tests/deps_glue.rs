@@ -134,3 +134,82 @@ fn main() {
     run_cargo_program(&out, "prost = \"0.14\"\n", "dependency glue compile/run");
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+fn glue_refuses_dependency_proto_collision_like_proto() {
+    let out = std::env::temp_dir().join(format!(
+        "witforge-deps-glue-proto-collision-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out);
+
+    // Dependency declares `record get-request` beside `get: func()`, which collide on
+    // `TypesGetRequest` in protobuf even though glue's own names do not collide.
+    let dep_root = out.join("dep-clash/wit");
+    let dep_v01 = dep_root.join("v0.1");
+    fs::create_dir_all(dep_v01.join("deps/shared")).unwrap();
+    fs::write(
+        dep_v01.join("deps/shared/types.wit"),
+        "package example:shared@0.1.0;\n\
+         interface types {\n\
+           record get-request { id: u32 }\n\
+           get: func() -> get-request;\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        dep_v01.join("contract.wit"),
+        "package example:app@0.1.0;\n\
+         interface api {\n\
+           use example:shared/types@0.1.0.{get-request};\n\
+           record box { req: get-request }\n\
+         }\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dep_v01).unwrap()).unwrap();
+    let mut lock = witforge::lock::WireLock::default();
+    lock.reconcile(&model.members().unwrap()).unwrap();
+    fs::write(dep_v01.join("wire.lock"), lock.render()).unwrap();
+
+    let proto_err = proto::plan(&dep_root).unwrap_err();
+    let glue_err = glue::plan(&dep_root, "crate::plain", "crate::proto").unwrap_err();
+    assert!(witforge::is_contract_error(&proto_err), "{proto_err:#}");
+    assert!(witforge::is_contract_error(&glue_err), "{glue_err:#}");
+    assert!(
+        format!("{proto_err:#}").contains("TypesGetRequest"),
+        "{proto_err:#}"
+    );
+    assert_eq!(format!("{glue_err:#}"), format!("{proto_err:#}"));
+
+    // Root collision also gives the exact same message and contract error classification.
+    let root_clash = out.join("root-clash/wit");
+    let root_v01 = root_clash.join("v0.1");
+    fs::create_dir_all(&root_v01).unwrap();
+    fs::write(
+        root_v01.join("contract.wit"),
+        "package example:rootclash@0.1.0;\n\
+         interface types {\n\
+           record get-request { id: u32 }\n\
+           get: func() -> get-request;\n\
+         }\n",
+    )
+    .unwrap();
+    let root_model = model::build(&load(&root_v01).unwrap()).unwrap();
+    let mut root_lock = witforge::lock::WireLock::default();
+    root_lock.reconcile(&root_model.members().unwrap()).unwrap();
+    fs::write(root_v01.join("wire.lock"), root_lock.render()).unwrap();
+
+    let root_proto_err = proto::plan(&root_clash).unwrap_err();
+    let root_glue_err = glue::plan(&root_clash, "crate::plain", "crate::proto").unwrap_err();
+    assert!(
+        witforge::is_contract_error(&root_proto_err),
+        "{root_proto_err:#}"
+    );
+    assert!(
+        witforge::is_contract_error(&root_glue_err),
+        "{root_glue_err:#}"
+    );
+    assert_eq!(format!("{root_glue_err:#}"), format!("{root_proto_err:#}"));
+
+    fs::remove_dir_all(&out).unwrap();
+}

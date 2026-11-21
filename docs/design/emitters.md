@@ -899,11 +899,15 @@ and the later version-conversion layer.
   module names by applying `prost-build` 0.14's default naming rules directly to the `.proto`
   names. Consumers MUST leave `prost-build`'s default identifier naming (including
   `strip_enum_prefix`) enabled when compiling generated `.proto` files for witforge glue. It
-  converts to and from the prost types generated from the protobuf schema, so it refuses every
-  contract the proto emitter refuses, with the same diagnostic and exit `1`: a record `f-request`
-  beside a function `f`, whose request message is also `IFRequest`, fails `glue` as it fails
-  `proto`, although glue's own names do not collide. WIT docs are carried to glue module/function
-  docs where they describe the type or function; synthesized helpers get a short doc comment.
+  converts to and from the prost types generated from the protobuf schema, so it runs the proto
+  emitter's validation for the root and every dependency and refuses every contract the proto
+  emitter refuses, with the same diagnostic and exit `1`: a record `f-request` beside a function
+  `f` (in the root or in a dependency), whose request message is also `IFRequest`, fails `glue` as
+  it fails `proto`, although glue's own names do not collide. WIT docs are carried to glue
+  module/function docs where they describe the type or function; synthesized helpers (`to_proto`,
+  `from_proto`, `METHOD`, `to_request`, `from_request`, `to_response`, `from_response`, and
+  `functions`) get a short doc comment naming the WIT item they serve, and empty doc lines carry
+  no trailing whitespace.
 - A type or function that the subset checker refuses never reaches glue.
 
 ### 7.2 CLI, output layout, and module paths

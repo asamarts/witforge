@@ -13,6 +13,7 @@ pub mod types {
     pub mod task {
         use super::GlueError;
 
+        /// Convert `types/task` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_2::types::Task) -> crate::generated::proto::v0::TypesTask {
             crate::generated::proto::v0::TypesTask {
                 id: ::core::option::Option::Some(value.id),
@@ -23,6 +24,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/task` from its protobuf representation.
         pub fn from_proto(value: crate::generated::proto::v0::TypesTask) -> ::core::result::Result<crate::generated::rust::v0_2::types::Task, GlueError> {
             Ok(crate::generated::rust::v0_2::types::Task {
                 id: match value.id { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/task.id" }), },
@@ -43,15 +45,18 @@ pub mod service {
     pub mod task {
         use super::GlueError;
 
+        /// Convert `service/task` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_2::service::Task) -> crate::generated::proto::v0::TypesTask {
             super::super::types::task::to_proto(value)
         }
 
+        /// Convert `service/task` from its protobuf representation.
         pub fn from_proto(value: crate::generated::proto::v0::TypesTask) -> ::core::result::Result<crate::generated::rust::v0_2::service::Task, GlueError> {
             ::core::result::Result::Ok(super::super::types::task::from_proto(value)?)
         }
     }
 
+    /// Protobuf conversion helpers for `service` functions.
     pub mod functions {
         #[allow(unused_imports)]
         use super::GlueError;
@@ -60,24 +65,29 @@ pub mod service {
         pub mod create {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#create`.
             pub const METHOD: crate::generated::proto::v0::ServiceMethod = crate::generated::proto::v0::ServiceMethod::Create;
 
+            /// Encode request parameters for `service#create`.
             pub fn to_request(title: &::std::string::String) -> crate::generated::proto::v0::ServiceCreateRequest {
                 crate::generated::proto::v0::ServiceCreateRequest {
                     title: ::core::option::Option::Some(::core::clone::Clone::clone(title)),
                 }
             }
 
+            /// Decode request parameters for `service#create`.
             pub fn from_request(value: crate::generated::proto::v0::ServiceCreateRequest) -> ::core::result::Result<::std::string::String, GlueError> {
                 ::core::result::Result::Ok(match value.title { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#create.title" }), })
             }
 
+            /// Encode the response for `service#create`.
             pub fn to_response(value: &crate::generated::rust::v0_2::service::Task) -> crate::generated::proto::v0::ServiceCreateResponse {
                 crate::generated::proto::v0::ServiceCreateResponse {
                     result: ::core::option::Option::Some(super::super::super::types::task::to_proto(value)),
                 }
             }
 
+            /// Decode the response for `service#create`.
             pub fn from_response(value: crate::generated::proto::v0::ServiceCreateResponse) -> ::core::result::Result<crate::generated::rust::v0_2::service::Task, GlueError> {
                 ::core::result::Result::Ok(match value.result { ::core::option::Option::Some(value) => super::super::super::types::task::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#create.result" }), })
             }

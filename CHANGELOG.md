@@ -47,6 +47,12 @@ have it.
   and functions whose fields collide on a `prost-derive` 0.14 generated accessor (such as
   `mode: my-enum` beside `set-mode: bool` sharing `set_mode`, or `modes: list<my-enum>` beside
   `push-modes: bool` sharing `push_modes`).
+- `glue` now runs the protobuf emitter's full validation for the root and every dependency so
+  `glue` refuses every contract `proto` refuses (including collisions inside a dependency) with
+  the same diagnostic and exit `1`. Unset option wrappers now return `GlueError::InvalidState`
+  consistently on every decode path (local named, anonymous, and foreign named options),
+  synthesized glue helpers now carry doc comments naming their WIT type or function, and empty
+  doc lines in plain Rust, protobuf, and glue no longer emit trailing whitespace.
 - `glue` now requires absolute module paths for `--plain-root` and `--proto-root` (and the
   matching `witforge.toml` keys): `crate`, `crate::...`, `::crate_name::...`, or an external
   crate name (`other::...`). Relative paths starting with `self` or `super`, and unprefixed

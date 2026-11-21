@@ -13,6 +13,7 @@ pub mod types {
     pub mod item {
         use super::GlueError;
 
+        /// Convert `types/item` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_1::types::Item) -> crate::generated::proto::v0::TypesItem {
             crate::generated::proto::v0::TypesItem {
                 id: ::core::option::Option::Some(value.id),
@@ -22,6 +23,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/item` from its protobuf representation.
         pub fn from_proto(value: crate::generated::proto::v0::TypesItem) -> ::core::result::Result<crate::generated::rust::v0_1::types::Item, GlueError> {
             Ok(crate::generated::rust::v0_1::types::Item {
                 id: match value.id { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/item.id" }), },
@@ -36,6 +38,7 @@ pub mod types {
     pub mod status {
         use super::GlueError;
 
+        /// Convert `types/status` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_1::types::Status) -> i32 {
             match value {
                 crate::generated::rust::v0_1::types::Status::Accepted => crate::generated::proto::v0::TypesStatus::Accepted as i32,
@@ -43,6 +46,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/status` from its protobuf representation.
         pub fn from_proto(value: i32) -> ::core::result::Result<crate::generated::rust::v0_1::types::Status, GlueError> {
             match value {
                 1 => ::core::result::Result::Ok(crate::generated::rust::v0_1::types::Status::Accepted),
@@ -56,6 +60,7 @@ pub mod types {
     pub mod options {
         use super::GlueError;
 
+        /// Convert `types/options` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_1::types::Options) -> crate::generated::proto::v0::TypesOptions {
             crate::generated::proto::v0::TypesOptions {
                 strict: value.strict,
@@ -63,6 +68,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/options` from its protobuf representation.
         pub fn from_proto(value: crate::generated::proto::v0::TypesOptions) -> ::core::result::Result<crate::generated::rust::v0_1::types::Options, GlueError> {
             ::core::result::Result::Ok(crate::generated::rust::v0_1::types::Options {
                 strict: value.strict,
@@ -75,6 +81,7 @@ pub mod types {
     pub mod event {
         use super::GlueError;
 
+        /// Convert `types/event` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_1::types::Event) -> crate::generated::proto::v0::TypesEvent {
             crate::generated::proto::v0::TypesEvent {
                 witforge_value: ::core::option::Option::Some(match value {
@@ -85,6 +92,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/event` from its protobuf representation.
         pub fn from_proto(value: crate::generated::proto::v0::TypesEvent) -> ::core::result::Result<crate::generated::rust::v0_1::types::Event, GlueError> {
             match value.witforge_value {
                 ::core::option::Option::Some(crate::generated::proto::v0::types_event::WitforgeValue::Started(_)) => ::core::result::Result::Ok(crate::generated::rust::v0_1::types::Event::Started),
@@ -104,10 +112,12 @@ pub mod ingest {
     pub mod item {
         use super::GlueError;
 
+        /// Convert `ingest/item` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_1::ingest::Item) -> crate::generated::proto::v0::TypesItem {
             super::super::types::item::to_proto(value)
         }
 
+        /// Convert `ingest/item` from its protobuf representation.
         pub fn from_proto(value: crate::generated::proto::v0::TypesItem) -> ::core::result::Result<crate::generated::rust::v0_1::ingest::Item, GlueError> {
             ::core::result::Result::Ok(super::super::types::item::from_proto(value)?)
         }
@@ -116,15 +126,18 @@ pub mod ingest {
     pub mod event {
         use super::GlueError;
 
+        /// Convert `ingest/event` to its protobuf representation.
         pub fn to_proto(value: &crate::generated::rust::v0_1::ingest::Event) -> crate::generated::proto::v0::TypesEvent {
             super::super::types::event::to_proto(value)
         }
 
+        /// Convert `ingest/event` from its protobuf representation.
         pub fn from_proto(value: crate::generated::proto::v0::TypesEvent) -> ::core::result::Result<crate::generated::rust::v0_1::ingest::Event, GlueError> {
             ::core::result::Result::Ok(super::super::types::event::from_proto(value)?)
         }
     }
 
+    /// Protobuf conversion helpers for `ingest` functions.
     pub mod functions {
         #[allow(unused_imports)]
         use super::GlueError;
@@ -133,24 +146,29 @@ pub mod ingest {
         pub mod submit {
             use super::GlueError;
 
+            /// Protobuf method identifier for `ingest#submit`.
             pub const METHOD: crate::generated::proto::v0::IngestMethod = crate::generated::proto::v0::IngestMethod::Submit;
 
+            /// Encode request parameters for `ingest#submit`.
             pub fn to_request(item: &crate::generated::rust::v0_1::ingest::Item) -> crate::generated::proto::v0::IngestSubmitRequest {
                 crate::generated::proto::v0::IngestSubmitRequest {
                     item: ::core::option::Option::Some(super::super::super::types::item::to_proto(item)),
                 }
             }
 
+            /// Decode request parameters for `ingest#submit`.
             pub fn from_request(value: crate::generated::proto::v0::IngestSubmitRequest) -> ::core::result::Result<crate::generated::rust::v0_1::ingest::Item, GlueError> {
                 ::core::result::Result::Ok(match value.item { ::core::option::Option::Some(value) => super::super::super::types::item::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "ingest#submit.item" }), })
             }
 
+            /// Encode the response for `ingest#submit`.
             pub fn to_response(value: &crate::generated::rust::v0_1::ingest::Event) -> crate::generated::proto::v0::IngestSubmitResponse {
                 crate::generated::proto::v0::IngestSubmitResponse {
                     result: ::core::option::Option::Some(super::super::super::types::event::to_proto(value)),
                 }
             }
 
+            /// Decode the response for `ingest#submit`.
             pub fn from_response(value: crate::generated::proto::v0::IngestSubmitResponse) -> ::core::result::Result<crate::generated::rust::v0_1::ingest::Event, GlueError> {
                 ::core::result::Result::Ok(match value.result { ::core::option::Option::Some(value) => super::super::super::types::event::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "ingest#submit.result" }), })
             }

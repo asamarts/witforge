@@ -716,7 +716,12 @@ fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
     }
     let prefix = " ".repeat(indent);
     for line in docs.lines() {
-        writeln!(out, "{prefix}/// {line}")?;
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            writeln!(out, "{prefix}///")?;
+        } else {
+            writeln!(out, "{prefix}/// {trimmed}")?;
+        }
     }
     Ok(())
 }

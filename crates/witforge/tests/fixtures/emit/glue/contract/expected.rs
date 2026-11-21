@@ -11,12 +11,14 @@ pub mod types {
     pub mod small {
         use super::GlueError;
 
+        /// Convert `types/small` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::Small) -> crate::proto::v0::TypesSmall {
             crate::proto::v0::TypesSmall {
                 value: ::core::option::Option::Some(::core::clone::Clone::clone(&value.value)),
             }
         }
 
+        /// Convert `types/small` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesSmall) -> ::core::result::Result<crate::plain::v0_4::types::Small, GlueError> {
             Ok(crate::plain::v0_4::types::Small {
                 value: match value.value { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/small.value" }), },
@@ -27,6 +29,7 @@ pub mod types {
     pub mod numbers {
         use super::GlueError;
 
+        /// Convert `types/numbers` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::Numbers) -> crate::proto::v0::TypesNumbers {
             crate::proto::v0::TypesNumbers {
                 u8_value: ::core::option::Option::Some(u32::from(value.u8_value)),
@@ -41,6 +44,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/numbers` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesNumbers) -> ::core::result::Result<crate::plain::v0_4::types::Numbers, GlueError> {
             Ok(crate::plain::v0_4::types::Numbers {
                 u8_value: match value.u8_value { ::core::option::Option::Some(value) => u8::try_from(value).map_err(|_| GlueError::IntegerOutOfRange { field: "types/numbers.u8-value", value: i64::from(value) })?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/numbers.u8-value" }), },
@@ -59,6 +63,7 @@ pub mod types {
     pub mod status {
         use super::GlueError;
 
+        /// Convert `types/status` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::Status) -> i32 {
             match value {
                 crate::plain::v0_4::types::Status::One => crate::proto::v0::TypesStatus::One as i32,
@@ -66,6 +71,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/status` from its protobuf representation.
         pub fn from_proto(value: i32) -> ::core::result::Result<crate::plain::v0_4::types::Status, GlueError> {
             match value {
                 1 => ::core::result::Result::Ok(crate::plain::v0_4::types::Status::One),
@@ -78,6 +84,7 @@ pub mod types {
     pub mod choice {
         use super::GlueError;
 
+        /// Convert `types/choice` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::Choice) -> crate::proto::v0::TypesChoice {
             crate::proto::v0::TypesChoice {
                 witforge_value: ::core::option::Option::Some(match value {
@@ -87,6 +94,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/choice` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesChoice) -> ::core::result::Result<crate::plain::v0_4::types::Choice, GlueError> {
             match value.witforge_value {
                 ::core::option::Option::Some(crate::proto::v0::types_choice::WitforgeValue::Small(payload)) => ::core::result::Result::Ok(crate::plain::v0_4::types::Choice::Small(super::super::types::small::from_proto(payload)?)),
@@ -99,6 +107,7 @@ pub mod types {
     pub mod caps {
         use super::GlueError;
 
+        /// Convert `types/caps` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::Caps) -> crate::proto::v0::TypesCaps {
             crate::proto::v0::TypesCaps {
                 a: value.a,
@@ -106,6 +115,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/caps` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesCaps) -> ::core::result::Result<crate::plain::v0_4::types::Caps, GlueError> {
             ::core::result::Result::Ok(crate::plain::v0_4::types::Caps {
                 a: value.a,
@@ -117,10 +127,12 @@ pub mod types {
     pub mod small_list {
         use super::GlueError;
 
+        /// Convert `types/small-list` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::SmallList) -> ::std::vec::Vec<crate::proto::v0::TypesSmall> {
             value.iter().map(|item| super::super::types::small::to_proto(item)).collect()
         }
 
+        /// Convert `types/small-list` from its protobuf representation.
         pub fn from_proto(value: ::std::vec::Vec<crate::proto::v0::TypesSmall>) -> ::core::result::Result<crate::plain::v0_4::types::SmallList, GlueError> {
             Ok(value.into_iter().map(|item| ::core::result::Result::Ok(super::super::types::small::from_proto(item)?)).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?)
         }
@@ -129,10 +141,12 @@ pub mod types {
     pub mod maybe_small {
         use super::GlueError;
 
+        /// Convert `types/maybe-small` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeSmall) -> ::core::option::Option<crate::proto::v0::TypesSmall> {
             value.as_ref().map(|value| super::super::types::small::to_proto(value))
         }
 
+        /// Convert `types/maybe-small` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<crate::proto::v0::TypesSmall>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeSmall, GlueError> {
             ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok(super::super::types::small::from_proto(value)?)).transpose()?)
         }
@@ -141,10 +155,12 @@ pub mod types {
     pub mod maybe_string {
         use super::GlueError;
 
+        /// Convert `types/maybe-string` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeString) -> ::core::option::Option<::std::string::String> {
             ::core::clone::Clone::clone(value)
         }
 
+        /// Convert `types/maybe-string` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<::std::string::String>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeString, GlueError> {
             ::core::result::Result::Ok(value)
         }
@@ -153,6 +169,7 @@ pub mod types {
     pub mod maybe_list {
         use super::GlueError;
 
+        /// Convert `types/maybe-list` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeList) -> ::core::option::Option<crate::proto::v0::TypesMaybeList> {
             match value {
                 ::core::option::Option::Some(value) => ::core::option::Option::Some(crate::proto::v0::TypesMaybeList {
@@ -162,6 +179,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/maybe-list` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<crate::proto::v0::TypesMaybeList>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeList, GlueError> {
             ::core::result::Result::Ok(value.map(|value| {
                 value.values.into_iter().map(|item| ::core::result::Result::Ok(super::super::types::small::from_proto(item)?)).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()
@@ -172,6 +190,7 @@ pub mod types {
     pub mod maybe_maybe {
         use super::GlueError;
 
+        /// Convert `types/maybe-maybe` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeMaybe) -> ::core::option::Option<crate::proto::v0::TypesMaybeMaybe> {
             match value {
                 ::core::option::Option::Some(value) => ::core::option::Option::Some(crate::proto::v0::TypesMaybeMaybe {
@@ -184,6 +203,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/maybe-maybe` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<crate::proto::v0::TypesMaybeMaybe>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeMaybe, GlueError> {
             ::core::result::Result::Ok(value.map(|value| match value.value {
                 ::core::option::Option::Some(crate::proto::v0::types_maybe_maybe::Value::None(_)) => ::core::result::Result::Ok(::core::option::Option::None),
@@ -196,6 +216,7 @@ pub mod types {
     pub mod outcome {
         use super::GlueError;
 
+        /// Convert `types/outcome` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::Outcome) -> crate::proto::v0::TypesOutcome {
             match value {
                 ::core::result::Result::Ok(value) => crate::proto::v0::TypesOutcome { value: ::core::option::Option::Some(crate::proto::v0::types_outcome::Value::Ok(super::super::types::small::to_proto(value))) },
@@ -203,6 +224,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/outcome` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesOutcome) -> ::core::result::Result<crate::plain::v0_4::types::Outcome, GlueError> {
             match value.value {
                 ::core::option::Option::Some(crate::proto::v0::types_outcome::Value::Ok(value)) => ::core::result::Result::Ok(::core::result::Result::Ok(super::super::types::small::from_proto(value)?)),
@@ -215,6 +237,7 @@ pub mod types {
     pub mod only_ok {
         use super::GlueError;
 
+        /// Convert `types/only-ok` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::OnlyOk) -> crate::proto::v0::TypesOnlyOk {
             match value {
                 ::core::result::Result::Ok(value) => crate::proto::v0::TypesOnlyOk { value: ::core::option::Option::Some(crate::proto::v0::types_only_ok::Value::Ok(super::super::types::small::to_proto(value))) },
@@ -222,6 +245,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/only-ok` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesOnlyOk) -> ::core::result::Result<crate::plain::v0_4::types::OnlyOk, GlueError> {
             match value.value {
                 ::core::option::Option::Some(crate::proto::v0::types_only_ok::Value::Ok(value)) => ::core::result::Result::Ok(::core::result::Result::Ok(super::super::types::small::from_proto(value)?)),
@@ -234,6 +258,7 @@ pub mod types {
     pub mod only_err {
         use super::GlueError;
 
+        /// Convert `types/only-err` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::OnlyErr) -> crate::proto::v0::TypesOnlyErr {
             match value {
                 ::core::result::Result::Ok(_) => crate::proto::v0::TypesOnlyErr { value: ::core::option::Option::Some(crate::proto::v0::types_only_err::Value::Ok(crate::proto::v0::Empty {})) },
@@ -241,6 +266,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/only-err` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesOnlyErr) -> ::core::result::Result<crate::plain::v0_4::types::OnlyErr, GlueError> {
             match value.value {
                 ::core::option::Option::Some(crate::proto::v0::types_only_err::Value::Ok(_)) => ::core::result::Result::Ok(::core::result::Result::Ok(())),
@@ -253,10 +279,12 @@ pub mod types {
     pub mod maybe_bytes {
         use super::GlueError;
 
+        /// Convert `types/maybe-bytes` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeBytes) -> ::core::option::Option<::std::vec::Vec<u8>> {
             value.as_ref().map(|value| ::core::clone::Clone::clone(value))
         }
 
+        /// Convert `types/maybe-bytes` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<::std::vec::Vec<u8>>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeBytes, GlueError> {
             ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok(value)).transpose()?)
         }
@@ -265,10 +293,12 @@ pub mod types {
     pub mod maybe_status {
         use super::GlueError;
 
+        /// Convert `types/maybe-status` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeStatus) -> ::core::option::Option<i32> {
             value.as_ref().map(|value| super::super::types::status::to_proto(value))
         }
 
+        /// Convert `types/maybe-status` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<i32>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeStatus, GlueError> {
             ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok(super::super::types::status::from_proto(value)?)).transpose()?)
         }
@@ -277,10 +307,12 @@ pub mod types {
     pub mod maybe_choice {
         use super::GlueError;
 
+        /// Convert `types/maybe-choice` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeChoice) -> ::core::option::Option<crate::proto::v0::TypesChoice> {
             value.as_ref().map(|value| super::super::types::choice::to_proto(value))
         }
 
+        /// Convert `types/maybe-choice` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<crate::proto::v0::TypesChoice>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeChoice, GlueError> {
             ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok(super::super::types::choice::from_proto(value)?)).transpose()?)
         }
@@ -289,10 +321,12 @@ pub mod types {
     pub mod maybe_caps {
         use super::GlueError;
 
+        /// Convert `types/maybe-caps` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeCaps) -> ::core::option::Option<crate::proto::v0::TypesCaps> {
             value.as_ref().map(|value| super::super::types::caps::to_proto(value))
         }
 
+        /// Convert `types/maybe-caps` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<crate::proto::v0::TypesCaps>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeCaps, GlueError> {
             ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok(super::super::types::caps::from_proto(value)?)).transpose()?)
         }
@@ -301,10 +335,12 @@ pub mod types {
     pub mod maybe_outcome {
         use super::GlueError;
 
+        /// Convert `types/maybe-outcome` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeOutcome) -> ::core::option::Option<crate::proto::v0::TypesOutcome> {
             value.as_ref().map(|value| super::super::types::outcome::to_proto(value))
         }
 
+        /// Convert `types/maybe-outcome` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<crate::proto::v0::TypesOutcome>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeOutcome, GlueError> {
             ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok(super::super::types::outcome::from_proto(value)?)).transpose()?)
         }
@@ -313,10 +349,12 @@ pub mod types {
     pub mod small_alias {
         use super::GlueError;
 
+        /// Convert `types/small-alias` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::SmallAlias) -> crate::proto::v0::TypesSmall {
             super::super::types::small::to_proto(value)
         }
 
+        /// Convert `types/small-alias` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesSmall) -> ::core::result::Result<crate::plain::v0_4::types::SmallAlias, GlueError> {
             ::core::result::Result::Ok(super::super::types::small::from_proto(value)?)
         }
@@ -325,10 +363,12 @@ pub mod types {
     pub mod small_list_alias {
         use super::GlueError;
 
+        /// Convert `types/small-list-alias` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::SmallListAlias) -> ::std::vec::Vec<crate::proto::v0::TypesSmall> {
             super::super::types::small_list::to_proto(value)
         }
 
+        /// Convert `types/small-list-alias` from its protobuf representation.
         pub fn from_proto(value: ::std::vec::Vec<crate::proto::v0::TypesSmall>) -> ::core::result::Result<crate::plain::v0_4::types::SmallListAlias, GlueError> {
             ::core::result::Result::Ok(super::super::types::small_list::from_proto(value)?)
         }
@@ -337,10 +377,12 @@ pub mod types {
     pub mod maybe_string_alias {
         use super::GlueError;
 
+        /// Convert `types/maybe-string-alias` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::MaybeStringAlias) -> ::core::option::Option<::std::string::String> {
             super::super::types::maybe_string::to_proto(value)
         }
 
+        /// Convert `types/maybe-string-alias` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<::std::string::String>) -> ::core::result::Result<crate::plain::v0_4::types::MaybeStringAlias, GlueError> {
             ::core::result::Result::Ok(super::super::types::maybe_string::from_proto(value)?)
         }
@@ -349,6 +391,7 @@ pub mod types {
     pub mod all {
         use super::GlueError;
 
+        /// Convert `types/all` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::All) -> crate::proto::v0::TypesAll {
             crate::proto::v0::TypesAll {
                 numbers: ::core::option::Option::Some(super::super::types::numbers::to_proto(&value.numbers)),
@@ -379,6 +422,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/all` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesAll) -> ::core::result::Result<crate::plain::v0_4::types::All, GlueError> {
             Ok(crate::plain::v0_4::types::All {
                 numbers: match value.numbers { ::core::option::Option::Some(value) => super::super::types::numbers::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/all.numbers" }), },
@@ -414,6 +458,7 @@ pub mod types {
     pub mod singular {
         use super::GlueError;
 
+        /// Convert `types/singular` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::types::Singular) -> crate::proto::v0::TypesSingular {
             crate::proto::v0::TypesSingular {
                 witforge_value: ::core::option::Option::Some(match value {
@@ -425,6 +470,7 @@ pub mod types {
             }
         }
 
+        /// Convert `types/singular` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesSingular) -> ::core::result::Result<crate::plain::v0_4::types::Singular, GlueError> {
             match value.witforge_value {
                 ::core::option::Option::Some(crate::proto::v0::types_singular::WitforgeValue::MaybeString(payload)) => ::core::result::Result::Ok(crate::plain::v0_4::types::Singular::MaybeString(match payload.value { ::core::option::Option::Some(crate::proto::v0::witforge_option_of_string::Value::None(_)) => ::core::option::Option::None, ::core::option::Option::Some(crate::proto::v0::witforge_option_of_string::Value::Some(value)) => super::super::types::maybe_string::from_proto(::core::option::Option::Some(value))?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState { message: "types/singular" }), })),
@@ -445,10 +491,12 @@ pub mod alias {
     pub mod local_small {
         use super::GlueError;
 
+        /// Convert `alias/local-small` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::alias::LocalSmall) -> crate::proto::v0::TypesSmall {
             super::super::types::small::to_proto(value)
         }
 
+        /// Convert `alias/local-small` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesSmall) -> ::core::result::Result<crate::plain::v0_4::alias::LocalSmall, GlueError> {
             ::core::result::Result::Ok(super::super::types::small::from_proto(value)?)
         }
@@ -457,10 +505,12 @@ pub mod alias {
     pub mod local_list {
         use super::GlueError;
 
+        /// Convert `alias/local-list` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::alias::LocalList) -> ::std::vec::Vec<crate::proto::v0::TypesSmall> {
             super::super::types::small_list::to_proto(value)
         }
 
+        /// Convert `alias/local-list` from its protobuf representation.
         pub fn from_proto(value: ::std::vec::Vec<crate::proto::v0::TypesSmall>) -> ::core::result::Result<crate::plain::v0_4::alias::LocalList, GlueError> {
             ::core::result::Result::Ok(super::super::types::small_list::from_proto(value)?)
         }
@@ -469,10 +519,12 @@ pub mod alias {
     pub mod local_maybe {
         use super::GlueError;
 
+        /// Convert `alias/local-maybe` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::alias::LocalMaybe) -> ::core::option::Option<::std::string::String> {
             super::super::types::maybe_string::to_proto(value)
         }
 
+        /// Convert `alias/local-maybe` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<::std::string::String>) -> ::core::result::Result<crate::plain::v0_4::alias::LocalMaybe, GlueError> {
             ::core::result::Result::Ok(super::super::types::maybe_string::from_proto(value)?)
         }
@@ -481,6 +533,7 @@ pub mod alias {
     pub mod holder {
         use super::GlueError;
 
+        /// Convert `alias/holder` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::alias::Holder) -> crate::proto::v0::AliasHolder {
             crate::proto::v0::AliasHolder {
                 one: ::core::option::Option::Some(super::super::types::small::to_proto(&value.one)),
@@ -489,6 +542,7 @@ pub mod alias {
             }
         }
 
+        /// Convert `alias/holder` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::AliasHolder) -> ::core::result::Result<crate::plain::v0_4::alias::Holder, GlueError> {
             Ok(crate::plain::v0_4::alias::Holder {
                 one: match value.one { ::core::option::Option::Some(value) => super::super::types::small::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "alias/holder.one" }), },
@@ -507,10 +561,12 @@ pub mod service {
     pub mod small {
         use super::GlueError;
 
+        /// Convert `service/small` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::service::Small) -> crate::proto::v0::TypesSmall {
             super::super::types::small::to_proto(value)
         }
 
+        /// Convert `service/small` from its protobuf representation.
         pub fn from_proto(value: crate::proto::v0::TypesSmall) -> ::core::result::Result<crate::plain::v0_4::service::Small, GlueError> {
             ::core::result::Result::Ok(super::super::types::small::from_proto(value)?)
         }
@@ -519,15 +575,18 @@ pub mod service {
     pub mod maybe_string {
         use super::GlueError;
 
+        /// Convert `service/maybe-string` to its protobuf representation.
         pub fn to_proto(value: &crate::plain::v0_4::service::MaybeString) -> ::core::option::Option<::std::string::String> {
             super::super::types::maybe_string::to_proto(value)
         }
 
+        /// Convert `service/maybe-string` from its protobuf representation.
         pub fn from_proto(value: ::core::option::Option<::std::string::String>) -> ::core::result::Result<crate::plain::v0_4::service::MaybeString, GlueError> {
             ::core::result::Result::Ok(super::super::types::maybe_string::from_proto(value)?)
         }
     }
 
+    /// Protobuf conversion helpers for `service` functions.
     pub mod functions {
         #[allow(unused_imports)]
         use super::GlueError;
@@ -536,23 +595,28 @@ pub mod service {
         pub mod ping {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#ping`.
             pub const METHOD: crate::proto::v0::ServiceMethod = crate::proto::v0::ServiceMethod::Ping;
 
+            /// Encode request parameters for `service#ping`.
             pub fn to_request() -> crate::proto::v0::ServicePingRequest {
                 crate::proto::v0::ServicePingRequest {}
             }
 
+            /// Decode request parameters for `service#ping`.
             pub fn from_request(value: crate::proto::v0::ServicePingRequest) -> ::core::result::Result<(), GlueError> {
                 let _ = value;
                 ::core::result::Result::Ok(())
             }
 
+            /// Encode the response for `service#ping`.
             pub fn to_response(value: &::std::string::String) -> crate::proto::v0::ServicePingResponse {
                 crate::proto::v0::ServicePingResponse {
                     result: ::core::option::Option::Some(::core::clone::Clone::clone(value)),
                 }
             }
 
+            /// Decode the response for `service#ping`.
             pub fn from_response(value: crate::proto::v0::ServicePingResponse) -> ::core::result::Result<::std::string::String, GlueError> {
                 ::core::result::Result::Ok(match value.result { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#ping.result" }), })
             }
@@ -562,24 +626,29 @@ pub mod service {
         pub mod echo {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#echo`.
             pub const METHOD: crate::proto::v0::ServiceMethod = crate::proto::v0::ServiceMethod::Echo;
 
+            /// Encode request parameters for `service#echo`.
             pub fn to_request(value: &::std::string::String) -> crate::proto::v0::ServiceEchoRequest {
                 crate::proto::v0::ServiceEchoRequest {
                     value: ::core::option::Option::Some(::core::clone::Clone::clone(value)),
                 }
             }
 
+            /// Decode request parameters for `service#echo`.
             pub fn from_request(value: crate::proto::v0::ServiceEchoRequest) -> ::core::result::Result<::std::string::String, GlueError> {
                 ::core::result::Result::Ok(match value.value { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#echo.value" }), })
             }
 
+            /// Encode the response for `service#echo`.
             pub fn to_response(value: &::std::string::String) -> crate::proto::v0::ServiceEchoResponse {
                 crate::proto::v0::ServiceEchoResponse {
                     result: ::core::option::Option::Some(::core::clone::Clone::clone(value)),
                 }
             }
 
+            /// Decode the response for `service#echo`.
             pub fn from_response(value: crate::proto::v0::ServiceEchoResponse) -> ::core::result::Result<::std::string::String, GlueError> {
                 ::core::result::Result::Ok(match value.result { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#echo.result" }), })
             }
@@ -589,8 +658,10 @@ pub mod service {
         pub mod many {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#many`.
             pub const METHOD: crate::proto::v0::ServiceMethod = crate::proto::v0::ServiceMethod::Many;
 
+            /// Encode request parameters for `service#many`.
             pub fn to_request(item: &crate::plain::v0_4::service::Small, maybe: &crate::plain::v0_4::service::MaybeString, items: &::std::vec::Vec<crate::plain::v0_4::service::Small>, flag: &bool) -> crate::proto::v0::ServiceManyRequest {
                 crate::proto::v0::ServiceManyRequest {
                     item: ::core::option::Option::Some(super::super::super::types::small::to_proto(item)),
@@ -600,10 +671,12 @@ pub mod service {
                 }
             }
 
+            /// Decode request parameters for `service#many`.
             pub fn from_request(value: crate::proto::v0::ServiceManyRequest) -> ::core::result::Result<(crate::plain::v0_4::service::Small, crate::plain::v0_4::service::MaybeString, ::std::vec::Vec<crate::plain::v0_4::service::Small>, bool), GlueError> {
                 ::core::result::Result::Ok((match value.item { ::core::option::Option::Some(value) => super::super::super::types::small::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#many.item" }), }, super::super::super::types::maybe_string::from_proto(value.maybe)?, value.items.into_iter().map(|item| ::core::result::Result::Ok(super::super::super::types::small::from_proto(item)?)).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?, match value.flag { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#many.flag" }), }))
             }
 
+            /// Encode the response for `service#many`.
             pub fn to_response(value: &::core::result::Result<::std::vec::Vec<crate::plain::v0_4::service::Small>, ::std::string::String>) -> crate::proto::v0::ServiceManyResponse {
                 crate::proto::v0::ServiceManyResponse {
                     result: ::core::option::Option::Some(match value {
@@ -613,6 +686,7 @@ pub mod service {
                 }
             }
 
+            /// Decode the response for `service#many`.
             pub fn from_response(value: crate::proto::v0::ServiceManyResponse) -> ::core::result::Result<::core::result::Result<::std::vec::Vec<crate::plain::v0_4::service::Small>, ::std::string::String>, GlueError> {
                 ::core::result::Result::Ok(match value.result { ::core::option::Option::Some(value) => match value.value {
 ::core::option::Option::Some(crate::proto::v0::witforge_result_of_list_of_types_small_and_string::Value::Ok(value)) => ::core::result::Result::Ok(value.values.into_iter().map(|item| ::core::result::Result::Ok(super::super::super::types::small::from_proto(item)?)).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?),
@@ -626,22 +700,27 @@ pub mod service {
         pub mod no_result {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#no-result`.
             pub const METHOD: crate::proto::v0::ServiceMethod = crate::proto::v0::ServiceMethod::NoResult;
 
+            /// Encode request parameters for `service#no-result`.
             pub fn to_request(value: &u8) -> crate::proto::v0::ServiceNoResultRequest {
                 crate::proto::v0::ServiceNoResultRequest {
                     value: ::core::option::Option::Some(u32::from(*value)),
                 }
             }
 
+            /// Decode request parameters for `service#no-result`.
             pub fn from_request(value: crate::proto::v0::ServiceNoResultRequest) -> ::core::result::Result<u8, GlueError> {
                 ::core::result::Result::Ok(match value.value { ::core::option::Option::Some(value) => u8::try_from(value).map_err(|_| GlueError::IntegerOutOfRange { field: "service#no-result.value", value: i64::from(value) })?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#no-result.value" }), })
             }
 
+            /// Encode the response for `service#no-result`.
             pub fn to_response() -> crate::proto::v0::ServiceNoResultResponse {
                 crate::proto::v0::ServiceNoResultResponse {}
             }
 
+            /// Decode the response for `service#no-result`.
             pub fn from_response(value: crate::proto::v0::ServiceNoResultResponse) -> ::core::result::Result<(), GlueError> {
                 let _ = value;
                 ::core::result::Result::Ok(())
@@ -652,23 +731,28 @@ pub mod service {
         pub mod maybe_result {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#maybe-result`.
             pub const METHOD: crate::proto::v0::ServiceMethod = crate::proto::v0::ServiceMethod::MaybeResult;
 
+            /// Encode request parameters for `service#maybe-result`.
             pub fn to_request() -> crate::proto::v0::ServiceMaybeResultRequest {
                 crate::proto::v0::ServiceMaybeResultRequest {}
             }
 
+            /// Decode request parameters for `service#maybe-result`.
             pub fn from_request(value: crate::proto::v0::ServiceMaybeResultRequest) -> ::core::result::Result<(), GlueError> {
                 let _ = value;
                 ::core::result::Result::Ok(())
             }
 
+            /// Encode the response for `service#maybe-result`.
             pub fn to_response(value: &crate::plain::v0_4::service::MaybeString) -> crate::proto::v0::ServiceMaybeResultResponse {
                 crate::proto::v0::ServiceMaybeResultResponse {
                     result: super::super::super::types::maybe_string::to_proto(value),
                 }
             }
 
+            /// Decode the response for `service#maybe-result`.
             pub fn from_response(value: crate::proto::v0::ServiceMaybeResultResponse) -> ::core::result::Result<crate::plain::v0_4::service::MaybeString, GlueError> {
                 ::core::result::Result::Ok(super::super::super::types::maybe_string::from_proto(value.result)?)
             }
@@ -678,23 +762,28 @@ pub mod service {
         pub mod list_result {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#list-result`.
             pub const METHOD: crate::proto::v0::ServiceMethod = crate::proto::v0::ServiceMethod::ListResult;
 
+            /// Encode request parameters for `service#list-result`.
             pub fn to_request() -> crate::proto::v0::ServiceListResultRequest {
                 crate::proto::v0::ServiceListResultRequest {}
             }
 
+            /// Decode request parameters for `service#list-result`.
             pub fn from_request(value: crate::proto::v0::ServiceListResultRequest) -> ::core::result::Result<(), GlueError> {
                 let _ = value;
                 ::core::result::Result::Ok(())
             }
 
+            /// Encode the response for `service#list-result`.
             pub fn to_response(value: &::std::vec::Vec<crate::plain::v0_4::service::Small>) -> crate::proto::v0::ServiceListResultResponse {
                 crate::proto::v0::ServiceListResultResponse {
                     result: value.iter().map(|item| super::super::super::types::small::to_proto(item)).collect(),
                 }
             }
 
+            /// Decode the response for `service#list-result`.
             pub fn from_response(value: crate::proto::v0::ServiceListResultResponse) -> ::core::result::Result<::std::vec::Vec<crate::plain::v0_4::service::Small>, GlueError> {
                 ::core::result::Result::Ok(value.result.into_iter().map(|item| ::core::result::Result::Ok(super::super::super::types::small::from_proto(item)?)).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?)
             }
@@ -704,24 +793,29 @@ pub mod service {
         pub mod r#type {
             use super::GlueError;
 
+            /// Protobuf method identifier for `service#type`.
             pub const METHOD: crate::proto::v0::ServiceMethod = crate::proto::v0::ServiceMethod::Type;
 
+            /// Encode request parameters for `service#type`.
             pub fn to_request(self_: &u32) -> crate::proto::v0::ServiceTypeRequest {
                 crate::proto::v0::ServiceTypeRequest {
                     self_: ::core::option::Option::Some(*self_),
                 }
             }
 
+            /// Decode request parameters for `service#type`.
             pub fn from_request(value: crate::proto::v0::ServiceTypeRequest) -> ::core::result::Result<u32, GlueError> {
                 ::core::result::Result::Ok(match value.self_ { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#type.self" }), })
             }
 
+            /// Encode the response for `service#type`.
             pub fn to_response(value: &u32) -> crate::proto::v0::ServiceTypeResponse {
                 crate::proto::v0::ServiceTypeResponse {
                     result: ::core::option::Option::Some(*value),
                 }
             }
 
+            /// Decode the response for `service#type`.
             pub fn from_response(value: crate::proto::v0::ServiceTypeResponse) -> ::core::result::Result<u32, GlueError> {
                 ::core::result::Result::Ok(match value.result { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "service#type.result" }), })
             }

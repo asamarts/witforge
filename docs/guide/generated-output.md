@@ -129,6 +129,7 @@ must own them, and already-owned identity collections move out of the protobuf v
 extra allocation.
 
 ```rust
+/// Convert `types/item` to its protobuf representation.
 pub fn to_proto(value: &crate::generated::rust::v0_1::types::Item) -> crate::generated::proto::v0::TypesItem {
     crate::generated::proto::v0::TypesItem {
         id: ::core::option::Option::Some(value.id),
@@ -138,6 +139,7 @@ pub fn to_proto(value: &crate::generated::rust::v0_1::types::Item) -> crate::gen
     }
 }
 
+/// Convert `types/item` from its protobuf representation.
 pub fn from_proto(value: crate::generated::proto::v0::TypesItem) -> ::core::result::Result<crate::generated::rust::v0_1::types::Item, GlueError> {
     Ok(crate::generated::rust::v0_1::types::Item {
         id: match value.id { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/item.id" }), },
@@ -157,14 +159,17 @@ Function helpers in the same module map WIT calls to protobuf request and respon
 expose the locked method ID:
 
 ```rust
+/// Protobuf method identifier for `ingest#submit`.
 pub const METHOD: crate::generated::proto::v0::IngestMethod = crate::generated::proto::v0::IngestMethod::Submit;
 
+/// Encode request parameters for `ingest#submit`.
 pub fn to_request(item: &crate::generated::rust::v0_1::ingest::Item) -> crate::generated::proto::v0::IngestSubmitRequest {
     crate::generated::proto::v0::IngestSubmitRequest {
         item: ::core::option::Option::Some(super::super::super::types::item::to_proto(item)),
     }
 }
 
+/// Decode request parameters for `ingest#submit`.
 pub fn from_request(value: crate::generated::proto::v0::IngestSubmitRequest) -> ::core::result::Result<crate::generated::rust::v0_1::ingest::Item, GlueError> {
     ::core::result::Result::Ok(match value.item { ::core::option::Option::Some(value) => super::super::super::types::item::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "ingest#submit.item" }), })
 }

@@ -124,6 +124,9 @@ pub(crate) fn plan_versions(
     let generated_modules = collect_plan_module_names(&highest, dependencies);
     validate_module_root_against_generated(plain_root, &generated_modules)?;
     validate_module_root_against_generated(proto_root, &generated_modules)?;
+    // Glue converts to and from the prost types produced from `proto`, so run the proto emitter's
+    // full validation (root majors, every dependency, and dependency file collisions) first.
+    crate::emit::proto::plan_versions(versions)?;
     let first = versions
         .first()
         .context("no version directories found under WIT root")?;
@@ -138,9 +141,8 @@ pub(crate) fn plan_versions(
     }
     let mut majors = Vec::new();
     for (major, version) in &highest {
-        let generated = emit_version(&version.model, &version.lock, plain_root, proto_root)
-            .with_context(|| version.directory.display().to_string())?;
-        crate::emit::proto::emit_major(&version.model, &version.lock)
+        let generated = Emitter::new(&version.model, &version.lock, plain_root, proto_root)?
+            .emit()
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.rs"), generated)?;
         majors.push(*major);
@@ -493,7 +495,9 @@ pub fn emit_version(
     plain_root: &str,
     proto_root: &str,
 ) -> Result<String> {
-    Emitter::new(model, lock, plain_root, proto_root)?.emit()
+    let emitter = Emitter::new(model, lock, plain_root, proto_root)?;
+    crate::emit::proto::emit_major(model, lock)?;
+    emitter.emit()
 }
 
 struct Emitter<'a> {
@@ -1408,7 +1412,12 @@ fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
     }
     let prefix = " ".repeat(indent);
     for line in docs.lines() {
-        writeln!(out, "{prefix}/// {line}")?;
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            writeln!(out, "{prefix}///")?;
+        } else {
+            writeln!(out, "{prefix}/// {trimmed}")?;
+        }
     }
     Ok(())
 }
@@ -1480,6 +1489,10 @@ impl Emitter<'_> {
         writeln!(out)?;
         writeln!(
             out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
+        writeln!(
+            out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
         )?;
         writeln!(out, "            {proto} {{")?;
@@ -1492,6 +1505,10 @@ impl Emitter<'_> {
         writeln!(out, "            }}")?;
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -1527,6 +1544,10 @@ impl Emitter<'_> {
         writeln!(out)?;
         writeln!(
             out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
+        writeln!(
+            out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
         )?;
         let oneof_field = ident::prost_field_ident("witforge_value");
@@ -1555,6 +1576,10 @@ impl Emitter<'_> {
         writeln!(out, "            }}")?;
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -1598,6 +1623,10 @@ impl Emitter<'_> {
         let proto_enum = ident::proto_type_name(interface, type_name);
         let proto = self.proto_user_type(interface, type_name);
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
         writeln!(out, "        pub fn to_proto(value: &{plain}) -> i32 {{")?;
         writeln!(out, "            match value {{")?;
         for case in cases {
@@ -1612,6 +1641,10 @@ impl Emitter<'_> {
         writeln!(out, "            }}")?;
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: i32) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -1649,6 +1682,10 @@ impl Emitter<'_> {
         writeln!(out)?;
         writeln!(
             out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
+        writeln!(
+            out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
         )?;
         writeln!(out, "            {proto} {{")?;
@@ -1660,6 +1697,10 @@ impl Emitter<'_> {
         writeln!(out, "            }}")?;
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -1709,11 +1750,19 @@ impl Emitter<'_> {
         writeln!(out)?;
         writeln!(
             out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
+        writeln!(
+            out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
         )?;
         writeln!(out, "            {to}")?;
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -1733,8 +1782,12 @@ impl Emitter<'_> {
         element: &TypeExpr,
     ) -> Result<()> {
         let proto = self.proto_type(&TypeExpr::List(Box::new(element.clone())))?;
-        let _ = (name, interface, type_name);
+        let _ = name;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
@@ -1750,6 +1803,10 @@ impl Emitter<'_> {
         }
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -1788,6 +1845,10 @@ impl Emitter<'_> {
         let form = self.form(payload)?;
         let wrapper = self.proto_direct_wrapper(&qualified);
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn to_proto(value: &{plain}) -> {proto} {{"
@@ -1862,6 +1923,10 @@ impl Emitter<'_> {
         }
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -1942,6 +2007,10 @@ impl Emitter<'_> {
         writeln!(out)?;
         writeln!(
             out,
+            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
+        writeln!(
+            out,
             "        pub fn to_proto(value: &{plain}) -> {message} {{"
         )?;
         writeln!(out, "            match value {{")?;
@@ -1967,6 +2036,10 @@ impl Emitter<'_> {
         writeln!(out, "            }}")?;
         writeln!(out, "        }}")?;
         writeln!(out)?;
+        writeln!(
+            out,
+            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
         writeln!(
             out,
             "        pub fn from_proto(value: {message}) -> ::core::result::Result<{plain}, GlueError> {{"
@@ -2002,6 +2075,11 @@ impl Emitter<'_> {
 
     fn emit_functions(&self, out: &mut String, interface: &Interface) -> Result<()> {
         writeln!(out)?;
+        writeln!(
+            out,
+            "    /// Protobuf conversion helpers for `{}` functions.",
+            interface.name
+        )?;
         writeln!(out, "    pub mod functions {{")?;
         writeln!(out, "        #[allow(unused_imports)]")?;
         writeln!(out, "        use super::GlueError;")?;
@@ -2051,7 +2129,12 @@ impl Emitter<'_> {
             &proto_method_enum,
             &ident::proto_method_enum_value(interface_name, &function.name),
         );
+        let function_label = format!("{interface_name}#{}", function.name);
         writeln!(out)?;
+        writeln!(
+            out,
+            "            /// Protobuf method identifier for `{function_label}`."
+        )?;
         writeln!(
             out,
             "            pub const METHOD: {method} = {method}::{method_variant};"
@@ -2072,6 +2155,10 @@ impl Emitter<'_> {
             args.push(format!("{name}: &{ty}"));
         }
         writeln!(out)?;
+        writeln!(
+            out,
+            "            /// Encode request parameters for `{function_label}`."
+        )?;
         writeln!(
             out,
             "            pub fn to_request({}) -> {request} {{",
@@ -2105,6 +2192,10 @@ impl Emitter<'_> {
                     .join(", ")
             ),
         };
+        writeln!(
+            out,
+            "            /// Decode request parameters for `{function_label}`."
+        )?;
         writeln!(
             out,
             "            pub fn from_request(value: {request}) -> ::core::result::Result<{return_type}, GlueError> {{"
@@ -2141,6 +2232,10 @@ impl Emitter<'_> {
             let ty = self.plain_type(result)?;
             writeln!(
                 out,
+                "            /// Encode the response for `{function_label}`."
+            )?;
+            writeln!(
+                out,
                 "            pub fn to_response(value: &{ty}) -> {response} {{"
             )?;
             writeln!(out, "                {response} {{")?;
@@ -2155,6 +2250,10 @@ impl Emitter<'_> {
             let identity = format!("{interface_name}#{}.result", function.name);
             writeln!(
                 out,
+                "            /// Decode the response for `{function_label}`."
+            )?;
+            writeln!(
+                out,
                 "            pub fn from_response(value: {response}) -> ::core::result::Result<{ty}, GlueError> {{"
             )?;
             writeln!(
@@ -2164,10 +2263,18 @@ impl Emitter<'_> {
             )?;
             writeln!(out, "            }}")?;
         } else {
+            writeln!(
+                out,
+                "            /// Encode the response for `{function_label}`."
+            )?;
             writeln!(out, "            pub fn to_response() -> {response} {{")?;
             writeln!(out, "                {response} {{}}")?;
             writeln!(out, "            }}")?;
             writeln!(out)?;
+            writeln!(
+                out,
+                "            /// Decode the response for `{function_label}`."
+            )?;
             writeln!(
                 out,
                 "            pub fn from_response(value: {response}) -> ::core::result::Result<(), GlueError> {{"
@@ -2498,7 +2605,7 @@ impl Emitter<'_> {
                             let payload = qualify_type(Some(dependency), payload);
                             let oneof = self.proto_oneof(&proto_wrapper, "value");
                             return Ok(format!(
-                                "match {expr}.value {{ ::core::option::Option::Some({oneof}::Some(value)) => ::core::option::Option::Some({}), ::core::option::Option::Some({oneof}::None(_)) | ::core::option::Option::None => ::core::option::Option::None }}",
+                                "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => ::core::option::Option::Some({}), ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}",
                                 self.decode_singular("value", &payload, identity)?
                             ));
                         }
