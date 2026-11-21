@@ -1,6 +1,6 @@
 # 1.0 release criteria and deprecation runways
 
-Status: criteria published 2026-11-01; **1.0.0 has not been released**.
+Status: criteria published 2026-11-01; updated 2026-11-20 after the second audit (`W10-098`); **1.0.0 has not been released**.
 
 1.0 is a promise about the library API, generated output, and the conformance suite. Feature
 completeness alone is not enough.
@@ -12,7 +12,12 @@ completeness alone is not enough.
       --release-type minor` reports no breaking change against the newest published release,
       including for `WorldInterface` and `Model.dependencies`. Releases 0.4.2 to 0.5.0 each
       passed this check against 0.4.1, so comparing with the newest release keeps the surface
-      reviewed at 0.4.1 covered
+      reviewed at 0.4.1 covered. **One planned pre-1.0 exception:** the pre-1.0 minor release
+      that lands `W10-095` (marking library model, lockfile, and diagnostic types
+      `#[non_exhaustive]` and making unlisted public items private, together with `W10-096`'s
+      structured check findings) breaks the library interface on purpose; `ci.yml` and
+      `release.yml` lift `--release-type minor` for that single release only and restore it for
+      every release after it before 1.0.0
 - [ ] the boundary error policy is published: `anyhow::Error` plus the stable `ContractError`
       classification, with no unclassified contract failure
 - [ ] the conformance matrix and `tests/conformance.rs` cover every supported WIT construct and
@@ -27,6 +32,8 @@ completeness alone is not enough.
 - [ ] the checked-out Action and the pinned published Action pass on Linux x86_64, macOS arm64,
       macOS Intel, and Windows x86_64; each platform installs and verifies its own release archive
 - [ ] the alint consumer pin and its CI are green against the 1.0 candidate
+- [ ] independent external consumer validation is recorded (`W10-001`; unchanged by the second
+      audit)
 - [ ] `CHANGELOG.md`, README status, workspace versions, and the release checklist agree
 - [ ] with `BUF_REQUIRED=1`, `ci/check-buf-history.sh` compares candidate output with every
       published generator, from `v0.1.0` on, for every fixture WIT root that existed at that
@@ -35,6 +42,39 @@ completeness alone is not enough.
 - [ ] the tag commit has a successful `ci ok` job from the `push` event before the release
       workflow publishes; the release owner records that exact commit, CI run URL, and publish
       run URL in the changelog section
+
+### Post-second-audit criteria
+
+Added on 2026-11-19 (`W10-098`) after [the second audit](audit-2026-11-18-second.md). These apply
+in addition to the criteria above and to independent external adoption (`W10-001`):
+
+- [ ] **Every second-audit task in `M-p10` (`W10-038` to `W10-098`) is closed with evidence, or
+      declined in writing here and dropped with `aplan drop` so the plan and this document agree.**
+      Proved by `W10-002`'s dependency graph (through `W10-069` for the 0.6.0 blockers and direct
+      blockers for `W10-071`, `W10-076`, and `W10-079` to `W10-098`). Already declined and
+      dropped: `W10-044` (2026-11-18, owner decision: skip 0.5.1 and ship its fixes in 0.6.0 under
+      `W10-069`).
+- [ ] **The `prost` compile-and-round-trip matrix and compiled example output run in CI and are
+      required by `ci ok`.** Proved by `W10-068` and the `needs` list of `ci ok` in
+      `.github/workflows/ci.yml`.
+- [ ] **One consumer has taken a contract through a minor evolution and regenerated it across two
+      witforge releases.** This does not replace independent adoption (`W10-001`); `alint`'s proof
+      crate can satisfy it by evolving its contract across a minor version and moving its pin
+      across two witforge releases, proved by the two changes in its repository.
+- [ ] **All four 1.0 surface-freezing decisions are implemented, not only decided:**
+      major-version boundaries and version retirement (`W10-093`), `#[non_exhaustive]` library
+      types and tightened public API table (`W10-095`), lossless JSON Schema result representation
+      (`W10-070`), and unified proto/prost/glue identifier conversion (`W10-059`). Proved by
+      closure of `W10-059`, `W10-070`, `W10-093`, and `W10-095`.
+
+#### Post-1.0 ideas from the second audit (not required for 1.0)
+
+Audit finding D7 recorded two ideas in cut `M-p11` rather than defects:
+
+- `W11-038` (generated trait adapters between contract versions): **not required for 1.0**;
+  remains a post-1.0 evaluation after `W10-093`.
+- `W11-039` (protobuf file options for non-Rust generators): **not required for 1.0**; remains a
+  post-1.0 evaluation after `W10-001` and `W11-034`.
 
 ### Exact compatibility commands
 

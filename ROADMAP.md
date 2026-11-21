@@ -153,7 +153,9 @@ The checked items are merged to `main` and are not in any release: `cargo instal
 ## 1.0 and beyond
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
-      paused; the independent-adoption gate remains unchanged (`W10-001`, `W10-002`).
+      paused; the 1.0 release criteria (including the independent-adoption gate and the
+      post-second-audit gates) live in [release-1.0.md](docs/design/release-1.0.md) (`W10-001`,
+      `W10-002`, `W10-098`).
 - [ ] Continue bounded implementation work that does not speculate about consumer demand. The
       first 0.5.0 audit's remediation and the diff/conversion benchmark are complete.
 - [ ] Close the [second audit](docs/design/audit-2026-11-18-second.md): wire-identity,

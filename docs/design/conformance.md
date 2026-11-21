@@ -43,3 +43,5 @@ consume it. Paths are relative to `crates/witforge/tests/`.
   root against every released generator at which the fixture exists. The historical release
   binary generates the old side; the candidate binary generates the new side. CI exposes the
   check through workflow dispatch, and the tag release workflow runs it before publication.
+- 1.0 also requires the `prost` compile-and-round-trip matrix and compiled example output
+  (`W10-068`) to run in CI under `ci ok` (see [`release-1.0.md`](release-1.0.md)).
