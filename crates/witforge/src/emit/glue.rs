@@ -393,6 +393,14 @@ fn collect_plan_module_names(
     names
 }
 
+fn dependency_pkg_prefix(dependency: &Dependency) -> String {
+    format!(
+        "{}{}",
+        ident::proto_pascal(&dependency.package.namespace),
+        ident::proto_pascal(&dependency.package.name)
+    )
+}
+
 fn dependency_shape_name(dependency: &Dependency, name: &QualifiedName) -> String {
     ident::proto_dependency_shape_name(
         &dependency.package.namespace,
@@ -760,6 +768,217 @@ impl<'a> Emitter<'a> {
         Ok(Some((dependency, def)))
     }
 
+    fn is_same_package(&self, a: Option<&Dependency>, b: Option<&Dependency>) -> bool {
+        let pkg_a = a.map_or(&self.model.package, |dep| &dep.package);
+        let pkg_b = b.map_or(&self.model.package, |dep| &dep.package);
+        pkg_a.namespace == pkg_b.namespace && pkg_a.name == pkg_b.name
+    }
+
+    fn dependency_proto_path(&self, dependency: &Dependency, proto_name: &str) -> String {
+        let rust_name = ident::prost_type_ident(proto_name);
+        format!(
+            "{}::{rust_name}",
+            dependency_proto_base(
+                &self.proto_root,
+                &dependency.package.namespace,
+                &dependency.package.name,
+                dependency.package.version.major
+            )
+        )
+    }
+
+    fn resolve_type_def<'b>(
+        &'b self,
+        context: Option<&'b Dependency>,
+        name: &QualifiedName,
+    ) -> Result<(Option<&'b Dependency>, &'b TypeDef)> {
+        if let Some((dep, def)) = self.foreign_type_def(context, name)? {
+            return Ok((Some(dep), def));
+        }
+        Ok((None, self.named(name)?))
+    }
+
+    fn resolve_foreign_named(
+        &self,
+        ty: &TypeExpr,
+    ) -> Result<Option<(Dependency, QualifiedName, TypeDefKind)>> {
+        match ty {
+            TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    let (dep, def) = self
+                        .foreign_type_def(None, name)?
+                        .context("foreign type needs a dependency package")?;
+                    match &def.kind {
+                        TypeDefKind::Alias(target) => {
+                            let qualified = qualify_type(Some(dep), target);
+                            self.resolve_foreign_named(&qualified)
+                        }
+                        other => Ok(Some((dep.clone(), name.clone(), other.clone()))),
+                    }
+                } else {
+                    match &self.named(name)?.kind {
+                        TypeDefKind::Alias(target) => self.resolve_foreign_named(target),
+                        _ => Ok(None),
+                    }
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolve the singular prost Rust type emitted inside `owner`'s own proto package for `ty`
+    /// (written inside `owner`), matching `proto.rs::dependency_defined_singular`.
+    #[allow(clippy::too_many_lines)]
+    fn dependency_defined_proto_singular(
+        &self,
+        owner: &Dependency,
+        ty: &TypeExpr,
+    ) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U64 => Ok("u64".to_string()),
+            TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
+            TypeExpr::S64 => Ok("i64".to_string()),
+            TypeExpr::F32 => Ok("f32".to_string()),
+            TypeExpr::F64 => Ok("f64".to_string()),
+            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
+                Ok("::std::vec::Vec<u8>".to_string())
+            }
+            TypeExpr::List(element) => {
+                let name = format!(
+                    "WitforgeListOf{}",
+                    self.owner_shape_name_ty(Some(owner), element)?
+                );
+                Ok(self.dependency_proto_path(owner, &name))
+            }
+            TypeExpr::Option(payload) => {
+                let name = format!(
+                    "WitforgeOptionOf{}",
+                    self.owner_shape_name_ty(Some(owner), payload)?
+                );
+                Ok(self.dependency_proto_path(owner, &name))
+            }
+            TypeExpr::Result(result) => {
+                let name = format!(
+                    "Witforge{}",
+                    self.owner_result_shape_name(Some(owner), result)?
+                );
+                Ok(self.dependency_proto_path(owner, &name))
+            }
+            TypeExpr::Named(name) => {
+                let (target_dep, def) = self.resolve_type_def(Some(owner), name)?;
+                if self.is_same_package(Some(owner), target_dep) {
+                    match &def.kind {
+                        TypeDefKind::Alias(target) => {
+                            self.dependency_defined_proto_singular(owner, target)
+                        }
+                        TypeDefKind::Enum(_) => Ok("i32".to_string()),
+                        TypeDefKind::Record(_)
+                        | TypeDefKind::Variant(_)
+                        | TypeDefKind::Flags(_)
+                        | TypeDefKind::Result(_) => Ok(self.dependency_proto_type(name, owner)),
+                        TypeDefKind::List(element)
+                            if self.model.resolves_to_u8_in(Some(owner), element) =>
+                        {
+                            Ok("::std::vec::Vec<u8>".to_string())
+                        }
+                        TypeDefKind::List(element) => {
+                            let wrapper = format!(
+                                "WitforgeListOf{}",
+                                self.owner_shape_name_ty(Some(owner), element)?
+                            );
+                            Ok(self.dependency_proto_path(owner, &wrapper))
+                        }
+                        TypeDefKind::Option(payload) => {
+                            let wrapper = if matches!(
+                                self.foreign_form_expr(Some(owner), payload)?,
+                                Form::List | Form::Option
+                            ) {
+                                format!(
+                                    "WitforgeOptionOf{}",
+                                    ident::proto_type_name(name.interface_name(), &name.name)
+                                )
+                            } else {
+                                format!(
+                                    "WitforgeOptionOf{}",
+                                    self.owner_shape_name_ty(Some(owner), payload)?
+                                )
+                            };
+                            Ok(self.dependency_proto_path(owner, &wrapper))
+                        }
+                    }
+                } else {
+                    let other = target_dep.context("foreign type has no dependency context")?;
+                    match &def.kind {
+                        TypeDefKind::Alias(target) => {
+                            let qualified = qualify_type(Some(other), target);
+                            self.dependency_defined_proto_singular(owner, &qualified)
+                        }
+                        TypeDefKind::Enum(_) => Ok("i32".to_string()),
+                        TypeDefKind::Record(_)
+                        | TypeDefKind::Variant(_)
+                        | TypeDefKind::Flags(_)
+                        | TypeDefKind::Result(_) => Ok(self.dependency_proto_type(name, other)),
+                        TypeDefKind::List(element)
+                            if self.model.resolves_to_u8_in(Some(other), element) =>
+                        {
+                            Ok("::std::vec::Vec<u8>".to_string())
+                        }
+                        TypeDefKind::List(_) | TypeDefKind::Option(_) => {
+                            let shape = self.foreign_shape_name_for_caller(
+                                Some(owner),
+                                other,
+                                name,
+                                &def.kind,
+                            )?;
+                            let wrapper = format!("Witforge{shape}");
+                            Ok(self.dependency_proto_path(owner, &wrapper))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn element_uses_dependency_wrapper(&self, owner: &Dependency, ty: &TypeExpr) -> Result<bool> {
+        match ty {
+            TypeExpr::Bool
+            | TypeExpr::U8
+            | TypeExpr::U16
+            | TypeExpr::U32
+            | TypeExpr::U64
+            | TypeExpr::S8
+            | TypeExpr::S16
+            | TypeExpr::S32
+            | TypeExpr::S64
+            | TypeExpr::F32
+            | TypeExpr::F64
+            | TypeExpr::String => Ok(false),
+            TypeExpr::List(element) => Ok(!self.model.resolves_to_u8_in(Some(owner), element)),
+            TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(true),
+            TypeExpr::Named(name) => {
+                let (resolved_dep, def) = self.resolve_type_def(Some(owner), name)?;
+                match &def.kind {
+                    TypeDefKind::Alias(target) => {
+                        let next_owner = resolved_dep.unwrap_or(owner);
+                        self.element_uses_dependency_wrapper(next_owner, target)
+                    }
+                    TypeDefKind::List(element) => {
+                        Ok(!self.model.resolves_to_u8_in(resolved_dep, element))
+                    }
+                    TypeDefKind::Option(_) => Ok(true),
+                    TypeDefKind::Record(_)
+                    | TypeDefKind::Variant(_)
+                    | TypeDefKind::Enum(_)
+                    | TypeDefKind::Flags(_)
+                    | TypeDefKind::Result(_) => Ok(false),
+                }
+            }
+        }
+    }
+
     fn foreign_proto_type(&self, name: &QualifiedName) -> Result<String> {
         let (dependency, def) = self
             .foreign_type_def(None, name)?
@@ -773,27 +992,30 @@ impl<'a> Emitter<'a> {
         name: &QualifiedName,
         kind: &TypeDefKind,
     ) -> Result<String> {
+        let owner = context.context("foreign type has no dependency context")?;
         match kind {
             TypeDefKind::Enum(_) => Ok("i32".to_string()),
-            TypeDefKind::Alias(target) => self.foreign_proto_type_expr(context, target),
-            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+            TypeDefKind::Alias(target) => self.foreign_proto_type_expr(Some(owner), target),
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
                 Ok("::std::vec::Vec<u8>".to_string())
             }
             TypeDefKind::List(element) => Ok(format!(
                 "::std::vec::Vec<{}>",
-                self.foreign_proto_singular_expr(context, element)?
+                self.dependency_defined_proto_singular(owner, element)?
             )),
-            TypeDefKind::Option(payload) => Ok(format!(
-                "::core::option::Option<{}>",
-                self.foreign_proto_singular_expr(context, payload)?
-            )),
+            TypeDefKind::Option(payload) => {
+                let inner = match self.foreign_form_expr(Some(owner), payload)? {
+                    Form::List | Form::Option => self.dependency_proto_type(name, owner),
+                    Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
+                        self.dependency_defined_proto_singular(owner, payload)?
+                    }
+                };
+                Ok(format!("::core::option::Option<{inner}>"))
+            }
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
-            | TypeDefKind::Result(_) => {
-                let dependency = context.context("foreign type has no dependency context")?;
-                Ok(self.dependency_proto_type(name, dependency))
-            }
+            | TypeDefKind::Result(_) => Ok(self.dependency_proto_type(name, owner)),
         }
     }
 
@@ -802,27 +1024,28 @@ impl<'a> Emitter<'a> {
         context: Option<&Dependency>,
         ty: &TypeExpr,
     ) -> Result<String> {
+        let owner = context.context("foreign type expression has no dependency context")?;
         match ty {
             TypeExpr::Named(name) => {
                 if name.package().is_some() {
                     self.foreign_proto_type(name)
                 } else {
                     let (dependency, def) = self
-                        .foreign_type_def(context, name)?
+                        .foreign_type_def(Some(owner), name)?
                         .context("foreign alias target has no dependency context")?;
                     self.foreign_proto_type_in(Some(dependency), name, &def.kind)
                 }
             }
-            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+            TypeExpr::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
                 Ok("::std::vec::Vec<u8>".to_string())
             }
             TypeExpr::List(element) => Ok(format!(
                 "::std::vec::Vec<{}>",
-                self.foreign_proto_singular_expr(context, element)?
+                self.dependency_defined_proto_singular(owner, element)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "::core::option::Option<{}>",
-                self.foreign_proto_singular_expr(context, payload)?
+                self.dependency_defined_proto_singular(owner, payload)?
             )),
             TypeExpr::Bool => Ok("bool".to_string()),
             TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
@@ -832,7 +1055,13 @@ impl<'a> Emitter<'a> {
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
             TypeExpr::String => Ok("::std::string::String".to_string()),
-            TypeExpr::Result(_) => bail!("foreign result needs a named wrapper"),
+            TypeExpr::Result(result) => {
+                let name = format!(
+                    "Witforge{}",
+                    self.owner_result_shape_name(Some(owner), result)?
+                );
+                Ok(self.dependency_proto_path(owner, &name))
+            }
         }
     }
 
@@ -849,78 +1078,25 @@ impl<'a> Emitter<'a> {
         name: &QualifiedName,
         kind: &TypeDefKind,
     ) -> Result<String> {
+        let owner = context.context("foreign type has no dependency context")?;
         match kind {
             TypeDefKind::Enum(_) => Ok("i32".to_string()),
-            TypeDefKind::Alias(target) => self.foreign_proto_singular_expr(context, target),
-            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+            TypeDefKind::Alias(target) => {
+                let qualified = qualify_type(Some(owner), target);
+                self.proto_singular_type(&qualified)
+            }
+            TypeDefKind::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
                 Ok("::std::vec::Vec<u8>".to_string())
             }
-            TypeDefKind::List(element) => {
-                let name = format!(
-                    "WitforgeListOf{}",
-                    self.foreign_shape_name_ty(context, element)?
-                );
-                Ok(self.proto_user_type_path(&name))
-            }
-            TypeDefKind::Option(payload) => {
-                let name = format!(
-                    "WitforgeOptionOf{}",
-                    self.foreign_shape_name_ty(context, payload)?
-                );
-                Ok(self.proto_user_type_path(&name))
+            TypeDefKind::List(_) | TypeDefKind::Option(_) => {
+                let shape = self.foreign_shape_name_for_caller(None, owner, name, kind)?;
+                let wrapper_name = format!("Witforge{shape}");
+                Ok(self.proto_user_type_path(&wrapper_name))
             }
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
-            | TypeDefKind::Result(_) => {
-                let dependency = context.context("foreign type has no dependency context")?;
-                Ok(self.dependency_proto_type(name, dependency))
-            }
-        }
-    }
-
-    fn foreign_proto_singular_expr(
-        &self,
-        context: Option<&Dependency>,
-        ty: &TypeExpr,
-    ) -> Result<String> {
-        match ty {
-            TypeExpr::Named(name) => {
-                if name.package().is_some() {
-                    self.foreign_proto_singular(name)
-                } else {
-                    let (dependency, def) = self
-                        .foreign_type_def(context, name)?
-                        .context("foreign alias target has no dependency context")?;
-                    self.foreign_proto_singular_in(Some(dependency), name, &def.kind)
-                }
-            }
-            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
-                Ok("::std::vec::Vec<u8>".to_string())
-            }
-            TypeExpr::List(element) => {
-                let name = format!(
-                    "WitforgeListOf{}",
-                    self.foreign_shape_name_ty(context, element)?
-                );
-                Ok(self.proto_user_type_path(&name))
-            }
-            TypeExpr::Option(payload) => {
-                let name = format!(
-                    "WitforgeOptionOf{}",
-                    self.foreign_shape_name_ty(context, payload)?
-                );
-                Ok(self.proto_user_type_path(&name))
-            }
-            TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
-            TypeExpr::U64 => Ok("u64".to_string()),
-            TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
-            TypeExpr::S64 => Ok("i64".to_string()),
-            TypeExpr::F32 => Ok("f32".to_string()),
-            TypeExpr::F64 => Ok("f64".to_string()),
-            TypeExpr::String => Ok("::std::string::String".to_string()),
-            TypeExpr::Result(_) => bail!("foreign result needs a named wrapper"),
+            | TypeDefKind::Result(_) => Ok(self.dependency_proto_type(name, owner)),
         }
     }
 
@@ -928,37 +1104,10 @@ impl<'a> Emitter<'a> {
         let (dependency, def) = self
             .foreign_type_def(None, name)?
             .context("foreign type needs a dependency package")?;
-        self.foreign_shape_name_kind(Some(dependency), name, &def.kind)
+        self.foreign_shape_name_for_caller(None, dependency, name, &def.kind)
     }
 
-    fn foreign_shape_name_kind(
-        &self,
-        context: Option<&Dependency>,
-        name: &QualifiedName,
-        kind: &TypeDefKind,
-    ) -> Result<String> {
-        match kind {
-            TypeDefKind::Alias(target) => self.foreign_shape_name_ty(context, target),
-            TypeDefKind::List(element) => Ok(format!(
-                "ListOf{}",
-                self.foreign_shape_name_ty(context, element)?
-            )),
-            TypeDefKind::Option(payload) => Ok(format!(
-                "OptionOf{}",
-                self.foreign_shape_name_ty(context, payload)?
-            )),
-            TypeDefKind::Result(result) => self.foreign_result_shape_name(context, result),
-            TypeDefKind::Record(_)
-            | TypeDefKind::Variant(_)
-            | TypeDefKind::Enum(_)
-            | TypeDefKind::Flags(_) => {
-                let dependency = context.context("foreign type has no dependency context")?;
-                Ok(dependency_shape_name(dependency, name))
-            }
-        }
-    }
-
-    fn foreign_shape_name_ty(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<String> {
+    fn owner_shape_name_ty(&self, owner: Option<&Dependency>, ty: &TypeExpr) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok("Bool".to_string()),
             TypeExpr::U8 => Ok("U8".to_string()),
@@ -974,36 +1123,150 @@ impl<'a> Emitter<'a> {
             TypeExpr::String => Ok("String".to_string()),
             TypeExpr::List(element) => Ok(format!(
                 "ListOf{}",
-                self.foreign_shape_name_ty(context, element)?
+                self.owner_shape_name_ty(owner, element)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "OptionOf{}",
-                self.foreign_shape_name_ty(context, payload)?
+                self.owner_shape_name_ty(owner, payload)?
             )),
-            TypeExpr::Result(result) => self.foreign_result_shape_name(context, result),
+            TypeExpr::Result(result) => self.owner_result_shape_name(owner, result),
             TypeExpr::Named(name) => {
-                if name.package().is_some() {
-                    return self.foreign_shape_name(name);
+                let (target_dep, def) = self.resolve_type_def(owner, name)?;
+                if self.is_same_package(owner, target_dep) {
+                    match &def.kind {
+                        TypeDefKind::Alias(target) => self.owner_shape_name_ty(owner, target),
+                        TypeDefKind::List(element) => Ok(format!(
+                            "ListOf{}",
+                            self.owner_shape_name_ty(owner, element)?
+                        )),
+                        TypeDefKind::Option(payload) => Ok(format!(
+                            "OptionOf{}",
+                            self.owner_shape_name_ty(owner, payload)?
+                        )),
+                        TypeDefKind::Result(result) => self.owner_result_shape_name(owner, result),
+                        TypeDefKind::Record(_)
+                        | TypeDefKind::Variant(_)
+                        | TypeDefKind::Enum(_)
+                        | TypeDefKind::Flags(_) => {
+                            Ok(ident::proto_type_name(name.interface_name(), &name.name))
+                        }
+                    }
+                } else {
+                    let dep = target_dep.context("foreign type has no dependency context")?;
+                    self.foreign_shape_name_for_caller(owner, dep, name, &def.kind)
                 }
-                let (dependency, def) = self
-                    .foreign_type_def(context, name)?
-                    .context("foreign alias target has no dependency context")?;
-                self.foreign_shape_name_kind(Some(dependency), name, &def.kind)
+            }
+        }
+    }
+
+    fn owner_result_shape_name(
+        &self,
+        owner: Option<&Dependency>,
+        result: &ResultExpr,
+    ) -> Result<String> {
+        let ok = match &result.ok {
+            Some(ty) => self.owner_shape_name_ty(owner, ty)?,
+            None => "Empty".to_string(),
+        };
+        let err = match &result.err {
+            Some(ty) => self.owner_shape_name_ty(owner, ty)?,
+            None => "Empty".to_string(),
+        };
+        Ok(format!("ResultOf{ok}And{err}"))
+    }
+
+    fn foreign_shape_name_for_caller(
+        &self,
+        caller: Option<&Dependency>,
+        owner: &Dependency,
+        name: &QualifiedName,
+        kind: &TypeDefKind,
+    ) -> Result<String> {
+        match kind {
+            TypeDefKind::Alias(target) => self.foreign_shape_name_expr(caller, owner, target),
+            TypeDefKind::List(element) => {
+                if self.element_uses_dependency_wrapper(owner, element)? {
+                    Ok(format!(
+                        "ListOf{}{}",
+                        dependency_pkg_prefix(owner),
+                        self.owner_shape_name_ty(Some(owner), element)?
+                    ))
+                } else {
+                    Ok(format!(
+                        "ListOf{}",
+                        self.foreign_shape_name_expr(caller, owner, element)?
+                    ))
+                }
+            }
+            TypeDefKind::Option(payload) => {
+                if matches!(
+                    self.foreign_form_expr(Some(owner), payload)?,
+                    Form::List | Form::Option
+                ) {
+                    Ok(format!("OptionOf{}", dependency_shape_name(owner, name)))
+                } else {
+                    Ok(format!(
+                        "OptionOf{}",
+                        self.foreign_shape_name_expr(caller, owner, payload)?
+                    ))
+                }
+            }
+            TypeDefKind::Result(result) => self.foreign_result_shape_name(caller, owner, result),
+            TypeDefKind::Record(_)
+            | TypeDefKind::Variant(_)
+            | TypeDefKind::Enum(_)
+            | TypeDefKind::Flags(_) => Ok(dependency_shape_name(owner, name)),
+        }
+    }
+
+    fn foreign_shape_name_expr(
+        &self,
+        caller: Option<&Dependency>,
+        owner: &Dependency,
+        ty: &TypeExpr,
+    ) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("Bool".to_string()),
+            TypeExpr::U8 => Ok("U8".to_string()),
+            TypeExpr::U16 => Ok("U16".to_string()),
+            TypeExpr::U32 => Ok("U32".to_string()),
+            TypeExpr::U64 => Ok("U64".to_string()),
+            TypeExpr::S8 => Ok("S8".to_string()),
+            TypeExpr::S16 => Ok("S16".to_string()),
+            TypeExpr::S32 => Ok("S32".to_string()),
+            TypeExpr::S64 => Ok("S64".to_string()),
+            TypeExpr::F32 => Ok("F32".to_string()),
+            TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::String => Ok("String".to_string()),
+            TypeExpr::List(element) => Ok(format!(
+                "ListOf{}",
+                self.foreign_shape_name_expr(caller, owner, element)?
+            )),
+            TypeExpr::Option(payload) => Ok(format!(
+                "OptionOf{}",
+                self.foreign_shape_name_expr(caller, owner, payload)?
+            )),
+            TypeExpr::Result(result) => self.foreign_result_shape_name(caller, owner, result),
+            TypeExpr::Named(name) => {
+                let (target_dep, def) = self.resolve_type_def(Some(owner), name)?;
+                let dep = target_dep.context("foreign type has no dependency context")?;
+                self.foreign_shape_name_for_caller(caller, dep, name, &def.kind)
             }
         }
     }
 
     fn foreign_result_shape_name(
         &self,
-        context: Option<&Dependency>,
+        caller: Option<&Dependency>,
+        owner: &Dependency,
         result: &ResultExpr,
     ) -> Result<String> {
         let ok = match &result.ok {
-            Some(ty) => self.foreign_shape_name_ty(context, ty)?,
+            Some(ty) => self.foreign_shape_name_expr(caller, owner, ty)?,
             None => "Empty".to_string(),
         };
         let err = match &result.err {
-            Some(ty) => self.foreign_shape_name_ty(context, ty)?,
+            Some(ty) => self.foreign_shape_name_expr(caller, owner, ty)?,
             None => "Empty".to_string(),
         };
         Ok(format!("ResultOf{ok}And{err}"))
@@ -1855,18 +2118,25 @@ impl Emitter<'_> {
         )?;
         match form {
             Form::List => {
-                let element = self.list_element(payload)?;
                 writeln!(out, "            match value {{")?;
                 writeln!(
                     out,
                     "                ::core::option::Option::Some(value) => ::core::option::Option::Some({wrapper} {{"
                 )?;
-                let values = match self.identity(&element)? {
-                    Some(_) => "::core::clone::Clone::clone(value)".to_string(),
-                    None => format!(
-                        "value.iter().map(|item| {}).collect()",
-                        self.encode_singular("item", &element)?
-                    ),
+                let values = if let Some((_, foreign_name, TypeDefKind::List(_))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let module = self.foreign_type_module(&foreign_name)?;
+                    format!("{module}::to_proto(value)")
+                } else {
+                    let element = self.list_element(payload)?;
+                    match self.identity(&element)? {
+                        Some(_) => "::core::clone::Clone::clone(value)".to_string(),
+                        None => format!(
+                            "value.iter().map(|item| {}).collect()",
+                            self.encode_singular("item", &element)?
+                        ),
+                    }
                 };
                 writeln!(out, "                    values: {values},")?;
                 writeln!(out, "                }}),")?;
@@ -1877,7 +2147,6 @@ impl Emitter<'_> {
                 writeln!(out, "            }}")?;
             }
             Form::Option => {
-                let inner = self.option_payload(payload)?;
                 let oneof =
                     self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
                 let empty = self.proto_empty();
@@ -1886,19 +2155,38 @@ impl Emitter<'_> {
                     out,
                     "                ::core::option::Option::Some(value) => ::core::option::Option::Some({wrapper} {{"
                 )?;
-                writeln!(
-                    out,
-                    "                    value: ::core::option::Option::Some(match value {{"
-                )?;
-                writeln!(
-                    out,
-                    "                        ::core::option::Option::Some(value) => {oneof}::Some({}),",
-                    self.encode_singular("value", &inner)?
-                )?;
-                writeln!(
-                    out,
-                    "                        ::core::option::Option::None => {oneof}::None({empty} {{}}),"
-                )?;
+                if let Some((_, foreign_name, TypeDefKind::Option(_))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let module = self.foreign_type_module(&foreign_name)?;
+                    writeln!(
+                        out,
+                        "                    value: ::core::option::Option::Some(match {module}::to_proto(value) {{"
+                    )?;
+                    writeln!(
+                        out,
+                        "                        ::core::option::Option::Some(value) => {oneof}::Some(value),"
+                    )?;
+                    writeln!(
+                        out,
+                        "                        ::core::option::Option::None => {oneof}::None({empty} {{}}),"
+                    )?;
+                } else {
+                    let inner = self.option_payload(payload)?;
+                    writeln!(
+                        out,
+                        "                    value: ::core::option::Option::Some(match value {{"
+                    )?;
+                    writeln!(
+                        out,
+                        "                        ::core::option::Option::Some(value) => {oneof}::Some({}),",
+                        self.encode_singular("value", &inner)?
+                    )?;
+                    writeln!(
+                        out,
+                        "                        ::core::option::Option::None => {oneof}::None({empty} {{}}),"
+                    )?;
+                }
                 writeln!(out, "                    }}),")?;
                 writeln!(out, "                }}),")?;
                 writeln!(
@@ -1933,27 +2221,36 @@ impl Emitter<'_> {
         )?;
         match form {
             Form::List => {
-                let element = self.list_element(payload)?;
-                if self.identity(&element)?.is_some() {
+                if let Some((_, foreign_name, TypeDefKind::List(_))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let module = self.foreign_type_module(&foreign_name)?;
                     writeln!(
                         out,
-                        "            ::core::result::Result::Ok(value.map(|value| value.values))"
+                        "            ::core::result::Result::Ok(value.map(|value| {module}::from_proto(value.values)).transpose()?)"
                     )?;
                 } else {
-                    writeln!(
-                        out,
-                        "            ::core::result::Result::Ok(value.map(|value| {{"
-                    )?;
-                    writeln!(
-                        out,
-                        "                value.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()",
-                        self.decode_singular("item", &element, &label)?
-                    )?;
-                    writeln!(out, "            }}).transpose()?)")?;
+                    let element = self.list_element(payload)?;
+                    if self.identity(&element)?.is_some() {
+                        writeln!(
+                            out,
+                            "            ::core::result::Result::Ok(value.map(|value| value.values))"
+                        )?;
+                    } else {
+                        writeln!(
+                            out,
+                            "            ::core::result::Result::Ok(value.map(|value| {{"
+                        )?;
+                        writeln!(
+                            out,
+                            "                value.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()",
+                            self.decode_singular("item", &element, &label)?
+                        )?;
+                        writeln!(out, "            }}).transpose()?)")?;
+                    }
                 }
             }
             Form::Option => {
-                let inner = self.option_payload(payload)?;
                 let oneof =
                     self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
                 writeln!(
@@ -1964,11 +2261,22 @@ impl Emitter<'_> {
                     out,
                     "                ::core::option::Option::Some({oneof}::None(_)) => ::core::result::Result::Ok(::core::option::Option::None),"
                 )?;
-                writeln!(
-                    out,
-                    "                ::core::option::Option::Some({oneof}::Some(value)) => ::core::result::Result::Ok(::core::option::Option::Some({})),",
-                    self.decode_singular("value", &inner, &label)?
-                )?;
+                if let Some((_, foreign_name, TypeDefKind::Option(_))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let module = self.foreign_type_module(&foreign_name)?;
+                    writeln!(
+                        out,
+                        "                ::core::option::Option::Some({oneof}::Some(value)) => {module}::from_proto(::core::option::Option::Some(value)),"
+                    )?;
+                } else {
+                    let inner = self.option_payload(payload)?;
+                    writeln!(
+                        out,
+                        "                ::core::option::Option::Some({oneof}::Some(value)) => ::core::result::Result::Ok(::core::option::Option::Some({})),",
+                        self.decode_singular("value", &inner, &label)?
+                    )?;
+                }
                 writeln!(
                     out,
                     "                ::core::option::Option::None => ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{label}\" }}),"
@@ -2415,26 +2723,29 @@ impl Emitter<'_> {
                             let target = qualify_type(Some(dependency), target);
                             return self.encode_singular(expr, &target);
                         }
-                        TypeDefKind::List(element) => {
-                            let element = qualify_type(Some(dependency), element);
+                        TypeDefKind::List(element)
+                            if self.model.resolves_to_u8_in(Some(dependency), element) =>
+                        {
+                            let module = self.foreign_type_module(name)?;
+                            return Ok(format!("{module}::to_proto({expr})"));
+                        }
+                        TypeDefKind::List(_) => {
                             let wrapper = self.foreign_proto_singular(name)?;
+                            let module = self.foreign_type_module(name)?;
                             return Ok(format!(
-                                "{wrapper} {{ values: {expr}.iter().map(|item| {}).collect() }}",
-                                self.encode_singular("item", &element)?
+                                "{wrapper} {{ values: {module}::to_proto({expr}) }}"
                             ));
                         }
-                        TypeDefKind::Option(payload) => {
-                            let proto_wrapper = format!(
-                                "WitforgeOptionOf{}",
-                                self.foreign_shape_name_ty(Some(dependency), payload)?
-                            );
-                            let payload = qualify_type(Some(dependency), payload);
+                        TypeDefKind::Option(_) => {
+                            let shape = self
+                                .foreign_shape_name_for_caller(None, dependency, name, &def.kind)?;
+                            let proto_wrapper = format!("Witforge{shape}");
                             let wrapper = self.proto_user_type_path(&proto_wrapper);
                             let oneof = self.proto_oneof(&proto_wrapper, "value");
                             let empty = self.proto_empty();
+                            let module = self.foreign_type_module(name)?;
                             return Ok(format!(
-                                "match {expr} {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some({})) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}",
-                                self.encode_singular("value", &payload)?
+                                "match {module}::to_proto({expr}) {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some(value)) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}"
                             ));
                         }
                         _ => {
@@ -2590,23 +2901,24 @@ impl Emitter<'_> {
                             let target = qualify_type(Some(dependency), target);
                             return self.decode_singular(expr, &target, identity);
                         }
-                        TypeDefKind::List(element) => {
-                            let element = qualify_type(Some(dependency), element);
-                            return Ok(format!(
-                                "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
-                                self.decode_singular("item", &element, identity)?
-                            ));
+                        TypeDefKind::List(element)
+                            if self.model.resolves_to_u8_in(Some(dependency), element) =>
+                        {
+                            let module = self.foreign_type_module(name)?;
+                            return Ok(format!("{module}::from_proto({expr})?"));
                         }
-                        TypeDefKind::Option(payload) => {
-                            let proto_wrapper = format!(
-                                "WitforgeOptionOf{}",
-                                self.foreign_shape_name_ty(Some(dependency), payload)?
-                            );
-                            let payload = qualify_type(Some(dependency), payload);
+                        TypeDefKind::List(_) => {
+                            let module = self.foreign_type_module(name)?;
+                            return Ok(format!("{module}::from_proto({expr}.values)?"));
+                        }
+                        TypeDefKind::Option(_) => {
+                            let shape = self
+                                .foreign_shape_name_for_caller(None, dependency, name, &def.kind)?;
+                            let proto_wrapper = format!("Witforge{shape}");
                             let oneof = self.proto_oneof(&proto_wrapper, "value");
+                            let module = self.foreign_type_module(name)?;
                             return Ok(format!(
-                                "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => ::core::option::Option::Some({}), ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}",
-                                self.decode_singular("value", &payload, identity)?
+                                "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => {module}::from_proto(::core::option::Option::Some(value))?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}"
                             ));
                         }
                         _ => {

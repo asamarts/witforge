@@ -47,6 +47,12 @@ have it.
   and functions whose fields collide on a `prost-derive` 0.14 generated accessor (such as
   `mode: my-enum` beside `set-mode: bool` sharing `set_mode`, or `modes: list<my-enum>` beside
   `push-modes: bool` sharing `push_modes`).
+- Dependency structural aliases (`list<list<...>>`, `option<list<...>>`, `option<option<...>>`,
+  named and inline `result`, transitive dependency aliases, and byte-list aliases including
+  aliases through `u8`) now define each wrapper in the proto package whose WIT source writes the
+  shape, reference dependency wrappers cross-package with the matching `import` and prost path in
+  both root and dependency glue, and project foreign byte-list aliases to `bytes` / `Vec<u8>` in
+  every field, list, option, result, variant, parameter, and function-result position.
 - `glue` now runs the protobuf emitter's full validation for the root and every dependency so
   `glue` refuses every contract `proto` refuses (including collisions inside a dependency) with
   the same diagnostic and exit `1`. Unset option wrappers now return `GlueError::InvalidState`

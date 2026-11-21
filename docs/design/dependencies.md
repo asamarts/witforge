@@ -74,7 +74,14 @@ may use a type from another package under the same `deps/` directory; that impor
 from the dependency's schema as well. Alias, list, option, and result shapes resolve through
 their dependency definitions, so a foreign alias maps to its underlying message or scalar
 rather than to a non-existent alias message. A foreign enum field keeps the same proto3
-presence as a local enum field.
+presence as a local enum field. Wrapper messages belong to the package whose WIT source writes
+the structural shape: a wrapper reached through a dependency's named `list`, `option`, or
+`result` type lives in that dependency's `.proto` package (and is referenced cross-package by
+the root and other dependents, with an `import` line), while a structural shape written in the
+root lives in the root's `.proto` package even when its element type is foreign. A dependency's
+`.proto` file and glue surface are therefore a function of the dependency alone, and a
+dependency byte-list alias (including through an alias of `u8`) projects directly to `bytes` /
+`Vec<u8>` in every direct and singular position.
 
 Dependency packages are generated on a best-effort basis: supported types and functions are
 included, and unsupported unexposed items are skipped. A local `use` makes the referenced type
