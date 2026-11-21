@@ -780,12 +780,13 @@ fn guard_output_root(paths: &ResolvedPaths) -> Result<()> {
     // to be valid. The output root must stay outside both the WIT root and every released
     // directory before any file is inspected or created.
     let manifest = load_root_released_manifest(&paths.root, paths.released.as_deref())?;
-    let manifest_dir = paths
-        .released
-        .as_deref()
-        .and_then(Path::parent)
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(&paths.root);
+    let manifest_dir = match paths.released.as_deref() {
+        Some(path) => path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+        None => &paths.root,
+    };
     emit::output::ensure_outside_wit_root(&paths.root, &paths.out)?;
     emit::output::ensure_outside_released(manifest_dir, &manifest, &paths.out)
 }

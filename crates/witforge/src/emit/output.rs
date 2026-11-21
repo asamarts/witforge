@@ -117,10 +117,7 @@ impl GeneratedFiles {
         if out.exists() {
             let expected: std::collections::BTreeSet<&str> =
                 self.files.keys().map(String::as_str).collect();
-            for entry in fs::read_dir(out)
-                .with_context(|| format!("failed to read output root {}", out.display()))?
-            {
-                let entry = entry?;
+            for entry in sorted_output_entries(out)? {
                 if !entry.file_type()?.is_file() {
                     continue;
                 }
@@ -206,10 +203,7 @@ impl GeneratedFiles {
             bail!("output root {} does not exist", out.display());
         }
         let mut extra = Vec::new();
-        for entry in fs::read_dir(out)
-            .with_context(|| format!("failed to read output root {}", out.display()))?
-        {
-            let entry = entry?;
+        for entry in sorted_output_entries(out)? {
             if !entry.file_type()?.is_file() {
                 continue;
             }
@@ -303,6 +297,21 @@ impl GeneratedFiles {
         }
         Ok(classify_header_line(&self.header, line))
     }
+}
+
+fn sorted_output_entries(out: &Path) -> Result<Vec<fs::DirEntry>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(out)
+        .with_context(|| format!("failed to read output root {}", out.display()))?
+    {
+        entries.push(entry?);
+    }
+    entries.sort_by(|left, right| {
+        left.file_name()
+            .as_encoded_bytes()
+            .cmp(right.file_name().as_encoded_bytes())
+    });
+    Ok(entries)
 }
 
 fn classify_header_line(expected_header: &str, line: &[u8]) -> HeaderKind {
@@ -542,6 +551,9 @@ fn paths_overlap_ascii_case_insensitive(left: &Path, right: &Path) -> bool {
 }
 
 fn resolve_components(original: &Path, path: &Path, depth: usize) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        bail!("output root must not be empty");
+    }
     if depth > MAX_SYMLINK_DEPTH {
         bail!(
             "failed to resolve {}: too many levels of symbolic links",
@@ -741,5 +753,31 @@ mod tests {
             Path::new("/tmp/gen-rust"),
             Path::new("/tmp/gen-proto")
         ));
+        assert!(resolve_output_root(Path::new("")).is_err());
+    }
+
+    #[test]
+    fn foreign_header_scan_reports_lexicographically_first_entry() {
+        let out = std::env::temp_dir().join(format!(
+            "witforge-output-foreign-order-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(&out).unwrap();
+        let foreign = comment_header("glue", "ex", "a");
+        fs::write(out.join("z.rs"), format!("{foreign}\n")).unwrap();
+        fs::write(out.join("a.rs"), format!("{foreign}\n")).unwrap();
+
+        let mut files = GeneratedFiles::new(comment_header("rust", "ex", "a"));
+        files
+            .insert("mod.rs", format!("{}\n", comment_header("rust", "ex", "a")))
+            .unwrap();
+
+        let write_err = format!("{:#}", files.write(&out).unwrap_err());
+        assert!(write_err.contains("a.rs"), "{write_err}");
+        let check_err = format!("{:#}", files.check(&out).unwrap_err());
+        assert!(check_err.contains("a.rs"), "{check_err}");
+
+        fs::remove_dir_all(&out).unwrap();
     }
 }

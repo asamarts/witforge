@@ -3038,6 +3038,28 @@ fn output_root_guard_protects_released_directories() {
     assert!(!archive.join("v0.1/nested").exists());
     assert!(!archive.join("mod.rs").exists());
     assert!(!base.join("missing").exists());
+
+    // A bare `--released released` filename resolves its listed directories relative to cwd, not
+    // the WIT root.
+    let bare_released = witforge()
+        .current_dir(&archive)
+        .args([
+            "rust",
+            wit.to_str().unwrap(),
+            "--out",
+            "v0.1",
+            "--released",
+            "released",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bare_released.status.code(), Some(2), "{bare_released:?}");
+    assert!(
+        String::from_utf8_lossy(&bare_released.stderr).contains("released directory"),
+        "{bare_released:?}"
+    );
+    assert!(!archive.join("v0.1/mod.rs").exists());
+
     fs::remove_dir_all(&base).unwrap();
 }
 
