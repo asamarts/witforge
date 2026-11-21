@@ -3,24 +3,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use witforge::emit::{glue, proto, rust};
+use witforge::emit::{glue, proto};
 use witforge::load;
 use witforge::model;
 
 mod support;
-use support::run_cargo_program;
+use support::compile_and_run_wit_root;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-world/wit")
 }
 
-fn generated_file(dir: &Path, name: &str) -> PathBuf {
-    let path = dir.join(name);
-    assert!(path.is_file(), "missing generated `{}`", path.display());
-    path
-}
-
-#[allow(clippy::too_many_lines, clippy::format_push_string)]
 #[test]
 fn dependency_glue_roundtrips_a_foreign_value() {
     let root = fixture();
@@ -30,71 +23,13 @@ fn dependency_glue_roundtrips_a_foreign_value() {
         model.worlds[0].imports[0].qualified_name(),
         "example:shared/types"
     );
-    let out = std::env::temp_dir().join(format!("witforge-deps-glue-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&out);
-    fs::create_dir_all(out.join("proto/example/app")).unwrap();
-    fs::create_dir_all(out.join("proto/example/shared")).unwrap();
-    fs::create_dir_all(out.join("proto/example/other")).unwrap();
-
-    rust::plan(&root)
-        .unwrap()
-        .write(&out.join("plain"))
-        .unwrap();
     let glue_files = glue::plan(&root, "crate::plain", "crate::proto").unwrap();
-    glue_files.write(&out.join("glue")).unwrap();
-    let drift = glue_files.check(&out.join("glue")).unwrap();
-    assert_eq!(drift, Vec::<String>::new());
     assert!(glue_files.files().contains_key("witforge_deps.rs"));
-    proto::plan(&root)
-        .unwrap()
-        .write(&out.join("proto-work"))
-        .unwrap();
 
-    let proto_files = [
-        out.join("proto-work/v0.proto"),
-        out.join("proto-work/example.shared.v0.proto"),
-        out.join("proto-work/example.other.v0.proto"),
-    ];
-    let descriptors = protox::compile(proto_files, [out.join("proto-work")]).unwrap();
-    let generated = out.join("proto-generated");
-    fs::create_dir_all(&generated).unwrap();
-    prost_build::Config::new()
-        .out_dir(&generated)
-        .compile_fds(descriptors)
-        .unwrap();
-
-    fs::copy(
-        generated_file(&generated, "example.app.v0.rs"),
-        out.join("proto/example/app/v0.rs"),
-    )
-    .unwrap();
-    fs::copy(
-        generated_file(&generated, "example.shared.v0.rs"),
-        out.join("proto/example/shared/v0.rs"),
-    )
-    .unwrap();
-    fs::copy(
-        generated_file(&generated, "example.other.v0.rs"),
-        out.join("proto/example/other/v0.rs"),
-    )
-    .unwrap();
-    fs::write(
-        out.join("proto/mod.rs"),
-        "pub mod example {\n\
-         pub mod app { pub mod v0 { include!(\"example/app/v0.rs\"); } }\n\
-         pub mod other { pub mod v0 { include!(\"example/other/v0.rs\"); } }\n\
-         pub mod shared { pub mod v0 { include!(\"example/shared/v0.rs\"); } }\n\
-         }\n",
-    )
-    .unwrap();
-
-    let mut main = String::new();
-    main.push_str(&format!(
-        "#[path = {:?}] mod plain;\n#[path = {:?}] mod glue;\nmod proto;\n\n",
-        out.join("plain/mod.rs"),
-        out.join("glue/mod.rs")
-    ));
-    main.push_str(
+    compile_and_run_wit_root(
+        "deps-glue",
+        &root,
+        false,
         r"
 fn main() {
     let value = plain::v0_1::api::Box {
@@ -128,11 +63,8 @@ fn main() {
     assert_eq!(many, decoded);
 }
 ",
+        "dependency glue compile/run",
     );
-    fs::write(out.join("main.rs"), main).unwrap();
-
-    run_cargo_program(&out, "prost = \"0.14\"\n", "dependency glue compile/run");
-    fs::remove_dir_all(&out).unwrap();
 }
 
 #[test]

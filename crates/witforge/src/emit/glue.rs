@@ -1876,9 +1876,18 @@ fn emit_module_call(
     let tmp = temps.fresh();
     let pad = " ".repeat(indent);
     let inner = " ".repeat(indent + 4);
-    stmts.push(format!(
-        "{pad}let {tmp} = {{\n{inner}use {module} as target;\n{inner}target::{func}({arg}){q}\n{pad}}};"
-    ));
+    let call = format!("target::{func}({arg}){q}");
+    if indent + 4 + call.len() <= rustfmt::MAX_WIDTH {
+        stmts.push(format!(
+            "{pad}let {tmp} = {{\n{inner}use {module} as target;\n{inner}{call}\n{pad}}};"
+        ));
+    } else {
+        let arg_var = temps.fresh();
+        let let_arg = rustfmt::fmt_let_stmt(indent + 4, &arg_var, arg);
+        stmts.push(format!(
+            "{pad}let {tmp} = {{\n{inner}use {module} as target;\n{let_arg}\n{inner}target::{func}({arg_var}){q}\n{pad}}};"
+        ));
+    }
     tmp
 }
 
@@ -3251,6 +3260,9 @@ impl Emitter<'_> {
             out,
             "{item_pad}/// Encode request parameters for `{function_label}`."
         )?;
+        if args.len() > 7 {
+            writeln!(out, "{item_pad}#[allow(clippy::too_many_arguments)]")?;
+        }
         writeln!(
             out,
             "{}",
@@ -4500,28 +4512,36 @@ impl Emitter<'_> {
         let arm_indent = inner_indent + 4;
         let arm_body_indent = arm_indent + 4;
 
-        let mut arm_stmts = Vec::new();
-        let decoded = emit_module_call(
-            &mut arm_stmts,
-            arm_body_indent,
-            temps,
-            module,
-            "from_proto",
-            &format!("::core::option::Option::Some({sub_var})"),
-            true,
-        );
+        let wrapped_arg = format!("::core::option::Option::Some({sub_var})");
+        let direct = format!("{module}::from_proto({wrapped_arg})?");
+        let some_pat = format!("Case::Some({sub_var})");
+        let (arm_stmts, decoded) =
+            if arm_indent + some_pat.len() + 4 + direct.len() < rustfmt::MAX_WIDTH {
+                (Vec::new(), direct)
+            } else {
+                let body_pad = " ".repeat(arm_body_indent);
+                let mut stmts_in_arm = vec![format!("{body_pad}use {module} as target;")];
+                let short_call = format!("target::from_proto({wrapped_arg})?");
+                let tail = if arm_body_indent + short_call.len() <= rustfmt::MAX_WIDTH {
+                    short_call
+                } else {
+                    let arg_var = temps.fresh();
+                    stmts_in_arm.push(rustfmt::fmt_let_stmt(
+                        arm_body_indent,
+                        &arg_var,
+                        &wrapped_arg,
+                    ));
+                    format!("target::from_proto({arg_var})?")
+                };
+                (stmts_in_arm, tail)
+            };
         let none_arm = rustfmt::fmt_match_arm(
             arm_indent,
             "Case::None(_)",
             &[],
             "::core::option::Option::None",
         );
-        let some_arm = rustfmt::fmt_match_arm(
-            arm_indent,
-            &format!("Case::Some({sub_var})"),
-            &arm_stmts,
-            &decoded,
-        );
+        let some_arm = rustfmt::fmt_match_arm(arm_indent, &some_pat, &arm_stmts, &decoded);
         let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
         stmts.push(format!(
             "{pad}let {out_var} = {{\n\

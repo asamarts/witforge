@@ -975,11 +975,8 @@ pub mod types {
                         match v0 {
                             Case::None(_) => ::core::option::Option::None,
                             Case::Some(v2) => {
-                                let v3 = {
-                                    use super::super::types::maybe_string as target;
-                                    target::from_proto(::core::option::Option::Some(v2))?
-                                };
-                                v3
+                                use super::super::types::maybe_string as target;
+                                target::from_proto(::core::option::Option::Some(v2))?
                             }
                         }
                     };
@@ -996,11 +993,8 @@ pub mod types {
                         match v0 {
                             Case::None(_) => ::core::option::Option::None,
                             Case::Some(v2) => {
-                                let v3 = {
-                                    use super::super::types::maybe_small as target;
-                                    target::from_proto(::core::option::Option::Some(v2))?
-                                };
-                                v3
+                                use super::super::types::maybe_small as target;
+                                target::from_proto(::core::option::Option::Some(v2))?
                             }
                         }
                     };
@@ -1017,11 +1011,8 @@ pub mod types {
                         match v0 {
                             Case::None(_) => ::core::option::Option::None,
                             Case::Some(v2) => {
-                                let v3 = {
-                                    use super::super::types::maybe_list as target;
-                                    target::from_proto(::core::option::Option::Some(v2))?
-                                };
-                                v3
+                                use super::super::types::maybe_list as target;
+                                target::from_proto(::core::option::Option::Some(v2))?
                             }
                         }
                     };
@@ -1038,11 +1029,8 @@ pub mod types {
                         match v0 {
                             Case::None(_) => ::core::option::Option::None,
                             Case::Some(v2) => {
-                                let v3 = {
-                                    use super::super::types::maybe_maybe as target;
-                                    target::from_proto(::core::option::Option::Some(v2))?
-                                };
-                                v3
+                                use super::super::types::maybe_maybe as target;
+                                target::from_proto(::core::option::Option::Some(v2))?
                             }
                         }
                     };

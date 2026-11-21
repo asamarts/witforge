@@ -36,12 +36,18 @@ consume it. Paths are relative to `crates/witforge/tests/`.
   member kinds, and every emitter against `fixtures/model/all.wit`.
 - The golden and compile tests named in [`emitters.md`](emitters.md) run every emitter against
   the mapping fixtures.
-- Generated output is checked by `ci/check-generated.sh`, and release directories by
+- Generated output is checked by `ci/check-generated.sh` (which also compiles and round-trips
+  the committed `examples/single` and `examples/evolved` outputs), and release directories by
   `ci/check-release-freeze.sh`.
 - CI runs the suite on Linux, macOS, and Windows; MSRV is tested at 1.88.
 - The 1.0 compatibility gate runs `ci/check-buf-history.sh` with buf 1.74: every fixture WIT
   root against every released generator at which the fixture exists. The historical release
   binary generates the old side; the candidate binary generates the new side. CI exposes the
   check through workflow dispatch, and the tag release workflow runs it before publication.
-- 1.0 also requires the `prost` compile-and-round-trip matrix and compiled example output
-  (`W10-068`) to run in CI under `ci ok` (see [`release-1.0.md`](release-1.0.md)).
+- `crates/witforge/tests/compile_matrix.rs` (backed by the shared compile-and-round-trip harness
+  in `crates/witforge/tests/support/mod.rs`, described in [`quality.md`](quality.md)) runs the
+  name matrix, shape matrix, fixed-seed property sample, and committed `examples/*` outputs
+  through `prost-build` 0.14 + `pbjson-build` 0.9, `rustfmt`/`cargo fmt --check`,
+  `cargo clippy -D warnings`, `-D missing_docs`, `cargo doc -D warnings`, `cargo test --doc`,
+  and binary/JSON round-trips in both Edition 2021 and Edition 2024 under CI's `test`, `msrv`,
+  and `generated` jobs (`W10-068`; see [`release-1.0.md`](release-1.0.md)).

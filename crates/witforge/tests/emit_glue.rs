@@ -3,14 +3,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use prost::Message as _;
 use witforge::emit::{glue, proto, rust};
 use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model;
 
 mod support;
-use support::run_cargo_program;
+use support::{
+    ScratchDir, compile_and_run_wit_root, compile_proto_module, run_cargo_program,
+    stage_single_version_root,
+};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -107,158 +109,34 @@ fn glue_output_matches_golden() {
     assert!(version.ends_with('\n'), "glue output has no final newline");
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn conversions_compile_and_run_against_generated_types() {
     let root = fixture("emit/glue/contract");
-    let (model, lock) = setup_contract(&root);
-    let version = format!(
-        "v{}_{}",
-        model.package.version.major, model.package.version.minor
-    );
-    let major = model.package.version.major;
-    let out = std::env::temp_dir().join(format!("witforge-glue-run-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&out);
-    fs::create_dir_all(out.join("plain")).unwrap();
-    fs::create_dir_all(out.join("proto")).unwrap();
-    fs::create_dir_all(out.join("glue")).unwrap();
-    fs::create_dir_all(out.join("proto-work")).unwrap();
-
-    fs::write(out.join("plain/mod.rs"), format!("pub mod {version};\n")).unwrap();
-    fs::write(
-        out.join(format!("plain/{version}.rs")),
-        rust::emit_version(&model).unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        out.join("proto/mod.rs"),
-        format!(
-            "pub mod v{major} {{\n    include!(\"v{major}.rs\");\n    include!(\"v{major}.serde.rs\");\n}}\n"
-        ),
-    )
-    .unwrap();
-
-    let schema = proto::emit_major(&model, &lock).unwrap();
-    let proto_path = out.join("proto-work/schema.proto");
-    fs::write(&proto_path, schema).unwrap();
-    let descriptors = protox::compile([&proto_path], [out.join("proto-work")]).unwrap();
-    let encoded_descriptors = descriptors.encode_to_vec();
-    let prost_out = out.join("proto-work/out");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .compile_fds(descriptors)
-        .unwrap();
-    let generated = fs::read_dir(&prost_out)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .expect("prost generated a Rust file");
-    fs::copy(generated, out.join(format!("proto/v{major}.rs"))).unwrap();
-
-    let pbjson_out = out.join("proto-work/pbjson");
-    fs::create_dir_all(&pbjson_out).unwrap();
-    pbjson_build::Builder::new()
-        .out_dir(&pbjson_out)
-        .register_descriptors(&encoded_descriptors)
-        .unwrap()
-        .build(&[".example.glue.v0"])
-        .unwrap();
-    let pbjson_generated = fs::read_dir(&pbjson_out)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .expect("pbjson generated a Rust file");
-    fs::copy(
-        pbjson_generated,
-        out.join(format!("proto/v{major}.serde.rs")),
-    )
-    .unwrap();
-
-    fs::write(
-        out.join("glue/mod.rs"),
-        glue::emit_root(&model, &[major]).unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        out.join(format!("glue/v{major}.rs")),
-        glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap(),
-    )
-    .unwrap();
-    let mut main = String::from("mod glue;\nmod plain;\nmod proto;\n\n");
-    main.push_str(&fs::read_to_string(root.join("main.rs")).unwrap());
-    fs::write(out.join("main.rs"), main).unwrap();
-
-    run_cargo_program(
-        &out,
-        "prost = \"0.14\"\npbjson = \"0.9\"\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n",
+    let scratch = ScratchDir::new("glue-conv");
+    let wit_root = scratch.path().join("wit");
+    stage_single_version_root(&root, &wit_root);
+    let main_body = fs::read_to_string(root.join("main.rs")).unwrap();
+    compile_and_run_wit_root(
+        "glue-run",
+        &wit_root,
+        true,
+        &main_body,
         "generated glue compile/run",
     );
-    fs::remove_dir_all(&out).unwrap();
+    scratch.finish();
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn byte_list_aliases_compile_and_roundtrip() {
     let root = fixture("emit/bytes");
-    let (model, lock) = setup_contract(&root);
-    let version = format!(
-        "v{}_{}",
-        model.package.version.major, model.package.version.minor
-    );
-    let major = model.package.version.major;
-    let out = std::env::temp_dir().join(format!("witforge-glue-bytes-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&out);
-    fs::create_dir_all(out.join("plain")).unwrap();
-    fs::create_dir_all(out.join("proto")).unwrap();
-    fs::create_dir_all(out.join("glue")).unwrap();
-    fs::create_dir_all(out.join("proto-work")).unwrap();
-
-    fs::write(out.join("plain/mod.rs"), format!("pub mod {version};\n")).unwrap();
-    fs::write(
-        out.join(format!("plain/{version}.rs")),
-        rust::emit_version(&model).unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        out.join("proto/mod.rs"),
-        format!("pub mod v{major} {{ include!(\"v{major}.rs\"); }}\n"),
-    )
-    .unwrap();
-    let schema = proto::emit_major(&model, &lock).unwrap();
-    let proto_path = out.join("proto-work/schema.proto");
-    fs::write(&proto_path, schema).unwrap();
-    let descriptors = protox::compile([&proto_path], [out.join("proto-work")]).unwrap();
-    let prost_out = out.join("proto-work/out");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .compile_fds(descriptors)
-        .unwrap();
-    let generated = fs::read_dir(&prost_out)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .expect("prost generated a Rust file");
-    fs::copy(generated, out.join(format!("proto/v{major}.rs"))).unwrap();
-
-    fs::write(
-        out.join("glue/mod.rs"),
-        glue::emit_root(&model, &[major]).unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        out.join(format!("glue/v{major}.rs")),
-        glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        out.join("main.rs"),
+    let scratch = ScratchDir::new("glue-bytes");
+    let wit_root = scratch.path().join("wit");
+    stage_single_version_root(&root, &wit_root);
+    compile_and_run_wit_root(
+        "glue-bytes-run",
+        &wit_root,
+        false,
         r"
-mod glue;
-mod plain;
-mod proto;
-
 fn main() {
     use plain::v0_1::types::{All, Choice};
 
@@ -290,11 +168,9 @@ fn main() {
     assert_eq!(round, vec![nested]);
 }
 ",
-    )
-    .unwrap();
-
-    run_cargo_program(&out, "prost = \"0.14\"\n", "byte-list glue compile/run");
-    fs::remove_dir_all(&out).unwrap();
+        "byte-list glue compile/run",
+    );
+    scratch.finish();
 }
 
 #[test]
@@ -438,30 +314,18 @@ fn absolute_module_roots_compile_with_crate_global_and_extern_paths() {
         .unwrap()
         .write(&out.join("proto-work"))
         .unwrap();
-    let descriptors =
-        protox::compile([out.join("proto-work/v0.proto")], [out.join("proto-work")]).unwrap();
-    let prost_out = out.join("proto-work/out");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .compile_fds(descriptors)
-        .unwrap();
-    let generated = fs::read_dir(&prost_out)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .expect("prost generated a Rust file");
-    fs::copy(generated, out.join("proto_crate/src/v0.rs")).unwrap();
+    compile_proto_module(
+        &out.join("proto-work"),
+        &out.join("proto_crate/src/wire"),
+        false,
+        false,
+    );
     fs::write(
         out.join("proto_crate/Cargo.toml"),
         "[package]\nname = \"ext_proto\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nprost = \"0.14\"\n",
     )
     .unwrap();
-    fs::write(
-        out.join("proto_crate/src/lib.rs"),
-        "pub mod wire { pub mod v0 { include!(\"v0.rs\"); } }\n",
-    )
-    .unwrap();
+    fs::write(out.join("proto_crate/src/lib.rs"), "pub mod wire;\n").unwrap();
 
     glue::plan(&root, "::ext_plain::generated", "ext_proto::wire")
         .unwrap()
@@ -641,46 +505,11 @@ interface types {\n\
     let (_, lock) = setup_contract(&v01);
     fs::write(v01.join("wire.lock"), lock.render()).unwrap();
 
-    rust::plan(&wit_root)
-        .unwrap()
-        .write(&out.join("plain"))
-        .unwrap();
-    glue::plan(&wit_root, "crate::plain", "crate::proto")
-        .unwrap()
-        .write(&out.join("glue"))
-        .unwrap();
-    proto::plan(&wit_root)
-        .unwrap()
-        .write(&out.join("proto-work"))
-        .unwrap();
-
-    let descriptors =
-        protox::compile([out.join("proto-work/v0.proto")], [out.join("proto-work")]).unwrap();
-    let prost_out = out.join("proto-work/out");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .compile_fds(descriptors)
-        .unwrap();
-    let generated = fs::read_dir(&prost_out)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .expect("prost generated a Rust file");
-    fs::create_dir_all(out.join("proto")).unwrap();
-    fs::copy(generated, out.join("proto/v0.rs")).unwrap();
-    fs::write(
-        out.join("proto/mod.rs"),
-        "pub mod v0 { include!(\"v0.rs\"); }\n",
-    )
-    .unwrap();
-    fs::write(
-        out.join("main.rs"),
+    compile_and_run_wit_root(
+        "glue-unreferenced",
+        &wit_root,
+        false,
         r#"
-mod glue;
-mod plain;
-mod proto;
-
 fn main() {
     let matrix = vec![vec!["a".to_string(), "b".to_string()], vec![]];
     let p = glue::v0::types::matrix::to_proto(&matrix);
@@ -719,11 +548,6 @@ fn main() {
     assert_eq!(glue::v0::types::nested_result::from_proto(p).unwrap(), err_res);
 }
 "#,
-    )
-    .unwrap();
-    run_cargo_program(
-        &out,
-        "prost = \"0.14\"\n",
         "unreferenced named structural types glue compile/run",
     );
 
@@ -849,45 +673,12 @@ interface HTTP-api {\n\
         String::from_utf8_lossy(&plain_check.stderr)
     );
 
-    // Compile `.proto` with protox + prost-build (default naming).
-    let proto_files = [
-        out.join("proto-work/v0.proto"),
-        out.join("proto-work/ex.API.v0.proto"),
-    ];
-    let descriptors = protox::compile(proto_files, [out.join("proto-work")]).unwrap();
-    let prost_out = out.join("proto-work/out");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .compile_fds(descriptors)
-        .unwrap();
-
-    fs::create_dir_all(out.join("proto/example/idents")).unwrap();
-    fs::create_dir_all(out.join("proto/ex/api")).unwrap();
-    fs::copy(
-        prost_out.join("example.idents.v0.rs"),
-        out.join("proto/example/idents/v0.rs"),
-    )
-    .unwrap();
-    fs::copy(
-        prost_out.join("ex.api.v0.rs"),
-        out.join("proto/ex/api/v0.rs"),
-    )
-    .unwrap();
-    fs::write(
-        out.join("proto/mod.rs"),
-        "pub mod example { pub mod idents { pub mod v0 { include!(\"example/idents/v0.rs\"); } } }\n\
-         pub mod ex { pub mod api { pub mod v0 { include!(\"ex/api/v0.rs\"); } } }\n",
-    )
-    .unwrap();
-
-    fs::write(
-        out.join("main.rs"),
+    // Compile and round-trip against prost via the shared harness.
+    compile_and_run_wit_root(
+        "glue-idents",
+        &wit_root,
+        false,
         r#"
-mod glue;
-mod plain;
-mod proto;
-
 fn main() {
     use plain::v0_1::{api, http_api, types};
     use plain::witforge_deps::ex_api::x::{HttpCode, YZ};
@@ -954,11 +745,6 @@ fn main() {
     );
 }
 "#,
-    )
-    .unwrap();
-    run_cargo_program(
-        &out,
-        "prost = \"0.14\"\n",
         "unified ident conversion glue compile/run",
     );
 
@@ -1196,38 +982,6 @@ interface types {{\n\
     let (_, lock) = setup_contract(&v01);
     fs::write(v01.join("wire.lock"), lock.render()).unwrap();
 
-    rust::plan(&wit_root)
-        .unwrap()
-        .write(&out.join("plain"))
-        .unwrap();
-    glue::plan(&wit_root, "crate::plain", "crate::proto")
-        .unwrap()
-        .write(&out.join("glue"))
-        .unwrap();
-    proto::plan(&wit_root)
-        .unwrap()
-        .write(&out.join("proto-work"))
-        .unwrap();
-
-    // Compile all `.proto` files with `protox` + `prost-build` and let `prost-build` generate
-    // `proto/mod.rs` itself so every keyword package segment is proven against prost's own tree.
-    let proto_files = [
-        out.join("proto-work/v0.proto"),
-        out.join("proto-work/example.gen.v0.proto"),
-        out.join("proto-work/example.extern.v0.proto"),
-        out.join("proto-work/example.type.v0.proto"),
-        out.join("proto-work/self.super.v0.proto"),
-        out.join("proto-work/crate.union.v0.proto"),
-    ];
-    let descriptors = protox::compile(proto_files, [out.join("proto-work")]).unwrap();
-    let prost_out = out.join("proto");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .include_file("mod.rs")
-        .compile_fds(descriptors)
-        .unwrap();
-
     // Build field literals for `AllKeywords` and `AllFlagKeywords` using plain Rust escaping.
     let plain_escape = |kw: &str| match kw {
         "crate" | "self" | "super" | "Self" => format!("{kw}_"),
@@ -1252,14 +1006,8 @@ interface types {{\n\
         .collect::<Vec<_>>()
         .join("\n");
 
-    fs::write(
-        out.join("main.rs"),
-        format!(
-            r#"
-mod glue;
-mod plain;
-mod proto;
-
+    let main_body = format!(
+        r#"
 fn main() {{
     use plain::v0_1::types;
     use plain::witforge_deps::{{
@@ -1330,13 +1078,13 @@ fn main() {{
     );
 }}
 "#
-        ),
-    )
-    .unwrap();
+    );
 
-    run_cargo_program(
-        &out,
-        "prost = \"0.14\"\n",
+    compile_and_run_wit_root(
+        "glue-kw",
+        &wit_root,
+        false,
+        &main_body,
         "prost keyword escaping and keyword dependency path glue compile/run",
     );
 
@@ -1618,54 +1366,13 @@ interface types {\n\
         );
     }
 
-    plain_files.write(&out.join("plain")).unwrap();
-    proto_files_plan.write(&out.join("proto-work")).unwrap();
-    glue_files.write(&out.join("glue")).unwrap();
-
-    // Compile `.proto` with prost-build AND pbjson-build so we also test proto3 JSON `null` vs
-    // absent vs `{}` (unset wrapper oneof).
-    let descriptors = protox::compile(
-        [
-            out.join("proto-work/v0.proto"),
-            out.join("proto-work/example.dep.v0.proto"),
-        ],
-        [out.join("proto-work")],
-    )
-    .unwrap();
-    let descriptor_bytes = prost::Message::encode_to_vec(&descriptors);
-    let prost_out = out.join("proto");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .include_file("mod.rs")
-        .compile_fds(descriptors)
-        .unwrap();
-    pbjson_build::Builder::new()
-        .register_descriptors(&descriptor_bytes)
-        .unwrap()
-        .out_dir(&prost_out)
-        .build(&[".example"])
-        .unwrap();
-    // Include the generated serde impls inside each prost module.
-    let mod_rs = fs::read_to_string(prost_out.join("mod.rs")).unwrap();
-    let patched_mod = mod_rs
-        .replace(
-            "include!(\"example.wrappers.v0.rs\");",
-            "include!(\"example.wrappers.v0.rs\");\ninclude!(\"example.wrappers.v0.serde.rs\");",
-        )
-        .replace(
-            "include!(\"example.dep.v0.rs\");",
-            "include!(\"example.dep.v0.rs\");\ninclude!(\"example.dep.v0.serde.rs\");",
-        );
-    fs::write(prost_out.join("mod.rs"), patched_mod).unwrap();
-
-    fs::write(
-        out.join("main.rs"),
+    // Compile `.proto` with prost-build AND pbjson-build via the shared harness so we also test
+    // proto3 JSON `null` vs absent vs `{}` (unset wrapper oneof).
+    compile_and_run_wit_root(
+        "glue-unset",
+        &wit_root,
+        true,
         r##"
-mod glue;
-mod plain;
-mod proto;
-
 use glue::GlueError;
 use proto::example::wrappers::v0 as p;
 
@@ -1888,12 +1595,6 @@ fn main() {
     );
 }
 "##,
-    )
-    .unwrap();
-
-    run_cargo_program(
-        &out,
-        "pbjson = \"0.9\"\nprost = \"0.14\"\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n",
         "unset option wrapper and proto3 JSON glue compile/run",
     );
 

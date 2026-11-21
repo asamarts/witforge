@@ -549,6 +549,9 @@ fn emit_type_def(
         }
         TypeDefKind::Variant(cases) => {
             write_derives(out, indent, serde)?;
+            if has_large_variant_disparity(model, cases) {
+                writeln!(out, "{prefix}#[allow(clippy::large_enum_variant)]")?;
+            }
             if cases.is_empty() {
                 writeln!(out, "{prefix}pub enum {name} {{}}")?;
                 return Ok(());
@@ -735,6 +738,17 @@ fn emit_trait(
             .as_ref()
             .map(|result| map_type(model, &interface.name, result, foreign_base))
             .transpose()?;
+        let method_prefix = " ".repeat(indent + 4);
+        if params.len() > 7 {
+            writeln!(out, "{method_prefix}#[allow(clippy::too_many_arguments)]")?;
+        }
+        if function
+            .result
+            .as_ref()
+            .is_some_and(|result| resolves_to_unit_err_result(model, result))
+        {
+            writeln!(out, "{method_prefix}#[allow(clippy::result_unit_err)]")?;
+        }
         writeln!(
             out,
             "{}",
@@ -749,6 +763,113 @@ fn emit_trait(
     }
     writeln!(out, "{prefix}}}")?;
     Ok(())
+}
+
+fn resolves_to_unit_err_result(model: &Model, ty: &TypeExpr) -> bool {
+    let mut current = ty;
+    for _ in 0..=crate::model::MAX_ALIAS_CHAIN {
+        match current {
+            TypeExpr::Result(result) => return result.err.is_none(),
+            TypeExpr::Named(name) => {
+                let Some(def) = model.type_def(name) else {
+                    return false;
+                };
+                match &def.kind {
+                    TypeDefKind::Result(result) => return result.err.is_none(),
+                    TypeDefKind::Alias(target) => current = target,
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Conservative 64-bit size estimate for `clippy::large_enum_variant` (default threshold 200 bytes).
+/// Emits `#[allow(clippy::large_enum_variant)]` only when a variant's largest and second-largest
+/// cases differ by at least 160 estimated bytes.
+fn has_large_variant_disparity(model: &Model, cases: &[crate::model::Case]) -> bool {
+    if cases.len() < 2 {
+        return false;
+    }
+    let mut sizes: Vec<usize> = cases
+        .iter()
+        .map(|case| {
+            case.payload
+                .as_ref()
+                .map_or(0, |ty| estimate_type_size(model, ty, 0))
+        })
+        .collect();
+    sizes.sort_unstable();
+    let largest = sizes[sizes.len() - 1];
+    let second = sizes[sizes.len() - 2];
+    largest.saturating_sub(second) >= 160
+}
+
+fn estimate_type_size(model: &Model, ty: &TypeExpr, depth: usize) -> usize {
+    if depth > crate::model::MAX_TYPE_NESTING {
+        return 24;
+    }
+    match ty {
+        TypeExpr::Bool | TypeExpr::U8 | TypeExpr::S8 => 1,
+        TypeExpr::U16 | TypeExpr::S16 => 2,
+        TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 => 4,
+        TypeExpr::U64 | TypeExpr::S64 | TypeExpr::F64 => 8,
+        TypeExpr::String | TypeExpr::List(_) => 24,
+        TypeExpr::Option(inner) => estimate_type_size(model, inner, depth + 1).saturating_add(8),
+        TypeExpr::Result(result) => {
+            let ok = result
+                .ok
+                .as_deref()
+                .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+            let err = result
+                .err
+                .as_deref()
+                .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+            ok.max(err).saturating_add(8)
+        }
+        TypeExpr::Named(name) => {
+            let Some(def) = model.type_def(name) else {
+                return 8;
+            };
+            match &def.kind {
+                TypeDefKind::Record(fields) => fields.iter().fold(0usize, |acc, field| {
+                    let fsz = estimate_type_size(model, &field.ty, depth + 1);
+                    // Round up each field to at most 8-byte alignment for a safe upper bound.
+                    acc.saturating_add(fsz.next_multiple_of(fsz.clamp(1, 8)))
+                }),
+                TypeDefKind::Variant(cases) => cases
+                    .iter()
+                    .map(|case| {
+                        case.payload
+                            .as_ref()
+                            .map_or(0, |t| estimate_type_size(model, t, depth + 1))
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(8),
+                TypeDefKind::Enum(_) => 4,
+                TypeDefKind::Flags(flags) => flags.len(),
+                TypeDefKind::Alias(target) => estimate_type_size(model, target, depth + 1),
+                TypeDefKind::List(_) => 24,
+                TypeDefKind::Option(inner) => {
+                    estimate_type_size(model, inner, depth + 1).saturating_add(8)
+                }
+                TypeDefKind::Result(result) => {
+                    let ok = result
+                        .ok
+                        .as_deref()
+                        .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+                    let err = result
+                        .err
+                        .as_deref()
+                        .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+                    ok.max(err).saturating_add(8)
+                }
+            }
+        }
+    }
 }
 
 fn map_type(

@@ -4,26 +4,11 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use prost::Message as _;
-
 mod support;
-use support::run_cargo_program;
+use support::{ScratchDir, compile_and_run_generated, copy_dir_tree};
 
 fn witforge() -> Command {
     Command::new(env!("CARGO_BIN_EXE_witforge"))
-}
-
-fn copy_tree(source: &Path, destination: &Path) {
-    fs::create_dir_all(destination).unwrap();
-    for entry in fs::read_dir(source).unwrap() {
-        let entry = entry.unwrap();
-        let target = destination.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), target).unwrap();
-        }
-    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -31,11 +16,11 @@ fn copy_tree(source: &Path, destination: &Path) {
 fn alint_contract_generates_compiles_and_roundtrips() {
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../witforge/tests/fixtures/contracts/alint-plugin");
-    let temp = std::env::temp_dir().join(format!("witforge-alint-e2e-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&temp);
+    let scratch = ScratchDir::new("alint-e2e");
+    let temp = scratch.path();
     let version = temp.join("wit/v0.1");
     fs::create_dir_all(&version).unwrap();
-    copy_tree(&source, &version);
+    copy_dir_tree(&source, &version);
 
     let wit_root = temp.join("wit");
     let check = witforge().arg("check").arg(&version).output().unwrap();
@@ -161,60 +146,18 @@ fn alint_contract_generates_compiles_and_roundtrips() {
         (generated(&plain), generated(&proto), generated(&glue))
     );
 
-    let proto_path = proto.join("v0.proto");
-    let descriptors = protox::compile([&proto_path], [&proto]).unwrap();
-    let encoded = descriptors.encode_to_vec();
-    let prost_out = temp.join("build/prost");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .compile_fds(descriptors)
-        .unwrap();
-    let prost_generated = fs::read_dir(&prost_out)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .unwrap();
-    let pbjson_out = temp.join("build/pbjson");
-    fs::create_dir_all(&pbjson_out).unwrap();
-    pbjson_build::Builder::new()
-        .out_dir(&pbjson_out)
-        .register_descriptors(&encoded)
-        .unwrap()
-        .build(&[".alint.plugin.v0"])
-        .unwrap();
-    let pbjson_generated = fs::read_dir(&pbjson_out)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .unwrap();
-
-    let crate_root = temp.join("crate");
-    fs::create_dir_all(crate_root.join("plain")).unwrap();
-    fs::create_dir_all(crate_root.join("proto")).unwrap();
-    fs::create_dir_all(crate_root.join("glue")).unwrap();
-    copy_tree(&plain, &crate_root.join("plain"));
-    copy_tree(&glue, &crate_root.join("glue"));
-    fs::copy(prost_generated, crate_root.join("proto/v0.rs")).unwrap();
-    fs::copy(pbjson_generated, crate_root.join("proto/v0.serde.rs")).unwrap();
-    fs::write(
-        crate_root.join("proto/mod.rs"),
-        "pub mod v0 {\n    include!(\"v0.rs\");\n    include!(\"v0.serde.rs\");\n}\n",
+    let main_body = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../witforge/tests/e2e/alint_main.rs"),
     )
     .unwrap();
-    let mut main = String::from("mod glue;\nmod plain;\nmod proto;\n\n");
-    main.push_str(
-        &fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../witforge/tests/e2e/alint_main.rs"),
-        )
-        .unwrap(),
-    );
-    fs::write(crate_root.join("main.rs"), main).unwrap();
-
-    run_cargo_program(
-        &crate_root,
-        "prost = \"0.14\"\npbjson = \"0.9\"\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n",
+    compile_and_run_generated(
+        "alint-run",
+        &plain,
+        &proto,
+        &glue,
+        true,
+        &main_body,
         "alint generated glue compile/run",
     );
-    fs::remove_dir_all(&temp).unwrap();
+    scratch.finish();
 }

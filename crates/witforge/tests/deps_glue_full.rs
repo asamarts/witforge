@@ -8,86 +8,23 @@ use witforge::load;
 use witforge::model;
 
 mod support;
-use support::run_cargo_program;
+use support::{ScratchDir, compile_and_run_wit_root};
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-full/wit")
 }
 
-#[allow(clippy::too_many_lines, clippy::format_push_string)]
 #[test]
 fn full_dependency_glue_compiles_and_roundtrips() {
     let root = fixture();
     let contract = load(&root.join("v0.1")).unwrap();
     let model = model::build(&contract).unwrap();
     assert_eq!(model.dependencies.len(), 3);
-    let out = std::env::temp_dir().join(format!("witforge-deps-glue-full-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&out);
-    for path in [
-        "proto/example/app",
-        "proto/example/shared",
-        "proto/example/other",
-        "proto/my_ns/my_dep",
-    ] {
-        fs::create_dir_all(out.join(path)).unwrap();
-    }
 
-    rust::plan(&root)
-        .unwrap()
-        .write(&out.join("plain"))
-        .unwrap();
-    glue::plan(&root, "crate::plain", "crate::proto")
-        .unwrap()
-        .write(&out.join("glue"))
-        .unwrap();
-    proto::plan(&root)
-        .unwrap()
-        .write(&out.join("proto-work"))
-        .unwrap();
-
-    let mut proto_files = Vec::new();
-    for entry in fs::read_dir(out.join("proto-work")).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|ext| ext == "proto") {
-            proto_files.push(path);
-        }
-    }
-    let descriptors = protox::compile(proto_files, [out.join("proto-work")]).unwrap();
-    let generated = out.join("proto-generated");
-    fs::create_dir_all(&generated).unwrap();
-    prost_build::Config::new()
-        .out_dir(&generated)
-        .compile_fds(descriptors)
-        .unwrap();
-
-    for (name, target) in [
-        ("example.app.v0.rs", "proto/example/app/v0.rs"),
-        ("example.shared.v0.rs", "proto/example/shared/v0.rs"),
-        ("example.other.v0.rs", "proto/example/other/v0.rs"),
-        ("my_ns.my_dep.v0.rs", "proto/my_ns/my_dep/v0.rs"),
-    ] {
-        let source = generated.join(name);
-        assert!(source.is_file(), "missing generated `{}`", source.display());
-        fs::copy(source, out.join(target)).unwrap();
-    }
-    fs::write(
-        out.join("proto/mod.rs"),
-        "pub mod example {\n\
-         pub mod app { pub mod v0 { include!(\"example/app/v0.rs\"); } }\n\
-         pub mod other { pub mod v0 { include!(\"example/other/v0.rs\"); } }\n\
-         pub mod shared { pub mod v0 { include!(\"example/shared/v0.rs\"); } }\n\
-         }\n\
-         pub mod my_ns { pub mod my_dep { pub mod v0 { include!(\"my_ns/my_dep/v0.rs\"); } } }\n",
-    )
-    .unwrap();
-
-    let mut main = String::new();
-    main.push_str(&format!(
-        "#[path = {:?}] mod plain;\n#[path = {:?}] mod glue;\nmod proto;\n\n",
-        out.join("plain/mod.rs"),
-        out.join("glue/mod.rs")
-    ));
-    main.push_str(
+    compile_and_run_wit_root(
+        "deps-full",
+        &root,
+        false,
         r#"
 fn main() {
     let thing = plain::witforge_deps::example_shared::types::Thing { id: 7 };
@@ -129,15 +66,8 @@ fn main() {
     assert_eq!(option_numbers, decoded);
 }
 "#,
-    );
-    fs::write(out.join("main.rs"), main).unwrap();
-
-    run_cargo_program(
-        &out,
-        "prost = \"0.14\"\n",
         "full dependency glue compile/run",
     );
-    fs::remove_dir_all(&out).unwrap();
 }
 
 fn strip_header(s: &str) -> &str {
@@ -147,11 +77,8 @@ fn strip_header(s: &str) -> &str {
 #[allow(clippy::too_many_lines)]
 #[test]
 fn dependency_structural_and_byte_list_aliases_compile_and_roundtrip() {
-    let out = std::env::temp_dir().join(format!(
-        "witforge-deps-glue-structural-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&out);
+    let scratch = ScratchDir::new("deps-struct-work");
+    let out = scratch.path();
     let wit_root = out.join("wit");
     let v01 = wit_root.join("v0.1");
     fs::create_dir_all(v01.join("deps/leaf")).unwrap();
@@ -351,29 +278,12 @@ interface api {
         "glue witforge_deps.rs differed between roots"
     );
 
-    // Compile all generated `.proto` files with `protox` + `prost-build` (using `include_file`
-    // so prost generates its own module hierarchy) and execute the full round-trip binary.
-    let proto_files = [
-        out.join("proto-work/v0.proto"),
-        out.join("proto-work/ex.shared.v0.proto"),
-        out.join("proto-work/ex.leaf.v0.proto"),
-    ];
-    let descriptors = protox::compile(proto_files, [out.join("proto-work")]).unwrap();
-    let prost_out = out.join("proto");
-    fs::create_dir_all(&prost_out).unwrap();
-    prost_build::Config::new()
-        .out_dir(&prost_out)
-        .include_file("mod.rs")
-        .compile_fds(descriptors)
-        .unwrap();
-
-    fs::write(
-        out.join("main.rs"),
+    // Compile all generated `.proto` files via the shared harness and execute the round-trip.
+    compile_and_run_wit_root(
+        "deps-struct",
+        &wit_root,
+        false,
         r#"
-mod glue;
-mod plain;
-mod proto;
-
 fn main() {
     use plain::v0_1::api::{ByteVariant, Holder, StructVariant};
     use plain::witforge_deps::ex_shared::types::Item;
@@ -466,13 +376,7 @@ fn main() {
     );
 }
 "#,
-    )
-    .unwrap();
-
-    run_cargo_program(
-        &out,
-        "prost = \"0.14\"\n",
         "dependency structural and byte-list aliases glue compile/run",
     );
-    fs::remove_dir_all(&out).unwrap();
+    scratch.finish();
 }

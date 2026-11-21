@@ -27,6 +27,15 @@ have it.
   references.
 - The test suite runs the command sequences of the README, the quickstart, and the evolution
   guide as written, and `cargo test` runs the release-script cases and the Action's unit tests.
+- Added a shared `prost-build` 0.14 / `pbjson-build` 0.9 compile-and-round-trip test harness
+  (`crates/witforge/tests/support/mod.rs`) and `compile_matrix` integration suite covering name
+  matrices (one-letter, upper-case, digits, all Rust 2015–2024 keywords, and all proto3 keywords),
+  shape matrices (every kind in every position, three-level nesting, both byte-list spellings,
+  unreferenced structural types, and two-hop dependencies), a fixed-seed property sample, and the
+  committed `examples/single` and `examples/evolved` outputs in both Edition 2021 and Edition 2024
+  with `rustfmt`/`cargo fmt --check`, `cargo clippy -D warnings`, `-D missing_docs`,
+  `cargo doc -D warnings`, `cargo test --doc`, and protobuf binary/JSON round-trips; also wired
+  committed-example compilation into `ci/check-generated.sh` and CI.
 
 ### Changed
 

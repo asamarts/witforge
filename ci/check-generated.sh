@@ -35,5 +35,10 @@ for example in single evolved; do
     done
 done
 
-echo "committed example output check passed"
+# Compile and round-trip the committed generated output of every example in Editions 2021 and 2024
+# against prost and pbjson with rustfmt, Clippy -D warnings, -D missing_docs, and cargo doc.
+cargo test --manifest-path "${ROOT}/Cargo.toml" -p witforge --test compile_matrix --locked -- \
+    examples_generated_code_compiles_and_roundtrips
+
+echo "committed example output check and compile/round-trip passed"
 echo "generated output check passed for ${WIT_ROOT}"

@@ -108,6 +108,7 @@ pub mod values {
     /// Trait for interface `values`.
     pub trait Values {
         /// A function with every parameter shape and a result.
+        #[allow(clippy::too_many_arguments)]
         fn all_params(
             &self,
             bool_value: bool,

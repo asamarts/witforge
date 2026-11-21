@@ -102,7 +102,7 @@ pub(crate) fn fmt_type_alias(indent: usize, prefix_decl: &str, ty: &str) -> Stri
     if head.len() + ty.len() < MAX_WIDTH {
         return format!("{head}{ty};");
     }
-    if indent + 4 + ty.len() < MAX_WIDTH {
+    if !ty.starts_with('(') && indent + 4 + ty.len() < MAX_WIDTH {
         return format!("{spaces}{prefix_decl} =\n{spaces}    {ty};");
     }
     let formatted = fmt_type(ty, indent, head.len(), 1);
@@ -180,6 +180,12 @@ pub(crate) fn fmt_fn_sig(
 pub(crate) fn fmt_struct_field(indent: usize, field_name: &str, ty: &str) -> String {
     let prefix = " ".repeat(indent);
     let head = format!("{prefix}pub {field_name}: ");
+    if head.len() + ty.len() < MAX_WIDTH {
+        return format!("{head}{ty},");
+    }
+    if indent + 4 + ty.len() < MAX_WIDTH {
+        return format!("{prefix}pub {field_name}:\n{prefix}    {ty},");
+    }
     let formatted = fmt_type(ty, indent, head.len(), 1);
     format!("{head}{formatted},")
 }
@@ -223,7 +229,7 @@ pub(crate) fn fmt_struct_lit(
     if all_single {
         let joined = rendered_fields.join(", ");
         if joined.len() <= STRUCT_LIT_WIDTH
-            && leading_col + path.len() + 4 + joined.len() + trailing_len <= MAX_WIDTH
+            && leading_col + path.len() + 5 + joined.len() + trailing_len <= MAX_WIDTH
         {
             return format!("{path} {{ {joined} }}");
         }

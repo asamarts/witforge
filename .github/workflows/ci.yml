@@ -177,6 +177,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
+          components: rustfmt, clippy
       - run: cargo test --workspace --locked
       # /bin/bash is 3.2 on macOS, which consumers of the freeze script may run it with.
       - if: runner.os != 'Windows'
@@ -195,6 +196,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.88"
+          components: rustfmt, clippy
       # 1.88 is the floor set by wit-parser.
       - run: cargo test --workspace --locked
 
@@ -313,6 +315,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
+          components: rustfmt, clippy
       - run: cargo build --locked -p witforge-cli
       - run: ci/check-generated.sh
         env:
