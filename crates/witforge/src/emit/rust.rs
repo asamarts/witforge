@@ -7,10 +7,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::ContractError;
-use crate::emit::docs;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
-use crate::emit::{pascal_case, rust_ident, snake_case};
+use crate::emit::{docs, pascal_case, rust_ident, rustfmt, snake_case};
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
 /// Legacy pre-0.6.0 shared ownership header.
@@ -68,7 +67,7 @@ pub(crate) fn plan_versions_with_serde(
     let header = header_for(&package.namespace, &package.name);
     let mut modules = BTreeMap::new();
     let mut files = GeneratedFiles::new(&header);
-    let mut module_lines = Vec::new();
+    let mut module_entries: Vec<(String, String)> = Vec::new();
     for version in versions {
         let module = version_module_name(&version.model);
         if let Some(previous) = modules.insert(module.clone(), &version.directory) {
@@ -81,23 +80,32 @@ pub(crate) fn plan_versions_with_serde(
         let generated = emit_version_with_serde(&version.model, serde)
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("{module}.rs"), generated)?;
-        module_lines.push(format!("pub mod {module};"));
+        module_entries.push((
+            format!("Contract version `{}`.", version.model.package.version),
+            format!("pub mod {module};"),
+        ));
     }
     if let Some(converted) = super::convert::plan(versions)? {
         files.insert("convert.rs", converted)?;
-        module_lines.push("pub mod convert;".to_string());
+        module_entries.push((
+            "Version-to-version adapters.".to_string(),
+            "pub mod convert;".to_string(),
+        ));
     }
     if !dependencies.is_empty() {
         let dependency_source = emit_dependency_bindings(&header, dependencies, serde)?;
         files.insert("witforge_deps.rs", dependency_source)?;
-        module_lines.push("pub mod witforge_deps;".to_string());
+        module_entries.push((
+            "Pinned dependency types.".to_string(),
+            "pub mod witforge_deps;".to_string(),
+        ));
     }
     if versions
         .iter()
         .any(|version| !version.model.worlds.is_empty())
     {
         files.insert("worlds.rs", emit_worlds(versions)?)?;
-        module_lines.push("pub mod worlds;".to_string());
+        module_entries.push(("World metadata.".to_string(), "pub mod worlds;".to_string()));
     }
     let mut complete = String::new();
     writeln!(complete, "{header}")?;
@@ -106,9 +114,12 @@ pub(crate) fn plan_versions_with_serde(
         "// source: {}:{}",
         package.namespace, package.name
     )?;
-    writeln!(complete)?;
-    for line in module_lines {
-        writeln!(complete, "{line}")?;
+    for (doc, decl) in module_entries {
+        // Separating each `pub mod` declaration with a blank line keeps ascending semver order
+        // stable under both Rustfmt Edition 2021 and Edition 2024 (including `v0_2` vs `v0_10`).
+        writeln!(complete)?;
+        writeln!(complete, "/// {doc}")?;
+        writeln!(complete, "{decl}")?;
     }
     files.insert("mod.rs", complete)?;
     Ok(files)
@@ -166,8 +177,7 @@ pub fn version_module_name(model: &Model) -> String {
 /// Emit one version module.
 ///
 /// The result is a complete Rust source file containing one inline module per interface and
-/// re-exports of the interface traits at the version root. Worlds and package metadata produce
-/// no code.
+/// re-exports of traits for interfaces that declare functions. Worlds produce no code here.
 ///
 /// # Errors
 ///
@@ -205,9 +215,10 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
             "// serde derives require the consumer's `serde` crate with `derive`."
         )?;
     }
-    writeln!(out)?;
-    if docs::write_rust_inner(&mut out, &model.package.docs)? {
+    let has_inner_docs = !docs::sanitize_rust_lines(&model.package.docs).is_empty();
+    if has_inner_docs {
         writeln!(out)?;
+        let _ = docs::write_rust_inner(&mut out, &model.package.docs)?;
     }
 
     let mut modules = BTreeMap::new();
@@ -220,12 +231,14 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
                 interface.name
             );
         }
-        let trait_name = rust_ident(&pascal_case(&interface.name), "interface trait")?;
-        if let Some(previous) = traits.insert(trait_name.clone(), interface.name.clone()) {
-            contract_bail!(
-                "interfaces `{previous}` and `{}` both map to Rust trait `{trait_name}`",
-                interface.name
-            );
+        if !interface.functions.is_empty() {
+            let trait_name = rust_ident(&pascal_case(&interface.name), "interface trait")?;
+            if let Some(previous) = traits.insert(trait_name.clone(), interface.name.clone()) {
+                contract_bail!(
+                    "interfaces `{previous}` and `{}` both map to Rust trait `{trait_name}`",
+                    interface.name
+                );
+            }
         }
     }
 
@@ -242,22 +255,43 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
         }
     }
 
+    let parent_module = version_module_name(model);
     for interface in &model.interfaces {
         let module = rust_ident(&snake_case(&interface.name), "interface module")?;
-        write_docs(&mut out, 0, &interface.docs)?;
-        writeln!(out, "pub mod {module} {{")?;
-        emit_interface(
+        writeln!(out)?;
+        rustfmt::write_docs_or(
             &mut out,
-            model,
-            interface,
-            serde,
-            "super::super::witforge_deps",
+            0,
+            &interface.docs,
+            &format!("Interface `{}`.", interface.name),
         )?;
-        writeln!(out, "}}\n")?;
+        if module == parent_module {
+            writeln!(out, "#[allow(clippy::module_inception)]")?;
+        }
+        if interface.types.is_empty() && interface.functions.is_empty() {
+            writeln!(out, "pub mod {module} {{}}")?;
+        } else {
+            writeln!(out, "pub mod {module} {{")?;
+            emit_interface(
+                &mut out,
+                4,
+                model,
+                interface,
+                serde,
+                "super::super::witforge_deps",
+            )?;
+            writeln!(out, "}}")?;
+        }
     }
     for interface in &model.interfaces {
+        if interface.functions.is_empty() {
+            continue;
+        }
         let module = rust_ident(&snake_case(&interface.name), "interface module")?;
         let trait_name = rust_ident(&pascal_case(&interface.name), "interface trait")?;
+        // Separate each re-export with a blank line so Rustfmt Edition 2021 and Edition 2024
+        // both keep WIT source order without re-sorting.
+        writeln!(out)?;
         writeln!(out, "pub use {module}::{trait_name};")?;
     }
     Ok(out)
@@ -265,14 +299,20 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
 
 fn emit_interface(
     out: &mut String,
+    indent: usize,
     model: &Model,
     interface: &crate::model::Interface,
     serde: bool,
     foreign_base: &str,
 ) -> Result<()> {
-    let trait_name = rust_ident(&pascal_case(&interface.name), "interface trait")?;
     let mut type_names: BTreeMap<String, String> = BTreeMap::new();
-    type_names.insert(trait_name.clone(), format!("trait {}", interface.name));
+    let trait_name = if interface.functions.is_empty() {
+        None
+    } else {
+        let name = rust_ident(&pascal_case(&interface.name), "interface trait")?;
+        type_names.insert(name.clone(), format!("trait {}", interface.name));
+        Some(name)
+    };
 
     for def in &interface.types {
         let name = rust_ident(&pascal_case(&def.name), "type")?;
@@ -283,10 +323,20 @@ fn emit_interface(
             "interface scope",
         )?;
     }
+    let mut first = true;
     for def in &interface.types {
-        emit_type_def(out, model, interface, def, serde, foreign_base)?;
+        if !first {
+            writeln!(out)?;
+        }
+        first = false;
+        emit_type_def(out, indent, model, interface, def, serde, foreign_base)?;
     }
-    emit_trait(out, model, interface, &trait_name, foreign_base)?;
+    if let Some(trait_name) = trait_name {
+        if !first {
+            writeln!(out)?;
+        }
+        emit_trait(out, indent, model, interface, &trait_name, foreign_base)?;
+    }
     Ok(())
 }
 
@@ -304,7 +354,6 @@ fn emit_dependency_bindings(
             "// serde derives require the consumer's `serde` crate with `derive`."
         )?;
     }
-    writeln!(out)?;
     let mut module_names = BTreeMap::new();
     for dependency in dependencies {
         let module = rust_ident(
@@ -322,32 +371,52 @@ fn emit_dependency_bindings(
                 dependency.package.name
             );
         }
-        write_docs(&mut out, 0, &dependency.package.docs)?;
+        writeln!(out)?;
+        rustfmt::write_docs_or(
+            &mut out,
+            0,
+            &dependency.package.docs,
+            &format!(
+                "Dependency package `{}:{}`.",
+                dependency.package.namespace, dependency.package.name
+            ),
+        )?;
+        if module == "witforge_deps" {
+            writeln!(out, "#[allow(clippy::module_inception)]")?;
+        }
+        if dependency.interfaces.is_empty() {
+            writeln!(out, "pub mod {module} {{}}")?;
+            continue;
+        }
         writeln!(out, "pub mod {module} {{")?;
-        for interface in &dependency.interfaces {
+        let dep_model = dependency_model(dependency, dependencies);
+        for (idx, interface) in dependency.interfaces.iter().enumerate() {
+            if idx > 0 {
+                writeln!(out)?;
+            }
             let interface_module =
                 rust_ident(&snake_case(&interface.name), "dependency interface module")?;
-            write_docs(&mut out, 4, &interface.docs)?;
-            writeln!(out, "    pub mod {interface_module} {{")?;
-            let mut body = String::new();
-            emit_interface(
-                &mut body,
-                &dependency_model(dependency, dependencies),
-                interface,
-                serde,
-                "super::super",
+            rustfmt::write_docs_or(
+                &mut out,
+                4,
+                &interface.docs,
+                &format!(
+                    "Interface `{}:{}/{}`.",
+                    dependency.package.namespace, dependency.package.name, interface.name
+                ),
             )?;
-            for line in body.lines() {
-                if line.is_empty() {
-                    out.push('\n');
-                } else {
-                    writeln!(out, "    {line}")?;
-                }
+            if interface_module == module {
+                writeln!(out, "    #[allow(clippy::module_inception)]")?;
             }
-            writeln!(out, "    }}")?;
+            if interface.types.is_empty() && interface.functions.is_empty() {
+                writeln!(out, "    pub mod {interface_module} {{}}")?;
+            } else {
+                writeln!(out, "    pub mod {interface_module} {{")?;
+                emit_interface(&mut out, 8, &dep_model, interface, serde, "super::super")?;
+                writeln!(out, "    }}")?;
+            }
         }
         writeln!(out, "}}")?;
-        writeln!(out)?;
     }
     Ok(out)
 }
@@ -371,14 +440,15 @@ fn dependency_model(
     }
 }
 
-fn write_derives(out: &mut String, serde: bool) -> Result<()> {
+fn write_derives(out: &mut String, indent: usize, serde: bool) -> Result<()> {
+    let prefix = " ".repeat(indent);
     if serde {
         writeln!(
             out,
-            "    #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]"
+            "{prefix}#[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]"
         )?;
     } else {
-        writeln!(out, "    #[derive(Debug, Clone, PartialEq)]")?;
+        writeln!(out, "{prefix}#[derive(Debug, Clone, PartialEq)]")?;
     }
     Ok(())
 }
@@ -386,6 +456,7 @@ fn write_derives(out: &mut String, serde: bool) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn emit_record(
     out: &mut String,
+    indent: usize,
     model: &Model,
     interface: &crate::model::Interface,
     def: &TypeDef,
@@ -394,8 +465,13 @@ fn emit_record(
     serde: bool,
     foreign_base: &str,
 ) -> Result<()> {
-    write_derives(out, serde)?;
-    writeln!(out, "    pub struct {name} {{")?;
+    let prefix = " ".repeat(indent);
+    write_derives(out, indent, serde)?;
+    if fields.is_empty() {
+        writeln!(out, "{prefix}pub struct {name} {{}}")?;
+        return Ok(());
+    }
+    writeln!(out, "{prefix}pub struct {name} {{")?;
     let mut field_names = BTreeMap::new();
     for field in fields {
         let field_name = rust_ident(&snake_case(&field.name), "record field")?;
@@ -405,29 +481,52 @@ fn emit_record(
             &format!("field {}", field.name),
             &format!("{}/{}", interface.name, def.name),
         )?;
-        write_docs(out, 8, &field.docs)?;
+        rustfmt::write_docs_or(
+            out,
+            indent + 4,
+            &field.docs,
+            &format!("Field `{}/{}.{}`.", interface.name, def.name, field.name),
+        )?;
         let ty = map_type(model, &interface.name, &field.ty, foreign_base)?;
-        writeln!(out, "        pub {field_name}: {ty},")?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_struct_field(indent + 4, &field_name, &ty)
+        )?;
     }
-    writeln!(out, "    }}")?;
+    writeln!(out, "{prefix}}}")?;
     Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
 fn emit_type_def(
     out: &mut String,
+    indent: usize,
     model: &Model,
     interface: &crate::model::Interface,
     def: &TypeDef,
     serde: bool,
     foreign_base: &str,
 ) -> Result<()> {
+    let prefix = " ".repeat(indent);
+    let member_prefix = " ".repeat(indent + 4);
     let name = rust_ident(&pascal_case(&def.name), "type")?;
-    write_docs(out, 4, &def.docs)?;
+    let fallback_doc = match &def.kind {
+        TypeDefKind::Record(_) => format!("Record `{}/{}`.", interface.name, def.name),
+        TypeDefKind::Variant(_) => format!("Variant `{}/{}`.", interface.name, def.name),
+        TypeDefKind::Enum(_) => format!("Enum `{}/{}`.", interface.name, def.name),
+        TypeDefKind::Flags(_) => format!("Flags `{}/{}`.", interface.name, def.name),
+        TypeDefKind::Alias(_)
+        | TypeDefKind::List(_)
+        | TypeDefKind::Option(_)
+        | TypeDefKind::Result(_) => format!("Type alias `{}/{}`.", interface.name, def.name),
+    };
+    rustfmt::write_docs_or(out, indent, &def.docs, &fallback_doc)?;
     match &def.kind {
         TypeDefKind::Record(fields) => {
             emit_record(
                 out,
+                indent,
                 model,
                 interface,
                 def,
@@ -438,8 +537,12 @@ fn emit_type_def(
             )?;
         }
         TypeDefKind::Variant(cases) => {
-            write_derives(out, serde)?;
-            writeln!(out, "    pub enum {name} {{")?;
+            write_derives(out, indent, serde)?;
+            if cases.is_empty() {
+                writeln!(out, "{prefix}pub enum {name} {{}}")?;
+                return Ok(());
+            }
+            writeln!(out, "{prefix}pub enum {name} {{")?;
             let mut case_names = BTreeMap::new();
             for case in cases {
                 let case_name = rust_ident(&pascal_case(&case.name), "variant case")?;
@@ -449,19 +552,32 @@ fn emit_type_def(
                     &format!("case {}", case.name),
                     &format!("{}/{}", interface.name, def.name),
                 )?;
-                write_docs(out, 8, &case.docs)?;
+                rustfmt::write_docs_or(
+                    out,
+                    indent + 4,
+                    &case.docs,
+                    &format!("Case `{}/{}.{}`.", interface.name, def.name, case.name),
+                )?;
                 if let Some(payload) = &case.payload {
                     let ty = map_type(model, &interface.name, payload, foreign_base)?;
-                    writeln!(out, "        {case_name}({ty}),")?;
+                    writeln!(
+                        out,
+                        "{}",
+                        rustfmt::fmt_tuple_variant(indent + 4, &case_name, &ty)
+                    )?;
                 } else {
-                    writeln!(out, "        {case_name},")?;
+                    writeln!(out, "{member_prefix}{case_name},")?;
                 }
             }
-            writeln!(out, "    }}")?;
+            writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Enum(cases) => {
-            write_derives(out, serde)?;
-            writeln!(out, "    pub enum {name} {{")?;
+            write_derives(out, indent, serde)?;
+            if cases.is_empty() {
+                writeln!(out, "{prefix}pub enum {name} {{}}")?;
+                return Ok(());
+            }
+            writeln!(out, "{prefix}pub enum {name} {{")?;
             let mut case_names = BTreeMap::new();
             for case in cases {
                 let case_name = rust_ident(&pascal_case(&case.name), "enum case")?;
@@ -471,14 +587,23 @@ fn emit_type_def(
                     &format!("case {}", case.name),
                     &format!("{}/{}", interface.name, def.name),
                 )?;
-                write_docs(out, 8, &case.docs)?;
-                writeln!(out, "        {case_name},")?;
+                rustfmt::write_docs_or(
+                    out,
+                    indent + 4,
+                    &case.docs,
+                    &format!("Case `{}/{}.{}`.", interface.name, def.name, case.name),
+                )?;
+                writeln!(out, "{member_prefix}{case_name},")?;
             }
-            writeln!(out, "    }}")?;
+            writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Flags(flags) => {
-            write_derives(out, serde)?;
-            writeln!(out, "    pub struct {name} {{")?;
+            write_derives(out, indent, serde)?;
+            if flags.is_empty() {
+                writeln!(out, "{prefix}pub struct {name} {{}}")?;
+                return Ok(());
+            }
+            writeln!(out, "{prefix}pub struct {name} {{")?;
             let mut flag_names = BTreeMap::new();
             for flag in flags {
                 let flag_name = rust_ident(&snake_case(&flag.name), "flag")?;
@@ -488,26 +613,49 @@ fn emit_type_def(
                     &format!("flag {}", flag.name),
                     &format!("{}/{}", interface.name, def.name),
                 )?;
-                write_docs(out, 8, &flag.docs)?;
-                writeln!(out, "        pub {flag_name}: bool,")?;
+                rustfmt::write_docs_or(
+                    out,
+                    indent + 4,
+                    &flag.docs,
+                    &format!("Flag `{}/{}.{}`.", interface.name, def.name, flag.name),
+                )?;
+                writeln!(out, "{member_prefix}pub {flag_name}: bool,")?;
             }
-            writeln!(out, "    }}")?;
+            writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Alias(target) => {
             let ty = map_type(model, &interface.name, target, foreign_base)?;
-            writeln!(out, "    pub type {name} = {ty};")?;
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(indent, &format!("pub type {name}"), &ty)
+            )?;
         }
         TypeDefKind::List(element) => {
-            if model.resolves_to_u8(element) {
-                writeln!(out, "    pub type {name} = ::std::vec::Vec<u8>;")?;
+            let ty = if model.resolves_to_u8(element) {
+                "::std::vec::Vec<u8>".to_string()
             } else {
-                let ty = map_type(model, &interface.name, element, foreign_base)?;
-                writeln!(out, "    pub type {name} = ::std::vec::Vec<{ty}>;")?;
-            }
+                format!(
+                    "::std::vec::Vec<{}>",
+                    map_type(model, &interface.name, element, foreign_base)?
+                )
+            };
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(indent, &format!("pub type {name}"), &ty)
+            )?;
         }
         TypeDefKind::Option(payload) => {
-            let ty = map_type(model, &interface.name, payload, foreign_base)?;
-            writeln!(out, "    pub type {name} = ::std::option::Option<{ty}>;")?;
+            let ty = format!(
+                "::std::option::Option<{}>",
+                map_type(model, &interface.name, payload, foreign_base)?
+            );
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(indent, &format!("pub type {name}"), &ty)
+            )?;
         }
         TypeDefKind::Result(result) => {
             let ok = result.ok.as_ref().map_or_else(
@@ -518,9 +666,11 @@ fn emit_type_def(
                 || Ok("()".to_string()),
                 |ty| map_type(model, &interface.name, ty, foreign_base),
             )?;
+            let ty = format!("::std::result::Result<{ok}, {err}>");
             writeln!(
                 out,
-                "    pub type {name} = ::std::result::Result<{ok}, {err}>;"
+                "{}",
+                rustfmt::fmt_type_alias(indent, &format!("pub type {name}"), &ty)
             )?;
         }
     }
@@ -529,14 +679,20 @@ fn emit_type_def(
 
 fn emit_trait(
     out: &mut String,
+    indent: usize,
     model: &Model,
     interface: &crate::model::Interface,
     trait_name: &str,
     foreign_base: &str,
 ) -> Result<()> {
-    writeln!(out, "    pub trait {trait_name} {{")?;
+    let prefix = " ".repeat(indent);
+    writeln!(out, "{prefix}/// Trait for interface `{}`.", interface.name)?;
+    writeln!(out, "{prefix}pub trait {trait_name} {{")?;
     let mut function_names = BTreeMap::new();
-    for function in &interface.functions {
+    for (idx, function) in interface.functions.iter().enumerate() {
+        if idx > 0 {
+            writeln!(out)?;
+        }
         let name = rust_ident(&snake_case(&function.name), "function")?;
         insert_name(
             &mut function_names,
@@ -544,8 +700,13 @@ fn emit_trait(
             &format!("function {}", function.name),
             &format!("trait {}", interface.name),
         )?;
-        write_docs(out, 8, &function.docs)?;
-        write!(out, "        fn {name}(&self")?;
+        rustfmt::write_docs_or(
+            out,
+            indent + 4,
+            &function.docs,
+            &format!("Function `{}#{}`.", interface.name, function.name),
+        )?;
+        let mut params = vec!["&self".to_string()];
         let mut param_names = BTreeMap::new();
         for param in &function.params {
             let param_name = rust_ident(&snake_case(&param.name), "parameter")?;
@@ -556,18 +717,26 @@ fn emit_trait(
                 &format!("function {}/{}", interface.name, function.name),
             )?;
             let ty = map_type(model, &interface.name, &param.ty, foreign_base)?;
-            write!(out, ", {param_name}: {ty}")?;
+            params.push(format!("{param_name}: {ty}"));
         }
-        write!(out, ")")?;
-        if let Some(result) = &function.result {
-            let ty = map_type(model, &interface.name, result, foreign_base)?;
-            write!(out, " -> {ty}")?;
-        } else {
-            write!(out, " -> ()")?;
-        }
-        writeln!(out, ";")?;
+        let ret = function
+            .result
+            .as_ref()
+            .map(|result| map_type(model, &interface.name, result, foreign_base))
+            .transpose()?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_fn_sig(
+                indent + 4,
+                &format!("fn {name}"),
+                &params,
+                ret.as_deref(),
+                ";"
+            )
+        )?;
     }
-    writeln!(out, "    }}")?;
+    writeln!(out, "{prefix}}}")?;
     Ok(())
 }
 
@@ -705,34 +874,53 @@ fn emit_worlds(versions: &[Version]) -> Result<String> {
                 }
             }
         }
-        writeln!(out, "    pub const WORLDS: &[super::World] = &[")?;
-        for world in &version.model.worlds {
-            let imports = world
-                .imports
-                .iter()
-                .map(|interface| format!("{:?}", interface.qualified_name()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let exports = world
-                .exports
-                .iter()
-                .map(|interface| format!("{:?}", interface.qualified_name()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln!(
-                out,
-                "        super::World {{ name: {:?}, imports: &[{imports}], exports: &[{exports}] }},",
-                world.name
-            )?;
+        match version.model.worlds.as_slice() {
+            [] => {
+                writeln!(out, "    pub const WORLDS: &[super::World] = &[];")?;
+            }
+            [world] => {
+                writeln!(
+                    out,
+                    "    pub const WORLDS: &[super::World] = &[super::World {{"
+                )?;
+                write_world_fields(&mut out, 8, world)?;
+                writeln!(out, "    }}];")?;
+            }
+            worlds => {
+                writeln!(out, "    pub const WORLDS: &[super::World] = &[")?;
+                for world in worlds {
+                    writeln!(out, "        super::World {{")?;
+                    write_world_fields(&mut out, 12, world)?;
+                    writeln!(out, "        }},")?;
+                }
+                writeln!(out, "    ];")?;
+            }
         }
-        writeln!(out, "    ];")?;
         writeln!(out, "}}")?;
     }
     Ok(out)
 }
 
-fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
-    docs::write_rust_outer(out, indent, docs)
+fn write_world_fields(out: &mut String, indent: usize, world: &crate::model::World) -> Result<()> {
+    let prefix = " ".repeat(indent);
+    writeln!(out, "{prefix}name: {:?},", world.name)?;
+    let imports: Vec<String> = world
+        .imports
+        .iter()
+        .map(|interface| format!("{:?}", interface.qualified_name()))
+        .collect();
+    let imports_rendered =
+        rustfmt::fmt_string_slice(indent, &imports, indent + "imports: ".len(), 1);
+    writeln!(out, "{prefix}imports: {imports_rendered},")?;
+    let exports: Vec<String> = world
+        .exports
+        .iter()
+        .map(|interface| format!("{:?}", interface.qualified_name()))
+        .collect();
+    let exports_rendered =
+        rustfmt::fmt_string_slice(indent, &exports, indent + "exports: ".len(), 1);
+    writeln!(out, "{prefix}exports: {exports_rendered},")?;
+    Ok(())
 }
 
 fn insert_name(

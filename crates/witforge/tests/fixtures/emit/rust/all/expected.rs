@@ -13,6 +13,7 @@ pub mod values {
         /// Raw bytes.
         pub bytes: ::std::vec::Vec<u8>,
     }
+
     /// A record with every primitive and structural row.
     #[derive(Debug, Clone, PartialEq)]
     pub struct RecordValue {
@@ -61,6 +62,7 @@ pub mod values {
         /// A variant payload.
         pub variant_field: VariantValue,
     }
+
     /// A variant with and without a payload.
     #[derive(Debug, Clone, PartialEq)]
     pub enum VariantValue {
@@ -69,6 +71,7 @@ pub mod values {
         /// A payload-less case.
         NoPayload,
     }
+
     /// A closed enum.
     #[derive(Debug, Clone, PartialEq)]
     pub enum EnumValue {
@@ -77,6 +80,7 @@ pub mod values {
         /// Second.
         Second,
     }
+
     /// A flags type.
     #[derive(Debug, Clone, PartialEq)]
     pub struct FlagValue {
@@ -85,29 +89,53 @@ pub mod values {
         /// Second flag.
         pub two: bool,
     }
+
     /// A named list.
     pub type ListValue = ::std::vec::Vec<::std::string::String>;
+
     /// A named option.
     pub type OptionValue = ::std::option::Option<::std::string::String>;
+
     /// A named result.
     pub type ResultValue = ::std::result::Result<u32, ::std::string::String>;
+
     /// An alias to a record.
     pub type AliasValue = Payload;
+
     /// An alias to an alias.
     pub type AliasChain = AliasValue;
+
+    /// Trait for interface `values`.
     pub trait Values {
         /// A function with every parameter shape and a result.
-        fn all_params(&self, bool_value: bool, byte: u8, bytes: ::std::vec::Vec<u8>, payload: Payload, values: ::std::vec::Vec<::std::string::String>, maybe: ::std::option::Option<::std::string::String>, outcome: ::std::result::Result<u32, ::std::string::String>) -> ::std::result::Result<::std::vec::Vec<Payload>, ::std::string::String>;
+        fn all_params(
+            &self,
+            bool_value: bool,
+            byte: u8,
+            bytes: ::std::vec::Vec<u8>,
+            payload: Payload,
+            values: ::std::vec::Vec<::std::string::String>,
+            maybe: ::std::option::Option<::std::string::String>,
+            outcome: ::std::result::Result<u32, ::std::string::String>,
+        ) -> ::std::result::Result<::std::vec::Vec<Payload>, ::std::string::String>;
+
         /// A function with no result.
-        fn no_result(&self, value: Payload) -> ();
+        fn no_result(&self, value: Payload);
     }
 }
 
 /// A consumer of interface-local aliases.
 pub mod user {
+    /// Type alias `user/local-payload`.
     pub type LocalPayload = super::values::Payload;
+
+    /// Type alias `user/local-list`.
     pub type LocalList = super::values::ListValue;
+
+    /// Type alias `user/local-result`.
     pub type LocalResult = super::values::ResultValue;
+
+    /// Trait for interface `user`.
     pub trait User {
         /// A cross-interface call.
         fn call(&self, value: LocalPayload, tags: LocalList) -> LocalResult;
@@ -122,6 +150,8 @@ pub mod r#type {
         /// An escaped field.
         pub self_: u32,
     }
+
+    /// Trait for interface `type`.
     pub trait Type {
         /// An escaped function.
         fn func(&self, self_: u32) -> Where;
@@ -129,5 +159,7 @@ pub mod r#type {
 }
 
 pub use values::Values;
+
 pub use user::User;
+
 pub use r#type::Type;

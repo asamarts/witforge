@@ -15,38 +15,50 @@ pub mod types {
         /// Optional note.
         pub note: ::std::option::Option<::std::string::String>,
     }
+
     /// The result state of an item.
     #[derive(Debug, Clone, PartialEq)]
     pub enum Status {
+        /// Case `types/status.accepted`.
         Accepted,
+        /// Case `types/status.rejected`.
         Rejected,
     }
+
     /// Optional ingester behavior.
     #[derive(Debug, Clone, PartialEq)]
     pub struct Options {
+        /// Flag `types/options.strict`.
         pub strict: bool,
+        /// Flag `types/options.trace`.
         pub trace: bool,
     }
+
     /// An event emitted by the ingester.
     #[derive(Debug, Clone, PartialEq)]
     pub enum Event {
+        /// Case `types/event.started`.
         Started,
+        /// Case `types/event.item`.
         Item(Item),
+        /// Case `types/event.finished`.
         Finished(Status),
-    }
-    pub trait Types {
     }
 }
 
 /// The ingestion interface.
 pub mod ingest {
+    /// Type alias `ingest/item`.
     pub type Item = super::types::Item;
+
+    /// Type alias `ingest/event`.
     pub type Event = super::types::Event;
+
+    /// Trait for interface `ingest`.
     pub trait Ingest {
         /// Submit one item and receive the resulting event.
         fn submit(&self, item: Item) -> Event;
     }
 }
 
-pub use types::Types;
 pub use ingest::Ingest;

@@ -15,15 +15,15 @@ use crate::emit::defaults::default_expr;
 use crate::emit::rust::{header_for, version_module_name};
 use crate::emit::versions::Version;
 use crate::emit::{
-    TypeRenderStyle, pascal_case, render_type, rust_ident, snake_case, type_kind_name,
+    TypeRenderStyle, pascal_case, render_type, rust_ident, rustfmt, snake_case, type_kind_name,
 };
 use crate::model::{
     Case, Dependency, Field, Interface, Model, QualifiedName, ResultExpr, TypeDef, TypeDefKind,
     TypeExpr,
 };
 
-/// The shared error type generated in `convert.rs`.
-const ERROR: &str = "super::super::ConversionError";
+/// The shared error type imported into each interface conversion module.
+const ERROR: &str = "ConversionError";
 
 /// Plan the `convert.rs` file for `versions`, or `None` when there are fewer than two versions.
 pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
@@ -45,17 +45,16 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
     writeln!(out, "// source: {}:{}", package.namespace, package.name)?;
     writeln!(out)?;
     write_error(&mut out)?;
-    for (index, &(old, new)) in pairs.iter().enumerate() {
+    for &(old, new) in &pairs {
+        writeln!(out)?;
         emit_pair(&mut out, old, new, Direction::Forward)?;
         writeln!(out)?;
         emit_pair(&mut out, new, old, Direction::Reverse)?;
-        if index + 1 != pairs.len() {
-            writeln!(out)?;
-        }
     }
     Ok(Some(out))
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_error(out: &mut String) -> Result<()> {
     writeln!(
         out,
@@ -135,18 +134,31 @@ fn write_error(out: &mut String) -> Result<()> {
     writeln!(out, "        match self {{")?;
     writeln!(
         out,
-        "            Self::MissingMember {{ from, to, path }} => write!(formatter, \"conversion {{from}} -> {{to}}: cannot reconstruct `{{path}}` from the source version\"),"
+        "            Self::MissingMember {{ from, to, path }} => write!("
     )?;
+    writeln!(out, "                formatter,")?;
     writeln!(
         out,
-        "            Self::UnknownCase {{ from, to, path, case }} => write!(formatter, \"conversion {{from}} -> {{to}}: `{{path}}` case `{{case}}` does not exist in the target version\"),"
+        "                \"conversion {{from}} -> {{to}}: cannot reconstruct `{{path}}` from the source version\""
     )?;
+    writeln!(out, "            ),")?;
+    writeln!(out, "            Self::UnknownCase {{")?;
+    writeln!(out, "                from,")?;
+    writeln!(out, "                to,")?;
+    writeln!(out, "                path,")?;
+    writeln!(out, "                case,")?;
+    writeln!(out, "            }} => write!(")?;
+    writeln!(out, "                formatter,")?;
+    writeln!(
+        out,
+        "                \"conversion {{from}} -> {{to}}: `{{path}}` case `{{case}}` does not exist in the target version\""
+    )?;
+    writeln!(out, "            ),")?;
     writeln!(out, "        }}")?;
     writeln!(out, "    }}")?;
     writeln!(out, "}}")?;
     writeln!(out)?;
     writeln!(out, "impl ::std::error::Error for ConversionError {{}}")?;
-    writeln!(out)?;
     Ok(())
 }
 
@@ -185,25 +197,35 @@ fn emit_pair(
         writeln!(out, "pub mod {source_module}_to_{target_module} {{}}")?;
         return Ok(());
     }
-    writeln!(out, "pub mod {source_module}_to_{target_module} {{")?;
-    // The aliases cannot collide with a WIT interface module: WIT identifiers start with a
-    // letter, while these start with `_`. Both aliases are used by every generated conversion
-    // function signature in this module.
+    let pair_module = format!("{source_module}_to_{target_module}");
+    writeln!(out, "pub mod {pair_module} {{")?;
+    // Separate the two `use` items with a blank line so Rustfmt Edition 2021 and Edition 2024
+    // do not disagree on sorting `v0_2` vs `v0_10`.
     writeln!(
         out,
-        "    use super::super::{{ {source_module} as __witforge_from, {target_module} as __witforge_to }};"
+        "    use super::super::{source_module} as __witforge_from;"
     )?;
     writeln!(out)?;
+    writeln!(
+        out,
+        "    use super::super::{target_module} as __witforge_to;"
+    )?;
 
     for (source_interface, target_interface, functions) in shared_interfaces {
         let interface_module = rust_ident(&snake_case(&source_interface.name), "interface module")?;
+        writeln!(out)?;
         writeln!(
             out,
             "    /// Conversions for interface `{}`.",
             source_interface.name
         )?;
+        if interface_module == pair_module {
+            writeln!(out, "    #[allow(clippy::module_inception)]")?;
+        }
         writeln!(out, "    pub mod {interface_module} {{")?;
+        writeln!(out, "        use super::super::ConversionError;")?;
         for (source_def, target_def) in functions {
+            writeln!(out)?;
             emit_function(
                 out,
                 source,
@@ -216,7 +238,6 @@ fn emit_pair(
             )?;
         }
         writeln!(out, "    }}")?;
-        writeln!(out)?;
     }
     writeln!(out, "}}")?;
     Ok(())
@@ -261,65 +282,10 @@ enum Direction {
     Reverse,
 }
 
-struct Converted {
-    expr: String,
-    fallible: bool,
-    /// When `expr` is a direct call `<callee>(<arg>)`, the callee path so `.map(<callee>)` avoids
-    /// `clippy::redundant_closure`.
-    direct_callee: Option<String>,
-}
-
-impl Converted {
-    fn infallible(expr: String) -> Self {
-        Self {
-            expr,
-            fallible: false,
-            direct_callee: None,
-        }
-    }
-
-    fn fallible(expr: String) -> Self {
-        Self {
-            expr,
-            fallible: true,
-            direct_callee: None,
-        }
-    }
-
-    fn direct_call(callee: String, arg: &str) -> Self {
-        let expr = format!("{callee}({arg})");
-        Self {
-            expr,
-            fallible: true,
-            direct_callee: Some(callee),
-        }
-    }
-
-    fn into_value_expr(self) -> String {
-        if self.fallible {
-            format!("{}?", self.expr)
-        } else {
-            self.expr
-        }
-    }
-
-    fn into_result_expr(self) -> String {
-        if self.fallible {
-            self.expr
-        } else {
-            format!("::core::result::Result::<_, {ERROR}>::Ok({})", self.expr)
-        }
-    }
-}
-
 fn copied(expression: &str) -> String {
     expression
         .strip_prefix('&')
         .map_or_else(|| format!("*{expression}"), str::to_owned)
-}
-
-fn borrowed(expression: &str) -> &str {
-    expression.strip_prefix('&').unwrap_or(expression)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -359,12 +325,16 @@ fn emit_function(
         out,
         "        /// Returns an error when the source value cannot be represented by the target version."
     )?;
-    writeln!(
-        out,
-        "        pub fn {function}(value: &{source_type}) -> ::core::result::Result<{target_type}, {ERROR}> {{"
-    )?;
-    writeln!(out, "            let _ = value;")?;
+    let sig = rustfmt::fmt_fn_sig(
+        8,
+        &format!("pub fn {function}"),
+        &[format!("value: &{source_type}")],
+        Some(&format!("::core::result::Result<{target_type}, {ERROR}>")),
+        " {",
+    );
+    writeln!(out, "{sig}")?;
     let body = conversion_body(
+        12,
         source,
         target,
         source_interface,
@@ -373,17 +343,16 @@ fn emit_function(
         target_def,
         direction,
     )?;
-    for line in body.lines() {
-        writeln!(out, "            {line}")?;
-    }
+    out.push_str(&body);
     writeln!(out, "        }}")?;
-    writeln!(out)?;
     Ok(())
 }
 
-/// The body of one conversion function, indented at the function's own level.
+/// The body of one conversion function, with every line already indented starting at `indent`.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn conversion_body(
+    indent: usize,
     source: &Version,
     target: &Version,
     source_interface: &Interface,
@@ -392,8 +361,11 @@ fn conversion_body(
     target_def: &TypeDef,
     direction: Direction,
 ) -> Result<String> {
+    let mut next_id = 0usize;
     match (&source_def.kind, &target_def.kind) {
         (TypeDefKind::Record(source_fields), TypeDefKind::Record(target_fields)) => record_body(
+            indent,
+            &mut next_id,
             source,
             target,
             source_interface,
@@ -404,6 +376,8 @@ fn conversion_body(
             direction,
         ),
         (TypeDefKind::Variant(source_cases), TypeDefKind::Variant(target_cases)) => variant_body(
+            indent,
+            &mut next_id,
             source,
             target,
             source_interface,
@@ -413,6 +387,7 @@ fn conversion_body(
             target_cases,
         ),
         (TypeDefKind::Enum(source_cases), TypeDefKind::Enum(target_cases)) => enum_body(
+            indent,
             source,
             target,
             source_interface,
@@ -421,56 +396,64 @@ fn conversion_body(
             source_cases,
             target_cases,
         ),
-        (TypeDefKind::Flags(source_flags), TypeDefKind::Flags(target_flags)) => {
-            flags_body(target_interface, source_def, source_flags, target_flags)
+        (TypeDefKind::Flags(source_flags), TypeDefKind::Flags(target_flags)) => flags_body(
+            indent,
+            target_interface,
+            source_def,
+            source_flags,
+            target_flags,
+        ),
+        (TypeDefKind::Alias(source_target), TypeDefKind::Alias(target_target)) => {
+            emit_direct_conversion(
+                indent,
+                &mut next_id,
+                source,
+                target,
+                source_interface,
+                target_interface,
+                source_target,
+                target_target,
+                &format!("{}/{}", source_interface.name, source_def.name),
+            )
         }
-        (TypeDefKind::Alias(source_target), TypeDefKind::Alias(target_target)) => Ok(convert_expr(
-            source,
-            target,
-            source_interface,
-            target_interface,
-            source_target,
-            target_target,
-            "value",
-            &format!("{}/{}", source_interface.name, source_def.name),
-        )?
-        .into_result_expr()),
-        (TypeDefKind::List(source_target), TypeDefKind::List(target_target)) => Ok(convert_expr(
-            source,
-            target,
-            source_interface,
-            target_interface,
-            &TypeExpr::List(Box::new(source_target.clone())),
-            &TypeExpr::List(Box::new(target_target.clone())),
-            "value",
-            &format!("{}/{}", source_interface.name, source_def.name),
-        )?
-        .into_result_expr()),
+        (TypeDefKind::List(source_target), TypeDefKind::List(target_target)) => {
+            emit_direct_conversion(
+                indent,
+                &mut next_id,
+                source,
+                target,
+                source_interface,
+                target_interface,
+                &TypeExpr::List(Box::new(source_target.clone())),
+                &TypeExpr::List(Box::new(target_target.clone())),
+                &format!("{}/{}", source_interface.name, source_def.name),
+            )
+        }
         (TypeDefKind::Option(source_target), TypeDefKind::Option(target_target)) => {
-            Ok(convert_expr(
+            emit_direct_conversion(
+                indent,
+                &mut next_id,
                 source,
                 target,
                 source_interface,
                 target_interface,
                 &TypeExpr::Option(Box::new(source_target.clone())),
                 &TypeExpr::Option(Box::new(target_target.clone())),
-                "value",
                 &format!("{}/{}", source_interface.name, source_def.name),
-            )?
-            .into_result_expr())
+            )
         }
         (TypeDefKind::Result(source_result), TypeDefKind::Result(target_result)) => {
-            Ok(result_expr(
+            emit_direct_conversion(
+                indent,
+                &mut next_id,
                 source,
                 target,
                 source_interface,
                 target_interface,
-                source_result,
-                target_result,
-                "value",
+                &TypeExpr::Result(source_result.clone()),
+                &TypeExpr::Result(target_result.clone()),
                 &format!("{}/{}", source_interface.name, source_def.name),
-            )?
-            .into_result_expr())
+            )
         }
         _ => contract_bail!(
             "conversion {} -> {}: {}/{} changes kind from {} to {}; evolution requires a new type",
@@ -485,7 +468,51 @@ fn conversion_body(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn emit_direct_conversion(
+    indent: usize,
+    next_id: &mut usize,
+    source: &Version,
+    target: &Version,
+    source_interface: &Interface,
+    target_interface: &Interface,
+    source_type: &TypeExpr,
+    target_type: &TypeExpr,
+    path: &str,
+) -> Result<String> {
+    let prefix = " ".repeat(indent);
+    let mut stmts = Vec::new();
+    let val = emit_convert_value(
+        &mut stmts,
+        indent,
+        next_id,
+        source,
+        target,
+        source_interface,
+        target_interface,
+        source_type,
+        target_type,
+        "value",
+        path,
+        true,
+    )?;
+    let mut out = String::new();
+    for stmt in stmts {
+        writeln!(out, "{stmt}")?;
+    }
+    if val.returns_result {
+        writeln!(out, "{prefix}{}", val.expr)?;
+    } else {
+        let ok_call =
+            rustfmt::fmt_call(indent, "::core::result::Result::Ok", &[val.expr], indent, 0);
+        writeln!(out, "{prefix}{ok_call}")?;
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn record_body(
+    indent: usize,
+    next_id: &mut usize,
     source: &Version,
     target: &Version,
     source_interface: &Interface,
@@ -495,9 +522,11 @@ fn record_body(
     target_fields: &[Field],
     direction: Direction,
 ) -> Result<String> {
+    let prefix = " ".repeat(indent);
     let target_interface_module =
         rust_ident(&snake_case(&target_interface.name), "interface module")?;
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
+    let target_path = format!("super::__witforge_to::{target_interface_module}::{target_type}");
     let type_path = format!("{}/{}", source_interface.name, source_def.name);
     let from_ver = source.model.package.version;
     let to_ver = target.model.package.version;
@@ -510,7 +539,12 @@ fn record_body(
             .find(|source_field| source_field.name == target_field.name)
         {
             let source_name = rust_ident(&snake_case(&source_field.name), "record field")?;
-            convert_expr(
+            let mut scratch = Vec::new();
+            let mut scratch_id = 0;
+            emit_convert_value(
+                &mut scratch,
+                indent,
+                &mut scratch_id,
                 source,
                 target,
                 source_interface,
@@ -519,6 +553,7 @@ fn record_body(
                 &target_field.ty,
                 &format!("&value.{source_name}"),
                 &format!("{type_path}.{}", source_field.name),
+                false,
             )?;
         }
     }
@@ -545,23 +580,42 @@ fn record_body(
                 missing.name,
             ),
             Direction::Reverse => {
+                let err = rustfmt::fmt_struct_lit(
+                    indent,
+                    &format!("{ERROR}::MissingMember"),
+                    &[
+                        ("from".to_string(), format!("{:?}", from_ver.to_string())),
+                        ("to".to_string(), format!("{:?}", to_ver.to_string())),
+                        (
+                            "path".to_string(),
+                            format!("{:?}", format!("{type_path}.{}", missing.name)),
+                        ),
+                    ],
+                    indent + "::core::result::Result::Err(".len(),
+                    1,
+                );
                 return Ok(format!(
-                    "::core::result::Result::Err({ERROR}::MissingMember {{ from: \"{from_ver}\", to: \"{to_ver}\", path: \"{type_path}.{}\" }})",
-                    missing.name
+                    "{prefix}let _ = value;\n{prefix}::core::result::Result::Err({err})\n"
                 ));
             }
         }
     }
 
-    let mut fields = String::new();
+    let mut stmts = Vec::new();
+    let mut fields = Vec::new();
+    let mut used_value = false;
     for target_field in target_fields {
         let target_name = rust_ident(&snake_case(&target_field.name), "record field")?;
-        let value = source_fields
+        if let Some(source_field) = source_fields
             .iter()
-            .find(|source_field| source_field.name == target_field.name);
-        if let Some(source_field) = value {
+            .find(|source_field| source_field.name == target_field.name)
+        {
+            used_value = true;
             let source_name = rust_ident(&snake_case(&source_field.name), "record field")?;
-            let converted = convert_expr(
+            let val = emit_convert_value(
+                &mut stmts,
+                indent,
+                next_id,
                 source,
                 target,
                 source_interface,
@@ -570,34 +624,48 @@ fn record_body(
                 &target_field.ty,
                 &format!("&value.{source_name}"),
                 &format!("{type_path}.{}", source_field.name),
+                false,
             )?;
-            writeln!(fields, "{target_name}: {},", converted.into_value_expr())?;
+            let mut field_expr = val.expr;
+            if indent + 4 + target_name.len() + 2 + field_expr.len() + 1 > rustfmt::MAX_WIDTH {
+                let tmp = fresh(next_id);
+                stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &field_expr));
+                field_expr = tmp;
+            }
+            fields.push((target_name, field_expr));
         } else {
             let Some(default) = default_expr(&target.model, &target_field.ty)? else {
-                // The required-field check above gives the better diagnostic; this arm is the
-                // internal-consistency guard for a model we did not expect.
                 bail!(
                     "no default for target field `{}` in {type_path}",
                     target_field.name
                 );
             };
-            writeln!(fields, "{target_name}: {default},")?;
+            fields.push((target_name, default.to_string()));
         }
     }
     let mut out = String::new();
-    writeln!(
-        out,
-        "::core::result::Result::Ok(super::__witforge_to::{target_interface_module}::{target_type} {{"
-    )?;
-    for line in fields.lines() {
-        writeln!(out, "    {line}")?;
+    if !used_value {
+        writeln!(out, "{prefix}let _ = value;")?;
     }
-    writeln!(out, "}})")?;
+    for stmt in stmts {
+        writeln!(out, "{stmt}")?;
+    }
+    let lit = rustfmt::fmt_struct_lit(
+        indent,
+        &target_path,
+        &fields,
+        indent + "::core::result::Result::Ok(".len(),
+        1,
+    );
+    writeln!(out, "{prefix}::core::result::Result::Ok({lit})")?;
     Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn variant_body(
+    indent: usize,
+    next_id: &mut usize,
     source: &Version,
     target: &Version,
     source_interface: &Interface,
@@ -606,17 +674,23 @@ fn variant_body(
     source_cases: &[Case],
     target_cases: &[Case],
 ) -> Result<String> {
+    let prefix = " ".repeat(indent);
+    let arm_indent = indent + 4;
+    let body_indent = indent + 8;
     let source_interface_module =
         rust_ident(&snake_case(&source_interface.name), "interface module")?;
     let target_interface_module =
         rust_ident(&snake_case(&target_interface.name), "interface module")?;
     let source_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
+    let source_path = format!("super::__witforge_from::{source_interface_module}::{source_type}");
+    let target_path = format!("super::__witforge_to::{target_interface_module}::{target_type}");
     let type_path = format!("{}/{}", source_interface.name, source_def.name);
     let from_ver = source.model.package.version;
     let to_ver = target.model.package.version;
+
     let mut out = String::new();
-    writeln!(out, "match value {{")?;
+    writeln!(out, "{prefix}match value {{")?;
     for source_case in source_cases {
         let source_case_name = rust_ident(&pascal_case(&source_case.name), "variant case")?;
         let target_case = target_cases
@@ -632,27 +706,43 @@ fn variant_body(
                 _ => {}
             }
         }
-        let pattern = if source_case.payload.is_some() {
-            format!(
-                "super::__witforge_from::{source_interface_module}::{source_type}::{source_case_name}(_payload)"
-            )
-        } else {
-            format!(
-                "super::__witforge_from::{source_interface_module}::{source_type}::{source_case_name}"
-            )
+        let pat = match (target_case, &source_case.payload) {
+            (Some(_), Some(_)) => format!("{source_path}::{source_case_name}(payload)"),
+            (None, Some(_)) => format!("{source_path}::{source_case_name}(_)"),
+            (_, None) => format!("{source_path}::{source_case_name}"),
         };
         let arm = match (target_case, &source_case.payload) {
-            (None, _) => format!(
-                "::core::result::Result::Err({ERROR}::UnknownCase {{ from: \"{from_ver}\", to: \"{to_ver}\", path: \"{type_path}\", case: \"{}\" }}),",
-                source_case.name
-            ),
+            (None, _) => {
+                let err = rustfmt::fmt_struct_lit(
+                    body_indent,
+                    &format!("{ERROR}::UnknownCase"),
+                    &[
+                        ("from".to_string(), format!("{:?}", from_ver.to_string())),
+                        ("to".to_string(), format!("{:?}", to_ver.to_string())),
+                        ("path".to_string(), format!("{type_path:?}")),
+                        ("case".to_string(), format!("{:?}", source_case.name)),
+                    ],
+                    body_indent + "::core::result::Result::Err(".len(),
+                    1,
+                );
+                rustfmt::fmt_match_arm(
+                    arm_indent,
+                    &pat,
+                    &[],
+                    &format!("::core::result::Result::Err({err})"),
+                )
+            }
             (Some(target_case), Some(source_payload)) => {
                 let target_case_name = rust_ident(&pascal_case(&target_case.name), "variant case")?;
                 let target_payload = target_case
                     .payload
                     .as_ref()
                     .expect("payload presence was checked above");
-                let converted = convert_expr(
+                let mut stmts = Vec::new();
+                let val = emit_convert_value(
+                    &mut stmts,
+                    body_indent,
+                    next_id,
                     source,
                     target,
                     source_interface,
@@ -661,34 +751,41 @@ fn variant_body(
                     target_payload,
                     "payload",
                     &format!("{type_path}.{}", source_case.name),
+                    false,
                 )?;
-                format!(
-                    "::core::result::Result::Ok(super::__witforge_to::{target_interface_module}::{target_type}::{target_case_name}({})),",
-                    converted.into_value_expr()
-                )
+                let mut inner = val.expr;
+                let ctor = format!("{target_path}::{target_case_name}");
+                let ok_single = format!("::core::result::Result::Ok({ctor}({inner}))");
+                if stmts.is_empty() && body_indent + ok_single.len() > rustfmt::MAX_WIDTH {
+                    let tmp = fresh(next_id);
+                    stmts.push(rustfmt::fmt_let_stmt(body_indent, &tmp, &inner));
+                    inner = tmp;
+                }
+                let ctor_call = rustfmt::fmt_call(
+                    body_indent,
+                    &ctor,
+                    &[inner],
+                    body_indent + "::core::result::Result::Ok(".len(),
+                    1,
+                );
+                let tail = format!("::core::result::Result::Ok({ctor_call})");
+                rustfmt::fmt_match_arm(arm_indent, &pat, &stmts, &tail)
             }
             (Some(target_case), None) => {
                 let target_case_name = rust_ident(&pascal_case(&target_case.name), "variant case")?;
-                format!(
-                    "::core::result::Result::Ok(super::__witforge_to::{target_interface_module}::{target_type}::{target_case_name}),"
-                )
+                let tail = format!("::core::result::Result::Ok({target_path}::{target_case_name})");
+                rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
             }
         };
-        // Name the binding `payload` only when the conversion arm uses it; a removed case keeps
-        // the underscore so the generated match stays warning-free.
-        let pattern = if target_case.is_some() {
-            pattern.replace("(_payload)", "(payload)")
-        } else {
-            pattern
-        };
-        writeln!(out, "    {pattern} => {arm}")?;
+        writeln!(out, "{arm}")?;
     }
-    writeln!(out, "}}")?;
+    writeln!(out, "{prefix}}}")?;
     Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn enum_body(
+    indent: usize,
     source: &Version,
     target: &Version,
     source_interface: &Interface,
@@ -697,17 +794,23 @@ fn enum_body(
     source_cases: &[Case],
     target_cases: &[Case],
 ) -> Result<String> {
+    let prefix = " ".repeat(indent);
+    let arm_indent = indent + 4;
+    let body_indent = indent + 8;
     let source_interface_module =
         rust_ident(&snake_case(&source_interface.name), "interface module")?;
     let target_interface_module =
         rust_ident(&snake_case(&target_interface.name), "interface module")?;
     let source_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
+    let source_path = format!("super::__witforge_from::{source_interface_module}::{source_type}");
+    let target_path = format!("super::__witforge_to::{target_interface_module}::{target_type}");
     let type_path = format!("{}/{}", source_interface.name, source_def.name);
     let from_ver = source.model.package.version;
     let to_ver = target.model.package.version;
+
     let mut out = String::new();
-    writeln!(out, "match value {{")?;
+    writeln!(out, "{prefix}match value {{")?;
     for source_case in source_cases {
         let source_case_name = rust_ident(&pascal_case(&source_case.name), "enum case")?;
         let target_case_name = target_cases
@@ -715,62 +818,128 @@ fn enum_body(
             .find(|target_case| target_case.name == source_case.name)
             .map(|case| rust_ident(&pascal_case(&case.name), "enum case"))
             .transpose()?;
+        let pat = format!("{source_path}::{source_case_name}");
         let arm = if let Some(target_case_name) = target_case_name {
-            format!(
-                "::core::result::Result::Ok(super::__witforge_to::{target_interface_module}::{target_type}::{target_case_name}),"
-            )
+            let tail = format!("::core::result::Result::Ok({target_path}::{target_case_name})");
+            rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
         } else {
-            format!(
-                "::core::result::Result::Err({ERROR}::UnknownCase {{ from: \"{from_ver}\", to: \"{to_ver}\", path: \"{type_path}\", case: \"{}\" }}),",
-                source_case.name
+            let err = rustfmt::fmt_struct_lit(
+                body_indent,
+                &format!("{ERROR}::UnknownCase"),
+                &[
+                    ("from".to_string(), format!("{:?}", from_ver.to_string())),
+                    ("to".to_string(), format!("{:?}", to_ver.to_string())),
+                    ("path".to_string(), format!("{type_path:?}")),
+                    ("case".to_string(), format!("{:?}", source_case.name)),
+                ],
+                body_indent + "::core::result::Result::Err(".len(),
+                1,
+            );
+            rustfmt::fmt_match_arm(
+                arm_indent,
+                &pat,
+                &[],
+                &format!("::core::result::Result::Err({err})"),
             )
         };
-        writeln!(
-            out,
-            "    super::__witforge_from::{source_interface_module}::{source_type}::{source_case_name} => {arm}"
-        )?;
+        writeln!(out, "{arm}")?;
     }
-    writeln!(out, "}}")?;
+    writeln!(out, "{prefix}}}")?;
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn flags_body(
+    indent: usize,
     target_interface: &Interface,
     source_def: &TypeDef,
     source_flags: &[crate::model::Flag],
     target_flags: &[crate::model::Flag],
 ) -> Result<String> {
+    let prefix = " ".repeat(indent);
     let target_interface_module =
         rust_ident(&snake_case(&target_interface.name), "interface module")?;
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
-    let mut out = String::new();
-    writeln!(
-        out,
-        "::core::result::Result::Ok(super::__witforge_to::{target_interface_module}::{target_type} {{"
-    )?;
+    let target_path = format!("super::__witforge_to::{target_interface_module}::{target_type}");
+    let mut fields = Vec::new();
+    let mut used_value = false;
     for target_flag in target_flags {
         let target_name = rust_ident(&snake_case(&target_flag.name), "flag")?;
-        let value = source_flags
+        let val = if let Some(source_flag) = source_flags
             .iter()
             .find(|source_flag| source_flag.name == target_flag.name)
-            .map(|source_flag| {
-                rust_ident(&snake_case(&source_flag.name), "flag")
-                    .map(|source_name| format!("value.{source_name}"))
-            })
-            .transpose()?
-            .unwrap_or_else(|| "false".to_string());
-        writeln!(out, "    {target_name}: {value},")?;
+        {
+            used_value = true;
+            let source_name = rust_ident(&snake_case(&source_flag.name), "flag")?;
+            format!("value.{source_name}")
+        } else {
+            "false".to_string()
+        };
+        fields.push((target_name, val));
     }
-    writeln!(out, "}})")?;
+    let mut out = String::new();
+    if !used_value {
+        writeln!(out, "{prefix}let _ = value;")?;
+    }
+    let lit = rustfmt::fmt_struct_lit(
+        indent,
+        &target_path,
+        &fields,
+        indent + "::core::result::Result::Ok(".len(),
+        1,
+    );
+    writeln!(out, "{prefix}::core::result::Result::Ok({lit})")?;
     Ok(out)
 }
 
+fn fresh(next_id: &mut usize) -> String {
+    let id = *next_id;
+    *next_id += 1;
+    format!("v{id}")
+}
+
+struct ValueExpr {
+    expr: String,
+    /// When `tail_result` is true and the conversion directly calls a function returning
+    /// `Result<Target, ConversionError>`, we return that call directly without `Ok(...?)`.
+    returns_result: bool,
+}
+
+fn is_infallible_pair(source_type: &TypeExpr, target_type: &TypeExpr) -> bool {
+    match (source_type, target_type) {
+        (TypeExpr::Bool, TypeExpr::Bool)
+        | (TypeExpr::U8, TypeExpr::U8)
+        | (TypeExpr::U16, TypeExpr::U16)
+        | (TypeExpr::U32, TypeExpr::U32)
+        | (TypeExpr::U64, TypeExpr::U64)
+        | (TypeExpr::S8, TypeExpr::S8)
+        | (TypeExpr::S16, TypeExpr::S16)
+        | (TypeExpr::S32, TypeExpr::S32)
+        | (TypeExpr::S64, TypeExpr::S64)
+        | (TypeExpr::F32, TypeExpr::F32)
+        | (TypeExpr::F64, TypeExpr::F64)
+        | (TypeExpr::String, TypeExpr::String) => true,
+        (TypeExpr::Named(a), TypeExpr::Named(b)) if a == b => a.is_foreign() || b.is_foreign(),
+        (TypeExpr::List(a), TypeExpr::List(b)) | (TypeExpr::Option(a), TypeExpr::Option(b)) => {
+            is_infallible_pair(a, b)
+        }
+        (TypeExpr::Result(a), TypeExpr::Result(b)) => {
+            let ok = match (&a.ok, &b.ok) {
+                (Some(sa), Some(sb)) => is_infallible_pair(sa, sb),
+                (None, None) => true,
+                _ => false,
+            };
+            let err = match (&a.err, &b.err) {
+                (Some(sa), Some(sb)) => is_infallible_pair(sa, sb),
+                (None, None) => true,
+                _ => false,
+            };
+            ok && err
+        }
+        _ => false,
+    }
+}
+
 /// Expand aliases and named structural definitions to the expression they project.
-///
-/// Conversion compares the types values actually have. An alias and its target are one Rust type
-/// and one wire type, so `type id = u32` and `u32` must convert identically. Named records,
-/// variants, enums, and flags stay named: their conversion function is the adapter.
 fn qualify_name(context: Option<&Dependency>, name: &QualifiedName) -> QualifiedName {
     if name.package().is_some() {
         return name.clone();
@@ -866,8 +1035,13 @@ fn resolve_expr(
     }
 }
 
+/// Emit statements converting borrowed `expression` from `source_type` to `target_type` and
+/// return a short expression holding the converted value.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn convert_expr(
+fn emit_convert_value(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    next_id: &mut usize,
     source: &Version,
     target: &Version,
     source_interface: &Interface,
@@ -876,7 +1050,8 @@ fn convert_expr(
     target_type: &TypeExpr,
     expression: &str,
     path: &str,
-) -> Result<Converted> {
+    tail_result: bool,
+) -> Result<ValueExpr> {
     let from_ver = source.model.package.version;
     let to_ver = target.model.package.version;
     let source_type = resolve_expr(
@@ -885,14 +1060,16 @@ fn convert_expr(
         source_type,
         "source",
         &mut HashSet::new(),
-    )?;
+    )
+    .with_context(|| format!("conversion {from_ver} -> {to_ver}"))?;
     let target_type = resolve_expr(
         &target.model,
         None,
         target_type,
         "target",
         &mut HashSet::new(),
-    )?;
+    )
+    .with_context(|| format!("conversion {from_ver} -> {to_ver}"))?;
     match (&source_type, &target_type) {
         (TypeExpr::Bool, TypeExpr::Bool)
         | (TypeExpr::U8, TypeExpr::U8)
@@ -904,10 +1081,14 @@ fn convert_expr(
         | (TypeExpr::S32, TypeExpr::S32)
         | (TypeExpr::S64, TypeExpr::S64)
         | (TypeExpr::F32, TypeExpr::F32)
-        | (TypeExpr::F64, TypeExpr::F64) => Ok(Converted::infallible(copied(expression))),
-        (TypeExpr::String, TypeExpr::String) => Ok(Converted::infallible(format!(
-            "::core::clone::Clone::clone({expression})"
-        ))),
+        | (TypeExpr::F64, TypeExpr::F64) => Ok(ValueExpr {
+            expr: copied(expression),
+            returns_result: false,
+        }),
+        (TypeExpr::String, TypeExpr::String) => Ok(ValueExpr {
+            expr: format!("::core::clone::Clone::clone({expression})"),
+            returns_result: false,
+        }),
         (TypeExpr::Named(source_name), TypeExpr::Named(target_name))
             if source_name == target_name =>
         {
@@ -922,83 +1103,142 @@ fn convert_expr(
                 );
             }
             if source_name.is_foreign() || target_name.is_foreign() {
-                // Dependency packages are pinned and frozen with the version directory; the
-                // same package-qualified name is the same value across these versions.
-                return Ok(Converted::infallible(format!(
-                    "::core::clone::Clone::clone({expression})"
-                )));
+                return Ok(ValueExpr {
+                    expr: format!("::core::clone::Clone::clone({expression})"),
+                    returns_result: false,
+                });
             }
             let interface_module =
                 rust_ident(&snake_case(&source_name.interface), "interface module")?;
             let function = rust_ident(&snake_case(&source_name.name), "conversion function")?;
-            Ok(Converted::direct_call(
-                format!("super::{interface_module}::{function}"),
-                expression,
-            ))
+            let callee = format!("super::{interface_module}::{function}");
+            if tail_result {
+                let call = rustfmt::fmt_call(indent, &callee, &[expression.to_string()], indent, 0);
+                return Ok(ValueExpr {
+                    expr: call,
+                    returns_result: true,
+                });
+            }
+            let tmp = fresh(next_id);
+            stmts.push(rustfmt::fmt_let_call(
+                indent,
+                &tmp,
+                &callee,
+                &[expression.to_string()],
+                true,
+            ));
+            Ok(ValueExpr {
+                expr: tmp,
+                returns_result: false,
+            })
         }
         (TypeExpr::List(source_element), TypeExpr::List(target_element)) => {
-            let inner = convert_expr(
+            if is_infallible_pair(source_element, target_element) {
+                return Ok(ValueExpr {
+                    expr: format!("::core::clone::Clone::clone({expression})"),
+                    returns_result: false,
+                });
+            }
+            let prefix = " ".repeat(indent);
+            let inner_indent = indent + 4;
+            let inner_prefix = " ".repeat(inner_indent);
+            let out_var = fresh(next_id);
+            let item_var = fresh(next_id);
+            let iter_src = expression.strip_prefix('&').unwrap_or(expression);
+            stmts.push(rustfmt::fmt_let_stmt(
+                indent,
+                &format!("mut {out_var}"),
+                &format!("::std::vec::Vec::with_capacity({iter_src}.len())"),
+            ));
+            let mut body_stmts = Vec::new();
+            let elem = emit_convert_value(
+                &mut body_stmts,
+                inner_indent,
+                next_id,
                 source,
                 target,
                 source_interface,
                 target_interface,
                 source_element,
                 target_element,
-                "item",
+                &item_var,
                 path,
+                false,
             )?;
-            if !inner.fallible {
-                return Ok(Converted::infallible(format!(
-                    "::core::clone::Clone::clone({expression})"
-                )));
+            let mut loop_code = format!("{prefix}for {item_var} in {expression} {{\n");
+            for s in body_stmts {
+                let _ = writeln!(loop_code, "{s}");
             }
-            let target_element_type =
-                rust_type_expr(source, target, target_element, "__witforge_to", path)?;
-            if let Some(callee) = inner.direct_callee {
-                Ok(Converted::fallible(format!(
-                    "{}.iter().map({callee}).collect::<::core::result::Result<::std::vec::Vec<{target_element_type}>, {ERROR}>>()",
-                    borrowed(expression)
-                )))
-            } else {
-                Ok(Converted::fallible(format!(
-                    "{}.iter().map(|item| {}).collect::<::core::result::Result<::std::vec::Vec<{target_element_type}>, {ERROR}>>()",
-                    borrowed(expression),
-                    inner.into_result_expr()
-                )))
-            }
+            let push_call = rustfmt::fmt_call(
+                inner_indent,
+                &format!("{out_var}.push"),
+                &[elem.expr],
+                inner_indent,
+                1,
+            );
+            let _ = writeln!(loop_code, "{inner_prefix}{push_call};");
+            let _ = write!(loop_code, "{prefix}}}");
+            stmts.push(loop_code);
+            Ok(ValueExpr {
+                expr: out_var,
+                returns_result: false,
+            })
         }
         (TypeExpr::Option(source_payload), TypeExpr::Option(target_payload)) => {
-            let inner = convert_expr(
+            if is_infallible_pair(source_payload, target_payload) {
+                return Ok(ValueExpr {
+                    expr: format!("::core::clone::Clone::clone({expression})"),
+                    returns_result: false,
+                });
+            }
+            let prefix = " ".repeat(indent);
+            let inner_indent = indent + 4;
+            let inner_prefix = " ".repeat(inner_indent);
+            let out_var = fresh(next_id);
+            let item_var = fresh(next_id);
+            stmts.push(format!(
+                "{prefix}let mut {out_var} = ::core::option::Option::None;"
+            ));
+            let mut body_stmts = Vec::new();
+            let elem = emit_convert_value(
+                &mut body_stmts,
+                inner_indent,
+                next_id,
                 source,
                 target,
                 source_interface,
                 target_interface,
                 source_payload,
                 target_payload,
-                "item",
+                &item_var,
                 path,
+                false,
             )?;
-            if !inner.fallible {
-                return Ok(Converted::infallible(format!(
-                    "::core::clone::Clone::clone({expression})"
-                )));
+            let mut if_code = format!(
+                "{prefix}if let ::core::option::Option::Some({item_var}) = {expression} {{\n"
+            );
+            for s in body_stmts {
+                let _ = writeln!(if_code, "{s}");
             }
-            if let Some(callee) = inner.direct_callee {
-                Ok(Converted::fallible(format!(
-                    "{}.as_ref().map({callee}).transpose()",
-                    borrowed(expression)
-                )))
-            } else {
-                Ok(Converted::fallible(format!(
-                    "match {expression} {{ \
-                     ::core::option::Option::Some(item) => ::core::result::Result::<_, {ERROR}>::Ok(::core::option::Option::Some({})), \
-                     ::core::option::Option::None => ::core::result::Result::<_, {ERROR}>::Ok(::core::option::Option::None), \
-                     }}",
-                    inner.into_value_expr()
-                )))
-            }
+            let some_call = rustfmt::fmt_call(
+                inner_indent,
+                "::core::option::Option::Some",
+                &[elem.expr],
+                inner_indent + out_var.len() + 3,
+                1,
+            );
+            let _ = writeln!(if_code, "{inner_prefix}{out_var} = {some_call};");
+            let _ = write!(if_code, "{prefix}}}");
+            stmts.push(if_code);
+            Ok(ValueExpr {
+                expr: out_var,
+                returns_result: false,
+            })
         }
-        (TypeExpr::Result(source_result), TypeExpr::Result(target_result)) => result_expr(
+        (TypeExpr::Result(source_result), TypeExpr::Result(target_result)) => emit_result_value(
+            stmts,
+            indent,
+            next_id,
             source,
             target,
             source_interface,
@@ -1019,7 +1259,11 @@ fn convert_expr(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn result_expr(
+#[allow(clippy::too_many_lines)]
+fn emit_result_value(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    next_id: &mut usize,
     source: &Version,
     target: &Version,
     source_interface: &Interface,
@@ -1028,68 +1272,153 @@ fn result_expr(
     target_result: &ResultExpr,
     expression: &str,
     path: &str,
-) -> Result<Converted> {
+) -> Result<ValueExpr> {
     let from_ver = source.model.package.version;
     let to_ver = target.model.package.version;
-    let ok = match (&source_result.ok, &target_result.ok) {
-        (Some(source_ok), Some(target_ok)) => convert_expr(
-            source,
-            target,
-            source_interface,
-            target_interface,
-            source_ok,
-            target_ok,
-            "ok",
-            path,
-        )?,
-        (None, None) => Converted::infallible("()".to_string()),
+    // Validate both slots before checking infallibility so shape/type mismatches are refused.
+    let mut check_ok_infallible = true;
+    match (&source_result.ok, &target_result.ok) {
+        (Some(sa), Some(sb)) => {
+            let ra = resolve_expr(&source.model, None, sa, "source", &mut HashSet::new())?;
+            let rb = resolve_expr(&target.model, None, sb, "target", &mut HashSet::new())?;
+            check_ok_infallible = is_infallible_pair(&ra, &rb);
+            let mut scratch = Vec::new();
+            let mut scratch_id = 0;
+            emit_convert_value(
+                &mut scratch,
+                indent,
+                &mut scratch_id,
+                source,
+                target,
+                source_interface,
+                target_interface,
+                sa,
+                sb,
+                "ok",
+                path,
+                false,
+            )?;
+        }
+        (None, None) => {}
         _ => {
             contract_bail!(
                 "conversion {from_ver} -> {to_ver}: {path} changes its result success shape; \
                  evolution requires a new type"
             )
         }
-    };
-    let err = match (&source_result.err, &target_result.err) {
-        (Some(source_err), Some(target_err)) => convert_expr(
-            source,
-            target,
-            source_interface,
-            target_interface,
-            source_err,
-            target_err,
-            "err",
-            path,
-        )?,
-        (None, None) => Converted::infallible("()".to_string()),
+    }
+    let mut check_err_infallible = true;
+    match (&source_result.err, &target_result.err) {
+        (Some(sa), Some(sb)) => {
+            let ra = resolve_expr(&source.model, None, sa, "source", &mut HashSet::new())?;
+            let rb = resolve_expr(&target.model, None, sb, "target", &mut HashSet::new())?;
+            check_err_infallible = is_infallible_pair(&ra, &rb);
+            let mut scratch = Vec::new();
+            let mut scratch_id = 0;
+            emit_convert_value(
+                &mut scratch,
+                indent,
+                &mut scratch_id,
+                source,
+                target,
+                source_interface,
+                target_interface,
+                sa,
+                sb,
+                "err",
+                path,
+                false,
+            )?;
+        }
+        (None, None) => {}
         _ => contract_bail!(
             "conversion {from_ver} -> {to_ver}: {path} changes its result error shape; evolution \
              requires a new type"
         ),
-    };
-    if !ok.fallible && !err.fallible {
-        return Ok(Converted::infallible(format!(
-            "::core::clone::Clone::clone({expression})"
-        )));
     }
-    let ok_binding = if source_result.ok.is_some() {
-        "ok"
+    if check_ok_infallible && check_err_infallible {
+        return Ok(ValueExpr {
+            expr: format!("::core::clone::Clone::clone({expression})"),
+            returns_result: false,
+        });
+    }
+
+    let prefix = " ".repeat(indent);
+    let arm_indent = indent + 4;
+    let body_indent = indent + 8;
+    let out_var = fresh(next_id);
+
+    let ok_arm = if let (Some(sa), Some(sb)) = (&source_result.ok, &target_result.ok) {
+        let ok_var = fresh(next_id);
+        let mut arm_stmts = Vec::new();
+        let val = emit_convert_value(
+            &mut arm_stmts,
+            body_indent,
+            next_id,
+            source,
+            target,
+            source_interface,
+            target_interface,
+            sa,
+            sb,
+            &ok_var,
+            path,
+            false,
+        )?;
+        rustfmt::fmt_match_arm(
+            arm_indent,
+            &format!("::core::result::Result::Ok({ok_var})"),
+            &arm_stmts,
+            &format!("::core::result::Result::Ok({})", val.expr),
+        )
     } else {
-        "_ok"
+        rustfmt::fmt_match_arm(
+            arm_indent,
+            "::core::result::Result::Ok(_)",
+            &[],
+            "::core::result::Result::Ok(())",
+        )
     };
-    let err_binding = if source_result.err.is_some() {
-        "err"
+
+    let err_arm = if let (Some(sa), Some(sb)) = (&source_result.err, &target_result.err) {
+        let err_var = fresh(next_id);
+        let mut arm_stmts = Vec::new();
+        let val = emit_convert_value(
+            &mut arm_stmts,
+            body_indent,
+            next_id,
+            source,
+            target,
+            source_interface,
+            target_interface,
+            sa,
+            sb,
+            &err_var,
+            path,
+            false,
+        )?;
+        rustfmt::fmt_match_arm(
+            arm_indent,
+            &format!("::core::result::Result::Err({err_var})"),
+            &arm_stmts,
+            &format!("::core::result::Result::Err({})", val.expr),
+        )
     } else {
-        "_err"
+        rustfmt::fmt_match_arm(
+            arm_indent,
+            "::core::result::Result::Err(_)",
+            &[],
+            "::core::result::Result::Err(())",
+        )
     };
-    Ok(Converted::fallible(format!(
-        "match {expression} {{ \
-         ::core::result::Result::Ok({ok_binding}) => ::core::result::Result::<_, {ERROR}>::Ok(::core::result::Result::Ok({})), \
-         ::core::result::Result::Err({err_binding}) => ::core::result::Result::<_, {ERROR}>::Ok(::core::result::Result::Err({})), \
-         }}",
-        ok.into_value_expr(),
-        err.into_value_expr()
-    )))
+
+    stmts.push(format!(
+        "{prefix}let {out_var} = match {expression} {{\n{ok_arm}\n{err_arm}\n{prefix}}};"
+    ));
+    Ok(ValueExpr {
+        expr: out_var,
+        returns_result: false,
+    })
 }
 
 /// A Rust type path for `ty` in `version`, relative to the pair module that imports that
@@ -1100,74 +1429,6 @@ fn rust_type(interface: &Interface, name: &str, version_alias: &str) -> Result<S
     Ok(format!(
         "super::{version_alias}::{interface_module}::{type_name}"
     ))
-}
-
-fn rust_type_expr(
-    source: &Version,
-    version: &Version,
-    ty: &TypeExpr,
-    version_alias: &str,
-    path: &str,
-) -> Result<String> {
-    match ty {
-        TypeExpr::Bool => Ok("bool".to_string()),
-        TypeExpr::U8 => Ok("u8".to_string()),
-        TypeExpr::U16 => Ok("u16".to_string()),
-        TypeExpr::U32 => Ok("u32".to_string()),
-        TypeExpr::U64 => Ok("u64".to_string()),
-        TypeExpr::S8 => Ok("i8".to_string()),
-        TypeExpr::S16 => Ok("i16".to_string()),
-        TypeExpr::S32 => Ok("i32".to_string()),
-        TypeExpr::S64 => Ok("i64".to_string()),
-        TypeExpr::F32 => Ok("f32".to_string()),
-        TypeExpr::F64 => Ok("f64".to_string()),
-        TypeExpr::String => Ok("::std::string::String".to_string()),
-        TypeExpr::Named(name) => {
-            if version.model.type_def(name).is_none() {
-                contract_bail!(
-                    "conversion {} -> {}: {path}: type `{name}` is missing from the target \
-                     version; evolution requires a new type instead of removing a referenced type",
-                    source.model.package.version,
-                    version.model.package.version,
-                );
-            }
-            if let Some((namespace, package)) = name.package() {
-                let module = format!("{}_{}", snake_case(namespace), snake_case(package));
-                let interface = rust_ident(
-                    &snake_case(name.interface_name()),
-                    "dependency interface module",
-                )?;
-                let type_name = rust_ident(&pascal_case(&name.name), "type")?;
-                return Ok(format!(
-                    "super::super::super::witforge_deps::{module}::{interface}::{type_name}"
-                ));
-            }
-            let interface_module = rust_ident(&snake_case(&name.interface), "interface module")?;
-            let type_name = rust_ident(&pascal_case(&name.name), "type")?;
-            Ok(format!(
-                "super::{version_alias}::{interface_module}::{type_name}"
-            ))
-        }
-        TypeExpr::List(element) => Ok(format!(
-            "::std::vec::Vec<{}>",
-            rust_type_expr(source, version, element, version_alias, path)?
-        )),
-        TypeExpr::Option(payload) => Ok(format!(
-            "::core::option::Option<{}>",
-            rust_type_expr(source, version, payload, version_alias, path)?
-        )),
-        TypeExpr::Result(result) => {
-            let ok = match &result.ok {
-                Some(ty) => rust_type_expr(source, version, ty, version_alias, path)?,
-                None => "()".to_string(),
-            };
-            let err = match &result.err {
-                Some(ty) => rust_type_expr(source, version, ty, version_alias, path)?,
-                None => "()".to_string(),
-            };
-            Ok(format!("::core::result::Result<{ok}, {err}>"))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1236,6 +1497,7 @@ mod tests {
         ])
         .unwrap_err();
         let message = format!("{error:#}");
+        assert!(message.contains("0.1.0 -> 0.2.0"), "{message}");
         assert!(
             message.contains("changes kind from list to option"),
             "{message}"
@@ -1262,6 +1524,7 @@ mod tests {
         ])
         .unwrap_err();
         let message = format!("{error:#}");
+        assert!(message.contains("0.1.0 -> 0.2.0"), "{message}");
         assert!(
             message.contains("changes its result error shape"),
             "{message}"
@@ -1301,6 +1564,7 @@ mod tests {
         ])
         .unwrap_err();
         let message = format!("{error:#}");
+        assert!(message.contains("0.1.0 -> 0.2.0"), "{message}");
         assert!(
             message.contains("missing from the target version"),
             "{message}"
@@ -1320,6 +1584,7 @@ mod tests {
         ])
         .unwrap_err();
         let message = format!("{error:#}");
+        assert!(message.contains("0.1.0 -> 0.2.0"), "{message}");
         assert!(
             message.contains("changes type from `u8` to `u64`"),
             "{message}"

@@ -18,7 +18,9 @@ pub mod v0_1 {
     /// World `ingestion`:
     ///
     /// A world that imports shared values and exports the ingester.
-    pub const WORLDS: &[super::World] = &[
-        super::World { name: "ingestion", imports: &["types"], exports: &["ingest"] },
-    ];
+    pub const WORLDS: &[super::World] = &[super::World {
+        name: "ingestion",
+        imports: &["types"],
+        exports: &["ingest"],
+    }];
 }

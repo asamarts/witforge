@@ -17,18 +17,18 @@ pub mod types {
         /// Tags, defaulted to empty for values from v0.1.
         pub tags: ::std::vec::Vec<::std::string::String>,
     }
-    pub trait Types {
-    }
 }
 
 /// Task operations.
 pub mod service {
+    /// Type alias `service/task`.
     pub type Task = super::types::Task;
+
+    /// Trait for interface `service`.
     pub trait Service {
         /// Create a task with the given title.
         fn create(&self, title: ::std::string::String) -> Task;
     }
 }
 
-pub use types::Types;
 pub use service::Service;

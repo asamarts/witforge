@@ -30,6 +30,18 @@ have it.
 
 ### Changed
 
+- Generated Rust (plain Rust, `worlds.rs`, `convert.rs`, `witforge_deps.rs`, and protobuf glue)
+  now formats directly in `rustfmt`'s default style for both Edition 2021 and Edition 2024
+  (without invoking `rustfmt`), passes default Clippy lints (`-D warnings`), and documents every
+  public item (`-D missing_docs`, emitting a concise one-line comment naming the WIT identity when
+  no WIT doc comment is present). Type-only interfaces (zero functions) no longer emit an empty
+  trait or root re-export—so `interface error { enum error { a } }` is now valid—while their empty
+  `<Interface>Method` enum stays in `.proto` to preserve wire/schema history under `buf breaking`.
+  Unit-returning trait methods omit `-> ()` (`fn ping(&self);`). **Migration:** consumers naming
+  an empty trait for a type-only interface (such as `types::Types`) must remove that reference;
+  regenerating released per-version Rust modules updates their formatting, fallback doc comments,
+  and unit signatures once. If your crate sets non-default `rustfmt.toml` options, put
+  `#[rustfmt::skip]` on the module declaration that includes the generated tree.
 - Generated `convert.rs` adapters no longer emit untyped `Result::Ok(...)?` expressions or
   redundant closures, so adding consumer `From<...> for ConversionError` impls in the including
   crate compiles cleanly and generated code passes Clippy at the default level. Empty version

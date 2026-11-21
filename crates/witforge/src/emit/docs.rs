@@ -32,11 +32,12 @@ enum Target {
     Proto,
 }
 
-/// Write outer Rust doc comments (`///`) for `docs`, indented by `indent` spaces.
-pub(crate) fn write_rust_outer(out: &mut String, indent: usize, docs: &str) -> Result<()> {
+/// Write outer Rust doc comments (`///`) for `docs`, indented by `indent` spaces. Returns `true`
+/// if any line was written.
+pub(crate) fn write_rust_outer(out: &mut String, indent: usize, docs: &str) -> Result<bool> {
     let lines = sanitize_rust_lines(docs);
     if lines.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let prefix = " ".repeat(indent);
     for line in lines {
@@ -46,7 +47,7 @@ pub(crate) fn write_rust_outer(out: &mut String, indent: usize, docs: &str) -> R
             writeln!(out, "{prefix}/// {line}")?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Write inner Rust doc comments (`//!`) for `docs`. Returns `true` if any line was written.

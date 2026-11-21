@@ -18,9 +18,11 @@ pub mod v0_1 {
     /// World `task-service`:
     ///
     /// The task service world.
-    pub const WORLDS: &[super::World] = &[
-        super::World { name: "task-service", imports: &["types"], exports: &["service"] },
-    ];
+    pub const WORLDS: &[super::World] = &[super::World {
+        name: "task-service",
+        imports: &["types"],
+        exports: &["service"],
+    }];
 }
 
 /// World metadata for `v0_2`.
@@ -30,7 +32,9 @@ pub mod v0_2 {
     /// World `task-service`:
     ///
     /// The task service world.
-    pub const WORLDS: &[super::World] = &[
-        super::World { name: "task-service", imports: &["types"], exports: &["service"] },
-    ];
+    pub const WORLDS: &[super::World] = &[super::World {
+        name: "task-service",
+        imports: &["types"],
+        exports: &["service"],
+    }];
 }

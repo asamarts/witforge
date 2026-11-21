@@ -20,6 +20,7 @@ pub mod json_schema;
 pub mod output;
 pub mod proto;
 pub mod rust;
+pub(crate) mod rustfmt;
 pub(crate) mod versions;
 
 use crate::model::{TypeDefKind, TypeExpr};

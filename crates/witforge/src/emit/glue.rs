@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
+use crate::emit::rustfmt;
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::emit::{RUST_KEYWORDS, pascal_case, rust_ident, snake_case};
 use crate::lock::WireLock;
@@ -70,7 +71,10 @@ impl ::core::fmt::Display for GlueError {
     fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         match self {
             Self::IntegerOutOfRange { field, value } => {
-                write!(formatter, "field `{field}`: integer {value} is out of range")
+                write!(
+                    formatter,
+                    "field `{field}`: integer {value} is out of range"
+                )
             }
             Self::MissingField { field } => write!(formatter, "field `{field}` is missing"),
             Self::UnknownEnumValue { enumeration, value } => {
@@ -227,19 +231,25 @@ fn emit_dependency_glue(
         let members = model.members()?;
         let mut lock = WireLock::default();
         lock.reconcile(&members)?;
-        let emitter = Emitter::new_dependency(&model, &lock, plain_root, proto_root, dependency)?;
+        let emitter =
+            Emitter::new_dependency(&model, &lock, plain_root, proto_root, dependency, 4)?;
         let body = emitter.emit_body()?;
-        write_docs(&mut out, 0, &dependency.package.docs)?;
-        writeln!(out, "pub mod {module} {{")?;
-        for line in body.lines() {
-            if line.is_empty() {
-                writeln!(out)?;
-            } else {
-                writeln!(out, "    {line}")?;
-            }
-        }
-        writeln!(out, "}}")?;
         writeln!(out)?;
+        let fallback = format!(
+            "Protobuf glue for dependency package `{}:{}`.",
+            dependency.package.namespace, dependency.package.name
+        );
+        rustfmt::write_docs_or(&mut out, 0, &dependency.package.docs, &fallback)?;
+        if module == "witforge_deps" {
+            writeln!(out, "#[allow(clippy::module_inception)]")?;
+        }
+        if body.is_empty() {
+            writeln!(out, "pub mod {module} {{}}")?;
+        } else {
+            writeln!(out, "pub mod {module} {{")?;
+            out.push_str(&body);
+            writeln!(out, "}}")?;
+        }
     }
     Ok(out)
 }
@@ -483,10 +493,12 @@ fn root_source(namespace: &str, name: &str, majors: &[u64], dependencies: bool) 
     out.push_str(GLUE_ERROR);
     for major in majors {
         writeln!(out)?;
+        writeln!(out, "/// Protobuf glue for major version `v{major}`.")?;
         writeln!(out, "pub mod v{major};")?;
     }
     if dependencies {
         writeln!(out)?;
+        writeln!(out, "/// Protobuf glue for pinned dependencies.")?;
         writeln!(out, "pub mod witforge_deps;")?;
     }
     Ok(out)
@@ -521,6 +533,7 @@ struct Emitter<'a> {
     plain_base_override: Option<String>,
     proto_base_override: Option<String>,
     dependency: bool,
+    base_indent: usize,
 }
 
 impl<'a> Emitter<'a> {
@@ -555,6 +568,7 @@ impl<'a> Emitter<'a> {
             plain_base_override: None,
             proto_base_override,
             dependency: false,
+            base_indent: 0,
         })
     }
 
@@ -564,6 +578,7 @@ impl<'a> Emitter<'a> {
         plain_root: &str,
         proto_root: &str,
         dependency: &Dependency,
+        base_indent: usize,
     ) -> Result<Self> {
         let mut emitter = Self::new(model, lock, plain_root, proto_root)?;
         emitter.plain_base_override = Some(format!(
@@ -578,6 +593,7 @@ impl<'a> Emitter<'a> {
             dependency.package.version.major,
         ));
         emitter.dependency = true;
+        emitter.base_indent = base_indent;
         Ok(emitter)
     }
 
@@ -593,6 +609,7 @@ impl<'a> Emitter<'a> {
             plain_base_override: self.plain_base_override.clone(),
             proto_base_override: self.proto_base_override.clone(),
             dependency: self.dependency,
+            base_indent: self.base_indent,
         }
     }
 
@@ -608,11 +625,16 @@ impl<'a> Emitter<'a> {
             "// source: {}:{}@{}",
             self.model.package.namespace, self.model.package.name, self.model.package.version
         )?;
-        writeln!(out)?;
-        if docs::write_rust_inner(&mut out, &self.model.package.docs)? {
+        let body = self.emit_body()?;
+        let has_docs = !docs::sanitize_rust_lines(&self.model.package.docs).is_empty();
+        if has_docs {
             writeln!(out)?;
+            docs::write_rust_inner(&mut out, &self.model.package.docs)?;
         }
-        out.push_str(&self.emit_body()?);
+        if !body.is_empty() {
+            writeln!(out)?;
+            out.push_str(&body);
+        }
         if !out.ends_with('\n') {
             out.push('\n');
         }
@@ -622,28 +644,58 @@ impl<'a> Emitter<'a> {
     fn emit_body(&self) -> Result<String> {
         self.check_module_names()?;
         let mut out = String::new();
-        writeln!(out, "#[allow(unused_imports)]")?;
-        writeln!(out, "use super::GlueError;")?;
+        let pad = " ".repeat(self.base_indent);
+        let iface_pad = " ".repeat(self.base_indent + 4);
+        let type_pad = " ".repeat(self.base_indent + 8);
+        let needs_error = self
+            .model
+            .interfaces
+            .iter()
+            .any(|interface| !interface.types.is_empty() || !interface.functions.is_empty());
+        let mut wrote_item = false;
+        if needs_error {
+            writeln!(out, "{pad}use super::GlueError;")?;
+            wrote_item = true;
+        }
         for interface in &self.model.interfaces {
             let module = rust_ident(&snake_case(&interface.name), "interface module")?;
-            writeln!(out)?;
-            write_docs(&mut out, 0, &interface.docs)?;
-            writeln!(out, "pub mod {module} {{")?;
-            writeln!(out, "    #[allow(unused_imports)]")?;
-            writeln!(out, "    use super::GlueError;")?;
+            if wrote_item {
+                writeln!(out)?;
+            }
+            wrote_item = true;
+            let fallback = format!("Protobuf glue for interface `{}`.", interface.name);
+            rustfmt::write_docs_or(&mut out, self.base_indent, &interface.docs, &fallback)?;
+            let parent_module = if self.dependency {
+                dependency_module_name(&self.model.package.namespace, &self.model.package.name)?
+            } else {
+                format!("v{}", self.major)
+            };
+            if module == parent_module {
+                writeln!(out, "{pad}#[allow(clippy::module_inception)]")?;
+            }
+            if interface.types.is_empty() && interface.functions.is_empty() {
+                writeln!(out, "{pad}pub mod {module} {{}}")?;
+                continue;
+            }
+            writeln!(out, "{pad}pub mod {module} {{")?;
+            writeln!(out, "{iface_pad}use super::GlueError;")?;
             for def in &interface.types {
                 let type_module = rust_ident(&snake_case(&def.name), "type module")?;
                 writeln!(out)?;
-                write_docs(&mut out, 4, &def.docs)?;
-                writeln!(out, "    pub mod {type_module} {{")?;
-                writeln!(out, "        use super::GlueError;")?;
+                let fallback = format!("Protobuf glue for `{}/{}`.", interface.name, def.name);
+                rustfmt::write_docs_or(&mut out, self.base_indent + 4, &def.docs, &fallback)?;
+                if type_module == module {
+                    writeln!(out, "{iface_pad}#[allow(clippy::module_inception)]")?;
+                }
+                writeln!(out, "{iface_pad}pub mod {type_module} {{")?;
+                writeln!(out, "{type_pad}use super::GlueError;")?;
                 self.emit_type(&mut out, interface, def)?;
-                writeln!(out, "    }}")?;
+                writeln!(out, "{iface_pad}}}")?;
             }
             if !interface.functions.is_empty() {
                 self.emit_functions(&mut out, interface)?;
             }
-            writeln!(out, "}}")?;
+            writeln!(out, "{pad}}}")?;
         }
         Ok(out)
     }
@@ -1686,8 +1738,138 @@ enum Identity {
     Clone,
 }
 
-fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
-    docs::write_rust_outer(out, indent, docs)
+struct TempGen {
+    next: usize,
+    reserved: BTreeSet<String>,
+}
+
+impl TempGen {
+    fn new() -> Self {
+        Self {
+            next: 0,
+            reserved: BTreeSet::new(),
+        }
+    }
+
+    fn with_reserved(reserved: BTreeSet<String>) -> Self {
+        Self { next: 0, reserved }
+    }
+
+    fn fresh(&mut self) -> String {
+        loop {
+            let name = format!("v{}", self.next);
+            self.next += 1;
+            if !self.reserved.contains(&name) {
+                return name;
+            }
+        }
+    }
+}
+
+fn push_stmts(out: &mut String, stmts: &[String]) -> Result<()> {
+    for stmt in stmts {
+        writeln!(out, "{stmt}")?;
+    }
+    Ok(())
+}
+
+fn push_let_else_err(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    temps: &mut TempGen,
+    pat: &str,
+    scrutinee: &str,
+    err_path: &str,
+    err_fields: &[(String, String)],
+) {
+    let prefix = " ".repeat(indent);
+    let body_indent = indent + 4;
+    let body_prefix = " ".repeat(body_indent);
+    let err_prefix = "return ::core::result::Result::Err(";
+    let return_stmt = if body_indent + err_prefix.len() + err_path.len() + 2 > rustfmt::MAX_WIDTH {
+        let arg_indent = body_indent + 4;
+        let arg_prefix = " ".repeat(arg_indent);
+        let err_expr = rustfmt::fmt_struct_lit(arg_indent, err_path, err_fields, arg_indent, 1);
+        format!("{body_prefix}{err_prefix}\n{arg_prefix}{err_expr},\n{body_prefix});")
+    } else {
+        let err_expr = rustfmt::fmt_struct_lit(
+            body_indent,
+            err_path,
+            err_fields,
+            body_indent + err_prefix.len(),
+            2,
+        );
+        format!("{body_prefix}{err_prefix}{err_expr});")
+    };
+    let header = format!("{prefix}let {pat} = {scrutinee} else {{");
+    if !scrutinee.contains('\n') && header.len() <= rustfmt::MAX_WIDTH {
+        stmts.push(format!("{header}\n{return_stmt}\n{prefix}}};"));
+    } else {
+        let tmp = temps.fresh();
+        stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, scrutinee));
+        stmts.push(format!(
+            "{prefix}let {pat} = {tmp} else {{\n{return_stmt}\n{prefix}}};"
+        ));
+    }
+}
+
+fn hoist_if_long(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    temps: &mut TempGen,
+    expr: String,
+    surrounding_len: usize,
+) -> String {
+    if !expr.contains('\n') && indent + surrounding_len + expr.len() <= rustfmt::MAX_WIDTH {
+        return expr;
+    }
+    let tmp = temps.fresh();
+    stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &expr));
+    tmp
+}
+
+fn emit_module_call(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    temps: &mut TempGen,
+    module: &str,
+    func: &str,
+    arg: &str,
+    try_op: bool,
+) -> String {
+    let q = if try_op { "?" } else { "" };
+    let direct = format!("{module}::{func}({arg}){q}");
+    if indent + 4 + direct.len() < rustfmt::MAX_WIDTH {
+        return direct;
+    }
+    let tmp = temps.fresh();
+    let pad = " ".repeat(indent);
+    let inner = " ".repeat(indent + 4);
+    stmts.push(format!(
+        "{pad}let {tmp} = {{\n{inner}use {module} as target;\n{inner}target::{func}({arg}){q}\n{pad}}};"
+    ));
+    tmp
+}
+
+fn emit_direct_module_tail(
+    out: &mut String,
+    indent: usize,
+    module: &str,
+    func: &str,
+    arg: &str,
+) -> Result<()> {
+    let pad = " ".repeat(indent);
+    let direct = format!("{module}::{func}({arg})");
+    if indent + direct.len() <= rustfmt::MAX_WIDTH {
+        writeln!(out, "{pad}{direct}")?;
+    } else {
+        let inner = " ".repeat(indent + 4);
+        writeln!(out, "{pad}{{")?;
+        writeln!(out, "{inner}use {module} as target;")?;
+        writeln!(out, "{inner}target::{func}({arg})")?;
+        writeln!(out, "{pad}}}")?;
+    }
+    Ok(())
 }
 
 impl Emitter<'_> {
@@ -1710,32 +1892,31 @@ impl Emitter<'_> {
     }
 
     fn emit_type(&self, out: &mut String, interface: &Interface, def: &TypeDef) -> Result<()> {
-        let name = rust_ident(&pascal_case(&def.name), "type")?;
         let plain = self.plain_named(&QualifiedName {
             interface: interface.name.clone(),
             name: def.name.clone(),
         })?;
         match &def.kind {
             TypeDefKind::Record(fields) => {
-                self.emit_record(out, &name, &plain, &interface.name, &def.name, fields)?;
+                self.emit_record(out, &plain, &interface.name, &def.name, fields)?;
             }
             TypeDefKind::Variant(cases) => {
-                self.emit_variant(out, &name, &plain, &interface.name, &def.name, cases)?;
+                self.emit_variant(out, &plain, &interface.name, &def.name, cases)?;
             }
             TypeDefKind::Enum(cases) => {
-                self.emit_enum(out, &name, &plain, &interface.name, &def.name, cases)?;
+                self.emit_enum(out, &plain, &interface.name, &def.name, cases)?;
             }
             TypeDefKind::Flags(flags) => {
-                self.emit_flags(out, &name, &plain, &interface.name, &def.name, flags)?;
+                self.emit_flags(out, &plain, &interface.name, &def.name, flags)?;
             }
             TypeDefKind::Alias(target) => {
-                self.emit_alias(out, &name, &plain, &interface.name, &def.name, target)?;
+                self.emit_alias(out, &plain, &interface.name, &def.name, target)?;
             }
             TypeDefKind::List(element) => {
-                self.emit_list(out, &name, &plain, &interface.name, &def.name, element)?;
+                self.emit_list(out, &plain, &interface.name, &def.name, element)?;
             }
             TypeDefKind::Option(payload) => {
-                self.emit_option(out, &name, &plain, &interface.name, &def.name, payload)?;
+                self.emit_option(out, &plain, &interface.name, &def.name, payload)?;
             }
             TypeDefKind::Result(result) => {
                 self.emit_result(out, &plain, &interface.name, &def.name, result)?;
@@ -1744,60 +1925,175 @@ impl Emitter<'_> {
         Ok(())
     }
 
+    fn type_item_indent(&self) -> usize {
+        self.base_indent + 8
+    }
+
+    fn write_type_aliases(&self, out: &mut String, aliases: &[(&str, &str)]) -> Result<()> {
+        let indent = self.type_item_indent();
+        writeln!(out)?;
+        for (name, ty) in aliases {
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(indent, &format!("type {name}"), ty)
+            )?;
+        }
+        Ok(())
+    }
+
+    fn write_to_from_headers(
+        &self,
+        out: &mut String,
+        interface: &str,
+        type_name: &str,
+        to_proto_ret: &str,
+    ) -> Result<()> {
+        let indent = self.type_item_indent();
+        let pad = " ".repeat(indent);
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{pad}/// Convert `{interface}/{type_name}` to its protobuf representation."
+        )?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_fn_sig(
+                indent,
+                "pub fn to_proto",
+                &["value: &Plain".to_string()],
+                Some(to_proto_ret),
+                " {",
+            )
+        )?;
+        Ok(())
+    }
+
+    fn write_from_header(
+        &self,
+        out: &mut String,
+        interface: &str,
+        type_name: &str,
+        from_param: &str,
+    ) -> Result<()> {
+        let indent = self.type_item_indent();
+        let pad = " ".repeat(indent);
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{pad}/// Convert `{interface}/{type_name}` from its protobuf representation."
+        )?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_fn_sig(
+                indent,
+                "pub fn from_proto",
+                &[format!("value: {from_param}")],
+                Some("::core::result::Result<Plain, GlueError>"),
+                " {",
+            )
+        )?;
+        Ok(())
+    }
+
     fn emit_record(
         &self,
         out: &mut String,
-        _name: &str,
         plain: &str,
         interface: &str,
         type_name: &str,
         fields: &[Field],
     ) -> Result<()> {
         let proto = self.proto_user_type(interface, type_name);
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn to_proto(value: &{plain}) -> {proto} {{"
-        )?;
-        writeln!(out, "            {proto} {{")?;
-        for field in fields {
-            let plain_field = rust_ident(&snake_case(&field.name), "record field")?;
-            let prost_field = ident::prost_field_ident(&ident::proto_field_name(&field.name));
-            let value = self.encode_field(&format!("&value.{plain_field}"), &field.ty)?;
-            writeln!(out, "                {prost_field}: {value},")?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+        self.write_type_aliases(out, &[("Plain", plain), ("Proto", &proto)])?;
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
+        if fields.is_empty() {
+            writeln!(out, "{body_pad}let _ = value;")?;
+            writeln!(out, "{body_pad}Proto {{}}")?;
+        } else {
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let mut pairs = Vec::with_capacity(fields.len());
+            for field in fields {
+                let plain_field = rust_ident(&snake_case(&field.name), "record field")?;
+                let prost_field = ident::prost_field_ident(&ident::proto_field_name(&field.name));
+                let expr = self.emit_encode_field(
+                    &mut stmts,
+                    body_indent,
+                    &mut temps,
+                    &format!("&value.{plain_field}"),
+                    &field.ty,
+                )?;
+                let expr = hoist_if_long(
+                    &mut stmts,
+                    body_indent,
+                    &mut temps,
+                    expr,
+                    4 + prost_field.len() + 3,
+                );
+                pairs.push((prost_field, expr));
+            }
+            push_stmts(out, &stmts)?;
+            let lit = rustfmt::fmt_struct_lit(body_indent, "Proto", &pairs, body_indent, 0);
+            writeln!(out, "{body_pad}{lit}")?;
         }
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
-        writeln!(out, "            Ok({plain} {{")?;
-        for field in fields {
-            let plain_field = rust_ident(&snake_case(&field.name), "record field")?;
-            let prost_field = ident::prost_field_ident(&ident::proto_field_name(&field.name));
-            let identity = format!("{interface}/{type_name}.{}", field.name);
-            let value = self.decode_field(&format!("value.{prost_field}"), &field.ty, &identity)?;
-            writeln!(out, "                {plain_field}: {value},")?;
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
+        if fields.is_empty() {
+            writeln!(out, "{body_pad}let _ = value;")?;
+            writeln!(out, "{body_pad}::core::result::Result::Ok(Plain {{}})")?;
+        } else {
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let mut pairs = Vec::with_capacity(fields.len());
+            for field in fields {
+                let plain_field = rust_ident(&snake_case(&field.name), "record field")?;
+                let prost_field = ident::prost_field_ident(&ident::proto_field_name(&field.name));
+                let identity = format!("{interface}/{type_name}.{}", field.name);
+                let expr = self.emit_decode_field(
+                    &mut stmts,
+                    body_indent,
+                    &mut temps,
+                    &format!("value.{prost_field}"),
+                    &field.ty,
+                    &identity,
+                )?;
+                let expr = hoist_if_long(
+                    &mut stmts,
+                    body_indent,
+                    &mut temps,
+                    expr,
+                    4 + plain_field.len() + 3,
+                );
+                pairs.push((plain_field, expr));
+            }
+            push_stmts(out, &stmts)?;
+            let ok_prefix = "::core::result::Result::Ok(";
+            let lit = rustfmt::fmt_struct_lit(
+                body_indent,
+                "Plain",
+                &pairs,
+                body_indent + ok_prefix.len(),
+                1,
+            );
+            writeln!(out, "{body_pad}{ok_prefix}{lit})")?;
         }
-        writeln!(out, "            }})")?;
-        writeln!(out, "        }}")?;
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_variant(
         &self,
         out: &mut String,
-        _name: &str,
         plain: &str,
         interface: &str,
         type_name: &str,
@@ -1809,80 +2105,156 @@ impl Emitter<'_> {
             "witforge_value",
         );
         let empty = self.proto_empty();
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn to_proto(value: &{plain}) -> {proto} {{"
-        )?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let arm_indent = body_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+
+        let mut aliases: Vec<(&str, &str)> = vec![("Plain", plain), ("Proto", &proto)];
+        if !cases.is_empty() {
+            aliases.push(("Oneof", &oneof));
+        }
+        if cases.iter().any(|case| case.payload.is_none()) {
+            aliases.push(("Empty", &empty));
+        }
+        self.write_type_aliases(out, &aliases)?;
+
         let oneof_field = ident::prost_field_ident("witforge_value");
-        writeln!(out, "            {proto} {{")?;
-        writeln!(
-            out,
-            "                {oneof_field}: ::core::option::Option::Some(match value {{"
-        )?;
-        for case in cases {
-            let plain_variant = rust_ident(&pascal_case(&case.name), "variant case")?;
-            let prost_variant = ident::prost_oneof_variant(&ident::proto_field_name(&case.name));
-            if let Some(payload) = &case.payload {
-                let value = self.encode_singular("payload", payload)?;
-                writeln!(
-                    out,
-                    "                    {plain}::{plain_variant}(payload) => {oneof}::{prost_variant}({value}),"
-                )?;
-            } else {
-                writeln!(
-                    out,
-                    "                    {plain}::{plain_variant} => {oneof}::{prost_variant}({empty} {{}}),"
-                )?;
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
+        if cases.is_empty() {
+            writeln!(out, "{body_pad}match *value {{}}")?;
+        } else {
+            writeln!(out, "{body_pad}let case = match value {{")?;
+            for case in cases {
+                let plain_variant = rust_ident(&pascal_case(&case.name), "variant case")?;
+                let prost_variant =
+                    ident::prost_oneof_variant(&ident::proto_field_name(&case.name));
+                if let Some(payload) = &case.payload {
+                    let mut arm_stmts = Vec::new();
+                    let mut temps = TempGen::new();
+                    let val = self.emit_encode_singular(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut temps,
+                        "payload",
+                        payload,
+                    )?;
+                    let val = hoist_if_long(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut temps,
+                        val,
+                        "Oneof::".len() + prost_variant.len() + 2,
+                    );
+                    let pat = format!("Plain::{plain_variant}(payload)");
+                    let tail = format!("Oneof::{prost_variant}({val})");
+                    writeln!(
+                        out,
+                        "{}",
+                        rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail)
+                    )?;
+                } else {
+                    let pat = format!("Plain::{plain_variant}");
+                    let tail = format!("Oneof::{prost_variant}(Empty {{}})");
+                    writeln!(
+                        out,
+                        "{}",
+                        rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
+                    )?;
+                }
             }
+            writeln!(out, "{body_pad}}};")?;
+            let lit = rustfmt::fmt_struct_lit(
+                body_indent,
+                "Proto",
+                &[(
+                    oneof_field.clone(),
+                    "::core::option::Option::Some(case)".to_string(),
+                )],
+                body_indent,
+                0,
+            );
+            writeln!(out, "{body_pad}{lit}")?;
         }
-        writeln!(out, "                }}),")?;
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
         let identity = format!("{interface}/{type_name}");
-        writeln!(out, "            match value.{oneof_field} {{")?;
-        for case in cases {
-            let plain_variant = rust_ident(&pascal_case(&case.name), "variant case")?;
-            let prost_variant = ident::prost_oneof_variant(&ident::proto_field_name(&case.name));
-            if let Some(payload) = &case.payload {
-                let value = self.decode_singular("payload", payload, &identity)?;
-                writeln!(
-                    out,
-                    "                ::core::option::Option::Some({oneof}::{prost_variant}(payload)) => ::core::result::Result::Ok({plain}::{plain_variant}({value})),"
-                )?;
-            } else {
-                writeln!(
-                    out,
-                    "                ::core::option::Option::Some({oneof}::{prost_variant}(_)) => ::core::result::Result::Ok({plain}::{plain_variant}),"
-                )?;
+        let mut stmts = Vec::new();
+        let mut temps = TempGen::new();
+        if cases.is_empty() {
+            writeln!(out, "{body_pad}let _ = value;")?;
+            let err_prefix = "::core::result::Result::Err(";
+            let err_lit = rustfmt::fmt_struct_lit(
+                body_indent,
+                "GlueError::UnknownCase",
+                &[("message".to_string(), format!("\"{identity}\""))],
+                body_indent + err_prefix.len(),
+                1,
+            );
+            writeln!(out, "{body_pad}{err_prefix}{err_lit})")?;
+        } else {
+            push_let_else_err(
+                &mut stmts,
+                body_indent,
+                &mut temps,
+                "::core::option::Option::Some(case)",
+                &format!("value.{oneof_field}"),
+                "GlueError::UnknownCase",
+                &[("message".to_string(), format!("\"{identity}\""))],
+            );
+            push_stmts(out, &stmts)?;
+            writeln!(out, "{body_pad}match case {{")?;
+            for case in cases {
+                let plain_variant = rust_ident(&pascal_case(&case.name), "variant case")?;
+                let prost_variant =
+                    ident::prost_oneof_variant(&ident::proto_field_name(&case.name));
+                if let Some(payload) = &case.payload {
+                    let mut arm_stmts = Vec::new();
+                    let mut arm_temps = TempGen::new();
+                    let val = self.emit_decode_singular(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut arm_temps,
+                        "payload",
+                        payload,
+                        &identity,
+                    )?;
+                    let val = hoist_if_long(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut arm_temps,
+                        val,
+                        "::core::result::Result::Ok(Plain::".len() + plain_variant.len() + 2,
+                    );
+                    let pat = format!("Oneof::{prost_variant}(payload)");
+                    let tail = format!("::core::result::Result::Ok(Plain::{plain_variant}({val}))");
+                    writeln!(
+                        out,
+                        "{}",
+                        rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail)
+                    )?;
+                } else {
+                    let pat = format!("Oneof::{prost_variant}(_)");
+                    let tail = format!("::core::result::Result::Ok(Plain::{plain_variant})");
+                    writeln!(
+                        out,
+                        "{}",
+                        rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
+                    )?;
+                }
             }
+            writeln!(out, "{body_pad}}}")?;
         }
-        writeln!(
-            out,
-            "                ::core::option::Option::None => ::core::result::Result::Err(GlueError::UnknownCase {{ message: \"{identity}\" }}),"
-        )?;
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
 
     fn emit_enum(
         &self,
         out: &mut String,
-        name: &str,
         plain: &str,
         interface: &str,
         type_name: &str,
@@ -1890,215 +2262,244 @@ impl Emitter<'_> {
     ) -> Result<()> {
         let proto_enum = ident::proto_type_name(interface, type_name);
         let proto = self.proto_user_type(interface, type_name);
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(out, "        pub fn to_proto(value: &{plain}) -> i32 {{")?;
-        writeln!(out, "            match value {{")?;
-        for case in cases {
-            let plain_variant = rust_ident(&pascal_case(&case.name), "enum case")?;
-            let proto_val = ident::proto_enum_value_name(&proto_enum, &case.name);
-            let prost_variant = ident::prost_enum_variant(&proto_enum, &proto_val);
-            writeln!(
-                out,
-                "                {plain}::{plain_variant} => {proto}::{prost_variant} as i32,"
-            )?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let arm_indent = body_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+
+        let mut aliases: Vec<(&str, &str)> = vec![("Plain", plain)];
+        if !cases.is_empty() {
+            aliases.push(("ProtoEnum", &proto));
         }
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: i32) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
-        writeln!(out, "            match value {{")?;
+        self.write_type_aliases(out, &aliases)?;
+
+        self.write_to_from_headers(out, interface, type_name, "i32")?;
+        if cases.is_empty() {
+            writeln!(out, "{body_pad}match *value {{}}")?;
+        } else {
+            writeln!(out, "{body_pad}match value {{")?;
+            for case in cases {
+                let plain_variant = rust_ident(&pascal_case(&case.name), "enum case")?;
+                let proto_val = ident::proto_enum_value_name(&proto_enum, &case.name);
+                let prost_variant = ident::prost_enum_variant(&proto_enum, &proto_val);
+                let pat = format!("Plain::{plain_variant}");
+                let tail = format!("ProtoEnum::{prost_variant} as i32");
+                writeln!(
+                    out,
+                    "{}",
+                    rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
+                )?;
+            }
+            writeln!(out, "{body_pad}}}")?;
+        }
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "i32")?;
+        let identity = format!("{interface}/{type_name}");
+        writeln!(out, "{body_pad}match value {{")?;
         for case in cases {
             let plain_variant = rust_ident(&pascal_case(&case.name), "enum case")?;
             let number = self.number(interface, type_name, &case.name)?;
+            let pat = number.to_string();
+            let tail = format!("::core::result::Result::Ok(Plain::{plain_variant})");
             writeln!(
                 out,
-                "                {number} => ::core::result::Result::Ok({plain}::{plain_variant}),"
+                "{}",
+                rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
             )?;
         }
-        let identity = format!("{interface}/{type_name}");
+        let err_let_prefix = "let err = ";
+        let err_lit = rustfmt::fmt_struct_lit(
+            arm_body_indent,
+            "GlueError::UnknownEnumValue",
+            &[
+                ("enumeration".to_string(), format!("\"{identity}\"")),
+                ("value".to_string(), "value".to_string()),
+            ],
+            arm_body_indent + err_let_prefix.len(),
+            1,
+        );
+        let arm_body_pad = " ".repeat(arm_body_indent);
+        let err_stmts = vec![format!("{arm_body_pad}{err_let_prefix}{err_lit};")];
         writeln!(
             out,
-            "                _ => ::core::result::Result::Err(GlueError::UnknownEnumValue {{ enumeration: \"{identity}\", value }}),"
+            "{}",
+            rustfmt::fmt_match_arm(
+                arm_indent,
+                "_",
+                &err_stmts,
+                "::core::result::Result::Err(err)",
+            )
         )?;
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
-        let _ = name;
+        writeln!(out, "{body_pad}}}")?;
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
 
     fn emit_flags(
         &self,
         out: &mut String,
-        name: &str,
         plain: &str,
         interface: &str,
         type_name: &str,
         flags: &[Flag],
     ) -> Result<()> {
         let proto = self.proto_user_type(interface, type_name);
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn to_proto(value: &{plain}) -> {proto} {{"
-        )?;
-        writeln!(out, "            {proto} {{")?;
-        for flag in flags {
-            let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
-            let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
-            writeln!(out, "                {prost_flag}: value.{plain_flag},")?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+        self.write_type_aliases(out, &[("Plain", plain), ("Proto", &proto)])?;
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
+        if flags.is_empty() {
+            writeln!(out, "{body_pad}let _ = value;")?;
+            writeln!(out, "{body_pad}Proto {{}}")?;
+        } else {
+            let mut pairs = Vec::with_capacity(flags.len());
+            for flag in flags {
+                let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
+                let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
+                pairs.push((prost_flag, format!("value.{plain_flag}")));
+            }
+            let lit = rustfmt::fmt_struct_lit(body_indent, "Proto", &pairs, body_indent, 0);
+            writeln!(out, "{body_pad}{lit}")?;
         }
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
-        writeln!(out, "            ::core::result::Result::Ok({plain} {{")?;
-        for flag in flags {
-            let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
-            let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
-            writeln!(out, "                {plain_flag}: value.{prost_flag},")?;
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
+        if flags.is_empty() {
+            writeln!(out, "{body_pad}let _ = value;")?;
+            writeln!(out, "{body_pad}::core::result::Result::Ok(Plain {{}})")?;
+        } else {
+            let mut pairs = Vec::with_capacity(flags.len());
+            for flag in flags {
+                let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
+                let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
+                pairs.push((plain_flag, format!("value.{prost_flag}")));
+            }
+            let ok_prefix = "::core::result::Result::Ok(";
+            let lit = rustfmt::fmt_struct_lit(
+                body_indent,
+                "Plain",
+                &pairs,
+                body_indent + ok_prefix.len(),
+                1,
+            );
+            writeln!(out, "{body_pad}{ok_prefix}{lit})")?;
         }
-        writeln!(out, "            }})")?;
-        writeln!(out, "        }}")?;
-        let _ = name;
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
 
     fn emit_alias(
         &self,
         out: &mut String,
-        name: &str,
         plain: &str,
         interface: &str,
         type_name: &str,
         target: &TypeExpr,
     ) -> Result<()> {
         let proto = self.proto_type(target)?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+        self.write_type_aliases(out, &[("Plain", plain), ("Proto", &proto)])?;
+
         let target_module = match target {
             TypeExpr::Named(target_name) if target_name.is_foreign() => {
-                self.foreign_type_module(target_name)?
+                Some(self.foreign_type_module(target_name)?)
             }
             TypeExpr::Named(target_name) => {
-                self.plain_type_module(&target_name.interface, &target_name.name)?
+                Some(self.plain_type_module(&target_name.interface, &target_name.name)?)
             }
-            _ => String::new(),
+            _ => None,
         };
-        let to = if target_module.is_empty() {
-            self.encode_value("value", target)?
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
+        if let Some(module) = &target_module {
+            emit_direct_module_tail(out, body_indent, module, "to_proto", "value")?;
+        } else if let TypeExpr::Result(result) = target {
+            let block = self.format_inline_result_encode(body_indent, "value", result)?;
+            writeln!(out, "{body_pad}{block}")?;
         } else {
-            format!("{target_module}::to_proto(value)")
-        };
-        let from = if target_module.is_empty() {
-            self.decode_value("value", target, &format!("{interface}/{type_name}"))?
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let expr =
+                self.emit_encode_value(&mut stmts, body_indent, &mut temps, "value", target)?;
+            push_stmts(out, &stmts)?;
+            writeln!(out, "{body_pad}{expr}")?;
+        }
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
+        if let Some(module) = &target_module {
+            emit_direct_module_tail(out, body_indent, module, "from_proto", "value")?;
         } else {
-            format!("{target_module}::from_proto(value)?")
-        };
-        let _ = name;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn to_proto(value: &{plain}) -> {proto} {{"
-        )?;
-        writeln!(out, "            {to}")?;
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
-        writeln!(out, "            ::core::result::Result::Ok({from})")?;
-        writeln!(out, "        }}")?;
+            let identity = format!("{interface}/{type_name}");
+            self.emit_decode_value_tail(out, body_indent, "value", target, &identity)?;
+        }
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
 
     fn emit_list(
         &self,
         out: &mut String,
-        name: &str,
         plain: &str,
         interface: &str,
         type_name: &str,
         element: &TypeExpr,
     ) -> Result<()> {
         let proto = self.proto_type(&TypeExpr::List(Box::new(element.clone())))?;
-        let _ = name;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn to_proto(value: &{plain}) -> {proto} {{"
-        )?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+        self.write_type_aliases(out, &[("Plain", plain), ("Proto", &proto)])?;
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
         if self.model.resolves_to_u8(element) || self.identity(element)?.is_some() {
-            writeln!(out, "            ::core::clone::Clone::clone(value)")?;
+            writeln!(out, "{body_pad}::core::clone::Clone::clone(value)")?;
         } else {
-            writeln!(
-                out,
-                "            value.iter().map(|item| {}).collect()",
-                self.encode_singular("item", element)?
-            )?;
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let out_var =
+                self.emit_encode_list_loop(&mut stmts, body_indent, &mut temps, "value", element)?;
+            push_stmts(out, &stmts)?;
+            writeln!(out, "{body_pad}{out_var}")?;
         }
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
         if self.model.resolves_to_u8(element) || self.identity(element)?.is_some() {
-            writeln!(out, "            ::core::result::Result::Ok(value)")?;
+            writeln!(out, "{body_pad}::core::result::Result::Ok(value)")?;
         } else {
-            writeln!(
-                out,
-                "            Ok(value.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?)",
-                self.decode_singular("item", element, &format!("{interface}/{type_name}"))?
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let identity = format!("{interface}/{type_name}");
+            let out_var = self.emit_decode_list_loop(
+                &mut stmts,
+                body_indent,
+                &mut temps,
+                "value",
+                element,
+                &identity,
             )?;
+            push_stmts(out, &stmts)?;
+            writeln!(out, "{body_pad}::core::result::Result::Ok({out_var})")?;
         }
-        writeln!(out, "        }}")?;
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
-}
 
-impl Emitter<'_> {
     #[allow(clippy::too_many_lines)]
     fn emit_option(
         &self,
         out: &mut String,
-        name: &str,
         plain: &str,
         interface: &str,
         type_name: &str,
@@ -2112,199 +2513,408 @@ impl Emitter<'_> {
         let label = format!("{interface}/{type_name}");
         let form = self.form(payload)?;
         let wrapper = self.proto_direct_wrapper(&qualified);
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn to_proto(value: &{plain}) -> {proto} {{"
-        )?;
+        let oneof = self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
+        let empty = self.proto_empty();
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let inner_indent = body_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+        let inner_pad = " ".repeat(inner_indent);
+
+        let mut aliases: Vec<(&str, &str)> = vec![("Plain", plain), ("Proto", &proto)];
+        match form {
+            Form::List => aliases.push(("Wrapper", &wrapper)),
+            Form::Option => {
+                aliases.push(("Wrapper", &wrapper));
+                aliases.push(("Oneof", &oneof));
+                aliases.push(("Empty", &empty));
+            }
+            Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {}
+        }
+        self.write_type_aliases(out, &aliases)?;
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
         match form {
             Form::List => {
-                writeln!(out, "            match value {{")?;
+                let mut temps = TempGen::new();
+                let out_var = temps.fresh();
+                let item_var = temps.fresh();
                 writeln!(
                     out,
-                    "                ::core::option::Option::Some(value) => ::core::option::Option::Some({wrapper} {{"
+                    "{body_pad}let mut {out_var} = ::core::option::Option::None;"
                 )?;
+                writeln!(
+                    out,
+                    "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
+                )?;
+                let mut stmts = Vec::new();
                 let values = if let Some((_, foreign_name, TypeDefKind::List(_))) =
                     self.resolve_foreign_named(payload)?
                 {
                     let module = self.foreign_type_module(&foreign_name)?;
-                    format!("{module}::to_proto(value)")
+                    emit_module_call(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        &module,
+                        "to_proto",
+                        &item_var,
+                        false,
+                    )
                 } else {
                     let element = self.list_element(payload)?;
                     match self.identity(&element)? {
-                        Some(_) => "::core::clone::Clone::clone(value)".to_string(),
-                        None => format!(
-                            "value.iter().map(|item| {}).collect()",
-                            self.encode_singular("item", &element)?
-                        ),
+                        Some(_) => format!("::core::clone::Clone::clone({item_var})"),
+                        None => self.emit_encode_list_loop(
+                            &mut stmts,
+                            inner_indent,
+                            &mut temps,
+                            &item_var,
+                            &element,
+                        )?,
                     }
                 };
-                writeln!(out, "                    values: {values},")?;
-                writeln!(out, "                }}),")?;
-                writeln!(
-                    out,
-                    "                ::core::option::Option::None => ::core::option::Option::None,"
-                )?;
-                writeln!(out, "            }}")?;
+                let values = hoist_if_long(
+                    &mut stmts,
+                    inner_indent,
+                    &mut temps,
+                    values,
+                    4 + "values: ".len() + 1,
+                );
+                push_stmts(out, &stmts)?;
+                let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
+                let lit = rustfmt::fmt_struct_lit(
+                    inner_indent,
+                    "Wrapper",
+                    &[("values".to_string(), values)],
+                    inner_indent + assign_prefix.len(),
+                    2,
+                );
+                writeln!(out, "{inner_pad}{assign_prefix}{lit});")?;
+                writeln!(out, "{body_pad}}}")?;
+                writeln!(out, "{body_pad}{out_var}")?;
             }
             Form::Option => {
-                let oneof =
-                    self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
-                let empty = self.proto_empty();
-                writeln!(out, "            match value {{")?;
+                let mut temps = TempGen::new();
+                let out_var = temps.fresh();
+                let item_var = temps.fresh();
+                let inner_var = temps.fresh();
+                let arm_indent = inner_indent + 4;
+                let arm_body_indent = arm_indent + 4;
                 writeln!(
                     out,
-                    "                ::core::option::Option::Some(value) => ::core::option::Option::Some({wrapper} {{"
+                    "{body_pad}let mut {out_var} = ::core::option::Option::None;"
+                )?;
+                writeln!(
+                    out,
+                    "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
                 )?;
                 if let Some((_, foreign_name, TypeDefKind::Option(_))) =
                     self.resolve_foreign_named(payload)?
                 {
                     let module = self.foreign_type_module(&foreign_name)?;
+                    let mut stmts = Vec::new();
+                    let converted = emit_module_call(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        &module,
+                        "to_proto",
+                        &item_var,
+                        false,
+                    );
+                    let scrutinee = hoist_if_long(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        converted,
+                        format!("let {inner_var} = match ").len() + 2,
+                    );
+                    push_stmts(out, &stmts)?;
+                    writeln!(out, "{inner_pad}let {inner_var} = match {scrutinee} {{")?;
+                    let sub_var = temps.fresh();
                     writeln!(
                         out,
-                        "                    value: ::core::option::Option::Some(match {module}::to_proto(value) {{"
+                        "{}",
+                        rustfmt::fmt_match_arm(
+                            arm_indent,
+                            &format!("::core::option::Option::Some({sub_var})"),
+                            &[],
+                            &format!("Oneof::Some({sub_var})"),
+                        )
                     )?;
                     writeln!(
                         out,
-                        "                        ::core::option::Option::Some(value) => {oneof}::Some(value),"
+                        "{}",
+                        rustfmt::fmt_match_arm(
+                            arm_indent,
+                            "::core::option::Option::None",
+                            &[],
+                            "Oneof::None(Empty {})",
+                        )
                     )?;
-                    writeln!(
-                        out,
-                        "                        ::core::option::Option::None => {oneof}::None({empty} {{}}),"
-                    )?;
+                    writeln!(out, "{inner_pad}}};")?;
                 } else {
                     let inner = self.option_payload(payload)?;
+                    writeln!(out, "{inner_pad}let {inner_var} = match {item_var} {{")?;
+                    let sub_var = temps.fresh();
+                    let mut arm_stmts = Vec::new();
+                    let encoded = self.emit_encode_singular(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut temps,
+                        &sub_var,
+                        &inner,
+                    )?;
+                    let encoded = hoist_if_long(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut temps,
+                        encoded,
+                        "Oneof::Some()".len(),
+                    );
                     writeln!(
                         out,
-                        "                    value: ::core::option::Option::Some(match value {{"
+                        "{}",
+                        rustfmt::fmt_match_arm(
+                            arm_indent,
+                            &format!("::core::option::Option::Some({sub_var})"),
+                            &arm_stmts,
+                            &format!("Oneof::Some({encoded})"),
+                        )
                     )?;
                     writeln!(
                         out,
-                        "                        ::core::option::Option::Some(value) => {oneof}::Some({}),",
-                        self.encode_singular("value", &inner)?
+                        "{}",
+                        rustfmt::fmt_match_arm(
+                            arm_indent,
+                            "::core::option::Option::None",
+                            &[],
+                            "Oneof::None(Empty {})",
+                        )
                     )?;
-                    writeln!(
-                        out,
-                        "                        ::core::option::Option::None => {oneof}::None({empty} {{}}),"
-                    )?;
+                    writeln!(out, "{inner_pad}}};")?;
                 }
-                writeln!(out, "                    }}),")?;
-                writeln!(out, "                }}),")?;
-                writeln!(
-                    out,
-                    "                ::core::option::Option::None => ::core::option::Option::None,"
-                )?;
-                writeln!(out, "            }}")?;
+                let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
+                let lit = rustfmt::fmt_struct_lit(
+                    inner_indent,
+                    "Wrapper",
+                    &[(
+                        "value".to_string(),
+                        format!("::core::option::Option::Some({inner_var})"),
+                    )],
+                    inner_indent + assign_prefix.len(),
+                    2,
+                );
+                writeln!(out, "{inner_pad}{assign_prefix}{lit});")?;
+                writeln!(out, "{body_pad}}}")?;
+                writeln!(out, "{body_pad}{out_var}")?;
             }
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
                 match self.identity(payload)? {
-                    Some(Identity::Copy) => writeln!(out, "            *value")?,
+                    Some(Identity::Copy) => writeln!(out, "{body_pad}*value")?,
                     Some(Identity::Clone) => {
-                        writeln!(out, "            ::core::clone::Clone::clone(value)")?;
+                        writeln!(out, "{body_pad}::core::clone::Clone::clone(value)")?;
                     }
-                    None => writeln!(
-                        out,
-                        "            value.as_ref().map(|value| {})",
-                        self.encode_singular("value", payload)?
-                    )?,
+                    None => {
+                        let mut stmts = Vec::new();
+                        let mut temps = TempGen::new();
+                        let out_var = self.emit_encode_option_stmt(
+                            &mut stmts,
+                            body_indent,
+                            &mut temps,
+                            "value",
+                            payload,
+                        )?;
+                        push_stmts(out, &stmts)?;
+                        writeln!(out, "{body_pad}{out_var}")?;
+                    }
                 }
             }
         }
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: {proto}) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
         match form {
             Form::List => {
-                if let Some((_, foreign_name, TypeDefKind::List(_))) =
+                let mut temps = TempGen::new();
+                let out_var = temps.fresh();
+                let item_var = temps.fresh();
+                writeln!(
+                    out,
+                    "{body_pad}let mut {out_var} = ::core::option::Option::None;"
+                )?;
+                writeln!(
+                    out,
+                    "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
+                )?;
+                let mut stmts = Vec::new();
+                let decoded = if let Some((_, foreign_name, TypeDefKind::List(_))) =
                     self.resolve_foreign_named(payload)?
                 {
                     let module = self.foreign_type_module(&foreign_name)?;
-                    writeln!(
-                        out,
-                        "            ::core::result::Result::Ok(value.map(|value| {module}::from_proto(value.values)).transpose()?)"
-                    )?;
+                    emit_module_call(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        &module,
+                        "from_proto",
+                        &format!("{item_var}.values"),
+                        true,
+                    )
                 } else {
                     let element = self.list_element(payload)?;
                     if self.identity(&element)?.is_some() {
-                        writeln!(
-                            out,
-                            "            ::core::result::Result::Ok(value.map(|value| value.values))"
-                        )?;
+                        format!("{item_var}.values")
                     } else {
-                        writeln!(
-                            out,
-                            "            ::core::result::Result::Ok(value.map(|value| {{"
-                        )?;
-                        writeln!(
-                            out,
-                            "                value.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()",
-                            self.decode_singular("item", &element, &label)?
-                        )?;
-                        writeln!(out, "            }}).transpose()?)")?;
+                        self.emit_decode_list_loop(
+                            &mut stmts,
+                            inner_indent,
+                            &mut temps,
+                            &format!("{item_var}.values"),
+                            &element,
+                            &label,
+                        )?
                     }
-                }
+                };
+                let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
+                let decoded = hoist_if_long(
+                    &mut stmts,
+                    inner_indent,
+                    &mut temps,
+                    decoded,
+                    assign_prefix.len() + 2,
+                );
+                push_stmts(out, &stmts)?;
+                writeln!(out, "{inner_pad}{assign_prefix}{decoded});")?;
+                writeln!(out, "{body_pad}}}")?;
+                writeln!(out, "{body_pad}::core::result::Result::Ok({out_var})")?;
             }
             Form::Option => {
-                let oneof =
-                    self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
+                let mut temps = TempGen::new();
+                let out_var = temps.fresh();
+                let item_var = temps.fresh();
+                let case_var = temps.fresh();
+                let decoded_var = temps.fresh();
+                let arm_indent = inner_indent + 4;
+                let arm_body_indent = arm_indent + 4;
                 writeln!(
                     out,
-                    "            ::core::result::Result::Ok(value.map(|value| match value.value {{"
+                    "{body_pad}let mut {out_var} = ::core::option::Option::None;"
                 )?;
                 writeln!(
                     out,
-                    "                ::core::option::Option::Some({oneof}::None(_)) => ::core::result::Result::Ok(::core::option::Option::None),"
+                    "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
                 )?;
+                let mut stmts = Vec::new();
+                push_let_else_err(
+                    &mut stmts,
+                    inner_indent,
+                    &mut temps,
+                    &format!("::core::option::Option::Some({case_var})"),
+                    &format!("{item_var}.value"),
+                    "GlueError::InvalidState",
+                    &[("message".to_string(), format!("\"{label}\""))],
+                );
+                push_stmts(out, &stmts)?;
+                writeln!(out, "{inner_pad}let {decoded_var} = match {case_var} {{")?;
+                writeln!(
+                    out,
+                    "{}",
+                    rustfmt::fmt_match_arm(
+                        arm_indent,
+                        "Oneof::None(_)",
+                        &[],
+                        "::core::option::Option::None",
+                    )
+                )?;
+                let sub_var = temps.fresh();
                 if let Some((_, foreign_name, TypeDefKind::Option(_))) =
                     self.resolve_foreign_named(payload)?
                 {
                     let module = self.foreign_type_module(&foreign_name)?;
+                    let mut arm_stmts = Vec::new();
+                    let decoded = emit_module_call(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut temps,
+                        &module,
+                        "from_proto",
+                        &format!("::core::option::Option::Some({sub_var})"),
+                        true,
+                    );
                     writeln!(
                         out,
-                        "                ::core::option::Option::Some({oneof}::Some(value)) => {module}::from_proto(::core::option::Option::Some(value)),"
+                        "{}",
+                        rustfmt::fmt_match_arm(
+                            arm_indent,
+                            &format!("Oneof::Some({sub_var})"),
+                            &arm_stmts,
+                            &decoded,
+                        )
                     )?;
                 } else {
                     let inner = self.option_payload(payload)?;
+                    let mut arm_stmts = Vec::new();
+                    let decoded = self.emit_decode_singular(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut temps,
+                        &sub_var,
+                        &inner,
+                        &label,
+                    )?;
+                    let decoded = hoist_if_long(
+                        &mut arm_stmts,
+                        arm_body_indent,
+                        &mut temps,
+                        decoded,
+                        "::core::option::Option::Some()".len(),
+                    );
                     writeln!(
                         out,
-                        "                ::core::option::Option::Some({oneof}::Some(value)) => ::core::result::Result::Ok(::core::option::Option::Some({})),",
-                        self.decode_singular("value", &inner, &label)?
+                        "{}",
+                        rustfmt::fmt_match_arm(
+                            arm_indent,
+                            &format!("Oneof::Some({sub_var})"),
+                            &arm_stmts,
+                            &format!("::core::option::Option::Some({decoded})"),
+                        )
                     )?;
                 }
+                writeln!(out, "{inner_pad}}};")?;
                 writeln!(
                     out,
-                    "                ::core::option::Option::None => ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{label}\" }}),"
+                    "{inner_pad}{out_var} = ::core::option::Option::Some({decoded_var});"
                 )?;
-                writeln!(out, "            }}).transpose()?)")?;
+                writeln!(out, "{body_pad}}}")?;
+                writeln!(out, "{body_pad}::core::result::Result::Ok({out_var})")?;
             }
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
                 if self.identity(payload)?.is_some() {
-                    writeln!(out, "            ::core::result::Result::Ok(value)")?;
+                    writeln!(out, "{body_pad}::core::result::Result::Ok(value)")?;
                 } else {
-                    writeln!(
-                        out,
-                        "            ::core::result::Result::Ok(value.map(|value| ::core::result::Result::Ok({})).transpose()?)",
-                        self.decode_singular("value", payload, &label)?
+                    let mut stmts = Vec::new();
+                    let mut temps = TempGen::new();
+                    let out_var = self.emit_decode_option_stmt(
+                        &mut stmts,
+                        body_indent,
+                        &mut temps,
+                        "value",
+                        payload,
+                        &label,
                     )?;
+                    push_stmts(out, &stmts)?;
+                    writeln!(out, "{body_pad}::core::result::Result::Ok({out_var})")?;
                 }
             }
         }
-        writeln!(out, "        }}")?;
-        let _ = name;
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_result(
         &self,
         out: &mut String,
@@ -2317,16 +2927,22 @@ impl Emitter<'_> {
         let oneof = self.proto_oneof(&ident::proto_type_name(interface, type_name), "value");
         let label = format!("{interface}/{type_name}");
         let empty = self.proto_empty();
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` to its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn to_proto(value: &{plain}) -> {message} {{"
-        )?;
-        writeln!(out, "            match value {{")?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let arm_indent = body_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+
+        let mut aliases: Vec<(&str, &str)> =
+            vec![("Plain", plain), ("Proto", &message), ("Oneof", &oneof)];
+        if result.ok.is_none() || result.err.is_none() {
+            aliases.push(("Empty", &empty));
+        }
+        self.write_type_aliases(out, &aliases)?;
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
+        writeln!(out, "{body_pad}let inner = match value {{")?;
         for (side, variant) in [("Ok", "Ok"), ("Err", "Err")] {
             let slot = if side == "Ok" {
                 &result.ok
@@ -2334,30 +2950,67 @@ impl Emitter<'_> {
                 &result.err
             };
             if let Some(ty) = slot {
+                let mut arm_stmts = Vec::new();
+                let mut temps = TempGen::new();
+                let val = self.emit_encode_singular(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut temps,
+                    "v",
+                    ty,
+                )?;
+                let val = hoist_if_long(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut temps,
+                    val,
+                    "Oneof::".len() + variant.len() + 2,
+                );
+                let pat = format!("::core::result::Result::{side}(v)");
+                let tail = format!("Oneof::{variant}({val})");
                 writeln!(
                     out,
-                    "                ::core::result::Result::{side}(value) => {message} {{ value: ::core::option::Option::Some({oneof}::{variant}({})) }},",
-                    self.encode_singular("value", ty)?
+                    "{}",
+                    rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail)
                 )?;
             } else {
+                let pat = format!("::core::result::Result::{side}(_)");
+                let tail = format!("Oneof::{variant}(Empty {{}})");
                 writeln!(
                     out,
-                    "                ::core::result::Result::{side}(_) => {message} {{ value: ::core::option::Option::Some({oneof}::{variant}({empty} {{}})) }},"
+                    "{}",
+                    rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
                 )?;
             }
         }
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "        /// Convert `{interface}/{type_name}` from its protobuf representation."
-        )?;
-        writeln!(
-            out,
-            "        pub fn from_proto(value: {message}) -> ::core::result::Result<{plain}, GlueError> {{"
-        )?;
-        writeln!(out, "            match value.value {{")?;
+        writeln!(out, "{body_pad}}};")?;
+        let lit = rustfmt::fmt_struct_lit(
+            body_indent,
+            "Proto",
+            &[(
+                "value".to_string(),
+                "::core::option::Option::Some(inner)".to_string(),
+            )],
+            body_indent,
+            0,
+        );
+        writeln!(out, "{body_pad}{lit}")?;
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
+        let mut stmts = Vec::new();
+        let mut temps = TempGen::new();
+        push_let_else_err(
+            &mut stmts,
+            body_indent,
+            &mut temps,
+            "::core::option::Option::Some(inner)",
+            "value.value",
+            "GlueError::UnknownCase",
+            &[("message".to_string(), format!("\"{label}\""))],
+        );
+        push_stmts(out, &stmts)?;
+        writeln!(out, "{body_pad}match inner {{")?;
         for (side, variant) in [("Ok", "Ok"), ("Err", "Err")] {
             let slot = if side == "Ok" {
                 &result.ok
@@ -2365,37 +3018,67 @@ impl Emitter<'_> {
                 &result.err
             };
             if let Some(ty) = slot {
+                let mut arm_stmts = Vec::new();
+                let mut arm_temps = TempGen::new();
+                let val = self.emit_decode_singular(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut arm_temps,
+                    "v",
+                    ty,
+                    &label,
+                )?;
+                let val = hoist_if_long(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut arm_temps,
+                    val,
+                    "::core::result::Result::Ok(::core::result::Result::".len() + side.len() + 3,
+                );
+                let pat = format!("Oneof::{variant}(v)");
+                let tail =
+                    format!("::core::result::Result::Ok(::core::result::Result::{side}({val}))");
                 writeln!(
                     out,
-                    "                ::core::option::Option::Some({oneof}::{variant}(value)) => ::core::result::Result::Ok(::core::result::Result::{side}({})),",
-                    self.decode_singular("value", ty, &label)?
+                    "{}",
+                    rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail)
                 )?;
             } else {
+                let pat = format!("Oneof::{variant}(_)");
+                let tail =
+                    format!("::core::result::Result::Ok(::core::result::Result::{side}(()))");
                 writeln!(
                     out,
-                    "                ::core::option::Option::Some({oneof}::{variant}(_)) => ::core::result::Result::Ok(::core::result::Result::{side}(())),"
+                    "{}",
+                    rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
                 )?;
             }
         }
-        writeln!(
-            out,
-            "                ::core::option::Option::None => ::core::result::Result::Err(GlueError::UnknownCase {{ message: \"{label}\" }}),"
-        )?;
-        writeln!(out, "            }}")?;
-        writeln!(out, "        }}")?;
+        writeln!(out, "{body_pad}}}")?;
+        writeln!(out, "{item_pad}}}")?;
         Ok(())
     }
 
     fn emit_functions(&self, out: &mut String, interface: &Interface) -> Result<()> {
+        let mod_indent = self.base_indent + 4;
+        let fn_mod_indent = self.base_indent + 8;
+        let fn_item_indent = self.base_indent + 12;
+        let mod_pad = " ".repeat(mod_indent);
+        let fn_mod_pad = " ".repeat(fn_mod_indent);
+        let fn_item_pad = " ".repeat(fn_item_indent);
+
         writeln!(out)?;
         writeln!(
             out,
-            "    /// Protobuf conversion helpers for `{}` functions.",
+            "{mod_pad}/// Protobuf conversion helpers for `{}` functions.",
             interface.name
         )?;
-        writeln!(out, "    pub mod functions {{")?;
-        writeln!(out, "        #[allow(unused_imports)]")?;
-        writeln!(out, "        use super::GlueError;")?;
+        let iface_module = rust_ident(&snake_case(&interface.name), "interface module")?;
+        if iface_module == "functions" {
+            writeln!(out, "{mod_pad}#[allow(clippy::module_inception)]")?;
+        }
+        writeln!(out, "{mod_pad}pub mod functions {{")?;
+        writeln!(out, "{fn_mod_pad}use super::GlueError;")?;
         let function_emitter = self.with_type_prefix("super::super::super");
         let mut names = BTreeMap::new();
         for function in &interface.functions {
@@ -2408,13 +3091,20 @@ impl Emitter<'_> {
                 );
             }
             writeln!(out)?;
-            write_docs(out, 8, &function.docs)?;
-            writeln!(out, "        pub mod {module} {{")?;
-            writeln!(out, "            use super::GlueError;")?;
+            let fallback = format!(
+                "Protobuf conversion helpers for `{}#{}`.",
+                interface.name, function.name
+            );
+            rustfmt::write_docs_or(out, fn_mod_indent, &function.docs, &fallback)?;
+            if module == "functions" {
+                writeln!(out, "{fn_mod_pad}#[allow(clippy::module_inception)]")?;
+            }
+            writeln!(out, "{fn_mod_pad}pub mod {module} {{")?;
+            writeln!(out, "{fn_item_pad}use super::GlueError;")?;
             function_emitter.emit_function(out, interface, function)?;
-            writeln!(out, "        }}")?;
+            writeln!(out, "{fn_mod_pad}}}")?;
         }
-        writeln!(out, "    }}")?;
+        writeln!(out, "{mod_pad}}}")?;
         Ok(())
     }
 
@@ -2443,18 +3133,16 @@ impl Emitter<'_> {
             &ident::proto_method_enum_value(interface_name, &function.name),
         );
         let function_label = format!("{interface_name}#{}", function.name);
-        writeln!(out)?;
-        writeln!(
-            out,
-            "            /// Protobuf method identifier for `{function_label}`."
-        )?;
-        writeln!(
-            out,
-            "            pub const METHOD: {method} = {method}::{method_variant};"
-        )?;
+
+        let item_indent = self.base_indent + 12;
+        let body_indent = item_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
 
         let mut request_fields = BTreeMap::new();
         let mut args = Vec::new();
+        let mut reserved = BTreeSet::new();
+        let mut param_types = Vec::new();
         for param in &function.params {
             let name = rust_ident(&snake_case(&param.name), "parameter")?;
             if let Some(previous) = request_fields.insert(name.clone(), param.name.clone()) {
@@ -2465,136 +3153,272 @@ impl Emitter<'_> {
                 );
             }
             let ty = self.plain_type(&param.ty)?;
+            reserved.insert(name.clone());
             args.push(format!("{name}: &{ty}"));
+            param_types.push(ty);
         }
+
+        let params_alias = match param_types.len() {
+            0 => None,
+            1 => Some(param_types[0].clone()),
+            _ => Some(format!("({})", param_types.join(", "))),
+        };
+        let output_alias = function
+            .result
+            .as_ref()
+            .map(|ty| self.plain_type(ty))
+            .transpose()?;
+
         writeln!(out)?;
         writeln!(
             out,
-            "            /// Encode request parameters for `{function_label}`."
+            "{}",
+            rustfmt::fmt_type_alias(item_indent, "type Method", &method)
         )?;
         writeln!(
             out,
-            "            pub fn to_request({}) -> {request} {{",
-            args.join(", ")
+            "{}",
+            rustfmt::fmt_type_alias(item_indent, "type Request", &request)
+        )?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_type_alias(item_indent, "type Response", &response)
+        )?;
+        if let Some(params_ty) = &params_alias {
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(item_indent, "type Params", params_ty)
+            )?;
+        }
+        if let Some(output_ty) = &output_alias {
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(item_indent, "type Output", output_ty)
+            )?;
+        }
+
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{item_pad}/// Protobuf method identifier for `{function_label}`."
+        )?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_const_item(
+                item_indent,
+                "pub const METHOD: Method",
+                &format!("Method::{method_variant}"),
+            )
+        )?;
+
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{item_pad}/// Encode request parameters for `{function_label}`."
+        )?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_fn_sig(
+                item_indent,
+                "pub fn to_request",
+                &args,
+                Some("Request"),
+                " {"
+            )
         )?;
         if function.params.is_empty() {
-            writeln!(out, "                {request} {{}}")?;
+            writeln!(out, "{body_pad}Request {{}}")?;
         } else {
-            writeln!(out, "                {request} {{")?;
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::with_reserved(reserved);
+            let mut pairs = Vec::with_capacity(function.params.len());
             for param in &function.params {
                 let plain_param = rust_ident(&snake_case(&param.name), "parameter")?;
                 let prost_param = ident::prost_field_ident(&ident::proto_field_name(&param.name));
-                let value = self.encode_field(&plain_param, &param.ty)?;
-                writeln!(out, "                    {prost_param}: {value},")?;
+                let expr = self.emit_encode_field(
+                    &mut stmts,
+                    body_indent,
+                    &mut temps,
+                    &plain_param,
+                    &param.ty,
+                )?;
+                let expr = hoist_if_long(
+                    &mut stmts,
+                    body_indent,
+                    &mut temps,
+                    expr,
+                    4 + prost_param.len() + 3,
+                );
+                pairs.push((prost_param, expr));
             }
-            writeln!(out, "                }}")?;
+            push_stmts(out, &stmts)?;
+            let lit = rustfmt::fmt_struct_lit(body_indent, "Request", &pairs, body_indent, 0);
+            writeln!(out, "{body_pad}{lit}")?;
         }
-        writeln!(out, "            }}")?;
+        writeln!(out, "{item_pad}}}")?;
 
         writeln!(out)?;
-        let return_type = match function.params.len() {
-            0 => "()".to_string(),
-            1 => self.plain_type(&function.params[0].ty)?,
-            _ => format!(
-                "({})",
-                function
-                    .params
-                    .iter()
-                    .map(|param| self.plain_type(&param.ty))
-                    .collect::<Result<Vec<_>>>()?
-                    .join(", ")
-            ),
+        let from_req_ret = if params_alias.is_some() {
+            "::core::result::Result<Params, GlueError>"
+        } else {
+            "::core::result::Result<(), GlueError>"
         };
         writeln!(
             out,
-            "            /// Decode request parameters for `{function_label}`."
+            "{item_pad}/// Decode request parameters for `{function_label}`."
         )?;
         writeln!(
             out,
-            "            pub fn from_request(value: {request}) -> ::core::result::Result<{return_type}, GlueError> {{"
+            "{}",
+            rustfmt::fmt_fn_sig(
+                item_indent,
+                "pub fn from_request",
+                &["value: Request".to_string()],
+                Some(from_req_ret),
+                " {",
+            )
         )?;
         if function.params.is_empty() {
-            writeln!(out, "                let _ = value;")?;
-            writeln!(out, "                ::core::result::Result::Ok(())")?;
+            writeln!(out, "{body_pad}let _ = value;")?;
+            writeln!(out, "{body_pad}::core::result::Result::Ok(())")?;
+        } else if function.params.len() == 1 {
+            let param = &function.params[0];
+            let prost_param = ident::prost_field_ident(&ident::proto_field_name(&param.name));
+            let identity = format!("{interface_name}#{}.{}", function.name, param.name);
+            self.emit_decode_field_tail(
+                out,
+                body_indent,
+                &format!("value.{prost_param}"),
+                &param.ty,
+                &identity,
+            )?;
         } else {
-            let decoded = if function.params.len() == 1 {
-                let param = &function.params[0];
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let mut values = Vec::with_capacity(function.params.len());
+            for param in &function.params {
                 let prost_param = ident::prost_field_ident(&ident::proto_field_name(&param.name));
                 let identity = format!("{interface_name}#{}.{}", function.name, param.name);
-                self.decode_field(&format!("value.{prost_param}"), &param.ty, &identity)?
-            } else {
-                let mut values = Vec::new();
-                for param in &function.params {
-                    let prost_param =
-                        ident::prost_field_ident(&ident::proto_field_name(&param.name));
-                    let identity = format!("{interface_name}#{}.{}", function.name, param.name);
-                    values.push(self.decode_field(
-                        &format!("value.{prost_param}"),
-                        &param.ty,
-                        &identity,
-                    )?);
-                }
-                format!("({})", values.join(", "))
-            };
-            writeln!(out, "                ::core::result::Result::Ok({decoded})")?;
+                let val = self.emit_decode_field(
+                    &mut stmts,
+                    body_indent,
+                    &mut temps,
+                    &format!("value.{prost_param}"),
+                    &param.ty,
+                    &identity,
+                )?;
+                let val = hoist_if_long(&mut stmts, body_indent, &mut temps, val, 5);
+                values.push(val);
+            }
+            push_stmts(out, &stmts)?;
+            let ok_prefix = "::core::result::Result::Ok(";
+            let tuple =
+                rustfmt::fmt_tuple_expr(body_indent, &values, body_indent + ok_prefix.len(), 1);
+            writeln!(out, "{body_pad}{ok_prefix}{tuple})")?;
         }
-        writeln!(out, "            }}")?;
+        writeln!(out, "{item_pad}}}")?;
 
         writeln!(out)?;
         if let Some(result) = &function.result {
-            let ty = self.plain_type(result)?;
             writeln!(
                 out,
-                "            /// Encode the response for `{function_label}`."
+                "{item_pad}/// Encode the response for `{function_label}`."
             )?;
             writeln!(
                 out,
-                "            pub fn to_response(value: &{ty}) -> {response} {{"
+                "{}",
+                rustfmt::fmt_fn_sig(
+                    item_indent,
+                    "pub fn to_response",
+                    &["value: &Output".to_string()],
+                    Some("Response"),
+                    " {",
+                )
             )?;
-            writeln!(out, "                {response} {{")?;
-            writeln!(
-                out,
-                "                    result: {},",
-                self.encode_field("value", result)?
-            )?;
-            writeln!(out, "                }}")?;
-            writeln!(out, "            }}")?;
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let expr =
+                self.emit_encode_field(&mut stmts, body_indent, &mut temps, "value", result)?;
+            let expr = hoist_if_long(
+                &mut stmts,
+                body_indent,
+                &mut temps,
+                expr,
+                4 + "result: ".len() + 1,
+            );
+            push_stmts(out, &stmts)?;
+            let lit = rustfmt::fmt_struct_lit(
+                body_indent,
+                "Response",
+                &[("result".to_string(), expr)],
+                body_indent,
+                0,
+            );
+            writeln!(out, "{body_pad}{lit}")?;
+            writeln!(out, "{item_pad}}}")?;
+
             writeln!(out)?;
             let identity = format!("{interface_name}#{}.result", function.name);
             writeln!(
                 out,
-                "            /// Decode the response for `{function_label}`."
+                "{item_pad}/// Decode the response for `{function_label}`."
             )?;
             writeln!(
                 out,
-                "            pub fn from_response(value: {response}) -> ::core::result::Result<{ty}, GlueError> {{"
+                "{}",
+                rustfmt::fmt_fn_sig(
+                    item_indent,
+                    "pub fn from_response",
+                    &["value: Response".to_string()],
+                    Some("::core::result::Result<Output, GlueError>"),
+                    " {",
+                )
             )?;
-            writeln!(
-                out,
-                "                ::core::result::Result::Ok({})",
-                self.decode_field("value.result", result, &identity)?
-            )?;
-            writeln!(out, "            }}")?;
+            self.emit_decode_field_tail(out, body_indent, "value.result", result, &identity)?;
+            writeln!(out, "{item_pad}}}")?;
         } else {
             writeln!(
                 out,
-                "            /// Encode the response for `{function_label}`."
+                "{item_pad}/// Encode the response for `{function_label}`."
             )?;
-            writeln!(out, "            pub fn to_response() -> {response} {{")?;
-            writeln!(out, "                {response} {{}}")?;
-            writeln!(out, "            }}")?;
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_fn_sig(
+                    item_indent,
+                    "pub fn to_response",
+                    &[],
+                    Some("Response"),
+                    " {"
+                )
+            )?;
+            writeln!(out, "{body_pad}Response {{}}")?;
+            writeln!(out, "{item_pad}}}")?;
+
             writeln!(out)?;
             writeln!(
                 out,
-                "            /// Decode the response for `{function_label}`."
+                "{item_pad}/// Decode the response for `{function_label}`."
             )?;
             writeln!(
                 out,
-                "            pub fn from_response(value: {response}) -> ::core::result::Result<(), GlueError> {{"
+                "{}",
+                rustfmt::fmt_fn_sig(
+                    item_indent,
+                    "pub fn from_response",
+                    &["value: Response".to_string()],
+                    Some("::core::result::Result<(), GlueError>"),
+                    " {",
+                )
             )?;
-            writeln!(out, "                let _ = value;")?;
-            writeln!(out, "                ::core::result::Result::Ok(())")?;
-            writeln!(out, "            }}")?;
+            writeln!(out, "{body_pad}let _ = value;")?;
+            writeln!(out, "{body_pad}::core::result::Result::Ok(())")?;
+            writeln!(out, "{item_pad}}}")?;
         }
         Ok(())
     }
@@ -2610,21 +3434,212 @@ impl Emitter<'_> {
             |expr| format!("{target}::from({expr})"),
         )
     }
+
     fn borrowed(expr: &str) -> &str {
         expr.strip_prefix('&').unwrap_or(expr)
     }
 
-    fn encode_field(&self, expr: &str, ty: &TypeExpr) -> Result<String> {
+    fn emit_encode_list_loop(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        list_expr: &str,
+        element: &TypeExpr,
+    ) -> Result<String> {
+        let out_var = temps.fresh();
+        let item_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let borrowed = Self::borrowed(list_expr);
+        stmts.push(rustfmt::fmt_let_stmt(
+            indent,
+            &format!("mut {out_var}"),
+            &format!("::std::vec::Vec::with_capacity({borrowed}.len())"),
+        ));
+        let mut loop_stmts = Vec::new();
+        let encoded =
+            self.emit_encode_singular(&mut loop_stmts, inner_indent, temps, &item_var, element)?;
+        let encoded = hoist_if_long(
+            &mut loop_stmts,
+            inner_indent,
+            temps,
+            encoded,
+            out_var.len() + ".push();".len(),
+        );
+        let mut block = format!("{pad}for {item_var} in {list_expr} {{\n");
+        for stmt in loop_stmts {
+            let _ = writeln!(block, "{stmt}");
+        }
+        let _ = writeln!(block, "{inner_pad}{out_var}.push({encoded});");
+        let _ = write!(block, "{pad}}}");
+        stmts.push(block);
+        Ok(out_var)
+    }
+
+    fn emit_decode_list_loop(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        list_expr: &str,
+        element: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
+        let out_var = temps.fresh();
+        let item_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        stmts.push(rustfmt::fmt_let_stmt(
+            indent,
+            &format!("mut {out_var}"),
+            &format!("::std::vec::Vec::with_capacity({list_expr}.len())"),
+        ));
+        let mut loop_stmts = Vec::new();
+        let decoded = self.emit_decode_singular(
+            &mut loop_stmts,
+            inner_indent,
+            temps,
+            &item_var,
+            element,
+            identity,
+        )?;
+        let decoded = hoist_if_long(
+            &mut loop_stmts,
+            inner_indent,
+            temps,
+            decoded,
+            out_var.len() + ".push();".len(),
+        );
+        let mut block = format!("{pad}for {item_var} in {list_expr} {{\n");
+        for stmt in loop_stmts {
+            let _ = writeln!(block, "{stmt}");
+        }
+        let _ = writeln!(block, "{inner_pad}{out_var}.push({decoded});");
+        let _ = write!(block, "{pad}}}");
+        stmts.push(block);
+        Ok(out_var)
+    }
+
+    fn emit_encode_option_stmt(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        opt_expr: &str,
+        payload: &TypeExpr,
+    ) -> Result<String> {
+        let out_var = temps.fresh();
+        let item_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let borrowed = Self::borrowed(opt_expr);
+        stmts.push(format!(
+            "{pad}let mut {out_var} = ::core::option::Option::None;"
+        ));
+        let mut if_stmts = Vec::new();
+        let encoded =
+            self.emit_encode_singular(&mut if_stmts, inner_indent, temps, &item_var, payload)?;
+        let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
+        let encoded = hoist_if_long(
+            &mut if_stmts,
+            inner_indent,
+            temps,
+            encoded,
+            assign_prefix.len() + 2,
+        );
+        let mut block = format!(
+            "{pad}if let ::core::option::Option::Some({item_var}) = {borrowed}.as_ref() {{\n"
+        );
+        for stmt in if_stmts {
+            let _ = writeln!(block, "{stmt}");
+        }
+        let _ = writeln!(block, "{inner_pad}{assign_prefix}{encoded});");
+        let _ = write!(block, "{pad}}}");
+        stmts.push(block);
+        Ok(out_var)
+    }
+
+    fn emit_decode_option_stmt(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        opt_expr: &str,
+        payload: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
+        let out_var = temps.fresh();
+        let item_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        stmts.push(format!(
+            "{pad}let mut {out_var} = ::core::option::Option::None;"
+        ));
+        let mut if_stmts = Vec::new();
+        let decoded = self.emit_decode_singular(
+            &mut if_stmts,
+            inner_indent,
+            temps,
+            &item_var,
+            payload,
+            identity,
+        )?;
+        let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
+        let decoded = hoist_if_long(
+            &mut if_stmts,
+            inner_indent,
+            temps,
+            decoded,
+            assign_prefix.len() + 2,
+        );
+        let mut block =
+            format!("{pad}if let ::core::option::Option::Some({item_var}) = {opt_expr} {{\n");
+        for stmt in if_stmts {
+            let _ = writeln!(block, "{stmt}");
+        }
+        let _ = writeln!(block, "{inner_pad}{assign_prefix}{decoded});");
+        let _ = write!(block, "{pad}}}");
+        stmts.push(block);
+        Ok(out_var)
+    }
+
+    fn emit_encode_field(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        ty: &TypeExpr,
+    ) -> Result<String> {
         match self.form(ty)? {
-            Form::List | Form::Option => self.encode_value(expr, ty),
-            Form::Scalar | Form::Bytes | Form::Enum | Form::Message => Ok(format!(
-                "::core::option::Option::Some({})",
-                self.encode_value(expr, ty)?
-            )),
+            Form::List | Form::Option => self.emit_encode_value(stmts, indent, temps, expr, ty),
+            Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
+                let inner = self.emit_encode_value(stmts, indent, temps, expr, ty)?;
+                let inner = hoist_if_long(
+                    stmts,
+                    indent,
+                    temps,
+                    inner,
+                    "::core::option::Option::Some()".len() + 16,
+                );
+                Ok(format!("::core::option::Option::Some({inner})"))
+            }
         }
     }
 
-    fn encode_value(&self, expr: &str, ty: &TypeExpr) -> Result<String> {
+    fn emit_encode_value(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        ty: &TypeExpr,
+    ) -> Result<String> {
         match ty {
             TypeExpr::Bool
             | TypeExpr::U32
@@ -2641,30 +3656,32 @@ impl Emitter<'_> {
             }
             TypeExpr::List(element) => match self.identity(element)? {
                 Some(_) => Ok(format!("::core::clone::Clone::clone({expr})")),
-                None => Ok(format!(
-                    "{}.iter().map(|item| {}).collect()",
-                    Self::borrowed(expr),
-                    self.encode_singular("item", element)?
-                )),
+                None => self.emit_encode_list_loop(stmts, indent, temps, expr, element),
             },
             TypeExpr::Option(payload) => match self.identity(payload)? {
                 Some(Identity::Copy) => Ok(Self::copied(expr)),
                 Some(Identity::Clone) => Ok(format!("::core::clone::Clone::clone({expr})")),
-                None => Ok(format!(
-                    "{}.as_ref().map(|value| {})",
-                    Self::borrowed(expr),
-                    self.encode_singular("value", payload)?
-                )),
+                None => self.emit_encode_option_stmt(stmts, indent, temps, expr, payload),
             },
-            TypeExpr::Result(result) => Ok(self.encode_inline_result(expr, result)?),
+            TypeExpr::Result(result) => {
+                let out_var = temps.fresh();
+                let block = self.format_inline_result_encode(indent, expr, result)?;
+                let pad = " ".repeat(indent);
+                stmts.push(format!("{pad}let {out_var} = {block};"));
+                Ok(out_var)
+            }
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
                     let module = self.foreign_type_module(name)?;
-                    return Ok(format!("{module}::to_proto({expr})"));
+                    return Ok(emit_module_call(
+                        stmts, indent, temps, &module, "to_proto", expr, false,
+                    ));
                 }
                 let def = self.named(name)?;
                 match &def.kind {
-                    TypeDefKind::Alias(target) => self.encode_value(expr, target),
+                    TypeDefKind::Alias(target) => {
+                        self.emit_encode_value(stmts, indent, temps, expr, target)
+                    }
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
@@ -2673,7 +3690,9 @@ impl Emitter<'_> {
                     | TypeDefKind::List(_)
                     | TypeDefKind::Option(_) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        Ok(format!("{module}::to_proto({expr})"))
+                        Ok(emit_module_call(
+                            stmts, indent, temps, &module, "to_proto", expr, false,
+                        ))
                     }
                 }
             }
@@ -2681,7 +3700,14 @@ impl Emitter<'_> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn encode_singular(&self, expr: &str, ty: &TypeExpr) -> Result<String> {
+    fn emit_encode_singular(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        ty: &TypeExpr,
+    ) -> Result<String> {
         match ty {
             TypeExpr::Bool
             | TypeExpr::U32
@@ -2700,24 +3726,26 @@ impl Emitter<'_> {
                 let wrapper = self.proto_singular_type(ty)?;
                 let values = match self.identity(element)? {
                     Some(_) => format!("::core::clone::Clone::clone({expr})"),
-                    None => format!(
-                        "{expr}.iter().map(|item| {}).collect()",
-                        self.encode_singular("item", element)?
-                    ),
+                    None => self.emit_encode_list_loop(stmts, indent, temps, expr, element)?,
                 };
-                Ok(format!("{wrapper} {{ values: {values} }}"))
+                Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values))
             }
             TypeExpr::Option(payload) => {
                 let proto_wrapper = format!("WitforgeOptionOf{}", self.shape_name(payload)?);
                 let wrapper = self.proto_user_type_path(&proto_wrapper);
                 let oneof = self.proto_oneof(&proto_wrapper, "value");
                 let empty = self.proto_empty();
-                Ok(format!(
-                    "match {expr} {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some({})) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}",
-                    self.encode_singular("value", payload)?
-                ))
+                self.emit_encode_option_wrapper(
+                    stmts, indent, temps, expr, &wrapper, &oneof, &empty, payload,
+                )
             }
-            TypeExpr::Result(result) => self.encode_inline_result(expr, result),
+            TypeExpr::Result(result) => {
+                let out_var = temps.fresh();
+                let block = self.format_inline_result_encode(indent, expr, result)?;
+                let pad = " ".repeat(indent);
+                stmts.push(format!("{pad}let {out_var} = {block};"));
+                Ok(out_var)
+            }
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
                     let (dependency, def) = self
@@ -2726,20 +3754,23 @@ impl Emitter<'_> {
                     match &def.kind {
                         TypeDefKind::Alias(target) => {
                             let target = qualify_type(Some(dependency), target);
-                            return self.encode_singular(expr, &target);
+                            return self.emit_encode_singular(stmts, indent, temps, expr, &target);
                         }
                         TypeDefKind::List(element)
                             if self.model.resolves_to_u8_in(Some(dependency), element) =>
                         {
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!("{module}::to_proto({expr})"));
+                            return Ok(emit_module_call(
+                                stmts, indent, temps, &module, "to_proto", expr, false,
+                            ));
                         }
                         TypeDefKind::List(_) => {
                             let wrapper = self.foreign_proto_singular(name)?;
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!(
-                                "{wrapper} {{ values: {module}::to_proto({expr}) }}"
-                            ));
+                            let values = emit_module_call(
+                                stmts, indent, temps, &module, "to_proto", expr, false,
+                            );
+                            return Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values));
                         }
                         TypeDefKind::Option(_) => {
                             let shape = self
@@ -2749,37 +3780,47 @@ impl Emitter<'_> {
                             let oneof = self.proto_oneof(&proto_wrapper, "value");
                             let empty = self.proto_empty();
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!(
-                                "match {module}::to_proto({expr}) {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some(value)) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}"
+                            let converted = emit_module_call(
+                                stmts, indent, temps, &module, "to_proto", expr, false,
+                            );
+                            return Ok(self.emit_wrap_option_expr(
+                                stmts, indent, temps, &converted, &wrapper, &oneof, &empty,
                             ));
                         }
                         _ => {
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!("{module}::to_proto({expr})"));
+                            return Ok(emit_module_call(
+                                stmts, indent, temps, &module, "to_proto", expr, false,
+                            ));
                         }
                     }
                 }
                 let def = self.named(name)?;
                 match &def.kind {
-                    TypeDefKind::Alias(target) => self.encode_singular(expr, target),
+                    TypeDefKind::Alias(target) => {
+                        self.emit_encode_singular(stmts, indent, temps, expr, target)
+                    }
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Result(_)
                     | TypeDefKind::Enum(_) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        Ok(format!("{module}::to_proto({expr})"))
+                        Ok(emit_module_call(
+                            stmts, indent, temps, &module, "to_proto", expr, false,
+                        ))
                     }
                     TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        Ok(format!("{module}::to_proto({expr})"))
+                        Ok(emit_module_call(
+                            stmts, indent, temps, &module, "to_proto", expr, false,
+                        ))
                     }
                     TypeDefKind::List(element) => {
                         let wrapper = self.proto_singular_type(ty)?;
-                        Ok(format!(
-                            "{wrapper} {{ values: {expr}.iter().map(|item| {}).collect() }}",
-                            self.encode_singular("item", element)?
-                        ))
+                        let values =
+                            self.emit_encode_list_loop(stmts, indent, temps, expr, element)?;
+                        Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values))
                     }
                     TypeDefKind::Option(payload) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
@@ -2792,8 +3833,11 @@ impl Emitter<'_> {
                         let wrapper = self.proto_user_type_path(&proto_wrapper);
                         let oneof = self.proto_oneof(&proto_wrapper, "value");
                         let empty = self.proto_empty();
-                        Ok(format!(
-                            "match {module}::to_proto({expr}) {{ ::core::option::Option::Some(value) => {wrapper} {{ value: ::core::option::Option::Some({oneof}::Some(value)) }}, ::core::option::Option::None => {wrapper} {{ value: ::core::option::Option::Some({oneof}::None({empty} {{}})) }} }}"
+                        let converted = emit_module_call(
+                            stmts, indent, temps, &module, "to_proto", expr, false,
+                        );
+                        Ok(self.emit_wrap_option_expr(
+                            stmts, indent, temps, &converted, &wrapper, &oneof, &empty,
                         ))
                     }
                 }
@@ -2801,17 +3845,291 @@ impl Emitter<'_> {
         }
     }
 
-    fn decode_field(&self, expr: &str, ty: &TypeExpr, identity: &str) -> Result<String> {
-        match self.form(ty)? {
-            Form::List | Form::Option => self.decode_value(expr, ty, identity),
-            Form::Scalar | Form::Bytes | Form::Enum | Form::Message => Ok(format!(
-                "match {expr} {{ ::core::option::Option::Some(value) => {}, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField {{ field: \"{identity}\" }}), }}",
-                self.decode_value("value", ty, identity)?
-            )),
+    fn emit_wrap_list(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        wrapper: &str,
+        values: String,
+    ) -> String {
+        let _ = self;
+        let out_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let values = hoist_if_long(stmts, indent, temps, values, 4 + "values: ".len() + 1);
+        let lit = rustfmt::fmt_struct_lit(
+            inner_indent,
+            "Wrapper",
+            &[("values".to_string(), values)],
+            inner_indent,
+            0,
+        );
+        let wrapper_alias = rustfmt::fmt_type_alias(inner_indent, "type Wrapper", wrapper);
+        stmts.push(format!(
+            "{pad}let {out_var} = {{\n{wrapper_alias}\n{inner_pad}{lit}\n{pad}}};"
+        ));
+        out_var
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_encode_option_wrapper(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        wrapper: &str,
+        oneof: &str,
+        empty: &str,
+        payload: &TypeExpr,
+    ) -> Result<String> {
+        let out_var = temps.fresh();
+        let inner_var = temps.fresh();
+        let sub_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let arm_indent = inner_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+
+        let mut arm_stmts = Vec::new();
+        let encoded =
+            self.emit_encode_singular(&mut arm_stmts, arm_body_indent, temps, &sub_var, payload)?;
+        let encoded = hoist_if_long(
+            &mut arm_stmts,
+            arm_body_indent,
+            temps,
+            encoded,
+            "Case::Some()".len(),
+        );
+        let some_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            &format!("::core::option::Option::Some({sub_var})"),
+            &arm_stmts,
+            &format!("Case::Some({encoded})"),
+        );
+        let none_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            "::core::option::Option::None",
+            &[],
+            "Case::None(Empty {})",
+        );
+        let lit = rustfmt::fmt_struct_lit(
+            inner_indent,
+            "Wrapper",
+            &[(
+                "value".to_string(),
+                format!("::core::option::Option::Some({inner_var})"),
+            )],
+            inner_indent,
+            0,
+        );
+        let wrapper_alias = rustfmt::fmt_type_alias(inner_indent, "type Wrapper", wrapper);
+        let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
+        let empty_alias = rustfmt::fmt_type_alias(inner_indent, "type Empty", empty);
+        stmts.push(format!(
+            "{pad}let {out_var} = {{\n\
+             {wrapper_alias}\n\
+             {case_alias}\n\
+             {empty_alias}\n\
+             {inner_pad}let {inner_var} = match {expr} {{\n\
+             {some_arm}\n\
+             {none_arm}\n\
+             {inner_pad}}};\n\
+             {inner_pad}{lit}\n\
+             {pad}}};"
+        ));
+        Ok(out_var)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_wrap_option_expr(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        converted: &str,
+        wrapper: &str,
+        oneof: &str,
+        empty: &str,
+    ) -> String {
+        let _ = self;
+        let out_var = temps.fresh();
+        let inner_var = temps.fresh();
+        let sub_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let arm_indent = inner_indent + 4;
+        let scrutinee = hoist_if_long(
+            stmts,
+            indent,
+            temps,
+            converted.to_string(),
+            inner_indent + format!("let {inner_var} = match  {{").len(),
+        );
+        let some_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            &format!("::core::option::Option::Some({sub_var})"),
+            &[],
+            &format!("Case::Some({sub_var})"),
+        );
+        let none_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            "::core::option::Option::None",
+            &[],
+            "Case::None(Empty {})",
+        );
+        let lit = rustfmt::fmt_struct_lit(
+            inner_indent,
+            "Wrapper",
+            &[(
+                "value".to_string(),
+                format!("::core::option::Option::Some({inner_var})"),
+            )],
+            inner_indent,
+            0,
+        );
+        let wrapper_alias = rustfmt::fmt_type_alias(inner_indent, "type Wrapper", wrapper);
+        let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
+        let empty_alias = rustfmt::fmt_type_alias(inner_indent, "type Empty", empty);
+        stmts.push(format!(
+            "{pad}let {out_var} = {{\n\
+             {wrapper_alias}\n\
+             {case_alias}\n\
+             {empty_alias}\n\
+             {inner_pad}let {inner_var} = match {scrutinee} {{\n\
+             {some_arm}\n\
+             {none_arm}\n\
+             {inner_pad}}};\n\
+             {inner_pad}{lit}\n\
+             {pad}}};"
+        ));
+        out_var
+    }
+
+    fn direct_from_proto_module(&self, ty: &TypeExpr) -> Result<Option<String>> {
+        match ty {
+            TypeExpr::Named(name) => {
+                if name.is_foreign() {
+                    return Ok(Some(self.foreign_type_module(name)?));
+                }
+                let def = self.named(name)?;
+                match &def.kind {
+                    TypeDefKind::Alias(target) => self.direct_from_proto_module(target),
+                    TypeDefKind::Record(_)
+                    | TypeDefKind::Variant(_)
+                    | TypeDefKind::Flags(_)
+                    | TypeDefKind::Enum(_)
+                    | TypeDefKind::Result(_)
+                    | TypeDefKind::List(_)
+                    | TypeDefKind::Option(_) => {
+                        Ok(Some(self.plain_type_module(&name.interface, &name.name)?))
+                    }
+                }
+            }
+            _ => Ok(None),
         }
     }
 
-    fn decode_value(&self, expr: &str, ty: &TypeExpr, identity: &str) -> Result<String> {
+    fn emit_decode_field_tail(
+        &self,
+        out: &mut String,
+        indent: usize,
+        expr: &str,
+        ty: &TypeExpr,
+        identity: &str,
+    ) -> Result<()> {
+        match self.form(ty)? {
+            Form::List | Form::Option => {
+                self.emit_decode_value_tail(out, indent, expr, ty, identity)
+            }
+            Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
+                let mut stmts = Vec::new();
+                let mut temps = TempGen::new();
+                let val_var = temps.fresh();
+                push_let_else_err(
+                    &mut stmts,
+                    indent,
+                    &mut temps,
+                    &format!("::core::option::Option::Some({val_var})"),
+                    expr,
+                    "GlueError::MissingField",
+                    &[("field".to_string(), format!("\"{identity}\""))],
+                );
+                push_stmts(out, &stmts)?;
+                self.emit_decode_value_tail(out, indent, &val_var, ty, identity)
+            }
+        }
+    }
+
+    fn emit_decode_value_tail(
+        &self,
+        out: &mut String,
+        indent: usize,
+        expr: &str,
+        ty: &TypeExpr,
+        identity: &str,
+    ) -> Result<()> {
+        if let Some(module) = self.direct_from_proto_module(ty)? {
+            return emit_direct_module_tail(out, indent, &module, "from_proto", expr);
+        }
+        let mut stmts = Vec::new();
+        let mut temps = TempGen::new();
+        let decoded = self.emit_decode_value(&mut stmts, indent, &mut temps, expr, ty, identity)?;
+        let decoded = hoist_if_long(
+            &mut stmts,
+            indent,
+            &mut temps,
+            decoded,
+            "::core::result::Result::Ok()".len(),
+        );
+        push_stmts(out, &stmts)?;
+        let pad = " ".repeat(indent);
+        writeln!(out, "{pad}::core::result::Result::Ok({decoded})")?;
+        Ok(())
+    }
+
+    fn emit_decode_field(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        ty: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
+        match self.form(ty)? {
+            Form::List | Form::Option => {
+                self.emit_decode_value(stmts, indent, temps, expr, ty, identity)
+            }
+            Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
+                let val_var = temps.fresh();
+                push_let_else_err(
+                    stmts,
+                    indent,
+                    temps,
+                    &format!("::core::option::Option::Some({val_var})"),
+                    expr,
+                    "GlueError::MissingField",
+                    &[("field".to_string(), format!("\"{identity}\""))],
+                );
+                self.emit_decode_value(stmts, indent, temps, &val_var, ty, identity)
+            }
+        }
+    }
+
+    fn emit_decode_value(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        ty: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
         match ty {
             TypeExpr::Bool
             | TypeExpr::U32
@@ -2824,31 +4142,39 @@ impl Emitter<'_> {
             | TypeExpr::U8
             | TypeExpr::U16
             | TypeExpr::S8
-            | TypeExpr::S16 => Self::decode_primitive(expr, ty, identity),
+            | TypeExpr::S16 => {
+                Self::emit_decode_primitive(stmts, indent, temps, expr, ty, identity)
+            }
             TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(expr.to_string()),
             TypeExpr::List(element) => match self.identity(element)? {
                 Some(_) => Ok(expr.to_string()),
-                None => Ok(format!(
-                    "{expr}.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
-                    self.decode_singular("item", element, identity)?
-                )),
+                None => self.emit_decode_list_loop(stmts, indent, temps, expr, element, identity),
             },
             TypeExpr::Option(payload) => match self.identity(payload)? {
                 Some(_) => Ok(expr.to_string()),
-                None => Ok(format!(
-                    "{expr}.map(|value| ::core::result::Result::Ok({})).transpose()?",
-                    self.decode_singular("value", payload, identity)?
-                )),
+                None => self.emit_decode_option_stmt(stmts, indent, temps, expr, payload, identity),
             },
-            TypeExpr::Result(result) => self.decode_inline_result(expr, result, identity),
+            TypeExpr::Result(result) => {
+                self.emit_decode_inline_result(stmts, indent, temps, expr, result, identity)
+            }
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
                     let module = self.foreign_type_module(name)?;
-                    return Ok(format!("{module}::from_proto({expr})?"));
+                    return Ok(emit_module_call(
+                        stmts,
+                        indent,
+                        temps,
+                        &module,
+                        "from_proto",
+                        expr,
+                        true,
+                    ));
                 }
                 let def = self.named(name)?;
                 match &def.kind {
-                    TypeDefKind::Alias(target) => self.decode_value(expr, target, identity),
+                    TypeDefKind::Alias(target) => {
+                        self.emit_decode_value(stmts, indent, temps, expr, target, identity)
+                    }
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
@@ -2857,7 +4183,15 @@ impl Emitter<'_> {
                     | TypeDefKind::List(_)
                     | TypeDefKind::Option(_) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        Ok(format!("{module}::from_proto({expr})?"))
+                        Ok(emit_module_call(
+                            stmts,
+                            indent,
+                            temps,
+                            &module,
+                            "from_proto",
+                            expr,
+                            true,
+                        ))
                     }
                 }
             }
@@ -2865,7 +4199,15 @@ impl Emitter<'_> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn decode_singular(&self, expr: &str, ty: &TypeExpr, identity: &str) -> Result<String> {
+    fn emit_decode_singular(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        ty: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
         match ty {
             TypeExpr::Bool
             | TypeExpr::U32
@@ -2878,24 +4220,31 @@ impl Emitter<'_> {
             | TypeExpr::U8
             | TypeExpr::U16
             | TypeExpr::S8
-            | TypeExpr::S16 => Self::decode_primitive(expr, ty, identity),
+            | TypeExpr::S16 => {
+                Self::emit_decode_primitive(stmts, indent, temps, expr, ty, identity)
+            }
             TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(expr.to_string()),
             TypeExpr::List(element) => match self.identity(element)? {
                 Some(_) => Ok(format!("{expr}.values")),
-                None => Ok(format!(
-                    "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
-                    self.decode_singular("item", element, identity)?
-                )),
+                None => self.emit_decode_list_loop(
+                    stmts,
+                    indent,
+                    temps,
+                    &format!("{expr}.values"),
+                    element,
+                    identity,
+                ),
             },
             TypeExpr::Option(payload) => {
                 let proto_wrapper = format!("WitforgeOptionOf{}", self.shape_name(payload)?);
                 let oneof = self.proto_oneof(&proto_wrapper, "value");
-                Ok(format!(
-                    "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => ::core::option::Option::Some({}), ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}",
-                    self.decode_singular("value", payload, identity)?
-                ))
+                self.emit_decode_option_wrapper(
+                    stmts, indent, temps, expr, &oneof, payload, identity,
+                )
             }
-            TypeExpr::Result(result) => self.decode_inline_result(expr, result, identity),
+            TypeExpr::Result(result) => {
+                self.emit_decode_inline_result(stmts, indent, temps, expr, result, identity)
+            }
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
                     let (dependency, def) = self
@@ -2904,17 +4253,35 @@ impl Emitter<'_> {
                     match &def.kind {
                         TypeDefKind::Alias(target) => {
                             let target = qualify_type(Some(dependency), target);
-                            return self.decode_singular(expr, &target, identity);
+                            return self.emit_decode_singular(
+                                stmts, indent, temps, expr, &target, identity,
+                            );
                         }
                         TypeDefKind::List(element)
                             if self.model.resolves_to_u8_in(Some(dependency), element) =>
                         {
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!("{module}::from_proto({expr})?"));
+                            return Ok(emit_module_call(
+                                stmts,
+                                indent,
+                                temps,
+                                &module,
+                                "from_proto",
+                                expr,
+                                true,
+                            ));
                         }
                         TypeDefKind::List(_) => {
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!("{module}::from_proto({expr}.values)?"));
+                            return Ok(emit_module_call(
+                                stmts,
+                                indent,
+                                temps,
+                                &module,
+                                "from_proto",
+                                &format!("{expr}.values"),
+                                true,
+                            ));
                         }
                         TypeDefKind::Option(_) => {
                             let shape = self
@@ -2922,37 +4289,67 @@ impl Emitter<'_> {
                             let proto_wrapper = format!("Witforge{shape}");
                             let oneof = self.proto_oneof(&proto_wrapper, "value");
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!(
-                                "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => {module}::from_proto(::core::option::Option::Some(value))?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}"
+                            return Ok(self.emit_decode_named_option_wrapper(
+                                stmts, indent, temps, expr, &oneof, &module, identity,
                             ));
                         }
                         _ => {
                             let module = self.foreign_type_module(name)?;
-                            return Ok(format!("{module}::from_proto({expr})?"));
+                            return Ok(emit_module_call(
+                                stmts,
+                                indent,
+                                temps,
+                                &module,
+                                "from_proto",
+                                expr,
+                                true,
+                            ));
                         }
                     }
                 }
                 let def = self.named(name)?;
                 match &def.kind {
-                    TypeDefKind::Alias(target) => self.decode_singular(expr, target, identity),
+                    TypeDefKind::Alias(target) => {
+                        self.emit_decode_singular(stmts, indent, temps, expr, target, identity)
+                    }
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Result(_) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        Ok(format!("{module}::from_proto({expr})?"))
+                        Ok(emit_module_call(
+                            stmts,
+                            indent,
+                            temps,
+                            &module,
+                            "from_proto",
+                            expr,
+                            true,
+                        ))
                     }
                     TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
-                        Ok(format!("{module}::from_proto({expr})?"))
+                        Ok(emit_module_call(
+                            stmts,
+                            indent,
+                            temps,
+                            &module,
+                            "from_proto",
+                            expr,
+                            true,
+                        ))
                     }
                     TypeDefKind::List(element) => match self.identity(element)? {
                         Some(_) => Ok(format!("{expr}.values")),
-                        None => Ok(format!(
-                            "{expr}.values.into_iter().map(|item| ::core::result::Result::Ok({})).collect::<::core::result::Result<::std::vec::Vec<_>, GlueError>>()?",
-                            self.decode_singular("item", element, identity)?
-                        )),
+                        None => self.emit_decode_list_loop(
+                            stmts,
+                            indent,
+                            temps,
+                            &format!("{expr}.values"),
+                            element,
+                            identity,
+                        ),
                     },
                     TypeDefKind::Option(payload) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
@@ -2963,8 +4360,8 @@ impl Emitter<'_> {
                                 format!("WitforgeOptionOf{}", self.shape_name(payload)?)
                             };
                         let oneof = self.proto_oneof(&proto_wrapper, "value");
-                        Ok(format!(
-                            "match {expr}.value {{ ::core::option::Option::Some({oneof}::None(_)) => ::core::option::Option::None, ::core::option::Option::Some({oneof}::Some(value)) => {module}::from_proto(::core::option::Option::Some(value))?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::InvalidState {{ message: \"{identity}\" }}), }}"
+                        Ok(self.emit_decode_named_option_wrapper(
+                            stmts, indent, temps, expr, &oneof, &module, identity,
                         ))
                     }
                 }
@@ -2972,8 +4369,150 @@ impl Emitter<'_> {
         }
     }
 
-    fn decode_primitive(expr: &str, ty: &TypeExpr, identity: &str) -> Result<String> {
-        Ok(match ty {
+    #[allow(clippy::too_many_arguments)]
+    fn emit_decode_option_wrapper(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        oneof: &str,
+        payload: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
+        let case_var = temps.fresh();
+        push_let_else_err(
+            stmts,
+            indent,
+            temps,
+            &format!("::core::option::Option::Some({case_var})"),
+            &format!("{expr}.value"),
+            "GlueError::InvalidState",
+            &[("message".to_string(), format!("\"{identity}\""))],
+        );
+        let out_var = temps.fresh();
+        let sub_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let arm_indent = inner_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+
+        let mut arm_stmts = Vec::new();
+        let decoded = self.emit_decode_singular(
+            &mut arm_stmts,
+            arm_body_indent,
+            temps,
+            &sub_var,
+            payload,
+            identity,
+        )?;
+        let decoded = hoist_if_long(
+            &mut arm_stmts,
+            arm_body_indent,
+            temps,
+            decoded,
+            "::core::option::Option::Some()".len(),
+        );
+        let none_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            "Case::None(_)",
+            &[],
+            "::core::option::Option::None",
+        );
+        let some_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            &format!("Case::Some({sub_var})"),
+            &arm_stmts,
+            &format!("::core::option::Option::Some({decoded})"),
+        );
+        let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
+        stmts.push(format!(
+            "{pad}let {out_var} = {{\n\
+             {case_alias}\n\
+             {inner_pad}match {case_var} {{\n\
+             {none_arm}\n\
+             {some_arm}\n\
+             {inner_pad}}}\n\
+             {pad}}};"
+        ));
+        Ok(out_var)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_decode_named_option_wrapper(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        oneof: &str,
+        module: &str,
+        identity: &str,
+    ) -> String {
+        let _ = self;
+        let case_var = temps.fresh();
+        push_let_else_err(
+            stmts,
+            indent,
+            temps,
+            &format!("::core::option::Option::Some({case_var})"),
+            &format!("{expr}.value"),
+            "GlueError::InvalidState",
+            &[("message".to_string(), format!("\"{identity}\""))],
+        );
+        let out_var = temps.fresh();
+        let sub_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let arm_indent = inner_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+
+        let mut arm_stmts = Vec::new();
+        let decoded = emit_module_call(
+            &mut arm_stmts,
+            arm_body_indent,
+            temps,
+            module,
+            "from_proto",
+            &format!("::core::option::Option::Some({sub_var})"),
+            true,
+        );
+        let none_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            "Case::None(_)",
+            &[],
+            "::core::option::Option::None",
+        );
+        let some_arm = rustfmt::fmt_match_arm(
+            arm_indent,
+            &format!("Case::Some({sub_var})"),
+            &arm_stmts,
+            &decoded,
+        );
+        let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
+        stmts.push(format!(
+            "{pad}let {out_var} = {{\n\
+             {case_alias}\n\
+             {inner_pad}match {case_var} {{\n\
+             {none_arm}\n\
+             {some_arm}\n\
+             {inner_pad}}}\n\
+             {pad}}};"
+        ));
+        out_var
+    }
+
+    fn emit_decode_primitive(
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        expr: &str,
+        ty: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
+        let target = match ty {
             TypeExpr::Bool
             | TypeExpr::U32
             | TypeExpr::U64
@@ -2981,31 +4520,65 @@ impl Emitter<'_> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
-            | TypeExpr::String => expr.to_string(),
-            TypeExpr::U8 => format!(
-                "u8::try_from({expr}).map_err(|_| GlueError::IntegerOutOfRange {{ field: \"{identity}\", value: i64::from({expr}) }})?"
-            ),
-            TypeExpr::U16 => format!(
-                "u16::try_from({expr}).map_err(|_| GlueError::IntegerOutOfRange {{ field: \"{identity}\", value: i64::from({expr}) }})?"
-            ),
-            TypeExpr::S8 => format!(
-                "i8::try_from({expr}).map_err(|_| GlueError::IntegerOutOfRange {{ field: \"{identity}\", value: i64::from({expr}) }})?"
-            ),
-            TypeExpr::S16 => format!(
-                "i16::try_from({expr}).map_err(|_| GlueError::IntegerOutOfRange {{ field: \"{identity}\", value: i64::from({expr}) }})?"
-            ),
+            | TypeExpr::String => return Ok(expr.to_string()),
+            TypeExpr::U8 => "u8",
+            TypeExpr::U16 => "u16",
+            TypeExpr::S8 => "i8",
+            TypeExpr::S16 => "i16",
             _ => bail!("type `{ty:?}` is not a primitive"),
-        })
+        };
+        let out_var = temps.fresh();
+        push_let_else_err(
+            stmts,
+            indent,
+            temps,
+            &format!("::core::result::Result::Ok({out_var})"),
+            &format!("{target}::try_from({expr})"),
+            "GlueError::IntegerOutOfRange",
+            &[
+                ("field".to_string(), format!("\"{identity}\"")),
+                ("value".to_string(), format!("i64::from({expr})")),
+            ],
+        );
+        Ok(out_var)
     }
 
-    fn encode_inline_result(&self, expr: &str, result: &ResultExpr) -> Result<String> {
+    fn format_inline_result_encode(
+        &self,
+        indent: usize,
+        expr: &str,
+        result: &ResultExpr,
+    ) -> Result<String> {
         let shape = self.shape_name(&TypeExpr::Result(result.clone()))?;
         let proto_name = format!("Witforge{shape}");
         let message = self.proto_user_type_path(&proto_name);
         let oneof = self.proto_oneof(&proto_name, "value");
         let empty = self.proto_empty();
-        let mut out = String::new();
-        writeln!(out, "match {expr} {{")?;
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let arm_indent = inner_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+
+        let mut out = String::from("{\n");
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_type_alias(inner_indent, "type Wrapper", &message)
+        )?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_type_alias(inner_indent, "type Case", &oneof)
+        )?;
+        if result.ok.is_none() || result.err.is_none() {
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(inner_indent, "type Empty", &empty)
+            )?;
+        }
+        writeln!(out, "{inner_pad}let inner = match {expr} {{")?;
         for (side, variant) in [("Ok", "Ok"), ("Err", "Err")] {
             let slot = if side == "Ok" {
                 &result.ok
@@ -3013,24 +4586,60 @@ impl Emitter<'_> {
                 &result.err
             };
             if let Some(ty) = slot {
+                let mut arm_stmts = Vec::new();
+                let mut temps = TempGen::new();
+                let val = self.emit_encode_singular(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut temps,
+                    "v",
+                    ty,
+                )?;
+                let val = hoist_if_long(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut temps,
+                    val,
+                    "Case::".len() + variant.len() + 2,
+                );
+                let pat = format!("::core::result::Result::{side}(v)");
+                let tail = format!("Case::{variant}({val})");
                 writeln!(
                     out,
-                    "::core::result::Result::{side}(value) => {message} {{ value: ::core::option::Option::Some({oneof}::{variant}({})) }},",
-                    self.encode_singular("value", ty)?
+                    "{}",
+                    rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail)
                 )?;
             } else {
+                let pat = format!("::core::result::Result::{side}(_)");
+                let tail = format!("Case::{variant}(Empty {{}})");
                 writeln!(
                     out,
-                    "::core::result::Result::{side}(_) => {message} {{ value: ::core::option::Option::Some({oneof}::{variant}({empty} {{}})) }},"
+                    "{}",
+                    rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
                 )?;
             }
         }
-        writeln!(out, "}}")?;
-        Ok(out.trim_end().to_string())
+        writeln!(out, "{inner_pad}}};")?;
+        let lit = rustfmt::fmt_struct_lit(
+            inner_indent,
+            "Wrapper",
+            &[(
+                "value".to_string(),
+                "::core::option::Option::Some(inner)".to_string(),
+            )],
+            inner_indent,
+            0,
+        );
+        writeln!(out, "{inner_pad}{lit}")?;
+        write!(out, "{pad}}}")?;
+        Ok(out)
     }
 
-    fn decode_inline_result(
+    fn emit_decode_inline_result(
         &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
         expr: &str,
         result: &ResultExpr,
         identity: &str,
@@ -3042,8 +4651,24 @@ impl Emitter<'_> {
             ),
             "value",
         );
-        let mut out = String::new();
-        writeln!(out, "match {expr}.value {{")?;
+        let case_var = temps.fresh();
+        push_let_else_err(
+            stmts,
+            indent,
+            temps,
+            &format!("::core::option::Option::Some({case_var})"),
+            &format!("{expr}.value"),
+            "GlueError::UnknownCase",
+            &[("message".to_string(), format!("\"{identity}\""))],
+        );
+        let out_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let arm_indent = inner_indent + 4;
+        let arm_body_indent = arm_indent + 4;
+
+        let mut arms = Vec::new();
         for (side, variant) in [("Ok", "Ok"), ("Err", "Err")] {
             let slot = if side == "Ok" {
                 &result.ok
@@ -3051,24 +4676,43 @@ impl Emitter<'_> {
                 &result.err
             };
             if let Some(ty) = slot {
-                writeln!(
-                    out,
-                    "::core::option::Option::Some({oneof}::{variant}(value)) => ::core::result::Result::{side}({}),",
-                    self.decode_singular("value", ty, identity)?
+                let mut arm_stmts = Vec::new();
+                let mut arm_temps = TempGen::new();
+                let val = self.emit_decode_singular(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut arm_temps,
+                    "v",
+                    ty,
+                    identity,
                 )?;
+                let val = hoist_if_long(
+                    &mut arm_stmts,
+                    arm_body_indent,
+                    &mut arm_temps,
+                    val,
+                    "::core::result::Result::".len() + side.len() + 2,
+                );
+                let pat = format!("Case::{variant}(v)");
+                let tail = format!("::core::result::Result::{side}({val})");
+                arms.push(rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail));
             } else {
-                writeln!(
-                    out,
-                    "::core::option::Option::Some({oneof}::{variant}(_)) => ::core::result::Result::{side}(()),"
-                )?;
+                let pat = format!("Case::{variant}(_)");
+                let tail = format!("::core::result::Result::{side}(())");
+                arms.push(rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail));
             }
         }
-        writeln!(
-            out,
-            "::core::option::Option::None => return ::core::result::Result::Err(GlueError::UnknownCase {{ message: \"{identity}\" }}),"
-        )?;
-        writeln!(out, "}}")?;
-        Ok(out.trim_end().to_string())
+        let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", &oneof);
+        stmts.push(format!(
+            "{pad}let {out_var} = {{\n\
+             {case_alias}\n\
+             {inner_pad}match {case_var} {{\n\
+             {}\n\
+             {inner_pad}}}\n\
+             {pad}}};",
+            arms.join("\n")
+        ));
+        Ok(out_var)
     }
 
     fn list_element(&self, ty: &TypeExpr) -> Result<TypeExpr> {

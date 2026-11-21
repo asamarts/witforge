@@ -35,8 +35,19 @@ pub enum ConversionError {
 impl ::core::fmt::Display for ConversionError {
     fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         match self {
-            Self::MissingMember { from, to, path } => write!(formatter, "conversion {from} -> {to}: cannot reconstruct `{path}` from the source version"),
-            Self::UnknownCase { from, to, path, case } => write!(formatter, "conversion {from} -> {to}: `{path}` case `{case}` does not exist in the target version"),
+            Self::MissingMember { from, to, path } => write!(
+                formatter,
+                "conversion {from} -> {to}: cannot reconstruct `{path}` from the source version"
+            ),
+            Self::UnknownCase {
+                from,
+                to,
+                path,
+                case,
+            } => write!(
+                formatter,
+                "conversion {from} -> {to}: `{path}` case `{case}` does not exist in the target version"
+            ),
         }
     }
 }
@@ -45,17 +56,22 @@ impl ::std::error::Error for ConversionError {}
 
 /// Conversions from `v0_1` to `v0_2`.
 pub mod v0_1_to_v0_2 {
-    use super::super::{ v0_1 as __witforge_from, v0_2 as __witforge_to };
+    use super::super::v0_1 as __witforge_from;
+
+    use super::super::v0_2 as __witforge_to;
 
     /// Conversions for interface `types`.
     pub mod types {
+        use super::super::ConversionError;
+
         /// Convert `types/task` from 0.1.0 to 0.2.0.
         ///
         /// # Errors
         ///
         /// Returns an error when the source value cannot be represented by the target version.
-        pub fn task(value: &super::__witforge_from::types::Task) -> ::core::result::Result<super::__witforge_to::types::Task, super::super::ConversionError> {
-            let _ = value;
+        pub fn task(
+            value: &super::__witforge_from::types::Task,
+        ) -> ::core::result::Result<super::__witforge_to::types::Task, ConversionError> {
             ::core::result::Result::Ok(super::__witforge_to::types::Task {
                 id: value.id,
                 title: ::core::clone::Clone::clone(&value.title),
@@ -64,33 +80,37 @@ pub mod v0_1_to_v0_2 {
                 tags: ::std::vec::Vec::new(),
             })
         }
-
     }
 
     /// Conversions for interface `service`.
     pub mod service {
+        use super::super::ConversionError;
+
         /// Convert `service/task` from 0.1.0 to 0.2.0.
         ///
         /// # Errors
         ///
         /// Returns an error when the source value cannot be represented by the target version.
-        pub fn task(value: &super::__witforge_from::service::Task) -> ::core::result::Result<super::__witforge_to::service::Task, super::super::ConversionError> {
-            let _ = value;
+        pub fn task(
+            value: &super::__witforge_from::service::Task,
+        ) -> ::core::result::Result<super::__witforge_to::service::Task, ConversionError> {
             super::types::task(value)
         }
-
     }
-
 }
 
 /// Conversions from `v0_2` to `v0_1`.
 ///
 /// Fields and flags added after `0.1.0` are dropped without reporting them.
 pub mod v0_2_to_v0_1 {
-    use super::super::{ v0_2 as __witforge_from, v0_1 as __witforge_to };
+    use super::super::v0_2 as __witforge_from;
+
+    use super::super::v0_1 as __witforge_to;
 
     /// Conversions for interface `types`.
     pub mod types {
+        use super::super::ConversionError;
+
         /// Convert `types/task` from 0.2.0 to 0.1.0.
         ///
         /// Fields and flags added after 0.1.0 are dropped without reporting them.
@@ -98,19 +118,21 @@ pub mod v0_2_to_v0_1 {
         /// # Errors
         ///
         /// Returns an error when the source value cannot be represented by the target version.
-        pub fn task(value: &super::__witforge_from::types::Task) -> ::core::result::Result<super::__witforge_to::types::Task, super::super::ConversionError> {
-            let _ = value;
+        pub fn task(
+            value: &super::__witforge_from::types::Task,
+        ) -> ::core::result::Result<super::__witforge_to::types::Task, ConversionError> {
             ::core::result::Result::Ok(super::__witforge_to::types::Task {
                 id: value.id,
                 title: ::core::clone::Clone::clone(&value.title),
                 done: value.done,
             })
         }
-
     }
 
     /// Conversions for interface `service`.
     pub mod service {
+        use super::super::ConversionError;
+
         /// Convert `service/task` from 0.2.0 to 0.1.0.
         ///
         /// Fields and flags added after 0.1.0 are dropped without reporting them.
@@ -118,11 +140,10 @@ pub mod v0_2_to_v0_1 {
         /// # Errors
         ///
         /// Returns an error when the source value cannot be represented by the target version.
-        pub fn task(value: &super::__witforge_from::service::Task) -> ::core::result::Result<super::__witforge_to::service::Task, super::super::ConversionError> {
-            let _ = value;
+        pub fn task(
+            value: &super::__witforge_from::service::Task,
+        ) -> ::core::result::Result<super::__witforge_to::service::Task, ConversionError> {
             super::types::task(value)
         }
-
     }
-
 }

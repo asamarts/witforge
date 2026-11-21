@@ -13,18 +13,18 @@ pub mod types {
         /// Whether the task is complete.
         pub done: bool,
     }
-    pub trait Types {
-    }
 }
 
 /// Task operations.
 pub mod service {
+    /// Type alias `service/task`.
     pub type Task = super::types::Task;
+
+    /// Trait for interface `service`.
     pub trait Service {
         /// Create a task with the given title.
         fn create(&self, title: ::std::string::String) -> Task;
     }
 }
 
-pub use types::Types;
 pub use service::Service;

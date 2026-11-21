@@ -129,9 +129,12 @@ must own them, and already-owned identity collections move out of the protobuf v
 extra allocation.
 
 ```rust
+type Plain = crate::generated::rust::v0_1::types::Item;
+type Proto = crate::generated::proto::v0::TypesItem;
+
 /// Convert `types/item` to its protobuf representation.
-pub fn to_proto(value: &crate::generated::rust::v0_1::types::Item) -> crate::generated::proto::v0::TypesItem {
-    crate::generated::proto::v0::TypesItem {
+pub fn to_proto(value: &Plain) -> Proto {
+    Proto {
         id: ::core::option::Option::Some(value.id),
         name: ::core::option::Option::Some(::core::clone::Clone::clone(&value.name)),
         tags: ::core::clone::Clone::clone(&value.tags),
@@ -140,18 +143,31 @@ pub fn to_proto(value: &crate::generated::rust::v0_1::types::Item) -> crate::gen
 }
 
 /// Convert `types/item` from its protobuf representation.
-pub fn from_proto(value: crate::generated::proto::v0::TypesItem) -> ::core::result::Result<crate::generated::rust::v0_1::types::Item, GlueError> {
-    Ok(crate::generated::rust::v0_1::types::Item {
-        id: match value.id { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/item.id" }), },
-        name: match value.name { ::core::option::Option::Some(value) => value, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "types/item.name" }), },
+pub fn from_proto(value: Proto) -> ::core::result::Result<Plain, GlueError> {
+    let ::core::option::Option::Some(v0) = value.id else {
+        return ::core::result::Result::Err(GlueError::MissingField {
+            field: "types/item.id",
+        });
+    };
+    let ::core::option::Option::Some(v1) = value.name else {
+        return ::core::result::Result::Err(GlueError::MissingField {
+            field: "types/item.name",
+        });
+    };
+    ::core::result::Result::Ok(Plain {
+        id: v0,
+        name: v1,
         tags: value.tags,
         note: value.note,
     })
 }
 ```
 
-Every line in this excerpt is copied from the generated file. Emitted Rust is deterministic but
-intentionally not passed through `rustfmt`. Full files:
+Every line in this excerpt is copied from the generated file. Emitted Rust is produced directly by
+witforge (without shelling out to `rustfmt`) in `rustfmt`'s default style for both Edition 2021 and
+Edition 2024, and passes default Clippy lints and `#![deny(missing_docs)]`. If your crate sets
+non-default `rustfmt.toml` options, put `#[rustfmt::skip]` on the module declaration that includes
+the generated tree. Full files:
 [`v0.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/glue/v0.rs) and
 [`mod.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/glue/mod.rs).
 
@@ -159,19 +175,31 @@ Function helpers in the same module map WIT calls to protobuf request and respon
 expose the locked method ID:
 
 ```rust
+type Method = crate::generated::proto::v0::IngestMethod;
+type Request = crate::generated::proto::v0::IngestSubmitRequest;
+type Response = crate::generated::proto::v0::IngestSubmitResponse;
+type Params = crate::generated::rust::v0_1::ingest::Item;
+type Output = crate::generated::rust::v0_1::ingest::Event;
+
 /// Protobuf method identifier for `ingest#submit`.
-pub const METHOD: crate::generated::proto::v0::IngestMethod = crate::generated::proto::v0::IngestMethod::Submit;
+pub const METHOD: Method = Method::Submit;
 
 /// Encode request parameters for `ingest#submit`.
-pub fn to_request(item: &crate::generated::rust::v0_1::ingest::Item) -> crate::generated::proto::v0::IngestSubmitRequest {
-    crate::generated::proto::v0::IngestSubmitRequest {
-        item: ::core::option::Option::Some(super::super::super::types::item::to_proto(item)),
+pub fn to_request(item: &crate::generated::rust::v0_1::ingest::Item) -> Request {
+    let v0 = super::super::super::types::item::to_proto(item);
+    Request {
+        item: ::core::option::Option::Some(v0),
     }
 }
 
 /// Decode request parameters for `ingest#submit`.
-pub fn from_request(value: crate::generated::proto::v0::IngestSubmitRequest) -> ::core::result::Result<crate::generated::rust::v0_1::ingest::Item, GlueError> {
-    ::core::result::Result::Ok(match value.item { ::core::option::Option::Some(value) => super::super::super::types::item::from_proto(value)?, ::core::option::Option::None => return ::core::result::Result::Err(GlueError::MissingField { field: "ingest#submit.item" }), })
+pub fn from_request(value: Request) -> ::core::result::Result<Params, GlueError> {
+    let ::core::option::Option::Some(v0) = value.item else {
+        return ::core::result::Result::Err(GlueError::MissingField {
+            field: "ingest#submit.item",
+        });
+    };
+    super::super::super::types::item::from_proto(v0)
 }
 ```
 
@@ -188,8 +216,9 @@ an optional priority and a list of tags; old values receive their WIT-safe defau
 /// # Errors
 ///
 /// Returns an error when the source value cannot be represented by the target version.
-pub fn task(value: &super::__witforge_from::types::Task) -> ::core::result::Result<super::__witforge_to::types::Task, super::super::ConversionError> {
-    let _ = value;
+pub fn task(
+    value: &super::__witforge_from::types::Task,
+) -> ::core::result::Result<super::__witforge_to::types::Task, ConversionError> {
     ::core::result::Result::Ok(super::__witforge_to::types::Task {
         id: value.id,
         title: ::core::clone::Clone::clone(&value.title),

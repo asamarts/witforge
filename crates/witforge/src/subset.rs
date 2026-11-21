@@ -1136,8 +1136,9 @@ fn check_package_generated_collisions(
                 ),
             );
         }
-        if let Ok(trait_name) =
-            ident::plain_ident(&ident::plain_pascal(iface_name), "interface trait")
+        if !iface.functions.is_empty()
+            && let Ok(trait_name) =
+                ident::plain_ident(&ident::plain_pascal(iface_name), "interface trait")
             && let Some(prev) = rust_traits.insert(trait_name.clone(), iface_name.clone())
             && !prev.eq_ignore_ascii_case(iface_name)
         {

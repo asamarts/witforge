@@ -39,10 +39,12 @@ fn emits_version_modules_types_traits_docs_and_aliases() {
         code.contains("pub type Finding = super::types::Finding;"),
         "{code}"
     );
+    assert!(!code.contains("pub trait Types"), "{code}");
+    assert!(!code.contains("pub use types::Types;"), "{code}");
     assert!(code.contains("pub trait Analyzer {"), "{code}");
     assert!(
         code.contains(
-            "fn analyze(&self, path: ::std::string::String, bytes: ::std::vec::Vec<u8>) -> ::std::result::Result<::std::vec::Vec<Finding>, ::std::string::String>;"
+            "        fn analyze(\n            &self,\n            path: ::std::string::String,\n            bytes: ::std::vec::Vec<u8>,\n        ) -> ::std::result::Result<::std::vec::Vec<Finding>, ::std::string::String>;"
         ),
         "{code}"
     );
@@ -187,6 +189,7 @@ interface API {\n\
 }\n\
 interface HTTP-api {\n\
   record x-y { x: u32, y: u32 }\n\
+  ping: func();\n\
 }\n",
     )
     .unwrap();
@@ -239,9 +242,22 @@ fn collisions_name_both_interfaces() {
     let dir = std::env::temp_dir().join(format!("witforge-emit-collision-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
+    // A type-only interface emits no trait, so a type sharing the interface's PascalCase name
+    // (for example `interface error { enum error { a } }`) is valid.
     fs::write(
         dir.join("contract.wit"),
-        "package example:collision@0.1.0;\ninterface analyzer { record analyzer { x: u32 } }\n",
+        "package example:collision@0.1.0;\ninterface error { enum error { a } }\n",
+    )
+    .unwrap();
+    let ok_model = model::build(&load(&dir).unwrap()).unwrap();
+    let ok_code = rust::emit_version(&ok_model).unwrap();
+    assert!(ok_code.contains("pub enum Error {"), "{ok_code}");
+    assert!(!ok_code.contains("pub trait Error"), "{ok_code}");
+
+    // Once the interface declares a function, the generated trait collides with the type.
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:collision@0.1.0;\ninterface analyzer { record analyzer { x: u32 } ping: func(); }\n",
     )
     .unwrap();
     let model = model::build(&load(&dir).unwrap()).unwrap();
@@ -592,11 +608,15 @@ fn emits_additive_world_metadata_for_every_version() {
     assert!(worlds.contains("pub mod v0_1 {"), "{worlds}");
     assert!(worlds.contains("pub mod v0_2 {"), "{worlds}");
     assert!(
-        worlds.contains("super::World { name: \"plugin\", imports: &[], exports: &[\"types\"] }"),
+        worlds.contains(
+            "        super::World {\n            name: \"plugin\",\n            imports: &[],\n            exports: &[\"types\"],\n        },"
+        ),
         "{worlds}"
     );
     assert!(
-        worlds.contains("super::World { name: \"host\", imports: &[\"types\"], exports: &[] }"),
+        worlds.contains(
+            "        super::World {\n            name: \"host\",\n            imports: &[\"types\"],\n            exports: &[],\n        },"
+        ),
         "{worlds}"
     );
     let root_module = files.files().get("mod.rs").unwrap();
@@ -1074,6 +1094,333 @@ fn hostile_wit_doc_comments_pass_cargo_doc_and_doctests() {
         String::from_utf8_lossy(&doc_build.stdout),
         String::from_utf8_lossy(&doc_build.stderr)
     );
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+fn assert_rustfmt_both_editions(path: &Path) {
+    for edition in ["2021", "2024"] {
+        let output = Command::new("rustfmt")
+            .args(["--edition", edition, "--style-edition", edition, "--check"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "rustfmt --edition {edition} --style-edition {edition} --check failed on {}:\nstdout:\n{}\nstderr:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn assert_generated_dir_rustfmt(dir: &Path) {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    entries.sort();
+    assert!(
+        !entries.is_empty(),
+        "no generated .rs files under {}",
+        dir.display()
+    );
+    for path in entries {
+        assert_rustfmt_both_editions(&path);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn generated_rust_passes_rustfmt_clippy_and_missing_docs_in_2021_and_2024() {
+    use witforge::emit::{glue, proto};
+    use witforge::lock::{LockMode, WireLock};
+
+    let base = std::env::temp_dir().join(format!("witforge-rustfmt-lints-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. Check rustfmt (Edition 2021 and Edition 2024) on single-version and multi-version
+    // fixtures and committed examples.
+    let single_rust = base.join("single_rust.rs");
+    let all_model = model::build(&load(&fixture("emit/rust/all")).unwrap()).unwrap();
+    fs::write(&single_rust, rust::emit_version(&all_model).unwrap()).unwrap();
+    assert_rustfmt_both_editions(&single_rust);
+
+    let glue_contract_model = model::build(&load(&fixture("emit/glue/contract")).unwrap()).unwrap();
+    let mut glue_lock = WireLock::default();
+    glue_lock
+        .reconcile(&glue_contract_model.members().unwrap())
+        .unwrap();
+    let glue_single = base.join("glue_contract.rs");
+    fs::write(
+        &glue_single,
+        glue::emit_version(
+            &glue_contract_model,
+            &glue_lock,
+            "crate::plain",
+            "crate::proto",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_rustfmt_both_editions(&glue_single);
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    for (label, wit_root) in [
+        ("versions_wit", fixture("versions/wit")),
+        ("versions_convert", fixture("versions/convert")),
+        ("deps", fixture("deps/wit")),
+        ("deps_full", fixture("deps-full/wit")),
+        ("deps_world", fixture("deps-world/wit")),
+        ("deps_convert", fixture("deps-convert/wit")),
+        ("deps_bytes", fixture("deps-bytes/wit")),
+        ("example_single", repo_root.join("examples/single/wit")),
+        ("example_evolved", repo_root.join("examples/evolved/wit")),
+    ] {
+        let rust_out = base.join(format!("{label}_rust"));
+        rust::plan(&wit_root).unwrap().write(&rust_out).unwrap();
+        assert_generated_dir_rustfmt(&rust_out);
+
+        let glue_out = base.join(format!("{label}_glue"));
+        glue::plan(&wit_root, "crate::plain", "crate::proto")
+            .unwrap()
+            .write(&glue_out)
+            .unwrap();
+        assert_generated_dir_rustfmt(&glue_out);
+    }
+    let serde_out = base.join("serde_rust");
+    let serde_model = model::build(&load(&fixture("serde")).unwrap()).unwrap();
+    fs::create_dir_all(&serde_out).unwrap();
+    fs::write(
+        serde_out.join("v0_1.rs"),
+        rust::emit_version_with_serde(&serde_model, true).unwrap(),
+    )
+    .unwrap();
+    assert_generated_dir_rustfmt(&serde_out);
+
+    // 2. Build a 12-version root (v0.1..v0.12) exercising:
+    // - `v0_2` vs `v0_10`..`v0_12` module & use-statement ordering in Edition 2021 vs 2024;
+    // - `interface error { enum error { a } }` (type-only interface with same name as type);
+    // - an interface with functions in v0.1..v0.6 and none in v0.7..v0.12 (and vice versa);
+    // - unit-returning `fn ping(&self);` (no `-> ()`);
+    // - long signatures (> 100 cols), nested wrappers, worlds, and pinned dependencies;
+    // - empty `<Interface>Method` enum preserved in `.proto` for type-only interfaces.
+    let wit_root = base.join("twelve/wit");
+    let dep_wit = "package example:shared@0.1.0;\n\n\
+        interface common {\n\
+            record token {\n\
+                raw-value-identifier: string,\n\
+            }\n\
+            type maybe-tokens = option<list<token>>;\n\
+        }\n\n\
+        interface helper {\n\
+            use common.{token};\n\
+            check-token: func(token-input: token) -> bool;\n\
+        }\n";
+    let mut prev_lock: Option<WireLock> = None;
+    for minor in 1..=12_u64 {
+        let dir = wit_root.join(format!("v0.{minor}"));
+        let dep_dir = dir.join("deps/shared");
+        fs::create_dir_all(&dep_dir).unwrap();
+        fs::write(dep_dir.join("shared.wit"), dep_wit).unwrap();
+        let service_fns = if minor <= 6 {
+            "            ping: func();\n\
+             evaluate-very-long-request-operation: func(\n\
+                 first-long-parameter-name: token,\n\
+                 second-long-parameter-name: list<option<string>>,\n\
+                 third-long-parameter-name: maybe-tokens,\n\
+             ) -> result<list<option<token>>, string>;\n"
+        } else {
+            ""
+        };
+        let extra_fns = if minor >= 7 {
+            "            notify: func(code: error);\n"
+        } else {
+            ""
+        };
+        let extra_field = if minor >= 2 {
+            "                optional-note: option<string>,\n"
+        } else {
+            ""
+        };
+        let root_wit = format!(
+            "package example:twelve@0.{minor}.0;\n\n\
+             interface error {{\n\
+                 enum error {{ a, b }}\n\
+             }}\n\n\
+             interface service {{\n\
+                 use example:shared/common@0.1.0.{{token, maybe-tokens}};\n\
+                 record payload {{\n\
+                     id: u64,\n\
+                     tok: token,\n\
+                     {extra_field}\
+                 }}\n\
+                 {service_fns}\
+             }}\n\n\
+             interface extra {{\n\
+                 use error.{{error}};\n\
+                 {extra_fns}\
+             }}\n\n\
+             world app {{\n\
+                 import example:shared/helper@0.1.0;\n\
+                 export service;\n\
+                 export extra;\n\
+             }}\n"
+        );
+        fs::write(dir.join("contract.wit"), root_wit).unwrap();
+        let contract = load(&dir).unwrap();
+        let members = model::members(&contract).unwrap();
+        let mut lock = prev_lock.clone().unwrap_or_default();
+        if prev_lock.is_none() {
+            lock.reconcile_with(&members, LockMode::First).unwrap();
+        } else {
+            lock.reconcile(&members).unwrap();
+        }
+        fs::write(dir.join("wire.lock"), lock.render()).unwrap();
+        prev_lock = Some(lock);
+    }
+
+    let plain_out = base.join("twelve/plain");
+    let glue_out = base.join("twelve/glue");
+    let proto_out = base.join("twelve/proto");
+    rust::plan(&wit_root).unwrap().write(&plain_out).unwrap();
+    glue::plan(&wit_root, "crate::plain", "crate::proto")
+        .unwrap()
+        .write(&glue_out)
+        .unwrap();
+    proto::plan(&wit_root).unwrap().write(&proto_out).unwrap();
+
+    assert_generated_dir_rustfmt(&plain_out);
+    assert_generated_dir_rustfmt(&glue_out);
+
+    let first_rs = fs::read_to_string(plain_out.join("v0_1.rs")).unwrap();
+    assert!(!first_rs.contains("pub trait Error"), "{first_rs}");
+    assert!(!first_rs.contains("pub trait Extra"), "{first_rs}");
+    assert!(first_rs.contains("pub trait Service {"), "{first_rs}");
+    assert!(first_rs.contains("fn ping(&self);"), "{first_rs}");
+    assert!(!first_rs.contains("-> ()"), "{first_rs}");
+
+    let twelfth_rs = fs::read_to_string(plain_out.join("v0_12.rs")).unwrap();
+    assert!(!twelfth_rs.contains("pub trait Error"), "{twelfth_rs}");
+    assert!(!twelfth_rs.contains("pub trait Service"), "{twelfth_rs}");
+    assert!(twelfth_rs.contains("pub trait Extra {"), "{twelfth_rs}");
+    assert!(
+        twelfth_rs.contains("fn notify(&self, code: Error);"),
+        "{twelfth_rs}"
+    );
+    assert!(!twelfth_rs.contains("-> ()"), "{twelfth_rs}");
+
+    let v0_proto = fs::read_to_string(proto_out.join("v0.proto")).unwrap();
+    assert!(
+        v0_proto.contains("enum ErrorMethod {\n  ERROR_METHOD_UNSPECIFIED = 0;\n}"),
+        "empty method enum must stay in .proto:\n{v0_proto}"
+    );
+
+    // Compile protobuf descriptors once with protox + prost-build.
+    let prost_out = base.join("twelve/prost");
+    fs::create_dir_all(&prost_out).unwrap();
+    let proto_paths: Vec<PathBuf> = fs::read_dir(&proto_out)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "proto"))
+        .collect();
+    let descriptors = protox::compile(proto_paths, [&proto_out]).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .compile_fds(descriptors)
+        .unwrap();
+
+    // 3. Compile and lint with `cargo clippy -- -D warnings` AND `#![deny(missing_docs)]` in both
+    // an Edition 2021 crate and an Edition 2024 crate.
+    let target_dir = base.join("cargo-target");
+    for (edition, resolver) in [("2021", "2"), ("2024", "3")] {
+        let crate_dir = base.join(format!("crate_{edition}"));
+        let src = crate_dir.join("src");
+        fs::create_dir_all(src.join("plain")).unwrap();
+        fs::create_dir_all(src.join("glue")).unwrap();
+        fs::create_dir_all(src.join("proto")).unwrap();
+
+        for (from, to) in [
+            (&plain_out, src.join("plain")),
+            (&glue_out, src.join("glue")),
+            (&prost_out, src.join("proto")),
+        ] {
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                if entry.path().extension().is_some_and(|ext| ext == "rs") {
+                    fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+                }
+            }
+        }
+        fs::write(
+            src.join("proto/mod.rs"),
+            "pub mod example {\n\
+                pub mod twelve {\n\
+                    pub mod v0 { include!(\"example.twelve.v0.rs\"); }\n\
+                }\n\
+                pub mod shared {\n\
+                    pub mod v0 { include!(\"example.shared.v0.rs\"); }\n\
+                }\n\
+            }\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("lib.rs"),
+            "//! Consumer crate verifying generated Rust under Clippy and missing_docs.\n\
+             #![deny(missing_docs)]\n\
+             \n\
+             /// Generated plain Rust bindings.\n\
+             pub mod plain;\n\
+             \n\
+             /// Generated prost protobuf bindings.\n\
+             #[allow(missing_docs, clippy::all)]\n\
+             pub mod proto;\n\
+             \n\
+             /// Generated protobuf glue.\n\
+             pub mod glue;\n",
+        )
+        .unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            format!(
+                "[package]\n\
+                 name = \"witforge-lint-check-{edition}\"\n\
+                 version = \"0.0.0\"\n\
+                 edition = \"{edition}\"\n\
+                 publish = false\n\
+                 \n\
+                 [dependencies]\n\
+                 prost = \"0.14\"\n\
+                 \n\
+                 [workspace]\n\
+                 resolver = \"{resolver}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let clippy = Command::new(env!("CARGO"))
+            .args(["clippy", "--offline", "--all-targets", "--manifest-path"])
+            .arg(crate_dir.join("Cargo.toml"))
+            .args(["--", "-D", "warnings"])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env("CARGO_TERM_COLOR", "never")
+            .env_remove("RUSTFLAGS")
+            .output()
+            .unwrap();
+        assert!(
+            clippy.status.success(),
+            "cargo clippy -D warnings (with #![deny(missing_docs)]) failed in Edition {edition}:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&clippy.stdout),
+            String::from_utf8_lossy(&clippy.stderr)
+        );
+    }
 
     fs::remove_dir_all(&base).unwrap();
 }
