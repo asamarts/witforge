@@ -29,7 +29,7 @@ rather than running the wrong binary.
 ## Installing a prebuilt archive
 
 ```sh
-VERSION=0.5.0
+VERSION=0.6.0
 TARGET=x86_64-unknown-linux-gnu
 BASE="https://github.com/asamarts/witforge/releases/download/v${VERSION}"
 curl -sSfLO "${BASE}/witforge-${VERSION}-${TARGET}.tar.gz"
@@ -46,8 +46,8 @@ archive and run `witforge.exe`.
 
 The action is published from this repository. It installs the release matching the action tag
 by default. Every GitHub API and release-asset request has a 30-second abort timeout, so a
-stalled network fails the step instead of hanging until the job timeout. The timeout is not in
-the `v0.5.0` Action: it is on `main` and unreleased.
+stalled network fails the step instead of hanging until the job timeout. The timeout was added in
+0.6.0 (Action releases through `v0.5.0` did not bound requests).
 
 The JavaScript entry point uses GitHub's Node 24 Action runtime and has no npm dependencies. CI
 executes the checked-out action with `uses: ./` so changes to `action.yml` are covered before
@@ -56,7 +56,7 @@ Windows x86_64. Running `action/test.js` alone does not exercise GitHub's runtim
 resolution, archive extraction, or PATH propagation.
 
 ```yaml
-- uses: asamarts/witforge@v0.5.0 # pinned: installs witforge 0.5.0
+- uses: asamarts/witforge@v0.6.0 # pinned: installs witforge 0.6.0
   with:
     check: wit/v0.2
     diff-old: wit/v0.1
@@ -71,7 +71,7 @@ published release. A `version` input overrides either default:
 ```yaml
 - uses: asamarts/witforge@main # floats, but installs a specific release
   with:
-    version: 0.5.0
+    version: 0.6.0
 ```
 
 Pass `${{ github.token }}` as `github-token` when querying the latest release to avoid anonymous
@@ -104,7 +104,7 @@ With `diff-old` and `diff-new` set and `diff-check` left at its default, the ste
 wire-, source-, or generated-API-breaking change. That includes an added record field, so a
 workflow that only wants the report sets `diff-check: "false"`. Because releases through v0.5.0
 ignored these inputs, a workflow that already passes them starts gating when its pin moves to
-the first release with the fix.
+`v0.6.0` or later.
 
 The action leaves `witforge` on `PATH` and exports `WITFORGE_BIN` for later steps. It runs, in
 order:

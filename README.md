@@ -13,7 +13,7 @@ witforge checks a deliberately portable WIT subset, locks protobuf field and met
 generates stable Rust, protobuf, JSON Schema, glue, compatibility reports, and adapters between
 contract versions.
 
-Current release: **0.5.0**. The 1.0 release remains intentionally gated on successful independent
+Current release: **0.6.0**. The 1.0 release remains intentionally gated on successful independent
 consumer validation.
 
 ## Outputs
@@ -49,7 +49,7 @@ language toolchain, and the documented [WIT decode profile](docs/guide/non-rust.
 ## Install
 
 ```sh
-cargo install witforge-cli --version 0.5.0 --locked
+cargo install witforge-cli --version 0.6.0 --locked
 witforge --version
 ```
 
@@ -188,7 +188,7 @@ example intentionally adds defaultable fields, so its adapters can convert old v
 Pin the Action to the same release used locally:
 
 ```yaml
-- uses: asamarts/witforge@v0.5.0
+- uses: asamarts/witforge@v0.6.0
   with:
     check: wit/v0.2
     config: witforge.toml
@@ -200,7 +200,7 @@ The Action downloads the matching checksum-verified release binary, leaves `witf
 and runs the configured generators with `--check`. The second step prints the contract diff. Add
 `--check` to it to fail the job on a wire-, source-, or generated-API-breaking change, which
 includes an added record field. The Action also has `diff-old`, `diff-new`, and `diff-check`
-inputs; releases up to v0.5.0 ignore them. See the
+inputs (supported from v0.6.0; releases up to v0.5.0 ignored them). See the
 [CI guide](https://asamarts.github.io/witforge/guide/ci.html).
 
 ## Important JSON boundary

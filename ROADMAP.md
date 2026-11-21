@@ -131,11 +131,9 @@ This is a summary of what tag `v0.5.0` contains; the changelog's 0.5.0 section i
 - [x] Release 0.5.0 (2026-11-17), with alint moved to the release and its generated output
       regenerated.
 
-## 0.6.0: assurance and audit remediation (unreleased)
+## 0.6.0: assurance and audit remediation (released)
 
-The checked items are merged to `main` and are not in any release: `cargo install` and the
-`v0.5.0` Action do not have them. They ship with 0.6.0 (`W10-069`); the changelog's
-`[Unreleased]` section is the full list.
+This is a summary of what tag `v0.6.0` contains; the changelog's 0.6.0 section is the full list.
 
 - [x] `diff` reports required-addition generation blockers, rejects reversed endpoints, and
       gives actionable missing-lock guidance.
@@ -147,8 +145,12 @@ The checked items are merged to `main` and are not in any release: `cargo instal
       sequences, and current-version references are checked in CI; shared emitter helpers
       remove duplicated naming and type rendering without changing generated output.
 - [x] Diff and version-conversion benchmark budgets cover a generated two-version fixture.
-- [ ] The [second audit](docs/design/audit-2026-11-18-second.md)'s release blockers and release
-      0.6.0 (`W10-069`; `aplan why W10-069` lists what it waits on).
+- [x] The [second audit](docs/design/audit-2026-11-18-second.md)'s release blockers (wire-identity
+      and lockfile hardening, unified prost/Rust identifier conversion, generator-refusal parity in
+      `check`, clean `rustfmt`/Clippy/`missing_docs` Rust output, hardened `convert.rs`, complete
+      JSON Schema `result` shapes and `f32` bounds, contract-scoped ownership headers, canonical
+      output-root guards, deterministic multi-file loading, and the `prost` compile matrix) and
+      release 0.6.0 (2026-11-21, `W10-069`).
 
 ## 1.0 and beyond
 
@@ -158,9 +160,8 @@ The checked items are merged to `main` and are not in any release: `cargo instal
       `W10-002`, `W10-098`).
 - [ ] Continue bounded implementation work that does not speculate about consumer demand. The
       first 0.5.0 audit's remediation and the diff/conversion benchmark are complete.
-- [ ] Close the [second audit](docs/design/audit-2026-11-18-second.md): wire-identity,
-      generated-code, tool, and release defects that the suite did not see. Its tasks (`W10-038`
-      to `W10-098`) come before 1.0 and ship from 0.6.0 (`W10-069`) on. `aplan ready` lists what
-      can start.
+- [ ] Close the remaining post-0.6.0 tasks from the
+      [second audit](docs/design/audit-2026-11-18-second.md) (`W10-071`, `W10-076`, and `W10-079`
+      to `W10-097`) before 1.0. `aplan ready` lists what can start.
 - [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
       JSON work behind their existing evidence or 1.0 triggers.

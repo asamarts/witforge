@@ -42,7 +42,8 @@ frozen as a whole, which covers the remaining source-level cases.
   The released-manifest loader and every command that reads it refuse one with exit `2`: a
   symlinked `contract.wit`, `wire.lock`, or `deps/` entry could change outside the manifest's
   view. The freeze script independently checks the tracked history and working tree. This rule
-  is not in 0.5.0, which refuses only a listed directory that is itself a symlink.
+  was added in 0.6.0; releases through 0.5.0 refused only a listed directory that is itself a
+  symlink.
 - Each version directory has its own `wire.lock`.
 - Rust module: `v<major>_<minor>`.
 - Protobuf package/file: `v<major>` and `v<major>.proto`.

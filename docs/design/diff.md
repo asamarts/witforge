@@ -5,9 +5,10 @@ declaration-order boundaries 2026-11-18 (`W10-026`); conversion-impact notes 202
 (`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`); kind
 changes and reused reserved numbers are wire-breaking 2026-11-19 (`W10-045`, `W10-048`); alias
 spellings and retyped conversion blockers 2026-11-20 (`W10-057`); released-manifest and
-dependency-alias endpoints 2026-11-20 (`W10-056`). The 2026-11-18 items are not in 0.5.0:
-reversed-endpoint rejection, missing-lock guidance, and `conversion_blockers` are on `main` and
-unreleased.
+dependency-alias endpoints 2026-11-20 (`W10-056`). The 2026-11-18 through 2026-11-20 items
+(reversed-endpoint rejection, missing-lock guidance, `conversion_blockers`, kind changes, reused
+reserved numbers, alias spellings, released-manifest checks, and dependency-alias endpoints)
+shipped in 0.6.0.
 
 `witforge diff <old> <new>` compares two contract versions and reports what changed in three
 independent compatibility views:

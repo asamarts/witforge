@@ -246,11 +246,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Install the tagged release and check a version
+      - name: Install the tagged release and run check and diff
         uses: ./
         with:
           version: ${{ needs.verify.outputs.version }}
           check: examples/evolved/wit/v0.2
+          diff-old: examples/evolved/wit/v0.1
+          diff-new: examples/evolved/wit/v0.2
+          diff-check: "false"
           generators: ""
           github-token: ${{ github.token }}
       - name: Materialize expected configured output

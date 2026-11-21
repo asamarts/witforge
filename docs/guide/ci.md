@@ -11,7 +11,7 @@ Pin the Action to the same release used for local generation, and run the contra
 own step. The Action leaves `witforge` on `PATH`:
 
 ```yaml
-- uses: asamarts/witforge@v0.5.0
+- uses: asamarts/witforge@v0.6.0
   with:
     check: wit/v0.2
     config: witforge.toml
@@ -30,17 +30,16 @@ fails for most minors; use it where a minor must not break the code of the contr
 
 The Action can run the diff itself through `diff-old`, `diff-new`, and `diff-check`.
 
-**Action releases up to and including v0.5.0 ignore these three inputs and `github-token`.** They
-read them under the wrong environment names, so a workflow that passes `diff-old` and `diff-new`
-runs `check` and the generators and never runs `diff`. The fix is in the next release. From that
-release on:
+**Action releases up to and including v0.5.0 ignored these three inputs and `github-token`.** They
+read them under the wrong environment names, so a workflow that passed `diff-old` and `diff-new`
+ran `check` and the generators and never ran `diff`. Fixed in `v0.6.0`. From `v0.6.0` on:
 
 - `diff-old` and `diff-new` run `witforge diff <old> <new> --check`, because `diff-check`
   defaults to `true`;
 - `diff-check: "false"` prints the diff without failing the job.
 
 A workflow that already passes `diff-old` and `diff-new` therefore starts gating when its pin
-moves past v0.5.0. Set `diff-check: "false"` before moving the pin if the job should keep
+moves to `v0.6.0` or later. Set `diff-check: "false"` before moving the pin if the job should keep
 passing on source-breaking changes.
 
 ## Direct commands
