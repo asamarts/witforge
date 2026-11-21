@@ -166,11 +166,17 @@ fn glue_refuses_dependency_proto_collision_like_proto() {
          }\n",
     )
     .unwrap();
-    let model = model::build(&load(&dep_v01).unwrap()).unwrap();
-    let mut lock = witforge::lock::WireLock::default();
-    lock.reconcile(&model.members().unwrap()).unwrap();
-    fs::write(dep_v01.join("wire.lock"), lock.render()).unwrap();
+    fs::write(dep_v01.join("wire.lock"), "").unwrap();
 
+    // `check` now reports the dependency proto collision with `WF1003`, and every generator
+    // refuses it with the same `ContractError`.
+    let dep_diags = witforge::subset::check_diagnostics(&load(&dep_v01).unwrap());
+    assert!(
+        dep_diags
+            .iter()
+            .any(|d| d.code == "WF1003" && d.message.contains("TypesGetRequest")),
+        "{dep_diags:#?}"
+    );
     let proto_err = proto::plan(&dep_root).unwrap_err();
     let glue_err = glue::plan(&dep_root, "crate::plain", "crate::proto").unwrap_err();
     assert!(witforge::is_contract_error(&proto_err), "{proto_err:#}");
@@ -181,7 +187,8 @@ fn glue_refuses_dependency_proto_collision_like_proto() {
     );
     assert_eq!(format!("{glue_err:#}"), format!("{proto_err:#}"));
 
-    // Root collision also gives the exact same message and contract error classification.
+    // Root collision also reports `WF1003` in `check` and gives the same `ContractError` across
+    // all generators.
     let root_clash = out.join("root-clash/wit");
     let root_v01 = root_clash.join("v0.1");
     fs::create_dir_all(&root_v01).unwrap();
@@ -194,11 +201,15 @@ fn glue_refuses_dependency_proto_collision_like_proto() {
          }\n",
     )
     .unwrap();
-    let root_model = model::build(&load(&root_v01).unwrap()).unwrap();
-    let mut root_lock = witforge::lock::WireLock::default();
-    root_lock.reconcile(&root_model.members().unwrap()).unwrap();
-    fs::write(root_v01.join("wire.lock"), root_lock.render()).unwrap();
+    fs::write(root_v01.join("wire.lock"), "").unwrap();
 
+    let root_diags = witforge::subset::check_diagnostics(&load(&root_v01).unwrap());
+    assert!(
+        root_diags
+            .iter()
+            .any(|d| d.code == "WF1003" && d.message.contains("TypesGetRequest")),
+        "{root_diags:#?}"
+    );
     let root_proto_err = proto::plan(&root_clash).unwrap_err();
     let root_glue_err = glue::plan(&root_clash, "crate::plain", "crate::proto").unwrap_err();
     assert!(

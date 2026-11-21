@@ -122,6 +122,48 @@ pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<String>> {
     plan(wit_root)?.check(out)
 }
 
+/// Validate that `model` (both the root package and every dependency package) can be emitted to
+/// valid, collision-free protobuf schemas, using fresh in-memory wire numbers.
+pub(crate) fn validate_model(model: &Model) -> Result<()> {
+    let members = model.members()?;
+    let mut lock = WireLock::default();
+    lock.reconcile(&members)?;
+    let _ = emit_major(model, &lock)?;
+    let mut dependency_files = BTreeSet::new();
+    for dependency in &model.dependencies {
+        let dep_model = Model {
+            package: dependency.package.clone(),
+            interfaces: dependency.interfaces.clone(),
+            worlds: Vec::new(),
+            dependencies: model
+                .dependencies
+                .iter()
+                .filter(|other| {
+                    other.package.namespace != dependency.package.namespace
+                        || other.package.name != dependency.package.name
+                })
+                .cloned()
+                .collect(),
+        };
+        let dep_members = dep_model.members()?;
+        let mut dep_lock = WireLock::default();
+        dep_lock.reconcile(&dep_members)?;
+        let _ = emit_major(&dep_model, &dep_lock).with_context(|| {
+            format!(
+                "dependency {}:{}",
+                dependency.package.namespace, dependency.package.name
+            )
+        })?;
+        let filename = dependency_file_name(dependency);
+        if !dependency_files.insert(filename.clone()) {
+            bail!(ContractError::new(format!(
+                "dependency packages both generate `{filename}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Emit one protobuf file for a model's major version.
 ///
 /// Record, variant, enum, flags, named result, and synthesized list/option/result wrappers are
@@ -172,11 +214,11 @@ struct ResolvedType<'a> {
 
 impl<'a> Emitter<'a> {
     fn new(model: &'a Model, lock: &'a WireLock) -> Result<Self> {
-        let namespace = proto_ident(
+        let namespace = proto_package_ident(
             &ident::proto_package_segment(&model.package.namespace),
             "namespace",
         )?;
-        let name = proto_ident(
+        let name = proto_package_ident(
             &ident::proto_package_segment(&model.package.name),
             "package",
         )?;
@@ -2200,6 +2242,24 @@ fn field_name(name: &str) -> Result<String> {
     // Field names may be proto keywords (`message`, `optional`, ...); protoc accepts them in
     // field position. The real alint contract uses `message`.
     Ok(name)
+}
+
+/// Validate a protobuf package segment (`package a.b.v0;`).
+///
+/// Proto3 grammar accepts proto keywords (`service`, `message`, `option`, `enum`, `package`,
+/// `import`, ...) as package segments; only identifier syntax is constrained.
+fn proto_package_ident(name: &str, what: &str) -> Result<String> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        contract_bail!("invalid proto {what} `{name}`");
+    }
+    Ok(name.to_string())
 }
 
 fn proto_ident(name: &str, what: &str) -> Result<String> {

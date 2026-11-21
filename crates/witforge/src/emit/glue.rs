@@ -504,6 +504,37 @@ fn root_source(namespace: &str, name: &str, majors: &[u64], dependencies: bool) 
     Ok(out)
 }
 
+/// Validate that `model` (root package and pinned dependencies) satisfies glue-specific naming
+/// constraints (such as the reserved `functions` type module and dependency module collisions).
+pub(crate) fn validate_model(model: &Model) -> Result<()> {
+    let members = model.members()?;
+    let mut lock = WireLock::default();
+    lock.reconcile(&members)?;
+    let emitter = Emitter::new(model, &lock, "crate::plain", "crate::proto")?;
+    emitter.check_module_names()?;
+    for interface in &model.interfaces {
+        for function in &interface.functions {
+            let mut request_fields = BTreeMap::new();
+            for param in &function.params {
+                let name = rust_ident(&snake_case(&param.name), "parameter")?;
+                if let Some(previous) = request_fields.insert(name.clone(), param.name.clone()) {
+                    contract_bail!(
+                        "parameters `{previous}` and `{}` of `{}#{}` both map to `{name}`",
+                        param.name,
+                        interface.name,
+                        function.name
+                    );
+                }
+            }
+        }
+    }
+    if !model.dependencies.is_empty() {
+        let header = header_for(&model.package.namespace, &model.package.name);
+        let _ = emit_dependency_glue(&header, &model.dependencies, "crate::plain", "crate::proto")?;
+    }
+    Ok(())
+}
+
 /// Emit one major's glue module.
 ///
 /// # Errors

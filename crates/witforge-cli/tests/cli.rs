@@ -3367,3 +3367,123 @@ fn glue_refuses_relative_and_colliding_module_roots_on_cli_and_in_config() {
     assert!(glue_out.join("v0.rs").is_file());
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn check_reports_generator_refusals_and_accepts_proto_keyword_packages() {
+    let base = std::env::temp_dir().join(format!(
+        "witforge-cli-check-implies-gen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+
+    // 1. `package example:service@0.1.0;` passes `lock`, `check`, and all four generators.
+    let svc_wit = base.join("svc/wit");
+    let svc_v01 = svc_wit.join("v0.1");
+    fs::create_dir_all(&svc_v01).unwrap();
+    fs::write(
+        svc_v01.join("contract.wit"),
+        "package example:service@0.1.0;\ninterface types { record item { id: u32 } ping: func(i: item) -> item; }\n",
+    )
+    .unwrap();
+    let out = witforge()
+        .args(["lock", "--first"])
+        .arg(&svc_v01)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let out = witforge().args(["check"]).arg(&svc_v01).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    for (subcmd, extra) in [
+        ("rust", &[][..]),
+        ("proto", &[][..]),
+        ("schema", &[][..]),
+        (
+            "glue",
+            &[
+                "--plain-root",
+                "crate::plain",
+                "--proto-root",
+                "crate::proto",
+            ][..],
+        ),
+    ] {
+        let out_dir = base.join(format!("svc/{subcmd}"));
+        let output = witforge()
+            .arg(subcmd)
+            .arg(&svc_wit)
+            .arg("--out")
+            .arg(&out_dir)
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{subcmd} failed: {output:?}");
+    }
+
+    // 2. `record get-request` beside `get: func()` is refused by `witforge check` with exit 1 and
+    // structured code `WF1003`.
+    let clash_v01 = base.join("clash/wit/v0.1");
+    fs::create_dir_all(&clash_v01).unwrap();
+    fs::write(
+        clash_v01.join("contract.wit"),
+        "package example:clash@0.1.0;\ninterface types { record get-request { id: u32 } get: func() -> get-request; }\n",
+    )
+    .unwrap();
+    fs::write(clash_v01.join("wire.lock"), "").unwrap();
+    let output = witforge()
+        .args(["--format", "json", "check"])
+        .arg(&clash_v01)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"WF1003\""), "{stdout}");
+    assert!(stdout.contains("TypesGetRequest"), "{stdout}");
+
+    // 3. A live type colliding with a removed interface's preserved `Method` enum in `wire.lock`
+    // is caught by `witforge check` with `WF1003` and exit 1.
+    let reserved_root = base.join("reserved-method/wit");
+    let reserved_v01 = reserved_root.join("v0.1");
+    let reserved_v02 = reserved_root.join("v0.2");
+    fs::create_dir_all(&reserved_v01).unwrap();
+    fs::create_dir_all(&reserved_v02).unwrap();
+    fs::write(
+        reserved_v01.join("contract.wit"),
+        "package example:clash@0.1.0;\ninterface api-x { ping: func(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        reserved_v02.join("contract.wit"),
+        "package example:clash@0.2.0;\ninterface api { record x-method { id: u32 } }\n",
+    )
+    .unwrap();
+    let out = witforge()
+        .args(["lock", "--first"])
+        .arg(&reserved_v01)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    fs::copy(
+        reserved_v01.join("wire.lock"),
+        reserved_v02.join("wire.lock"),
+    )
+    .unwrap();
+    let out = witforge()
+        .args(["lock", "--against"])
+        .arg(reserved_v01.join("wire.lock"))
+        .arg(&reserved_v02)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let output = witforge()
+        .args(["--format", "json", "check"])
+        .arg(&reserved_v02)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"WF1003\""), "{stdout}");
+    assert!(stdout.contains("ApiXMethod"), "{stdout}");
+
+    fs::remove_dir_all(&base).unwrap();
+}

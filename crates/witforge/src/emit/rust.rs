@@ -174,6 +174,17 @@ pub fn version_module_name(model: &Model) -> String {
     )
 }
 
+/// Validate that `model` (root package and pinned dependencies) can be emitted to plain Rust
+/// without contract refusals.
+pub(crate) fn validate_model(model: &Model) -> Result<()> {
+    let _ = emit_version(model)?;
+    if !model.dependencies.is_empty() {
+        let header = header_for(&model.package.namespace, &model.package.name);
+        let _ = emit_dependency_bindings(&header, &model.dependencies, false)?;
+    }
+    Ok(())
+}
+
 /// Emit one version module.
 ///
 /// The result is a complete Rust source file containing one inline module per interface and

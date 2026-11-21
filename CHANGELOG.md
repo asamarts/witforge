@@ -30,6 +30,19 @@ have it.
 
 ### Changed
 
+- `witforge check` (and `subset::check_diagnostics`) now reports every single-version refusal
+  that `rust`, `proto`, `schema`, or `glue` could make—including type/trait collisions, reserved
+  `functions` / `witforge_value` / `UNSPECIFIED` / `Empty` names, `Request`/`Response` collisions,
+  dependency module/filename collisions, synthesized wrapper collisions and 1024-byte limits,
+  model expansion limits (`WF1001`), and live-vs-reserved lockfile collisions (`WF1003`)—so a
+  passing `check` implies all four generators succeed. Unreachable unsupported dependency items
+  and every dependency item transitively referencing them (including across multiple dependency
+  packages) are now pruned to a fixed point during model construction rather than failing with
+  exit `2` or emitting dangling aliases/`$ref`s. Protobuf package segments now accept proto3
+  keywords accepted by `protoc`/`protox` (such as `package example:service@0.1.0;`). **Migration:**
+  if a released contract version directory was previously accepted by `check` while carrying a
+  generator-only collision (such as `record get-request` beside `get: func()`, `record functions`,
+  or colliding dependency modules), the extended `check` now reports it with `WF1003` (exit `1`).
 - Generated Rust (plain Rust, `worlds.rs`, `convert.rs`, `witforge_deps.rs`, and protobuf glue)
   now formats directly in `rustfmt`'s default style for both Edition 2021 and Edition 2024
   (without invoking `rustfmt`), passes default Clippy lints (`-D warnings`), and documents every

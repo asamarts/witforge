@@ -310,15 +310,25 @@ interface types {\n\
 }\n",
     )
     .unwrap();
+    // `check` reports the reserved `functions` glue module with `WF1003`.
+    let diags = witforge::subset::check_diagnostics(&load(&dir).unwrap());
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "WF1003" && d.message.contains("reserved glue module `functions`")),
+        "{diags:#?}"
+    );
+    // And a valid model still refuses empty module roots in `glue::emit_version`.
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:reserved-module@0.1.0;\n\
+interface types {\n\
+  record item { value: string }\n\
+}\n",
+    )
+    .unwrap();
     let model = model::build(&load(&dir).unwrap()).unwrap();
     let lock = lock_for(&model);
-    let error = glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("reserved glue module `functions`"),
-        "{error}"
-    );
     assert!(glue::emit_version(&model, &lock, "", "crate::proto").is_err());
     assert!(glue::emit_version(&model, &lock, "crate::plain", "").is_err());
     fs::remove_dir_all(&dir).unwrap();
@@ -566,8 +576,8 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
 
 #[test]
 fn glue_refuses_a_contract_the_protobuf_schema_refuses() {
-    // The record `f-request` and the request message of function `f` are both `IFRequest`: proto
-    // refuses the schema, and glue, which converts to and from its types, must refuse it too.
+    // The record `f-request` and the request message of function `f` are both `IFRequest`:
+    // `check` reports `WF1003` and every generator refuses the contract.
     let root =
         std::env::temp_dir().join(format!("witforge-glue-proto-clash-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -578,10 +588,16 @@ fn glue_refuses_a_contract_the_protobuf_schema_refuses() {
         "package example:clash@0.1.0;\n\ninterface i {\n  record f-request { x: u32 }\n  f: func(x: u32);\n}\n",
     )
     .unwrap();
-    let (_, lock) = setup_contract(&version);
-    fs::write(version.join("wire.lock"), lock.render()).unwrap();
-    rust::plan(&root).unwrap();
+    fs::write(version.join("wire.lock"), "").unwrap();
+    let diags = witforge::subset::check_diagnostics(&load(&version).unwrap());
+    assert!(
+        diags.iter().any(|d| d.code == "WF1003"
+            && d.message
+                .contains("proto name `IFRequest` is produced by both")),
+        "{diags:#?}"
+    );
     let errors = [
+        rust::plan(&root).unwrap_err(),
         proto::plan(&root).unwrap_err(),
         glue::plan(&root, "crate::plain", "crate::proto").unwrap_err(),
     ];
@@ -712,7 +728,7 @@ fn main() {
     );
 
     // A wrapper synthesized for an unreferenced type still collides with a user type of the same
-    // proto name and is refused by both proto and glue.
+    // proto name and is refused by `check`, `proto`, and `glue`.
     let clash_root = out.join("clash");
     let clash_v01 = clash_root.join("v0.1");
     fs::create_dir_all(&clash_v01).unwrap();
@@ -723,9 +739,16 @@ interface witforge { record list-of-string { value: string } }\n\
 interface api { type matrix = list<list<string>>; }\n",
     )
     .unwrap();
-    let (_, clash_lock) = setup_contract(&clash_v01);
-    fs::write(clash_v01.join("wire.lock"), clash_lock.render()).unwrap();
+    fs::write(clash_v01.join("wire.lock"), "").unwrap();
+    let clash_diags = witforge::subset::check_diagnostics(&load(&clash_v01).unwrap());
+    assert!(
+        clash_diags
+            .iter()
+            .any(|d| d.code == "WF1003" && d.message.contains("WitforgeListOfString")),
+        "{clash_diags:#?}"
+    );
     for error in [
+        rust::plan(&clash_root).unwrap_err(),
         proto::plan(&clash_root).unwrap_err(),
         glue::plan(&clash_root, "crate::plain", "crate::proto").unwrap_err(),
     ] {

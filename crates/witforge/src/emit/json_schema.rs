@@ -99,6 +99,43 @@ pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<String>> {
     plan(wit_root)?.check(out)
 }
 
+/// Validate that `model` (root package and pinned dependencies) can be emitted to JSON Schema
+/// without contract refusals.
+pub(crate) fn validate_model(model: &Model) -> Result<()> {
+    let header = header_for(&model.package.namespace, &model.package.name);
+    let _ = emit_version_with_header(model, &header)?;
+    let mut dependency_files = std::collections::BTreeSet::new();
+    for dependency in &model.dependencies {
+        let dep_model = Model {
+            package: dependency.package.clone(),
+            interfaces: dependency.interfaces.clone(),
+            worlds: Vec::new(),
+            dependencies: model
+                .dependencies
+                .iter()
+                .filter(|other| {
+                    other.package.namespace != dependency.package.namespace
+                        || other.package.name != dependency.package.name
+                })
+                .cloned()
+                .collect(),
+        };
+        let _ = emit_version_with_header(&dep_model, &header).with_context(|| {
+            format!(
+                "dependency {}:{}",
+                dependency.package.namespace, dependency.package.name
+            )
+        })?;
+        let filename = dependency_schema_filename(dependency);
+        if !dependency_files.insert(filename.clone()) {
+            bail!(ContractError::new(format!(
+                "dependency packages both generate `{filename}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Emit one version's complete JSON Schema document.
 ///
 /// # Errors

@@ -105,11 +105,39 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
   names them. Neither creates a protobuf type or a lockfile member; canonical types and proto
   references resolve through the alias to the defining type.
 - Unsupported root constructs and dependency constructs reached by a root type or world are
-  refused by the subset checker before an emitter runs. Unsupported unexposed dependency items
-  MAY be skipped; an emitter MAY return an internal error if it still sees any required one.
+  refused by the subset checker before an emitter runs. Unsupported unexposed dependency items,
+  together with every dependency item that transitively references them (including across
+  dependency packages), are pruned to a fixed point during model construction so no emitter ever
+  sees a dangling dependency reference or exits `2`.
 - Worlds generate shared metadata, not traits or per-version types. They are validated and kept
   in the model, and the Rust emitter writes `worlds.rs` with each world's imports and exports
   (section 3.6).
+
+### 1.1 Contract refusals: `check` vs generators
+
+`witforge check` is target-independent: for any single version directory, a passing `check`
+implies that `rust`, `proto`, `schema`, and `glue` all exit `0` (excluding CLI option or
+output-root errors such as a bad `--plain-root` or foreign output owner). Across a multi-version
+root, `check --against` passing for every adjacent pair (plus identical pinned dependencies and
+compatible conversions) implies all four generators exit `0`.
+
+Every emitter and `emit/versions.rs` `ContractError` refusal is classified below so any new
+refusal added later is kept in sync with `check`:
+
+| Refusal | Disposition | Code / location |
+|---|---|---|
+| Proto3 keyword as package segment (`service`, `message`, `option`, `enum`, `package`, `import`, …) | **Removed** — `protoc`/`protox` accept proto3 keywords in `package` segments; `glue` escapes Rust keywords via `prost_package_segment` | `emit/proto.rs` (`proto_package_ident`) |
+| Rust interface module, trait, type, field, case, flag, or parameter collisions; type colliding with its own interface trait (when interface has functions) | **Moved into `check`** | `WF1003` (`subset.rs`, defensive check kept in `emit/rust.rs`) |
+| Reserved glue type module `functions`; glue interface/type/function/parameter module collisions | **Moved into `check`** | `WF1003` (`subset.rs`, defensive check kept in `emit/glue.rs`) |
+| Dependency packages colliding on Rust/glue module (`<ns>_<pkg>`) or `.proto` / `.schema.json` filename | **Moved into `check`** | `WF1003` (`subset.rs`, defensive checks kept in `rust.rs`, `proto.rs`, `json_schema.rs`, `glue.rs`) |
+| Proto top-level name, `Empty`, method enum, `Request`/`Response` message, `prost` type/oneof/field/variant, and `prost-derive` accessor collisions (root and pruned dependencies) | **Moved into `check`** | `WF1003` (`subset.rs` + `proto::validate_model`) |
+| Variant case `witforge_value`; enum case or function mapping to `UNSPECIFIED`; invalid proto/Rust identifier syntax | **Moved into `check`** | `WF1003` (`subset.rs` + `proto::validate_model`) |
+| Synthesized wrapper collisions (`WitforgeListOf...`, `WitforgeOptionOf...`, `WitforgeResultOf...`) and wrapper names over 1024 bytes | **Moved into `check`** | `WF1003` / `WF1001` (`subset.rs` + `proto::validate_model`) |
+| Model expansion limits (`MAX_TYPE_NESTING`, `MAX_ALIAS_CHAIN`, `MAX_CANONICAL_TYPE_BYTES`) | **Moved into `check`** | `WF1001` (`subset.rs` + `model.rs`) |
+| Live member or type colliding with a reserved lockfile entry (including a removed interface's preserved `<Interface>Method` enum) | **Moved into `check`** | `WF1003` (`witforge-cli` `check` validates `proto::emit_major(&model, &lock)`) |
+| Duplicate version directories, package/version mismatch across versions, non-continuous minor lockfiles, stale lockfile / invalid order section | **Cross-version / lockfile** | `emit/versions.rs` (checked by `check`, `check --against`) |
+| Pinned dependency graph differences across versions | **Cross-version** | `emit/versions.rs` (checked by `check --against`) |
+| Version-to-version conversion refusals (kind change, missing non-defaultable field, payload shape change, removed referenced type, retyped member, result shape change) | **Cross-version** | `emit/convert.rs` (surfaced by `diff` `WF3004` / root generation) |
 
 ## 2. Inputs and version layout
 
@@ -462,15 +490,17 @@ generation. See [`dependencies.md`](dependencies.md).
   payload-less variant cases and for missing `result` payloads.
 - Generated names, oneof names, field names, enum values, method ids, wrappers, and reserved
   names are collision-checked across the whole proto package. A collision is a hard error.
-- Proto package components are the WIT namespace and name with `-` replaced by `_`. If that
-  mapping collides with another generated package or is not a valid proto identifier, generation
-  fails.
-- Proto has no raw identifiers. The emitter keeps a proto keyword/reserved-word table; a
-  converted message, enum, wrapper, enum-value, package, or other type-position name that is a
-  proto keyword or otherwise invalid is a hard error naming the WIT item. Field-position names
-  may be proto keywords because protobuf accepts them there; the real alint contract depends on
-  a field named `message`. The table is covered by golden tests. Silent suffixing or renaming is
-  not allowed because it would change proto3-JSON names unpredictably.
+- Proto package components are the WIT namespace and name with `-` replaced by `_`. Proto3
+  accepts proto keywords (`service`, `message`, `option`, `enum`, `package`, `import`, …) as
+  package segments, so witforge accepts them too (and `glue` escapes Rust keywords via
+  `prost_package_segment`). If a package mapping collides with another generated package or is
+  not a valid proto identifier, `check` (`WF1003`) and generation fail.
+- Proto has no raw identifiers. Field-position names and package segments may be proto keywords
+  because protobuf accepts them there (for example `service` as a package name, or `message` as a
+  field name in the real alint contract). Type, message, enum, and wrapper names are PascalCase
+  and prefixed, so they never collide with lowercase proto keywords; any invalid proto identifier
+  syntax or generated-name collision is a hard error naming the WIT item. Silent suffixing or
+  renaming is not allowed because it would change proto3-JSON names unpredictably.
 
 ### 4.2 Messages and enums
 

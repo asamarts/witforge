@@ -217,6 +217,16 @@ model::build(&Contract) -> Result<Model>
   be `major.minor.0`; violations are reported as subset diagnostics (exit `1`) naming the
   package, its version, and its `deps/` entry. The model uses the version for module/proto names
   and freeze checks, but never for lockfile keys.
+- Unsupported items in dependency packages that no root type or world reaches are skipped
+  during model construction, together with every dependency type or function that transitively
+  references them (within the same dependency package or across dependency packages). Pruning
+  runs to a fixed point so no emitter ever sees a dangling dependency reference or produces a
+  dangling Rust alias or JSON Schema `$ref`.
+- `subset::check_diagnostics` validates every single-version contract refusal that any generator
+  could make—including Rust/glue/proto/prost name collisions, reserved generated names
+  (`functions`, `witforge_value`, `UNSPECIFIED`, `Empty`), dependency module/filename collisions,
+  synthesized wrapper collisions and byte limits, and section 4.1 expansion limits—so a passing
+  single-version `check` implies that `rust`, `proto`, `schema`, and `glue` all succeed.
 - The model MUST NOT contain source spans in the current 0.x line. If diagnostics need them later, add them as an
   additive field.
 

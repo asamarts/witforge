@@ -648,6 +648,20 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         );
         return Ok(ExitCode::from(1));
     }
+    if canonical
+        && report.is_empty()
+        && let Err(err) = emit::proto::emit_major(&model, &lock)
+    {
+        if is_contract_error(&err) {
+            reporter.error(
+                "WF1003",
+                format!("{err:#}"),
+                Some(lock_path.display().to_string()),
+            );
+            return Ok(ExitCode::from(1));
+        }
+        return Err(err);
+    }
     report_check_changes(
         &report.changes,
         &report.discrepancies,

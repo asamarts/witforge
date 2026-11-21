@@ -690,12 +690,22 @@ pub fn build(contract: &Contract) -> Result<Model> {
     let violations = crate::subset::check(contract);
     if !violations.is_empty() {
         let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
-        bail!(
+        bail!(crate::ContractError::new(format!(
             "contract does not satisfy the subset: {}",
             messages.join("; ")
-        );
+        )));
     }
+    let model = build_unchecked(contract)?;
+    model.validate_type_limits()?;
+    Ok(model)
+}
 
+/// Build the owned model without re-running `subset::check` or `validate_type_limits`.
+///
+/// Unreachable unsupported dependency items—and every dependency item that transitively
+/// references them, including across dependency packages—are pruned to a fixed point so no
+/// emitter ever sees a dangling dependency reference.
+pub(crate) fn build_unchecked(contract: &Contract) -> Result<Model> {
     let resolve = &contract.resolve;
     let root = contract.package;
     let wit_package = &resolve.packages[root];
@@ -776,17 +786,261 @@ pub fn build(contract: &Contract) -> Result<Model> {
         (&left.package.namespace, &left.package.name)
             .cmp(&(&right.package.namespace, &right.package.name))
     });
-    let model = Model {
+    prune_dangling_dependency_items(&mut dependencies);
+    Ok(Model {
         package,
         interfaces,
         worlds,
         dependencies,
-    };
-    model.validate_type_limits()?;
-    Ok(model)
+    })
+}
+
+/// Iteratively remove any dependency type or function that references a skipped dependency type,
+/// within the same dependency package or across dependency packages.
+fn prune_dangling_dependency_items(dependencies: &mut [Dependency]) {
+    loop {
+        let mut surviving: HashSet<(String, String, String, String)> = HashSet::new();
+        for dep in dependencies.iter() {
+            for iface in &dep.interfaces {
+                for def in &iface.types {
+                    surviving.insert((
+                        dep.package.namespace.clone(),
+                        dep.package.name.clone(),
+                        iface.name.clone(),
+                        def.name.clone(),
+                    ));
+                }
+            }
+        }
+        let mut removed_any = false;
+        for dep in dependencies.iter_mut() {
+            let ns = dep.package.namespace.clone();
+            let pkg = dep.package.name.clone();
+            for iface in &mut dep.interfaces {
+                let before_types = iface.types.len();
+                iface
+                    .types
+                    .retain(|def| type_def_refs_exist(&ns, &pkg, def, &surviving));
+                if iface.types.len() != before_types {
+                    removed_any = true;
+                }
+                let before_fns = iface.functions.len();
+                iface
+                    .functions
+                    .retain(|func| function_refs_exist(&ns, &pkg, func, &surviving));
+                if iface.functions.len() != before_fns {
+                    removed_any = true;
+                }
+            }
+        }
+        if !removed_any {
+            break;
+        }
+    }
+}
+
+fn type_def_refs_exist(
+    ns: &str,
+    pkg: &str,
+    def: &TypeDef,
+    surviving: &HashSet<(String, String, String, String)>,
+) -> bool {
+    match &def.kind {
+        TypeDefKind::Record(fields) => fields
+            .iter()
+            .all(|field| type_expr_refs_exist(ns, pkg, &field.ty, surviving)),
+        TypeDefKind::Variant(cases) => cases.iter().all(|case| {
+            case.payload
+                .as_ref()
+                .is_none_or(|ty| type_expr_refs_exist(ns, pkg, ty, surviving))
+        }),
+        TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => true,
+        TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
+            type_expr_refs_exist(ns, pkg, ty, surviving)
+        }
+        TypeDefKind::Result(result) => {
+            result
+                .ok
+                .as_deref()
+                .is_none_or(|ty| type_expr_refs_exist(ns, pkg, ty, surviving))
+                && result
+                    .err
+                    .as_deref()
+                    .is_none_or(|ty| type_expr_refs_exist(ns, pkg, ty, surviving))
+        }
+    }
+}
+
+fn function_refs_exist(
+    ns: &str,
+    pkg: &str,
+    func: &Function,
+    surviving: &HashSet<(String, String, String, String)>,
+) -> bool {
+    func.params
+        .iter()
+        .all(|param| type_expr_refs_exist(ns, pkg, &param.ty, surviving))
+        && func
+            .result
+            .as_ref()
+            .is_none_or(|ty| type_expr_refs_exist(ns, pkg, ty, surviving))
+}
+
+fn type_expr_refs_exist(
+    ns: &str,
+    pkg: &str,
+    ty: &TypeExpr,
+    surviving: &HashSet<(String, String, String, String)>,
+) -> bool {
+    match ty {
+        TypeExpr::Bool
+        | TypeExpr::U8
+        | TypeExpr::U16
+        | TypeExpr::U32
+        | TypeExpr::U64
+        | TypeExpr::S8
+        | TypeExpr::S16
+        | TypeExpr::S32
+        | TypeExpr::S64
+        | TypeExpr::F32
+        | TypeExpr::F64
+        | TypeExpr::String => true,
+        TypeExpr::List(inner) | TypeExpr::Option(inner) => {
+            type_expr_refs_exist(ns, pkg, inner, surviving)
+        }
+        TypeExpr::Result(result) => {
+            result
+                .ok
+                .as_deref()
+                .is_none_or(|inner| type_expr_refs_exist(ns, pkg, inner, surviving))
+                && result
+                    .err
+                    .as_deref()
+                    .is_none_or(|inner| type_expr_refs_exist(ns, pkg, inner, surviving))
+        }
+        TypeExpr::Named(name) => {
+            let (target_ns, target_pkg) = name.package().unwrap_or((ns, pkg));
+            surviving.contains(&(
+                target_ns.to_string(),
+                target_pkg.to_string(),
+                name.interface_name().to_string(),
+                name.name.clone(),
+            ))
+        }
+    }
 }
 
 impl Model {
+    /// Collect all type-expansion limit violations (`MAX_TYPE_NESTING`, `MAX_ALIAS_CHAIN`,
+    /// `MAX_CANONICAL_TYPE_BYTES`) across the root package and every dependency package.
+    pub(crate) fn collect_type_limit_errors(&self) -> Vec<(String, String)> {
+        let mut errors = Vec::new();
+        let root_pkg = format!("{}:{}", self.package.namespace, self.package.name);
+        for interface in &self.interfaces {
+            self.collect_interface_limit_errors(&root_pkg, interface, &mut errors);
+        }
+        for dependency in &self.dependencies {
+            let dep_pkg = format!(
+                "{}:{}",
+                dependency.package.namespace, dependency.package.name
+            );
+            let model = Model {
+                package: dependency.package.clone(),
+                interfaces: dependency.interfaces.clone(),
+                worlds: Vec::new(),
+                dependencies: self
+                    .dependencies
+                    .iter()
+                    .filter(|other| {
+                        other.package.namespace != dependency.package.namespace
+                            || other.package.name != dependency.package.name
+                    })
+                    .cloned()
+                    .collect(),
+            };
+            for interface in &model.interfaces {
+                model.collect_interface_limit_errors(&dep_pkg, interface, &mut errors);
+            }
+        }
+        errors
+    }
+
+    fn collect_interface_limit_errors(
+        &self,
+        pkg: &str,
+        interface: &Interface,
+        errors: &mut Vec<(String, String)>,
+    ) {
+        for def in &interface.types {
+            let base = format!("{pkg}/{}/{}", interface.name, def.name);
+            let context = || format!("type `{}/{}`", interface.name, def.name);
+            match &def.kind {
+                TypeDefKind::Record(fields) => {
+                    for field in fields {
+                        if let Err(err) = self
+                            .canonical_type(&field.ty)
+                            .with_context(|| format!("{} field `{}`", context(), field.name))
+                        {
+                            errors.push((format!("{base}.{}", field.name), format!("{err:#}")));
+                        }
+                    }
+                }
+                TypeDefKind::Variant(cases) => {
+                    for case in cases {
+                        if let Some(payload) = &case.payload
+                            && let Err(err) = self
+                                .canonical_type(payload)
+                                .with_context(|| format!("{} case `{}`", context(), case.name))
+                        {
+                            errors.push((format!("{base}.{}", case.name), format!("{err:#}")));
+                        }
+                    }
+                }
+                TypeDefKind::Alias(_)
+                | TypeDefKind::List(_)
+                | TypeDefKind::Option(_)
+                | TypeDefKind::Result(_) => {
+                    let name = QualifiedName {
+                        interface: interface.name.clone(),
+                        name: def.name.clone(),
+                    };
+                    if let Err(err) = self
+                        .canonical_type(&TypeExpr::Named(name))
+                        .with_context(context)
+                    {
+                        errors.push((base, format!("{err:#}")));
+                    }
+                }
+                TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
+            }
+        }
+        for function in &interface.functions {
+            for param in &function.params {
+                if let Err(err) = self.canonical_type(&param.ty).with_context(|| {
+                    format!(
+                        "type `{}/{}` parameter `{}`",
+                        interface.name, function.name, param.name
+                    )
+                }) {
+                    errors.push((
+                        format!("{pkg}/{}#{}({})", interface.name, function.name, param.name),
+                        format!("{err:#}"),
+                    ));
+                }
+            }
+            if let Some(result) = &function.result
+                && let Err(err) = self
+                    .canonical_type(result)
+                    .with_context(|| format!("type `{}/{}` result", interface.name, function.name))
+            {
+                errors.push((
+                    format!("{pkg}/{}#{} -> result", interface.name, function.name),
+                    format!("{err:#}"),
+                ));
+            }
+        }
+    }
+
     /// Refuse an alias chain, nested type, or canonical string over the documented limits.
     ///
     /// This runs for every definition and function in the root package and in every dependency

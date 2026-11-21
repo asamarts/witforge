@@ -257,19 +257,16 @@ interface api {\n\
 }\n",
     )
     .unwrap();
-    let model = model::build(&load(&version).unwrap()).unwrap();
-    let lock = lock_for(&model);
-    let error = proto::emit_major(&model, &lock).unwrap_err();
-    assert!(witforge::is_contract_error(&error), "{error:#}");
-    let message = format!("{error:#}");
+    fs::write(version.join("wire.lock"), "").unwrap();
+    let diags = witforge::subset::check_diagnostics(&load(&version).unwrap());
     assert!(
-        message.contains("wrapper message `WitforgeListOfListOfAbCd`"),
-        "{message}"
+        diags.iter().any(|d| d.code == "WF1003"
+            && d.message
+                .contains("wrapper message `WitforgeListOfListOfAbCd`")
+            && d.message.contains("list<list<ab/cd>>")
+            && d.message.contains("list<list-of-ab/cd>")),
+        "{diags:#?}"
     );
-    assert!(message.contains("list<list<ab/cd>>"), "{message}");
-    assert!(message.contains("list<list-of-ab/cd>"), "{message}");
-
-    fs::write(version.join("wire.lock"), lock.render()).unwrap();
     let proto_error = proto::plan(&root).unwrap_err();
     let glue_error = witforge::emit::glue::plan(&root, "crate::plain", "crate::proto").unwrap_err();
     for error in [&proto_error, &glue_error] {
@@ -340,16 +337,17 @@ interface api {\n\
 }\n",
     )
     .unwrap();
-    let model = model::build(&load(&dir).unwrap()).unwrap();
-    let error = proto::emit_major(&model, &lock_for(&model)).unwrap_err();
-    assert!(witforge::is_contract_error(&error), "{error:#}");
-    let message = format!("{error:#}");
+    let diags = witforge::subset::check_diagnostics(&load(&dir).unwrap());
     assert!(
-        message.contains("wrapper message `WitforgeResultOfAbCdAndAndEfGh`"),
-        "{message}"
+        diags.iter().any(|d| d.code == "WF1003"
+            && d.message
+                .contains("wrapper message `WitforgeResultOfAbCdAndAndEfGh`")
+            && d.message.contains("result<ab/cd,and/ef-gh>")
+            && d.message.contains("result<ab/cd-and,ef/gh>")),
+        "{diags:#?}"
     );
-    assert!(message.contains("result<ab/cd,and/ef-gh>"), "{message}");
-    assert!(message.contains("result<ab/cd-and,ef/gh>"), "{message}");
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
+    assert!(witforge::is_contract_error(&error), "{error:#}");
     fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -370,12 +368,15 @@ interface api {\n\
 }\n",
     )
     .unwrap();
-    let model = model::build(&load(&dir).unwrap()).unwrap();
-    let error = proto::emit_major(&model, &lock_for(&model)).unwrap_err();
+    let diags = witforge::subset::check_diagnostics(&load(&dir).unwrap());
+    assert!(
+        diags.iter().any(|d| d.code == "WF1003"
+            && d.message.contains("WitforgeListOfString")
+            && d.message.contains("witforge/list-of-string")),
+        "{diags:#?}"
+    );
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
     assert!(witforge::is_contract_error(&error), "{error:#}");
-    let message = format!("{error:#}");
-    assert!(message.contains("WitforgeListOfString"), "{message}");
-    assert!(message.contains("witforge/list-of-string"), "{message}");
     fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -664,18 +665,19 @@ interface types {\n\
 }\n",
     )
     .unwrap();
-    let model = model::build(&load(&dir).unwrap()).unwrap();
-    let error = proto::emit_major(&model, &lock_for(&model)).unwrap_err();
+    let diags = witforge::subset::check_diagnostics(&load(&dir).unwrap());
     assert!(
-        error
-            .to_string()
-            .contains("proto name `TypesCallRequest` is produced by both"),
-        "{error}"
+        diags.iter().any(|d| d.code == "WF1003"
+            && d.message
+                .contains("proto name `TypesCallRequest` is produced by both")),
+        "{diags:#?}"
     );
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
     assert!(witforge::is_contract_error(&error), "{error}");
     // A lockfile that lacks the model's members is an internal inconsistency that validated
     // input never produces, not a contract violation.
-    let error = proto::emit_major(&model, &witforge::lock::WireLock::default()).unwrap_err();
+    let valid_model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
+    let error = proto::emit_major(&valid_model, &witforge::lock::WireLock::default()).unwrap_err();
     assert!(!witforge::is_contract_error(&error), "{error:#}");
     fs::remove_dir_all(&dir).unwrap();
 }

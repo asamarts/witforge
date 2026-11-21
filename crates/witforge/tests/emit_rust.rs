@@ -159,12 +159,22 @@ fn root_module_and_trait_collisions_are_rejected() {
         "package example:clash@0.1.0;\ninterface foo { record foo { x: u32 } ping: func(); }\n",
     )
     .unwrap();
-    let model = model::build(&load(&dir).unwrap()).unwrap();
-    let error = rust::emit_version(&model).unwrap_err();
-    assert!(format!("{error:#}").contains("Foo"), "{error:#}");
+    let diags = witforge::subset::check_diagnostics(&load(&dir).unwrap());
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "WF1003" && d.message.contains("Foo")),
+        "{diags:#?}"
+    );
 
     // Two interfaces mapping to the same root module name are also rejected directly by the
     // Rust emitter.
+    fs::write(
+        dir.join("contract.wit"),
+        "package example:clash@0.1.0;\ninterface foo { record item { x: u32 } ping: func(); }\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
     let mut duplicate_root = model.clone();
     duplicate_root
         .interfaces
@@ -254,19 +264,25 @@ fn collisions_name_both_interfaces() {
     assert!(ok_code.contains("pub enum Error {"), "{ok_code}");
     assert!(!ok_code.contains("pub trait Error"), "{ok_code}");
 
-    // Once the interface declares a function, the generated trait collides with the type.
+    // Once the interface declares a function, `check` refuses the trait/type collision with
+    // `WF1003` and `model::build` marks it as a contract error.
     fs::write(
         dir.join("contract.wit"),
         "package example:collision@0.1.0;\ninterface analyzer { record analyzer { x: u32 } ping: func(); }\n",
     )
     .unwrap();
-    let model = model::build(&load(&dir).unwrap()).unwrap();
-    let error = rust::emit_version(&model).unwrap_err();
+    let diags = witforge::subset::check_diagnostics(&load(&dir).unwrap());
+    assert!(
+        diags.iter().any(|d| d.code == "WF1003"
+            && d.message.contains("Analyzer")
+            && d.message.contains("analyzer")),
+        "{diags:#?}"
+    );
+    let error = model::build(&load(&dir).unwrap()).unwrap_err();
     let message = format!("{error:#}");
     assert!(message.contains("Analyzer"), "{message}");
     assert!(message.contains("analyzer"), "{message}");
-    // The emitter marks the collision as a contract violation where it finds it, so the CLI
-    // exits with 1 for it and with 2 for an internal error.
+    // The collision is a contract violation, so the CLI exits with 1 rather than 2.
     assert!(witforge::is_contract_error(&error), "{message}");
     fs::remove_dir_all(&dir).unwrap();
 }
