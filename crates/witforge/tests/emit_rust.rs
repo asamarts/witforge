@@ -379,12 +379,16 @@ fn output_root_guard_resolves_parent_components() {
 
     for inside in [
         root.clone(),
+        base.clone(),
         root.join("gen"),
         root.join("v0.1/gen"),
+        root.join("v0.1/deps/shared"),
         base.join("missing/../wit/gen"),
+        base.join("missing/../out"),
         base.join("existing/../wit/gen"),
         base.join("existing/../wit"),
         root.join("gen/../../wit/v0.1"),
+        root.join("gen/../../out"),
         base.join("missing/../existing/../wit/./gen"),
     ] {
         assert!(
@@ -396,16 +400,30 @@ fn output_root_guard_resolves_parent_components() {
     for outside in [
         base.join("out"),
         base.join("existing/out"),
-        base.join("missing/../out"),
+        base.join("existing/../out"),
         root.join("../out"),
-        root.join("gen/../../out"),
     ] {
         ensure_outside_wit_root(&root, &outside).unwrap();
     }
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(&root, base.join("link")).unwrap();
-        assert!(ensure_outside_wit_root(&root, &base.join("link/gen")).is_err());
+        std::os::unix::fs::symlink(root.join("v0.1"), base.join("outlink")).unwrap();
+        std::os::unix::fs::symlink(root.join("newdir"), base.join("dangling")).unwrap();
+        for bad in [
+            base.join("link/gen"),
+            base.join("missing/../link/v0.1"),
+            base.join("existing/../link/v0.1"),
+            base.join("outlink"),
+            base.join("dangling"),
+            base.join("dangling/sub"),
+        ] {
+            assert!(
+                ensure_outside_wit_root(&root, &bad).is_err(),
+                "accepted symlinked {}",
+                bad.display()
+            );
+        }
         assert!(ensure_outside_wit_root(&base.join("link"), &root.join("gen")).is_err());
     }
     fs::remove_dir_all(&base).unwrap();

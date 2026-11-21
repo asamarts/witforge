@@ -24,7 +24,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::proto` | `HEADER`, `plan`, `generate`, `check`, `emit_major` |
 | `emit::json_schema` | `HEADER`, `plan`, `generate`, `check`, `emit_version` |
 | `emit::glue` | `HEADER`, `plan`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
-| `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `absolute` |
+| `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `ensure_outside_released`, `resolve_output_root`, `absolute` |
 | `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `DiffAnalysis`, `compare`, `compare_with_impacts` |
 | `diagnostic` | `Diagnostic`, `Position`, `Severity` |
 | `subset` | `Violation`, `check`, `check_diagnostics` |

@@ -727,11 +727,17 @@ Every command also accepts the global `--format human|json|sarif`
 - `--first` and `--against` are mutually exclusive. They are defined in
   [`lockfile.md`](lockfile.md).
 - Generation creates the output directory when it is missing. The output root MUST NOT be the WIT
-  root or inside it (which includes every version directory); such a path is refused. Both paths
-  are resolved before the comparison: the WIT root and the longest existing prefix of the output
-  root are canonicalised, and the rest of the output root is normalised lexically, so `..`
-  components and symlinks cannot reach the WIT root. `--check` requires the output directory to
-  exist and scans only the output root (not subdirectories) for generated-header files.
+  root, lie inside it (which includes every version directory and `deps/`), or contain it, and the
+  same guard applies to every directory listed in the `released` manifest (whether beside the WIT
+  root or passed through `--released`); any overlapping path is refused before anything is created
+  or checked, for both generation and `--check`. Both paths are compared canonically: the WIT root,
+  every listed `released` directory, and every existing component of the output root (including
+  symlinks, Windows junctions, and case-insensitive spellings) are canonicalised step by step, a
+  dangling symlink is followed to its resolved target, and any `..` component after a missing
+  component (such as `missing/../witlink/v0.1`) is refused rather than collapsed lexically. The
+  guard prevents accidental overwrites and is not a boundary against a local attacker swapping a
+  symlink between the check and the write. `--check` requires the output directory to exist and
+  scans only the output root (not subdirectories) for generated-header files.
 - `--check` writes nothing. It fails if an expected file is missing or differs, if a
   generated-header file in the output root is not expected, or if an expected path is one that
   generation refuses to write (see below), so `--check` and generation agree on what needs

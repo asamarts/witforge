@@ -719,6 +719,21 @@ fn report_lock_notes(report: &witforge::lock::Reconciliation, reporter: &mut Rep
     }
 }
 
+fn guard_output_root(paths: &ResolvedPaths) -> Result<()> {
+    // Generation reproduces released versions without modifying them, so the manifest only has
+    // to be valid. The output root must stay outside both the WIT root and every released
+    // directory before any file is inspected or created.
+    let manifest = load_root_released_manifest(&paths.root, paths.released.as_deref())?;
+    let manifest_dir = paths
+        .released
+        .as_deref()
+        .and_then(Path::parent)
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(&paths.root);
+    emit::output::ensure_outside_wit_root(&paths.root, &paths.out)?;
+    emit::output::ensure_outside_released(manifest_dir, &manifest, &paths.out)
+}
+
 fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let paths = resolve_paths(
         Emitter::Rust,
@@ -738,9 +753,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             },
         },
     )?;
-    // Generation reproduces released versions without modifying them, so the manifest only has
-    // to be valid. The emitter validates every version and lockfile before writing.
-    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
+    guard_output_root(&paths)?;
     if options.check {
         return Ok(check_messages(
             &emit::rust::check_with_serde(&paths.root, &paths.out, paths.serde)?,
@@ -764,7 +777,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             serde: None,
         },
     )?;
-    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
+    guard_output_root(&paths)?;
     if options.check {
         return Ok(check_messages(
             &emit::proto::check(&paths.root, &paths.out)?,
@@ -788,7 +801,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             serde: None,
         },
     )?;
-    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
+    guard_output_root(&paths)?;
     if options.check {
         return Ok(check_messages(
             &emit::json_schema::check(&paths.root, &paths.out)?,
@@ -822,7 +835,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         .context("glue requires --proto-root or a config glue section")?;
     // Glue is current-schema output for the highest minor of each major; released plain modules
     // stay frozen. As for the other generators, the manifest only has to be valid.
-    load_root_released_manifest(&paths.root, paths.released.as_deref())?;
+    guard_output_root(&paths)?;
     if options.check {
         return Ok(check_messages(
             &emit::glue::check(&paths.root, &paths.out, plain_root, proto_root)?,

@@ -2913,3 +2913,130 @@ fn full_stdout_device_writes_outputs_and_exits_two() {
     assert!(gen_out.join("mod.rs").is_file());
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn output_root_guard_closes_symlink_and_parent_component_bypasses() {
+    let base = versions("out-guard-symlinks");
+    let wit = base.join("wit");
+    fs::create_dir_all(wit.join("v0.1/deps/shared")).unwrap();
+    let v01_before: Vec<_> = fs::read_dir(wit.join("v0.1"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+
+    std::os::unix::fs::symlink(&wit, base.join("witlink")).unwrap();
+    std::os::unix::fs::symlink(&base, base.join("parentlink")).unwrap();
+    std::os::unix::fs::symlink(wit.join("v0.1"), base.join("outlink")).unwrap();
+    std::os::unix::fs::symlink(wit.join("gen"), base.join("danglinglink")).unwrap();
+
+    // Exact audit reproduction (`missing/../witlink/v0.1`), symlinked ancestor, symlinked
+    // output directory (existing and dangling), inside `deps/`, equal to WIT root, and an
+    // output root containing the WIT root.
+    let cases = [
+        ("wit", "missing/../witlink/v0.1"),
+        ("wit", "parentlink/wit/gen"),
+        ("wit", "outlink"),
+        ("wit", "danglinglink"),
+        ("wit", "danglinglink/sub"),
+        ("witlink", "wit/gen"),
+        ("wit", "wit/v0.1/deps/shared"),
+        ("wit", "wit"),
+        ("wit", "."),
+    ];
+    for (root_arg, out_arg) in cases {
+        for command in ["rust", "proto", "schema", "glue"] {
+            for check_flag in [false, true] {
+                let mut cmd = witforge();
+                cmd.current_dir(&base)
+                    .args([command, root_arg, "--out", out_arg]);
+                if command == "glue" {
+                    cmd.args([
+                        "--plain-root",
+                        "crate::plain",
+                        "--proto-root",
+                        "crate::proto",
+                    ]);
+                }
+                if check_flag {
+                    cmd.arg("--check");
+                }
+                let output = cmd.output().unwrap();
+                assert_eq!(
+                    output.status.code(),
+                    Some(2),
+                    "{command} {root_arg} --out {out_arg} check={check_flag}: {output:?}"
+                );
+            }
+        }
+    }
+    assert!(!base.join("missing").exists());
+    assert!(!wit.join("gen").exists());
+    let v01_after: Vec<_> = fs::read_dir(wit.join("v0.1"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(v01_after, v01_before);
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn output_root_guard_protects_released_directories() {
+    let base = versions("out-guard-released");
+    let wit = base.join("wit");
+    // Put an explicit released manifest and its listed directory outside `wit/`.
+    let archive = base.join("archive");
+    copy_tree(&wit.join("v0.1"), &archive.join("v0.1"));
+    let manifest = archive.join("released");
+    fs::write(&manifest, "v0.1\n").unwrap();
+
+    let mut bad_outs = vec![
+        archive.join("v0.1"),
+        archive.join("v0.1/nested"),
+        archive.clone(),
+    ];
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(archive.join("v0.1"), base.join("rel-link")).unwrap();
+        bad_outs.push(base.join("rel-link"));
+        bad_outs.push(base.join("missing/../rel-link"));
+    }
+
+    for out in &bad_outs {
+        for command in ["rust", "proto", "schema", "glue"] {
+            for check_flag in [false, true] {
+                let mut cmd = witforge();
+                cmd.args([
+                    command,
+                    wit.to_str().unwrap(),
+                    "--out",
+                    out.to_str().unwrap(),
+                    "--released",
+                    manifest.to_str().unwrap(),
+                ]);
+                if command == "glue" {
+                    cmd.args([
+                        "--plain-root",
+                        "crate::plain",
+                        "--proto-root",
+                        "crate::proto",
+                    ]);
+                }
+                if check_flag {
+                    cmd.arg("--check");
+                }
+                let output = cmd.output().unwrap();
+                assert_eq!(
+                    output.status.code(),
+                    Some(2),
+                    "{command} out={} check={check_flag}: {output:?}",
+                    out.display()
+                );
+            }
+        }
+    }
+    assert!(!archive.join("v0.1/nested").exists());
+    assert!(!archive.join("mod.rs").exists());
+    assert!(!base.join("missing").exists());
+    fs::remove_dir_all(&base).unwrap();
+}

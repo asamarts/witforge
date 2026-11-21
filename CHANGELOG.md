@@ -57,6 +57,11 @@ have it.
 
 ### Fixed
 
+- The generator output-root guard now resolves existing path components canonically (following
+  symlinks, dangling symlink targets, Windows junctions, and case-insensitive spellings), refuses
+  `..` after a missing directory component (closing the `missing/../witlink/v0.1` bypass),
+  refuses an output root that contains the WIT root, and applies the same guard to every directory
+  listed in the `released` manifest for both generation and `--check`.
 - `witforge lock` now writes `wire.lock` atomically before reporting its changes, and CLI stdout
   and stderr writes no longer panic when piped to a reader that exits early (`head`, `grep -q`)
   or redirected to a full device: a closed stdout pipe preserves the command's exit status, while

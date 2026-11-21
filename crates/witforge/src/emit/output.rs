@@ -257,23 +257,31 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     result
 }
 
-/// Refuse an output root that is the WIT root or inside it.
+/// Maximum symbolic-link hops followed when resolving a dangling output path.
+const MAX_SYMLINK_DEPTH: usize = 40;
+
+/// Refuse an output root that is, lies inside, or contains the WIT root.
 ///
-/// Both paths are resolved before they are compared: the WIT root is canonicalised, and so is the
-/// longest existing prefix of the output root, with the rest normalised lexically. Neither `..`
-/// components nor symlinks can reach the WIT root.
+/// Both paths are resolved to canonical form before they are compared: the WIT root is
+/// canonicalised, and each existing prefix component of the output root is canonicalised (which
+/// follows symlinks, Windows junctions, and case-insensitive spellings). A `..` component after a
+/// component that does not exist yet is refused rather than collapsed lexically, so a path such as
+/// `missing/../witlink/v0.1` cannot bypass the guard.
+///
+/// This guard prevents accidental writes into the WIT tree; it does not defend against a local
+/// attacker swapping a symlink between the check and the write.
 ///
 /// # Errors
 ///
-/// Returns an error when the WIT root cannot be resolved or the output path is equal to or below
-/// it.
+/// Returns an error when the WIT root cannot be resolved, the output path uses `..` after a
+/// missing component, or the output path is equal to, inside, or an ancestor of the WIT root.
 pub fn ensure_outside_wit_root(wit_root: &Path, out: &Path) -> Result<()> {
     let root = fs::canonicalize(wit_root)
         .with_context(|| format!("failed to resolve WIT root {}", wit_root.display()))?;
-    let resolved = resolve(out)?;
-    if resolved.starts_with(&root) {
+    let resolved = resolve_output_root(out)?;
+    if paths_overlap(&resolved, &root) {
         bail!(
-            "output root {} must not be the WIT root or inside it ({})",
+            "output root {} must not be the WIT root, inside it, or contain it ({})",
             out.display(),
             root.display()
         );
@@ -281,33 +289,154 @@ pub fn ensure_outside_wit_root(wit_root: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Resolve `path` to an absolute path with no `.` or `..` components.
+/// Refuse an output root that is, lies inside, or contains any directory listed in `manifest`.
 ///
-/// The longest prefix that exists is canonicalised, which follows its symlinks and `..`
-/// components as the operating system would. The rest does not exist yet, so it contains no
-/// symlinks and is normalised lexically.
-fn resolve(path: &Path) -> Result<PathBuf> {
-    let absolute = std::path::absolute(path)
-        .with_context(|| format!("failed to resolve {}", path.display()))?;
-    for prefix in absolute.ancestors() {
-        let Ok(mut resolved) = fs::canonicalize(prefix) else {
-            continue;
-        };
-        let rest = absolute
-            .strip_prefix(prefix)
-            .expect("an ancestor is a prefix");
-        for component in rest.components() {
-            match component {
-                Component::ParentDir => {
-                    resolved.pop();
+/// `manifest_dir` is the directory that owns the `released` manifest (usually the WIT root, or
+/// the parent of an explicit `--released` file). Uses the same canonical path resolution as
+/// [`ensure_outside_wit_root`].
+///
+/// # Errors
+///
+/// Returns an error when the output path or a released directory cannot be resolved, or when the
+/// output path overlaps any listed released directory.
+pub fn ensure_outside_released(
+    manifest_dir: &Path,
+    manifest: &crate::ReleasedManifest,
+    out: &Path,
+) -> Result<()> {
+    if manifest.directories().is_empty() {
+        return Ok(());
+    }
+    let resolved = resolve_output_root(out)?;
+    for entry in manifest.directories() {
+        let released = manifest_dir.join(entry);
+        let canonical = fs::canonicalize(&released).with_context(|| {
+            format!(
+                "failed to resolve released directory `{entry}` ({})",
+                released.display()
+            )
+        })?;
+        if paths_overlap(&resolved, &canonical) {
+            bail!(
+                "output root {} must not be, contain, or lie inside released directory `{entry}` \
+                 ({})",
+                out.display(),
+                canonical.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Resolve an output root to a canonical absolute path without lexically collapsing `..` across
+/// missing components.
+///
+/// Every existing component (including symlinks and Windows junctions) is canonicalised step by
+/// step; a dangling symlink target is resolved recursively up to a hop limit. Any `..` component
+/// that appears after a missing component is refused.
+///
+/// # Errors
+///
+/// Returns an error when the current directory or an existing prefix cannot be resolved, a
+/// symbolic-link loop is encountered, or `..` appears after a missing path component.
+pub fn resolve_output_root(path: &Path) -> Result<PathBuf> {
+    resolve_components(path, path, 0)
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
+}
+
+fn resolve_components(original: &Path, path: &Path, depth: usize) -> Result<PathBuf> {
+    if depth > MAX_SYMLINK_DEPTH {
+        bail!(
+            "failed to resolve {}: too many levels of symbolic links",
+            original.display()
+        );
+    }
+    let mut current = if path.is_relative() {
+        let cwd = std::env::current_dir().context("failed to read the current directory")?;
+        fs::canonicalize(&cwd)
+            .with_context(|| format!("failed to resolve current directory {}", cwd.display()))?
+    } else {
+        PathBuf::new()
+    };
+    let mut missing_tail = false;
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+            }
+            Component::RootDir => {
+                current.push(Component::RootDir.as_os_str());
+                if let Ok(canon) = fs::canonicalize(&current) {
+                    current = canon;
                 }
-                Component::Normal(name) => resolved.push(name),
-                Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if missing_tail {
+                    bail!(
+                        "output root {} must not contain `..` after a missing directory component \
+                         (it must not be the WIT root, inside it, or contain it)",
+                        original.display()
+                    );
+                }
+                current.push(Component::ParentDir);
+                current = fs::canonicalize(&current)
+                    .with_context(|| format!("failed to resolve {}", original.display()))?;
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                if missing_tail {
+                    continue;
+                }
+                match fs::symlink_metadata(&current) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        match fs::canonicalize(&current) {
+                            Ok(canon) => current = canon,
+                            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                                let target = fs::read_link(&current).with_context(|| {
+                                    format!("failed to read symlink {}", current.display())
+                                })?;
+                                let next = if target.is_absolute() {
+                                    target
+                                } else {
+                                    current
+                                        .parent()
+                                        .unwrap_or_else(|| Path::new("."))
+                                        .join(target)
+                                };
+                                current = resolve_components(original, &next, depth + 1)?;
+                                missing_tail = true;
+                            }
+                            Err(err) => {
+                                return Err(err).with_context(|| {
+                                    format!("failed to resolve {}", original.display())
+                                });
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        current = fs::canonicalize(&current)
+                            .with_context(|| format!("failed to resolve {}", original.display()))?;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        missing_tail = true;
+                    }
+                    Err(err) => {
+                        return Err(err)
+                            .with_context(|| format!("failed to resolve {}", original.display()));
+                    }
+                }
             }
         }
-        return Ok(resolved);
     }
-    bail!("failed to resolve {}", path.display())
+    if current.as_os_str().is_empty() {
+        bail!("failed to resolve {}", original.display());
+    }
+    Ok(current)
 }
 
 /// A resolved output root used for diagnostics.
