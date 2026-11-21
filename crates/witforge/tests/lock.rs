@@ -1506,8 +1506,8 @@ fn draft_removal_of_a_released_member_can_be_restored() {
         .reconcile_report_with(&members_a_b_c, LockMode::Against(&previous))
         .unwrap();
     assert_eq!(report.restored, vec![("a:b/i/t.b".to_string(), 2)]);
-    assert!(report.changes.is_empty());
-    assert!(report.discrepancies.is_empty());
+    assert!(report.changes.is_empty(), "{report:?}");
+    assert!(report.discrepancies.is_empty(), "{report:?}");
     assert!(!current.get("a:b/i/t.b").unwrap().reserved);
     assert_eq!(current.get("a:b/i/t.b").unwrap().number, 2);
     assert_eq!(current.get("a:b/i/t.c").unwrap().number, 3);
@@ -1583,8 +1583,8 @@ a:b/i#m.p = 1 param u64\n"
         .reconcile_report_with(&members, LockMode::Against(&previous))
         .unwrap();
     assert_eq!(report.restored.len(), members.len());
-    assert!(report.changes.is_empty());
-    assert!(report.discrepancies.is_empty());
+    assert!(report.changes.is_empty(), "{report:?}");
+    assert!(report.discrepancies.is_empty(), "{report:?}");
     assert!(
         current.entries().all(|(_, entry)| !entry.reserved),
         "every released entry should be restored"
