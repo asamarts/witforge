@@ -454,7 +454,10 @@ mod tests {
         assert_eq!(plain_ident("union", "field").unwrap(), "r#union");
 
         // prost-derive 0.14 inherent accessors
-        assert!(prost_field_accessors("msg", ProstFieldAccessorKind::None).is_empty());
+        assert_eq!(
+            prost_field_accessors("msg", ProstFieldAccessorKind::None),
+            Vec::<String>::new()
+        );
         assert_eq!(
             prost_field_accessors("set_mode", ProstFieldAccessorKind::OptionalScalar),
             vec!["set_mode"]
