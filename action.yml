@@ -82,7 +82,7 @@ inputs:
   github-token:
     description: >-
       Token used for GitHub API queries (`version: latest` lookup and `gh attestation verify`);
-      pass `${{ github.token }}` for rate limits. Release assets are downloaded without it.
+      pass the workflow token for rate limits. Release assets are downloaded without it.
     required: false
     default: ''
 outputs:

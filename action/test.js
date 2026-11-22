@@ -144,6 +144,10 @@ function runnerEnvironment(inputs) {
 
 function declaredInputs() {
   const metadata = fs.readFileSync(path.join(__dirname, '..', 'action.yml'), 'utf8');
+  assert.ok(
+    !metadata.includes('${{'),
+    'action.yml must not contain `${{` expressions (GitHub evaluates them even in descriptions)',
+  );
   const start = metadata.indexOf('\ninputs:\n');
   const end = metadata.indexOf('\noutputs:\n');
   assert.ok(start >= 0 && end > start, 'action.yml has an inputs block before outputs');
