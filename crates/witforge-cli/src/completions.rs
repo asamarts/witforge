@@ -255,7 +255,18 @@ fn zsh_arg_spec(arg: &Arg) -> Vec<String> {
         String::new()
     };
 
-    let eq = if takes_val { "=" } else { "" };
+    let eq = if takes_val
+        && arg.is_require_equals_set()
+        && arg
+            .get_num_args()
+            .is_some_and(|range| range.min_values() == 0)
+    {
+        "=-"
+    } else if takes_val {
+        "="
+    } else {
+        ""
+    };
     let mut specs = Vec::new();
     if let Some(long) = arg.get_long() {
         specs.push(format!("'--{long}{eq}[{help}]{value_suffix}'"));

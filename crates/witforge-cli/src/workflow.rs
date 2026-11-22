@@ -239,12 +239,40 @@ pub(crate) fn rewrite_package_version(text: &str, old_ver: &str, new_ver: &str) 
             ("", line_body)
         };
 
+        // Advance through leading whitespace and `/* ... */` block comments on this line so
+        // `/* doc */ package ex:foo@0.1.0;` and multi-line comment endings before `package` are
+        // handled accurately.
+        let bytes = body.as_bytes();
+        let mut i = 0usize;
+        let mut code_start = None;
+        while i < bytes.len() {
+            if in_block_comment {
+                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            } else if bytes[i] == b' ' || bytes[i] == b'\t' {
+                i += 1;
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                break;
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+            } else {
+                code_start = Some(i);
+                break;
+            }
+        }
+
         let mut replaced = None;
-        if !in_block_comment {
-            let trimmed = body.trim_start_matches([' ', '\t']);
-            if (trimmed.starts_with("package ") || trimmed.starts_with("package\t"))
-                && let Some(pos) = body.find(&old_suffix)
+        if let Some(start) = code_start {
+            let code_tail = &body[start..];
+            if (code_tail.starts_with("package ") || code_tail.starts_with("package\t"))
+                && let Some(rel_pos) = code_tail.find(&old_suffix)
             {
+                let pos = start + rel_pos;
                 let after = &body[pos + old_suffix.len()..];
                 let boundary_ok = after
                     .chars()
@@ -258,26 +286,23 @@ pub(crate) fn rewrite_package_version(text: &str, old_ver: &str, new_ver: &str) 
                     replaced = Some(updated);
                 }
             }
-        }
-
-        // Track multi-line `/* ... */` block comments across lines (outside `//` line comments).
-        let bytes = body.as_bytes();
-        let mut i = 0usize;
-        while i + 1 < bytes.len() {
-            if in_block_comment {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    in_block_comment = false;
+            // Track any block comment opened or closed later on the same line.
+            while i + 1 < bytes.len() {
+                if in_block_comment {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        in_block_comment = false;
+                        i += 2;
+                        continue;
+                    }
+                } else if bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                    break;
+                } else if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                    in_block_comment = true;
                     i += 2;
                     continue;
                 }
-            } else if bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                break;
-            } else if bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true;
-                i += 2;
-                continue;
+                i += 1;
             }
-            i += 1;
         }
 
         out.push_str(bom);
@@ -332,8 +357,27 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Append `entry` to `manifest_path`, preserving LF line endings and a final newline.
+/// Append `entry` to `manifest_path` atomically, refusing symlinks and preserving LF line endings
+/// and a final newline.
 pub(crate) fn append_released_entry(manifest_path: &Path, entry: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    if let Ok(meta) = fs::symlink_metadata(manifest_path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{}` is a symlink; commit a regular file",
+                manifest_path.display()
+            ),
+            Some(manifest_path.display().to_string()),
+        ));
+    }
+    let existing_perms = fs::metadata(manifest_path).ok().map(|m| m.permissions());
     let mut contents = if manifest_path.exists() {
         fs::read_to_string(manifest_path)
             .with_context(|| format!("failed to read {}", manifest_path.display()))?
@@ -346,7 +390,79 @@ pub(crate) fn append_released_entry(manifest_path: &Path, entry: &str) -> Result
     }
     contents.push_str(entry);
     contents.push('\n');
-    fs::write(manifest_path, contents.as_bytes())
-        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+
+    let parent = manifest_path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = manifest_path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("released");
+    let pid = std::process::id();
+    let mut attempt = 0u32;
+    let (tmp_path, mut tmp_file) = loop {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".witforge.{file_name}.{pid}.{seq}.tmp"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 64 => {
+                attempt += 1;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to create temporary file beside {}",
+                        manifest_path.display()
+                    )
+                });
+            }
+        }
+    };
+    let write_res = (|| -> Result<()> {
+        tmp_file
+            .write_all(contents.as_bytes())
+            .and_then(|()| tmp_file.sync_all())
+            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+        drop(tmp_file);
+        if let Some(perms) = existing_perms {
+            let _ = fs::set_permissions(&tmp_path, perms);
+        }
+        fs::rename(&tmp_path, manifest_path).with_context(|| {
+            format!(
+                "failed to replace {} with {}",
+                manifest_path.display(),
+                tmp_path.display()
+            )
+        })?;
+        Ok(())
+    })();
+    if let Err(err) = write_res {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_package_version_handles_inline_and_closing_block_comments() {
+        let input =
+            "/* header */ package ex:demo@0.1.0;\ninterface a {\n    use ex:dep/t@0.1.0.{x};\n}\n";
+        let got = rewrite_package_version(input, "0.1.0", "0.2.0");
+        assert!(got.contains("/* header */ package ex:demo@0.2.0;"), "{got}");
+        assert!(got.contains("use ex:dep/t@0.1.0.{x};"), "{got}");
+
+        let multiline = "/*\n package ex:fake@0.1.0;\n */ package ex:demo@0.1.0;\r\n";
+        let got2 = rewrite_package_version(multiline, "0.1.0", "1.0.0");
+        assert!(got2.contains(" package ex:fake@0.1.0;\n"), "{got2}");
+        assert!(got2.contains(" */ package ex:demo@1.0.0;\r\n"), "{got2}");
+    }
 }

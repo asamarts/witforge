@@ -2228,6 +2228,13 @@ fn freeze_command(options: &FreezeOptions, reporter: &mut Reporter) -> Result<Ex
 
 fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<PathBuf>> {
     if let Some(root) = &options.root {
+        if options.config.config.is_some() || options.config.project.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--config` and `--project` cannot be combined with a positional WIT_ROOT on `freeze`",
+                None,
+            ));
+        }
         return Ok(vec![root.clone()]);
     }
     let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
@@ -2326,12 +2333,8 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         None
     };
 
-    let mut had_violation = false;
-    let mut had_operational = false;
-    let mut ran_any = false;
-    let multi_project = config.project.len() > 1;
-
-    for (proj_name, proj) in selected {
+    let mut planned: Vec<(String, Vec<Emitter>)> = Vec::with_capacity(selected.len());
+    for (proj_name, proj) in &selected {
         let mut emitters = Vec::new();
         if proj.rust.is_some() {
             emitters.push(Emitter::Rust);
@@ -2356,7 +2359,15 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                 Some(config_path.display().to_string()),
             ));
         }
+        planned.push((proj_name.clone(), emitters));
+    }
 
+    let mut had_violation = false;
+    let mut had_operational = false;
+    let mut ran_any = false;
+    let multi_project = config.project.len() > 1;
+
+    for (proj_name, emitters) in planned {
         let cfg_args = ConfigArgs {
             config: Some(config_path.clone()),
             no_config: false,
@@ -2467,6 +2478,13 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
 
 fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let wit_root = if let Some(root) = &options.root {
+        if options.config.config.is_some() || options.config.project.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--config` and `--project` cannot be combined with a positional WIT_ROOT on `new-version`",
+                None,
+            ));
+        }
         root.clone()
     } else {
         let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
@@ -2596,6 +2614,17 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
     } else {
         default_released_manifest(&options.dir)
     };
+
+    if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{}` is a symlink; commit a regular file",
+                manifest_path.display()
+            ),
+            Some(manifest_path.display().to_string()),
+        ));
+    }
 
     let manifest = if manifest_path.exists() {
         ReleasedManifest::load(&manifest_path)?

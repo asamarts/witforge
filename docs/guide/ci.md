@@ -47,25 +47,27 @@ ran `check` and the generators and never ran `diff`. Fixed in `v0.6.0`. From `v0
 
 - `diff-old` and `diff-new` run `witforge diff <old> <new> --check`, because `diff-check`
   defaults to `true`;
-- `diff-check: "false"` prints the diff without failing the job.
+- `diff-check: "false"` prints the diff without failing the job;
+- `diff-check: "wire"` (or another comma-separated subset of `wire`, `source`, `api`) passes
+  `--check=<views>` to gate only on those compatibility views.
 
 A workflow that already passes `diff-old` and `diff-new` therefore starts gating when its pin
-moves to `v0.6.0` or later. Set `diff-check: "false"` before moving the pin if the job should keep
-passing on source-breaking changes.
+moves to `v0.6.0` or later. Set `diff-check: "false"` or `diff-check: "wire"` before moving the
+pin if the job should keep passing on source-breaking changes.
 
 ## Direct commands
 
 ```sh
 witforge freeze --config witforge.toml
-witforge check wit/v0.2 --against wit/v0.1/wire.lock
+witforge check wit
 witforge diff wit/v0.1 wit/v0.2 --check
-witforge rust --config witforge.toml --check
-witforge proto --config witforge.toml --check
-witforge schema --config witforge.toml --check
-witforge glue --config witforge.toml --check
+witforge generate --config witforge.toml --check
 ```
 
-Run `witforge freeze` (with full Git history), `diff --check`, and at least one generator over the whole WIT root. `check` validates one package version; whole-root generation also checks dependency-graph continuity, and `--check` on committed generated files keeps generated per-version modules frozen alongside the released WIT directories.
+Run `witforge freeze` (with full Git history), `witforge check <wit-root>` (which checks every
+version directory, predecessor lockfile continuity, and the pinned dependency graph), `diff --check`
+(or `--check=wire`), and `witforge generate --check` (keeping generated per-version modules frozen
+alongside the released WIT directories).
 
 ## Consumer tests
 

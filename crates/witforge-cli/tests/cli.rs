@@ -4170,6 +4170,37 @@ fn whole_root_check_new_version_and_release_workflow_cover_gaps_drafts_and_major
     let empty_out = witforge().args(["check"]).arg(&empty_dir).output().unwrap();
     assert_eq!(empty_out.status.code(), Some(2), "{empty_out:?}");
 
+    // 6. `release` refuses a symlinked `released` manifest (WF9004, exit 2).
+    #[cfg(unix)]
+    {
+        let sym_root = base.join("sym-release");
+        let sym_v01 = sym_root.join("v0.1");
+        fs::create_dir_all(&sym_v01).unwrap();
+        fs::write(
+            sym_v01.join("contract.wit"),
+            "package ex:sym@0.1.0;\ninterface a { record r { id: u32 } }\n",
+        )
+        .unwrap();
+        assert!(
+            witforge()
+                .args(["lock", sym_v01.to_str().unwrap(), "--first"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let real_manifest = base.join("external-released");
+        fs::write(&real_manifest, "").unwrap();
+        std::os::unix::fs::symlink(&real_manifest, sym_root.join("released")).unwrap();
+        let sym_out = witforge()
+            .args(["release", sym_v01.to_str().unwrap(), "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(sym_out.status.code(), Some(2), "{sym_out:?}");
+        let sym_json: serde_json::Value = serde_json::from_slice(&sym_out.stdout).unwrap();
+        assert_eq!(sym_json["diagnostics"][0]["code"], "WF9004", "{sym_json}");
+    }
+
     fs::remove_dir_all(&base).unwrap();
 }
 

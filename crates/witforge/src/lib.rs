@@ -496,17 +496,61 @@ pub(crate) fn resolve_span_location(
     resolve_span_cached(source_map, span, &mut cache)
 }
 
-/// Locate the `package ...;` declaration line inside `file`, falling back to line 1.
+/// Locate the `package ...;` declaration line inside `file`, skipping comments and falling back
+/// to line 1.
 pub(crate) fn find_package_header_position(
     file: &str,
     cache: &mut BTreeMap<String, LineIndex>,
 ) -> Option<(String, diagnostic::Position)> {
     let index = load_line_index(file, cache)?;
+    let mut in_block_comment = false;
     for (line_idx, raw) in index.body.lines().enumerate() {
         let line_no = line_idx + 1;
-        let trimmed = raw.trim_start_matches([' ', '\t']);
-        if trimmed.starts_with("package ") || trimmed.starts_with("package\t") {
-            return Some((file.to_string(), line_position(line_no, raw)));
+        let bytes = raw.as_bytes();
+        let mut i = 0usize;
+        let mut code_start = None;
+        while i < bytes.len() {
+            if in_block_comment {
+                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            } else if bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' {
+                i += 1;
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                break;
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+            } else {
+                code_start = Some(i);
+                break;
+            }
+        }
+        if let Some(start) = code_start {
+            let rest = &raw[start..];
+            if rest.starts_with("package ") || rest.starts_with("package\t") {
+                return Some((file.to_string(), line_position(line_no, raw)));
+            }
+            // Still advance block-comment state across the rest of the line.
+            while i + 1 < bytes.len() {
+                if in_block_comment {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        in_block_comment = false;
+                        i += 2;
+                        continue;
+                    }
+                } else if bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                    break;
+                } else if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                    in_block_comment = true;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            }
         }
     }
     let first_line = index.body.lines().next().unwrap_or("");

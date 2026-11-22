@@ -566,5 +566,51 @@ out = "gen/proto"
     );
     assert!(diags.iter().all(|d| d["code"] == "WF2001"));
 
+    // 6. `generate` validates every selected project up front before writing any files.
+    let atomic_out = repo.join("atomic-rust");
+    write_config(
+        &repo,
+        r#"
+version = 1
+[project.a]
+root = "wit"
+[project.a.rust]
+out = "atomic-rust"
+[project.b]
+root = "wit"
+"#,
+    );
+    let partial = witforge()
+        .current_dir(&repo)
+        .args(["generate", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(partial.status.code(), Some(2), "{partial:?}");
+    let partial_json: serde_json::Value = serde_json::from_slice(&partial.stdout).unwrap();
+    assert_eq!(partial_json["diagnostics"][0]["code"], "WF9001");
+    assert!(
+        !atomic_out.exists(),
+        "generate must not partially write project `a` when project `b` has no generators"
+    );
+
+    // 7. Positional WIT_ROOT cannot be combined with `--config` or `--project` on `freeze` or
+    // `new-version`.
+    for args in [
+        vec![
+            "freeze",
+            "wit",
+            "--config",
+            "witforge.toml",
+            "--format",
+            "json",
+        ],
+        vec!["new-version", "wit", "--project", "a", "--format", "json"],
+    ] {
+        let out = witforge().current_dir(&repo).args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        let val: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(val["diagnostics"][0]["code"], "WF9001", "{args:?}: {val}");
+    }
+
     fs::remove_dir_all(&base).unwrap();
 }

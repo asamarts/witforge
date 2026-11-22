@@ -809,7 +809,7 @@ fn follow_renamed_manifests(
             if let Some(old_path) = parts.next() {
                 let _new_path = parts.next();
                 let old = String::from_utf8_lossy(old_path).replace('\\', "/");
-                if !old.is_empty() {
+                if !old.is_empty() && old != manifest {
                     earlier.insert(old);
                 }
             }
