@@ -731,7 +731,7 @@ fn operational_errors_have_specific_codes_and_never_emit_wf9000() {
     assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9002");
 
     // 3. Malformed wire.lock -> WF9003 (exit 2) with lockfile path.
-    let bad_lock_dir = root.join("bad-lock/v0.1");
+    let bad_lock_dir = root.join("bad-lock").join("v0.1");
     fs::create_dir_all(&bad_lock_dir).unwrap();
     fs::write(
         bad_lock_dir.join("contract.wit"),
@@ -744,7 +744,10 @@ fn operational_errors_have_specific_codes_and_never_emit_wf9000() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     let diag = &json(&out)["diagnostics"][0];
     assert_eq!(diag["code"], "WF9003");
-    assert_eq!(diag["path"], bad_lock.display().to_string());
+    assert_eq!(
+        fs::canonicalize(Path::new(diag["path"].as_str().unwrap())).unwrap(),
+        fs::canonicalize(&bad_lock).unwrap()
+    );
 
     // 4. Malformed released manifest -> WF9003 (exit 2) with manifest path.
     let bad_manifest_root = root.join("bad-manifest");
@@ -761,7 +764,10 @@ fn operational_errors_have_specific_codes_and_never_emit_wf9000() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     let diag = &json(&out)["diagnostics"][0];
     assert_eq!(diag["code"], "WF9003");
-    assert_eq!(diag["path"], manifest_path.display().to_string());
+    assert_eq!(
+        fs::canonicalize(Path::new(diag["path"].as_str().unwrap())).unwrap(),
+        fs::canonicalize(&manifest_path).unwrap()
+    );
 
     // 5. Malformed WIT file -> WF9003 (exit 2).
     let bad_wit = root.join("bad-wit/v0.1");
@@ -854,8 +860,8 @@ fn foreign_package_lockfile_emits_wf1002_with_offending_file_path() {
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    let pkg_a = root.join("pkg-a/v0.1");
-    let pkg_b = root.join("pkg-b/v0.1");
+    let pkg_a = root.join("pkg-a").join("v0.1");
+    let pkg_b = root.join("pkg-b").join("v0.1");
     fs::create_dir_all(&pkg_a).unwrap();
     fs::create_dir_all(&pkg_b).unwrap();
     fs::write(
@@ -896,8 +902,8 @@ fn foreign_package_lockfile_emits_wf1002_with_offending_file_path() {
         assert_eq!(diags.len(), 1, "{subcmd}: {diags:?}");
         assert_eq!(diags[0]["code"], "WF1002", "{subcmd}: {diags:?}");
         assert_eq!(
-            diags[0]["path"],
-            beta_lock.display().to_string(),
+            fs::canonicalize(Path::new(diags[0]["path"].as_str().unwrap())).unwrap(),
+            fs::canonicalize(&beta_lock).unwrap(),
             "{subcmd} must name the foreign baseline file, not the current wire.lock"
         );
     }
@@ -933,8 +939,8 @@ fn foreign_package_lockfile_emits_wf1002_with_offending_file_path() {
         assert_eq!(diags.len(), 1, "{label}: {diags:?}");
         assert_eq!(diags[0]["code"], "WF1002", "{label}: {diags:?}");
         assert_eq!(
-            diags[0]["path"],
-            alpha_lock.display().to_string(),
+            fs::canonicalize(Path::new(diags[0]["path"].as_str().unwrap())).unwrap(),
+            fs::canonicalize(&alpha_lock).unwrap(),
             "{label}: {diags:?}"
         );
     }
