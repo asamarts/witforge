@@ -31,6 +31,10 @@ EOF
     cat >"${base}/docs/guide/ci.md" <<'EOF'
 - uses: asamarts/witforge@v9.9.9
 EOF
+    cat >"${base}/docs/guide/wiring.md" <<'EOF'
+cargo install witforge-cli --version 9.9.9 --locked
+VERSION=9.9.9
+EOF
     cat >"${base}/docs/design/action.md" <<'EOF'
 VERSION=9.9.9
 - uses: asamarts/witforge@v9.9.9 # pinned: installs witforge 9.9.9
@@ -102,6 +106,10 @@ expect_failure "the quickstart install version" docs/quickstart.md \
     's/9\.9\.9/9.9.8/'
 expect_failure "the CI guide Action reference" docs/guide/ci.md \
     's/9\.9\.9/9.9.8/'
+expect_failure "the wiring guide install version" docs/guide/wiring.md \
+    's/--version 9\.9\.9/--version 9.9.8/'
+expect_failure "the wiring guide VERSION example" docs/guide/wiring.md \
+    's/VERSION=9\.9\.9/VERSION=9.9.8/'
 expect_failure "the Action guide VERSION example" docs/design/action.md \
     's/VERSION=9\.9\.9/VERSION=9.9.8/'
 expect_failure "the Action guide reference" docs/design/action.md \

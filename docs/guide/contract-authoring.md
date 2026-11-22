@@ -57,6 +57,9 @@ Use named records instead of tuples and explicit IDs/records instead of resource
 
 ## Dependencies
 
-Place standard WIT dependencies under each version's `deps/` directory. All versions in one generated root must resolve an identical dependency graph. witforge emits referenced dependency bindings and glue with package-qualified identity.
+Place standard WIT dependencies under each version's `deps/` directory. All versions within one
+major must resolve an identical dependency graph; across majors, dependencies may be upgraded or
+changed and are scoped per major. witforge emits referenced dependency bindings and glue with
+package-qualified identity.
 
 See the [dependency specification](https://github.com/asamarts/witforge/blob/main/docs/design/dependencies.md) for layout and generated modules.

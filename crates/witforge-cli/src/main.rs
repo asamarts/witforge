@@ -3649,3 +3649,91 @@ fn reintroduced(key: &str, number: u32, against: bool) -> String {
         )
     }
 }
+
+#[cfg(test)]
+mod reference_doc_tests {
+    use super::*;
+
+    #[test]
+    fn reference_guide_documents_every_cli_command_option_and_config_key() {
+        let doc_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/guide/reference.md");
+        let doc = fs::read_to_string(&doc_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", doc_path.display()));
+        let root = Cli::command();
+
+        // Every global CLI flag on the root command must be documented in `docs/guide/reference.md`.
+        for arg in root.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                let needle = format!("`--{long}");
+                assert!(
+                    doc.contains(&needle),
+                    "docs/guide/reference.md does not document global flag `--{long}`"
+                );
+            }
+            if let Some(short) = arg.get_short() {
+                let needle = format!("`-{short}`");
+                assert!(
+                    doc.contains(&needle),
+                    "docs/guide/reference.md does not document global short flag `-{short}`"
+                );
+            }
+        }
+
+        // Every subcommand and every one of its non-global options must appear under its section.
+        let global_longs: BTreeSet<String> = root
+            .get_arguments()
+            .filter_map(|a| a.get_long().map(str::to_string))
+            .collect();
+        for sub in root.get_subcommands() {
+            let name = sub.get_name();
+            if name == "help" {
+                continue;
+            }
+            let heading = format!("### `witforge {name}`");
+            let (_, after) = doc
+                .split_once(&heading)
+                .unwrap_or_else(|| panic!("docs/guide/reference.md missing section `{heading}`"));
+            let section = after
+                .split("\n### ")
+                .next()
+                .and_then(|s| s.split("\n## ").next())
+                .unwrap_or(after);
+            for arg in sub.get_arguments() {
+                if let Some(long) = arg.get_long() {
+                    if global_longs.contains(long) || long == "help" || long == "version" {
+                        continue;
+                    }
+                    let needle = format!("`--{long}");
+                    assert!(
+                        section.contains(&needle),
+                        "docs/guide/reference.md section `{heading}` does not document `--{long}`"
+                    );
+                }
+            }
+        }
+
+        // Every `witforge.toml` key supported by `ConfigFile` / `ProjectConfig` / emitter structs.
+        for key in [
+            "`version`",
+            "`[project.<name>]`",
+            "`project.<name>.root`",
+            "`project.<name>.released`",
+            "`[project.<name>.rust]`",
+            "`project.<name>.rust.out`",
+            "`project.<name>.rust.serde`",
+            "`[project.<name>.proto]`",
+            "`project.<name>.proto.out`",
+            "`[project.<name>.schema]`",
+            "`project.<name>.schema.out`",
+            "`[project.<name>.glue]`",
+            "`project.<name>.glue.out`",
+            "`project.<name>.glue.plain-root`",
+            "`project.<name>.glue.proto-root`",
+        ] {
+            assert!(
+                doc.contains(key),
+                "docs/guide/reference.md does not document witforge.toml key {key}"
+            );
+        }
+    }
+}

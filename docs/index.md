@@ -19,10 +19,11 @@ It is a contract compiler, not a Wasm runtime, RPC framework, or replacement for
 1. [Choose whether witforge fits](guide/choosing-witforge.html).
 2. Follow the [quickstart](quickstart.html).
 3. Learn the [contract layout and supported WIT](guide/contract-authoring.html).
-4. Configure [generation](guide/generation.html).
+4. Configure [generation](guide/generation.html) and [wire a Rust crate](guide/wiring.md).
 5. Inspect [real generated output](guide/generated-output.html).
 6. Add [CI checks](guide/ci.html).
-7. Review [contract evolution](guide/evolution.html).
+7. Review [contract evolution](guide/evolution.html) and [release migrations](guide/migration.md).
+8. Look up flags and keys in the [CLI and configuration reference](guide/reference.md).
 
 ## Important boundaries
 

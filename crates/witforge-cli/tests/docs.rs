@@ -458,3 +458,128 @@ fn the_interpreter_refuses_what_it_does_not_understand() {
     assert_eq!(lines[1].words, ["witforge", "check", "a"]);
     fs::remove_dir_all(&directory).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn wiring_guide_crate_generates_compiles_and_roundtrips() {
+    let guide = document("docs/guide/wiring.md");
+    let (_, after_heading) = guide
+        .split_once("\n## Empty crate to compiling round trip")
+        .expect("wiring guide has `Empty crate to compiling round trip` section");
+    let (walkthrough, _) = after_heading
+        .split_once("\n## Module roots, dependencies")
+        .expect("wiring guide has `Module roots, dependencies` section after walkthrough");
+
+    let directory = scratch("wiring");
+    let mut toml_targets = [
+        "my-contract-crate/Cargo.toml",
+        "my-contract-crate/witforge.toml",
+    ]
+    .into_iter();
+    let mut rust_targets = [
+        "my-contract-crate/build.rs",
+        "my-contract-crate/src/lib.rs",
+        "my-contract-crate/src/main.rs",
+    ]
+    .into_iter();
+    let mut wit_count = 0usize;
+    let mut witforge_ran = 0usize;
+    let mut cargo_ran = 0usize;
+
+    // Share one per-rustc offline build cache under TMPDIR so prost/protox compile once.
+    let rustc_ver = Command::new("rustc").arg("-V").output().map_or_else(
+        |_| "rustc".to_string(),
+        |o| {
+            String::from_utf8_lossy(&o.stdout)
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect::<String>()
+        },
+    );
+    let shared_target = std::env::temp_dir().join(format!("wf-wiring-t-{rustc_ver}"));
+
+    for (language, body) in fenced_blocks(walkthrough) {
+        match language.as_str() {
+            "text" => {}
+            "toml" => {
+                let target = toml_targets
+                    .next()
+                    .expect("unexpected extra toml block in wiring walkthrough");
+                fs::write(directory.join(target), body).unwrap();
+            }
+            "wit" => {
+                fs::write(
+                    directory.join("my-contract-crate/wit/v0.1/contract.wit"),
+                    body,
+                )
+                .unwrap();
+                wit_count += 1;
+            }
+            "rust" => {
+                let target = rust_targets
+                    .next()
+                    .expect("unexpected extra rust block in wiring walkthrough");
+                fs::write(directory.join(target), body).unwrap();
+            }
+            "sh" => {
+                let trimmed = body.trim();
+                if trimmed == "cargo run --manifest-path my-contract-crate/Cargo.toml" {
+                    // Copy the workspace lockfile so the guide crate compiles offline with the
+                    // repository's locked prost 0.14 / protox 0.10 dependencies.
+                    let crate_dir = directory.join("my-contract-crate");
+                    fs::copy(
+                        repository().join("Cargo.lock"),
+                        crate_dir.join("Cargo.lock"),
+                    )
+                    .unwrap();
+                    let clippy = Command::new(env!("CARGO"))
+                        .args(["clippy", "--offline", "--all-targets", "--manifest-path"])
+                        .arg(crate_dir.join("Cargo.toml"))
+                        .args(["--", "-D", "warnings"])
+                        .env("CARGO_TARGET_DIR", &shared_target)
+                        .env("CARGO_TERM_COLOR", "never")
+                        .env_remove("RUSTFLAGS")
+                        .output()
+                        .unwrap();
+                    assert!(
+                        clippy.status.success(),
+                        "wiring guide crate failed clippy:\nstdout:\n{}\nstderr:\n{}",
+                        String::from_utf8_lossy(&clippy.stdout),
+                        String::from_utf8_lossy(&clippy.stderr)
+                    );
+                    let run = Command::new(env!("CARGO"))
+                        .args(["run", "--offline", "--manifest-path"])
+                        .arg(crate_dir.join("Cargo.toml"))
+                        .env("CARGO_TARGET_DIR", &shared_target)
+                        .env("CARGO_TERM_COLOR", "never")
+                        .env_remove("RUSTFLAGS")
+                        .output()
+                        .unwrap();
+                    assert!(
+                        run.status.success(),
+                        "wiring guide crate failed cargo run:\nstdout:\n{}\nstderr:\n{}",
+                        String::from_utf8_lossy(&run.stdout),
+                        String::from_utf8_lossy(&run.stderr)
+                    );
+                    cargo_ran += 1;
+                } else {
+                    witforge_ran += run_block(&directory, &body, &mut no_comments);
+                }
+            }
+            other => panic!("unexpected `{other}` block in wiring guide walkthrough"),
+        }
+    }
+
+    assert!(
+        toml_targets.next().is_none(),
+        "missing toml block in wiring guide"
+    );
+    assert!(
+        rust_targets.next().is_none(),
+        "missing rust block in wiring guide"
+    );
+    assert_eq!(wit_count, 1);
+    assert_eq!(witforge_ran, 4);
+    assert_eq!(cargo_ran, 1);
+    fs::remove_dir_all(&directory).unwrap();
+}
