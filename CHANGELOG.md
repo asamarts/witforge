@@ -8,6 +8,57 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Adopter & contributor documentation and dual GitHub/Pages link checking (`W10-091`, `W10-092`):**
+  - Added [`docs/guide/wiring.md`](docs/guide/wiring.md) (empty crate to compiling `prost`/`protox`
+    round trip, verified by `wiring_guide_crate_generates_compiles_and_roundtrips`, prebuilt
+    archive checksum/attestation verification, and `--lock`/`--released`/`released` options),
+    [`docs/guide/reference.md`](docs/guide/reference.md) (complete CLI & `witforge.toml`
+    reference verified against `Cli::command()`), and
+    [`docs/guide/migration.md`](docs/guide/migration.md) (per-release generated-output migration
+    index linking to `CHANGELOG.md` sections).
+  - Added [`CONTRIBUTING.md`](CONTRIBUTING.md), GitHub issue forms (`.github/ISSUE_TEMPLATE/`),
+    and `.github/PULL_REQUEST_TEMPLATE.md`; enabled `jekyll-relative-links` in `docs/_config.yml`,
+    converted all internal `docs/` links to `.md`, and added dual GitHub/Pages link and anchor
+    verification (`documentation_links_and_anchors_resolve_on_github_and_pages`).
+- **Structure-aware fuzz target, tracked seed corpus, and asserted invariants (`W10-089`):**
+  - Added a tracked fixture-derived seed corpus under `fuzz/seeds/`, a WIT keyword dictionary
+    (`fuzz/wit.dict`), and the structure-aware `structured-contract` target exercising one-letter
+    and upper-case names, multiple `.wit` files, and `deps/` packages.
+  - Updated `wit-package` and `structured-contract` to assert full compiler invariants (generation
+    success across all four emitters, determinism, canonical/idempotent lockfiles, empty
+    self-diff, and two-version conversion) and added the matching fixed-seed property test
+    `structured_contracts_satisfy_fuzz_invariants` to the stable suite.
+- **GitHub Action ref-pinned versions, `against`/`format`/`sarif-file`/`binary`, annotations, and
+  `failed-command` (`W10-086`):**
+  - Non-tag refs (commit SHAs, branches, floating tags, and local `./`) now install the workspace
+    version from `Cargo.toml` in the Action's own tree instead of silently floating to `latest`
+    (`latest` is installed only when `version: latest` is passed explicitly; missing assets fail
+    naming `version`).
+  - Added `against`, `format` (`human`/`json`/`sarif`), `sarif-file`, and `binary` inputs plus
+    `failed-command` and `sarif-file` outputs, pre-download input validation, bounded retries on
+    transient network/5xx errors (never retrying 4xx or checksum mismatches), archive/checksum
+    scratch cleanup, and GitHub workflow annotations (`::error file=...,line=...,col=...::...`)
+    on failing checks.
+- **Atomic releases, SLSA build provenance, Linux arm64, archive licenses, and crate metadata
+  (`W10-087`, `W10-090`):**
+  - Reordered `.github/workflows/release.yml` so platform binaries (including `linux/arm64` /
+    `aarch64-unknown-linux-gnu`) are built, attested via `actions/attest-build-provenance`, and
+    smoke-tested from workflow artifacts **before** publishing crates (using `--no-verify` after
+    verifying `.crate` SHA-256 digests against the unprivileged `verify` job) or creating a
+    draft-first GitHub release without `--clobber`. The Action verifies build provenance with
+    `gh attestation verify` on releases `0.7.0+` before extracting.
+  - Included `LICENSE-APACHE`, `LICENSE-MIT`, and `README.md` in every release archive, added
+    `homepage`/`documentation`/`[package.metadata.binstall]` crate metadata, excluded `tests/`
+    from the published `witforge` library crate, enabled GitHub Private Vulnerability Reporting,
+    documented the threat model and download verification in `SECURITY.md`, and ignored local-only
+    paths (`/.private/`, `/.github-account`) in `.gitignore`.
+- **CI concurrency, weekly schedule, pinned lint toolchain, and benchmark ceilings (`W10-088`):**
+  - Grouped `main` CI runs per commit so no commit is cancelled while pending, pinned the gating
+    Rust lint toolchain (`1.100.0`) with a weekly scheduled `floating-stable` + `fuzz-smoke` +
+    `security` run, removed retired self-hosted runner leftovers and unused `ci/deny.toml`
+    licenses, made every `ci/*.sh` script default scratch to `${TMPDIR:-$HOME/.tmp}`, cached
+    historical `buf` baseline binaries in manual CI only, and tightened `tests/bench.rs` release
+    ceilings to ~10x hosted-runner baselines.
 - **Protobuf binary decode-compatibility view in `diff` (`W10-097`):**
   - Added a directional **decode** compatibility view (`new_reads_old` and `old_reads_new`) to
     `witforge diff`, modelling two processes speaking the same major's protobuf schema over binary
