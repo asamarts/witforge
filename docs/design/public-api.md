@@ -26,7 +26,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::glue` | `HEADER`, `plan`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
 | `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root`, `absolute` |
 | `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `DiffAnalysis`, `compare`, `compare_with_impacts`, `compare_with_locations` |
-| `diagnostic` | `codes`, `CodeInfo`, `CATALOG`, `lookup`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity` |
+| `diagnostic` | `codes`, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity` |
 | `freeze` | `FreezeOptions`, `FreezeReport`, `check_root` |
 | `subset` | `Violation`, `check`, `check_diagnostics`, `check_located_diagnostics` |
 
@@ -68,7 +68,9 @@ contract, not an item exported by the `witforge` library; there is no
 
 ## CLI commands
 
-The stable 1.0 CLI surface (every command accepts `--format human|json|sarif`):
+The stable 1.0 CLI surface (every command accepts `--format human|json|sarif` and `-q`/`--quiet`;
+`--version` prints the bare version on an exact clean release tag or tarball build and adds the
+short Git commit and `-dirty` suffix on development builds):
 
 | Command | Purpose | Key options |
 |---|---|---|
@@ -81,8 +83,10 @@ The stable 1.0 CLI surface (every command accepts `--format human|json|sarif`):
 | `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge new-version [<WIT_ROOT>]` | Create the next minor (or `--major`) version directory from the latest version | `--major`, `--config`, `--no-config`, `--project` |
 | `witforge release <WIT_DIR>` | Validate a version directory and append it to `released` | `--released`, `--config`, `--no-config`, `--project` |
-| `witforge diff <OLD> <NEW>` | Compare two version directories or WIT roots | `--json`, `--check` |
+| `witforge diff <OLD> <NEW>` | Compare two version directories or WIT roots | `--json`, `--check[=VIEWS]` |
 | `witforge freeze [<WIT_ROOT>]` | Verify released directories have not changed in Git history | `--base`, `--config`, `--no-config`, `--project` |
+| `witforge completions <SHELL>` | Print shell completions for `bash`, `zsh`, or `fish` | — |
+| `witforge explain <CODE>` | Print the catalogue explanation and documentation URL for a diagnostic code | — |
 
 Config-aware commands discover the nearest `witforge.toml` upwards (stopping at `.git` or
 filesystem root) when required paths are omitted; `--no-config` disables discovery.

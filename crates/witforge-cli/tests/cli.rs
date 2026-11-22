@@ -4172,3 +4172,348 @@ fn whole_root_check_new_version_and_release_workflow_cover_gaps_drafts_and_major
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn build_identity_quiet_mode_completions_and_explain() {
+    // 1. `--version` carries commit identity on non-release-tag workspace builds and no timestamp.
+    let version = witforge().arg("--version").output().unwrap();
+    assert!(version.status.success(), "{version:?}");
+    let version_text = String::from_utf8_lossy(&version.stdout);
+    assert!(
+        version_text.contains(env!("CARGO_PKG_VERSION")),
+        "{version_text}"
+    );
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let head_sha = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(manifest_dir)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+    let tags = Command::new("git")
+        .args(["tag", "--points-at", "HEAD"])
+        .current_dir(manifest_dir)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    let on_release_tag = tags
+        .lines()
+        .any(|t| t.trim() == format!("v{}", env!("CARGO_PKG_VERSION")));
+    if let Some(sha) = head_sha
+        && !sha.is_empty()
+        && !on_release_tag
+    {
+        assert!(
+            version_text.contains(&format!("({sha}")),
+            "expected commit `{sha}` in `--version`, got: {version_text}"
+        );
+    }
+    assert!(
+        !version_text.contains("UTC")
+            && !version_text.contains("T0")
+            && !version_text.contains("T1")
+            && !version_text.contains("T2"),
+        "version must not embed a timestamp: {version_text}"
+    );
+
+    // 2. `--quiet` / `-q` suppresses human notes and summaries while preserving errors, exit codes,
+    // and JSON/SARIF output verbatim.
+    let base = std::env::temp_dir().join(format!("witforge-w10-085-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit = base.join("wit");
+    let v01 = wit.join("v0.1");
+    fs::create_dir_all(&v01).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:quiet@0.1.0;\ninterface types { record item { id: u32, old: string } }\n",
+    )
+    .unwrap();
+
+    // `lock --first --quiet` suppresses human notes on stdout.
+    let lock_quiet = witforge()
+        .args(["lock", v01.to_str().unwrap(), "--first", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(lock_quiet.status.success(), "{lock_quiet:?}");
+    assert!(
+        lock_quiet.stdout.is_empty(),
+        "quiet lock must suppress notes: {}",
+        String::from_utf8_lossy(&lock_quiet.stdout)
+    );
+
+    // `lock --first -q --format json` and `--format sarif` keep every diagnostic note intact.
+    fs::remove_file(v01.join("wire.lock")).unwrap();
+    let lock_json_loud = witforge()
+        .args(["lock", v01.to_str().unwrap(), "--first", "--format", "json"])
+        .output()
+        .unwrap();
+    fs::remove_file(v01.join("wire.lock")).unwrap();
+    let lock_json_quiet = witforge()
+        .args([
+            "lock",
+            v01.to_str().unwrap(),
+            "--first",
+            "-q",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(lock_json_quiet.stdout, lock_json_loud.stdout);
+    let lock_json: serde_json::Value = serde_json::from_slice(&lock_json_quiet.stdout).unwrap();
+    assert!(
+        lock_json["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "WF1201"),
+        "{lock_json}"
+    );
+
+    fs::remove_file(v01.join("wire.lock")).unwrap();
+    let lock_sarif_loud = witforge()
+        .args([
+            "lock",
+            v01.to_str().unwrap(),
+            "--first",
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(v01.join("wire.lock")).unwrap();
+    let lock_sarif_quiet = witforge()
+        .args([
+            "lock",
+            v01.to_str().unwrap(),
+            "--first",
+            "--quiet",
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(lock_sarif_quiet.stdout, lock_sarif_loud.stdout);
+
+    // `release --quiet` and `new-version --quiet` suppress stdout summaries.
+    let rel_q = witforge()
+        .args(["release", v01.to_str().unwrap(), "--quiet"])
+        .output()
+        .unwrap();
+    assert!(rel_q.status.success(), "{rel_q:?}");
+    assert!(rel_q.stdout.is_empty(), "{rel_q:?}");
+    let nv_q = witforge()
+        .args(["new-version", wit.to_str().unwrap(), "-q"])
+        .output()
+        .unwrap();
+    assert!(nv_q.status.success(), "{nv_q:?}");
+    assert!(nv_q.stdout.is_empty(), "{nv_q:?}");
+
+    // Modify v0.2 to drop `old` (triggers WF3003 conversion-impact note) and leave unstamped to
+    // verify `check --quiet` STILL prints errors on stderr and exits 1.
+    let v02 = wit.join("v0.2");
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:quiet@0.2.0;\ninterface types { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    let check_err_q = witforge()
+        .args(["check", v02.to_str().unwrap(), "--quiet"])
+        .output()
+        .unwrap();
+    assert_eq!(check_err_q.status.code(), Some(1), "{check_err_q:?}");
+    assert!(
+        !check_err_q.stderr.is_empty(),
+        "quiet mode must never suppress errors"
+    );
+
+    assert!(
+        witforge()
+            .args([
+                "lock",
+                v02.to_str().unwrap(),
+                "--against",
+                v01.join("wire.lock").to_str().unwrap(),
+                "-q",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // `diff --quiet` omits `summary:`, `result:`, and `note:` while keeping change lines and
+    // preserving `--check` errors on stderr and exit 1.
+    let diff_q = witforge()
+        .args([
+            "diff",
+            v01.to_str().unwrap(),
+            v02.to_str().unwrap(),
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    assert!(diff_q.status.success(), "{diff_q:?}");
+    let diff_q_out = String::from_utf8_lossy(&diff_q.stdout);
+    assert!(diff_q_out.contains("types/item.old"), "{diff_q_out}");
+    assert!(!diff_q_out.contains("summary:"), "{diff_q_out}");
+    assert!(!diff_q_out.contains("result:"), "{diff_q_out}");
+    assert!(!diff_q_out.contains("note:"), "{diff_q_out}");
+
+    let diff_q_check = witforge()
+        .args([
+            "diff",
+            v01.to_str().unwrap(),
+            v02.to_str().unwrap(),
+            "--check",
+            "-q",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(diff_q_check.status.code(), Some(1), "{diff_q_check:?}");
+    assert!(
+        String::from_utf8_lossy(&diff_q_check.stderr).contains("--check failed"),
+        "{diff_q_check:?}"
+    );
+
+    // `diff --json --quiet` and `diff --format sarif --quiet` are byte-identical to non-quiet runs.
+    let diff_json_loud = witforge()
+        .args([
+            "diff",
+            v01.to_str().unwrap(),
+            v02.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let diff_json_quiet = witforge()
+        .args([
+            "diff",
+            v01.to_str().unwrap(),
+            v02.to_str().unwrap(),
+            "--json",
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(diff_json_quiet.stdout, diff_json_loud.stdout);
+    let diff_sarif_loud = witforge()
+        .args([
+            "diff",
+            v01.to_str().unwrap(),
+            v02.to_str().unwrap(),
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .unwrap();
+    let diff_sarif_quiet = witforge()
+        .args([
+            "diff",
+            v01.to_str().unwrap(),
+            v02.to_str().unwrap(),
+            "--format",
+            "sarif",
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(diff_sarif_quiet.stdout, diff_sarif_loud.stdout);
+
+    // 3. `witforge completions bash|zsh|fish` covers all commands, global flags, and enum values.
+    let expected_subcommands = [
+        "check",
+        "lock",
+        "rust",
+        "proto",
+        "schema",
+        "glue",
+        "generate",
+        "new-version",
+        "release",
+        "diff",
+        "freeze",
+        "completions",
+        "explain",
+    ];
+    for shell in ["bash", "zsh", "fish"] {
+        let out = witforge().args(["completions", shell]).output().unwrap();
+        assert!(out.status.success(), "{shell}: {out:?}");
+        let script = String::from_utf8(out.stdout).unwrap();
+        assert!(!script.is_empty(), "{shell} empty");
+        assert!(!script.contains('\r'), "{shell} must be LF-only");
+        for sub in expected_subcommands {
+            assert!(
+                script.contains(sub),
+                "{shell} completion missing subcommand `{sub}`"
+            );
+        }
+        for token in [
+            "format", "quiet", "human", "json", "sarif", "bash", "zsh", "fish",
+        ] {
+            assert!(
+                script.contains(token),
+                "{shell} completion missing `{token}`"
+            );
+        }
+        #[cfg(unix)]
+        if shell == "bash" {
+            let syntax = Command::new("bash").args(["-n", "-c", &script]).output();
+            if let Ok(syntax) = syntax {
+                assert!(
+                    syntax.status.success(),
+                    "generated bash completion failed `bash -n`: {syntax:?}"
+                );
+            }
+        }
+    }
+    let bad_shell = witforge()
+        .args(["completions", "powershell", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad_shell.status.code(), Some(2), "{bad_shell:?}");
+    let bad_shell_json: serde_json::Value = serde_json::from_slice(&bad_shell.stdout).unwrap();
+    assert_eq!(bad_shell_json["diagnostics"][0]["code"], "WF9001");
+
+    // 4. `witforge explain <CODE>` works for every code in CATALOG (case-insensitively) and
+    // refuses unknown codes with exit 2 / WF9001.
+    for info in witforge::diagnostic::CATALOG {
+        let out = witforge().args(["explain", info.code]).output().unwrap();
+        assert!(out.status.success(), "{}: {out:?}", info.code);
+        let text = String::from_utf8_lossy(&out.stdout);
+        let expected_meaning = witforge::diagnostic::explanation(info.code).unwrap();
+        assert!(text.contains(info.code), "{}: {text}", info.code);
+        assert!(text.contains(expected_meaning), "{}: {text}", info.code);
+        assert!(
+            text.contains(&witforge::diagnostic::help_uri(info.code)),
+            "{}: {text}",
+            info.code
+        );
+        if let Some(prior) = info.supersedes {
+            assert!(
+                text.contains(&format!("Prior code: {prior}")),
+                "{}: {text}",
+                info.code
+            );
+        }
+    }
+    let lower = witforge().args(["explain", "wf1015"]).output().unwrap();
+    assert!(lower.status.success(), "{lower:?}");
+    assert!(
+        String::from_utf8_lossy(&lower.stdout).contains("WF1015 (error)"),
+        "{lower:?}"
+    );
+    let unknown = witforge()
+        .args(["explain", "WF9999", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(unknown.status.code(), Some(2), "{unknown:?}");
+    let unknown_json: serde_json::Value = serde_json::from_slice(&unknown.stdout).unwrap();
+    assert_eq!(unknown_json["diagnostics"][0]["code"], "WF9001");
+
+    fs::remove_dir_all(&base).unwrap();
+}

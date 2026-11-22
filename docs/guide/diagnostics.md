@@ -6,7 +6,8 @@ title: Diagnostic codes
 # Diagnostic codes
 
 Every `witforge` command emits structured diagnostics with `--format json` or `--format sarif`.
-SARIF rules link directly to the per-code anchors on this page.
+SARIF rules link directly to the per-code anchors on this page, and `witforge explain <CODE>`
+prints any code's catalogue entry offline from the CLI.
 
 Positions use **1-based lines and 1-based UTF-16 code-unit columns** (the SARIF 2.1.0 default).
 Physical paths in JSON `file` fields and SARIF `artifactLocation.uri` are repository-relative
@@ -319,11 +320,12 @@ between adjacent versions (such as adding a non-defaulted record field or retypi
 
 ### WF3001
 
-**Severity:** `error` (with `--check`) or `warning` (without `--check`)
+**Severity:** `error` (breaking a gated view under `--check[=<views>]`) or `warning` (un-gated)
 
 `witforge diff` found a wire-, source-, or generated-API-breaking change. Without `--check`,
-`diff` exits `0` and emits `WF3001` at level `warning`; with `--check`, `diff` exits `1` and
-emits `WF3001` at level `error`.
+`diff` exits `0` and emits `WF3001` at level `warning`; with `--check` or `--check=<views>`,
+`diff` exits `1` and emits `WF3001` at level `error` for changes breaking a gated view (and
+`warning` for breaking changes outside the gated views).
 
 ### WF3002
 

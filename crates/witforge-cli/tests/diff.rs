@@ -1426,3 +1426,136 @@ fn diff_remedy_messages_quote_spaces_and_run_as_printed() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn diff_check_gates_selected_views_and_rejects_empty_or_unknown_views() {
+    let root = workspace("per-view-check");
+    // Case 1: Wire-compatible, source/API-breaking addition (`option<string>` record field).
+    contract(
+        &root,
+        "add/v0.1",
+        "package example:views@0.1.0;\ninterface types { record item { id: u64 } }\n",
+    );
+    contract(
+        &root,
+        "add/v0.2",
+        "package example:views@0.2.0;\ninterface types { record item { id: u64, note: option<string> } }\n",
+    );
+    let add_old = root.join("add/v0.1");
+    let add_new = root.join("add/v0.2");
+    lock(&root, "add/v0.1");
+    fs::copy(add_old.join("wire.lock"), add_new.join("wire.lock")).unwrap();
+    lock_against(&root, "add/v0.2", "add/v0.1");
+
+    // `--check=wire` passes (exit 0) and SARIF emits warning (never error) on exit 0.
+    let wire_ok = diff(&add_old, &add_new, &["--check=wire"]);
+    assert!(wire_ok.status.success(), "{wire_ok:?}");
+    let wire_sarif = diff(&add_old, &add_new, &["--check=wire", "--format", "sarif"]);
+    assert!(wire_sarif.status.success(), "{wire_sarif:?}");
+    let sarif_val: serde_json::Value = serde_json::from_slice(&wire_sarif.stdout).unwrap();
+    let results = sarif_val["runs"][0]["results"].as_array().unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|r| r["ruleId"] == "WF3001" && r["level"] == "warning"),
+        "{results:?}"
+    );
+    assert!(
+        results.iter().all(|r| r["level"] != "error"),
+        "passing --check=wire must not emit error-level SARIF results: {results:?}"
+    );
+
+    // `--check` before positional args still parses OLD/NEW cleanly without swallowing OLD.
+    let before_pos = run(&[
+        "diff",
+        "--check=wire",
+        &add_old.display().to_string(),
+        &add_new.display().to_string(),
+    ]);
+    assert!(before_pos.status.success(), "{before_pos:?}");
+    let bare_before_pos = run(&[
+        "diff",
+        "--check",
+        &add_old.display().to_string(),
+        &add_new.display().to_string(),
+    ]);
+    assert_eq!(
+        bare_before_pos.status.code(),
+        Some(1),
+        "{bare_before_pos:?}"
+    );
+
+    // `--check=source`, `--check=api`, `--check=wire,api`, and bare `--check` all fail (exit 1).
+    for flag in [
+        "--check",
+        "--check=source",
+        "--check=api",
+        "--check=wire,api",
+    ] {
+        let out = diff(&add_old, &add_new, &[flag]);
+        assert_eq!(out.status.code(), Some(1), "{flag}: {out:?}");
+    }
+    let api_sarif = diff(&add_old, &add_new, &["--check=api", "--format", "sarif"]);
+    assert_eq!(api_sarif.status.code(), Some(1), "{api_sarif:?}");
+    let api_val: serde_json::Value = serde_json::from_slice(&api_sarif.stdout).unwrap();
+    assert!(
+        api_val["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["ruleId"] == "WF3001" && r["level"] == "error"),
+        "{api_val}"
+    );
+
+    // Case 2: Wire-only breaking change (renumbering fields, source & API unchanged).
+    contract(
+        &root,
+        "renum/v0.1",
+        "package example:renum@0.1.0;\ninterface types { record r { a: u8, b: u8 } }\n",
+    );
+    contract(
+        &root,
+        "renum/v0.2",
+        "package example:renum@0.2.0;\ninterface types { record r { a: u8, b: u8 } }\n",
+    );
+    let r_old = root.join("renum/v0.1");
+    let r_new = root.join("renum/v0.2");
+    lock(&root, "renum/v0.1");
+    fs::copy(r_old.join("wire.lock"), r_new.join("wire.lock")).unwrap();
+    let swapped = fs::read_to_string(r_new.join("wire.lock"))
+        .unwrap()
+        .replace(
+            "example:renum/types/r.a = 1 field u8",
+            "example:renum/types/r.a = 2 field u8",
+        )
+        .replace(
+            "example:renum/types/r.b = 2 field u8",
+            "example:renum/types/r.b = 1 field u8",
+        );
+    fs::write(r_new.join("wire.lock"), swapped).unwrap();
+
+    let renum_wire = diff(&r_old, &r_new, &["--check=wire"]);
+    assert_eq!(renum_wire.status.code(), Some(1), "{renum_wire:?}");
+    assert!(
+        String::from_utf8_lossy(&renum_wire.stderr).contains("gated view(s) (wire)"),
+        "{renum_wire:?}"
+    );
+    let renum_source_api = diff(&r_old, &r_new, &["--check=source,api"]);
+    assert!(renum_source_api.status.success(), "{renum_source_api:?}");
+
+    // Case 3: Empty set and unknown views are usage errors (exit 2, WF9001).
+    for bad in [
+        "--check=",
+        "--check=bogus",
+        "--check=wire,",
+        "--check=,wire",
+    ] {
+        let out = diff(&add_old, &add_new, &[bad, "--format", "json"]);
+        assert_eq!(out.status.code(), Some(2), "{bad}: {out:?}");
+        let val: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(val["diagnostics"][0]["code"], "WF9001", "{bad}: {val}");
+    }
+
+    fs::remove_dir_all(&root).unwrap();
+}

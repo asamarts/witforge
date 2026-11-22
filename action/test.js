@@ -149,6 +149,26 @@ test('incomplete or unknown inputs are refused', () => {
     diffCheck: 'false',
   });
   assert.deepEqual(noCheck, [['witforge', 'diff', 'v0.1', 'v0.2']]);
+  assert.deepEqual(
+    buildCommands('witforge', {
+      diffOld: 'v0.1',
+      diffNew: 'v0.2',
+      diffCheck: 'wire',
+    }),
+    [['witforge', 'diff', 'v0.1', 'v0.2', '--check=wire']],
+  );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      diffOld: 'v0.1',
+      diffNew: 'v0.2',
+      diffCheck: 'wire, api',
+    }),
+    [['witforge', 'diff', 'v0.1', 'v0.2', '--check=wire,api']],
+  );
+  assert.throws(
+    () => buildCommands('witforge', { diffOld: 'v0.1', diffNew: 'v0.2', diffCheck: ',,,' }),
+    /diff-check view list must not be empty/,
+  );
   assert.throws(() => buildCommands('witforge', { freeze: 'true' }), /freeze: true requires config/);
 });
 

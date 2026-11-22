@@ -480,6 +480,161 @@ pub fn lookup(code: &str) -> Option<&'static CodeInfo> {
         .map(|index| &CATALOG[index])
 }
 
+/// Return the full normative explanation for a stable diagnostic `code`.
+///
+/// This is the single source of truth shared by `witforge explain <CODE>` and the
+/// `docs/design/diagnostics.md` catalogue table.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn explanation(code: &str) -> Option<&'static str> {
+    match code {
+        codes::SUBSET_UNSUPPORTED => Some(
+            "Unrecognised WIT construct outside the supported subset (legacy umbrella code; \
+             specific subset rules now emit `WF1010`–`WF1030`).",
+        ),
+        codes::LOCKFILE_WRONG_PACKAGE => Some(
+            "A lockfile belongs to another package. The path names the lockfile holding the \
+             foreign key.",
+        ),
+        codes::IDENTIFIER_COLLISION => Some(
+            "Two names in one scope collide (differ only in ASCII letter case, including against \
+             a reserved lockfile member, or map to one generated identifier, module, filename, \
+             accessor, or reserved target name).",
+        ),
+        codes::SUBSET_PACKAGE_VERSION => {
+            Some("Root contract package version is missing or not `<major>.<minor>.0`.")
+        }
+        codes::SUBSET_NESTED_PACKAGE => Some(
+            "Nested `package` block inside a version directory; dependencies must live under \
+             `deps/`.",
+        ),
+        codes::SUBSET_DEPENDENCY_VERSION => Some(
+            "Dependency package under `deps/` has a missing or unsupported version (must be \
+             `<major>.<minor>.0`).",
+        ),
+        codes::SUBSET_DEPENDENCY_IDENTITY => Some(
+            "Duplicate dependency package identity or dependency sharing the root package's \
+             `namespace:name`.",
+        ),
+        codes::SUBSET_ANNOTATION => Some(
+            "Unsupported WIT annotation (such as `@external-id`; only `@since`, `@unstable`, and \
+             `@deprecated` are accepted).",
+        ),
+        codes::SUBSET_RESOURCE => {
+            Some("Resources and handles (`resource`, `borrow<T>`, `own<T>`) are not supported.")
+        }
+        codes::SUBSET_FUTURE_OR_STREAM => Some("`future` and `stream` types are not supported."),
+        codes::SUBSET_CHAR => Some("`char` primitive is not supported; use `string`."),
+        codes::SUBSET_ERROR_CONTEXT => Some("`error-context` is not supported."),
+        codes::SUBSET_TUPLE => Some("Tuples are not supported; use a named record."),
+        codes::SUBSET_MAP => Some("`map` is not supported; use `list<record>`."),
+        codes::SUBSET_FIXED_LENGTH_LIST => {
+            Some("Fixed-length lists are not supported; use `list`.")
+        }
+        codes::SUBSET_EMPTY_RECORD => Some("Empty records are not supported."),
+        codes::SUBSET_ASYNC_FUNCTION => Some("`async` functions are not supported."),
+        codes::SUBSET_ACCESSOR => Some("`get` and `set` accessors are not supported."),
+        codes::SUBSET_INLINE_INTERFACE => Some("Inline interfaces in a world are not supported."),
+        codes::SUBSET_NAMED_WORLD_INTERFACE => {
+            Some("Named (renamed) world interface imports or exports are not supported.")
+        }
+        codes::SUBSET_WORLD_FUNCTION => {
+            Some("Functions defined directly in a world are not supported.")
+        }
+        codes::SUBSET_WORLD_TYPE => Some("Types defined directly in a world are not supported."),
+        codes::SUBSET_WORLD_FOREIGN_INTERFACE => {
+            Some("World imports or exports an interface with no package or from outside `deps/`.")
+        }
+        codes::SUBSET_TYPE_LIMIT => Some(
+            "Type nesting, alias chain, canonical type length, synthesized wrapper name length, \
+             or canonical type cycle limit exceeded.",
+        ),
+        codes::DIRECTORY_VERSION_MISMATCH => Some(
+            "Version directory name (`v<major>.<minor>`) disagrees with its declared package \
+             version (`<major>.<minor>.0`).",
+        ),
+        codes::PACKAGE_MISMATCH => Some(
+            "Versions in a WIT root or `diff` endpoints declare different package identities \
+             (`namespace:name`).",
+        ),
+        codes::DEPENDENCY_GRAPH_MISMATCH => Some(
+            "Pinned dependency graphs differ across versions, `diff` endpoints, or `--against` \
+             baseline.",
+        ),
+        codes::LOCKFILE_ERROR => Some(
+            "Lockfile continuity, drift evaluation, order-section, or baseline-policy violation.",
+        ),
+        codes::LOCKFILE_MISSING_NUMBER => Some("A live member has no wire number."),
+        codes::LOCKFILE_UNRESERVED_REMOVAL => {
+            Some("A removed member is not reserved in the current lockfile.")
+        }
+        codes::LOCKFILE_REINTRODUCED => {
+            Some("A removed member was reintroduced under its reserved name/number.")
+        }
+        codes::LOCKFILE_STALE_DRAFT => Some("A stale draft entry remains in the lockfile."),
+        codes::LOCKFILE_CHANGED_DRAFT => Some("A draft member changed kind or canonical type."),
+        codes::LOCKFILE_NON_CANONICAL => Some("The lockfile is not in canonical `lock` form."),
+        codes::LOCKFILE_BASELINE_NO_DEPS => Some(
+            "The pinned dependency graph cannot be compared because the baseline is not a \
+             version-directory lockfile.",
+        ),
+        codes::LOCKFILE_RESTORABLE_DRAFT => {
+            Some("A draft removal can be restored; `lock --against` would un-reserve the member.")
+        }
+        codes::RELEASE_FREEZE_VIOLATION => Some(
+            "A released version directory changed after release, lost a manifest entry, or failed \
+             release-freeze hygiene (`witforge freeze`).",
+        ),
+        codes::LOCK_ADDED => Some("`lock` added a member."),
+        codes::LOCK_RESERVED => Some("`lock` reserved a removed member."),
+        codes::LOCK_DROPPED => Some("`lock` dropped a stale draft."),
+        codes::LOCK_UPDATED => Some("`lock` updated a draft's kind or type."),
+        codes::LOCK_RESTORED => Some("`lock` restored a draft removal."),
+        codes::GENERATED_DRIFT => Some(
+            "A generated file is missing, changed, extra, unowned, or otherwise refuses `--check`.",
+        ),
+        codes::CONVERSION_REFUSED => Some(
+            "Version-to-version Rust conversion generation refused an incompatible evolution \
+             between adjacent versions.",
+        ),
+        codes::DIFF_BREAKING => {
+            Some("`diff` found a wire-, source-, or generated-API-breaking change.")
+        }
+        codes::DIFF_COMPATIBLE => Some("`diff` found a compatible change."),
+        codes::DIFF_CONVERSION_IMPACT => Some(
+            "`diff` found a record whose generated new-to-old conversion is guaranteed to fail. \
+             The path is the missing member.",
+        ),
+        codes::DIFF_CONVERSION_BLOCKER => Some(
+            "`diff` found a non-defaulted required record field addition or retyped member that \
+             makes conversion generation refuse. The path is the affected member.",
+        ),
+        codes::INTERNAL_ERROR => Some(
+            "Internal compiler error (unexpected invariant failure only; never emitted for usage, \
+             I/O, parse, or guard errors).",
+        ),
+        codes::CLI_USAGE => Some(
+            "Command-line usage or argument error (invalid flags, missing required options, WIT \
+             root passed to `check`/`lock`, reversed `diff` endpoints, invalid module root).",
+        ),
+        codes::IO_ERROR => Some(
+            "Filesystem or I/O error (missing file, directory, or lockfile; permission denied; \
+             unreadable path; no version directories under root; write failure).",
+        ),
+        codes::PARSE_ERROR => Some(
+            "Parse or format error (invalid WIT source or resolution error, malformed `wire.lock`, \
+             malformed `released` manifest, or invalid `witforge.toml` / BOM).",
+        ),
+        codes::GUARD_REFUSED => Some(
+            "Safety guard or freeze-policy refusal (locking or writing into a released directory, \
+             symlinked version directory or symlink in a released directory, \
+             overlapping/unowned/foreign/symlink output path, non-canonical or duplicate `v...` \
+             entry, or unexpanded shell path in `witforge.toml`).",
+        ),
+        _ => None,
+    }
+}
+
 /// The severity of a structured diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -669,6 +824,10 @@ mod tests {
                 info.code
             );
             assert_eq!(lookup(info.code), Some(info));
+            let text = explanation(info.code).unwrap_or_else(|| {
+                panic!("missing explanation for {}", info.code);
+            });
+            assert!(!text.is_empty(), "empty explanation for {}", info.code);
             if let Some(old) = info.supersedes {
                 assert!(
                     lookup(old).is_some(),
@@ -677,5 +836,6 @@ mod tests {
             }
         }
         assert_eq!(lookup("WF9999"), None);
+        assert_eq!(explanation("WF9999"), None);
     }
 }

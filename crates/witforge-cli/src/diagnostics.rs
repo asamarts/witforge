@@ -52,6 +52,7 @@ pub(crate) enum Format {
 
 pub(crate) struct Reporter {
     format: Format,
+    quiet: bool,
     diagnostics: Vec<LocatedDiagnostic>,
     suppressed: bool,
     stdout_closed: bool,
@@ -59,9 +60,10 @@ pub(crate) struct Reporter {
 }
 
 impl Reporter {
-    pub(crate) fn new(format: Format) -> Self {
+    pub(crate) fn new(format: Format, quiet: bool) -> Self {
         Self {
             format,
+            quiet,
             diagnostics: Vec::new(),
             suppressed: false,
             stdout_closed: false,
@@ -71,6 +73,10 @@ impl Reporter {
 
     pub(crate) fn human(&self) -> bool {
         self.format == Format::Human
+    }
+
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.quiet
     }
 
     pub(crate) fn suppress(&mut self) {
@@ -140,7 +146,9 @@ impl Reporter {
 
     pub(crate) fn note_located(&mut self, human: &str, located: LocatedDiagnostic) {
         if self.human() {
-            self.write_stdout_line(human);
+            if !self.quiet {
+                self.write_stdout_line(human);
+            }
         } else {
             self.diagnostics.push(located);
         }

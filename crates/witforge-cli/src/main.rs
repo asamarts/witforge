@@ -16,10 +16,12 @@
 //!                   [--serde | --no-serde] [--released PATH]
 //! witforge new-version [<wit-root>] [--major] [--config PATH | --no-config] [--project NAME]
 //! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
-//! witforge diff  <old> <new> [--json] [--check]
+//! witforge diff  <old> <new> [--json] [--check[=VIEWS]]
 //! witforge freeze [<wit-root>] [--config PATH | --no-config] [--project NAME] [--base REV]
+//! witforge completions <bash|zsh|fish>
+//! witforge explain <code-id>
 //!
-//! All commands accept `--format human|json|sarif`; `human` is the default.
+//! All commands accept `--format human|json|sarif` (`human` default) and `-q`/`--quiet`.
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Deserialize;
 
 use serde_json::{Value, json};
@@ -39,6 +41,7 @@ use witforge::diagnostic::{
 use witforge::diff::{self, ChangeKind, DiffReport};
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
+mod completions;
 mod diagnostics;
 mod workflow;
 
@@ -81,11 +84,14 @@ fn op_error_at(
 
 /// The witforge contract compiler.
 #[derive(Debug, Parser)]
-#[command(name = "witforge", version, about)]
+#[command(name = "witforge", version = env!("WITFORGE_BUILD_VERSION"), about)]
 struct Cli {
     /// Emit diagnostics as human text, JSON, or SARIF 2.1.0.
     #[arg(long, global = true, value_enum, default_value_t = Format::Human)]
     format: Format,
+    /// Suppress human notes and summaries (never hides errors or JSON/SARIF output).
+    #[arg(short = 'q', long, global = true)]
+    quiet: bool,
     /// Command to run.
     #[command(subcommand)]
     command: Command,
@@ -116,6 +122,10 @@ enum Command {
     Diff(DiffOptions),
     /// Verify that released version directories have not changed in Git history.
     Freeze(FreezeOptions),
+    /// Generate shell completion scripts for bash, zsh, or fish.
+    Completions(CompletionsOptions),
+    /// Print the documentation entry for a diagnostic code (for example `WF1015`).
+    Explain(ExplainOptions),
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -230,9 +240,30 @@ struct DiffOptions {
     /// Emit machine-readable JSON instead of the human report.
     #[arg(long)]
     json: bool,
-    /// Exit non-zero when any wire, source, or generated-API breaking change is found.
-    #[arg(long)]
-    check: bool,
+    /// Exit non-zero when a breaking change hits any gated view (comma-separated: wire, source,
+    /// api; defaults to all views when given without `=...`).
+    #[arg(
+        long,
+        value_name = "VIEWS",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "wire,source,api"
+    )]
+    check: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct CompletionsOptions {
+    /// Target shell (`bash`, `zsh`, or `fish`).
+    #[arg(value_enum)]
+    shell: completions::Shell,
+}
+
+#[derive(Debug, Args)]
+struct ExplainOptions {
+    /// Diagnostic code to explain (for example `WF1015`).
+    #[arg(value_name = "CODE")]
+    code: String,
 }
 
 #[derive(Debug, Args)]
@@ -875,7 +906,7 @@ fn main() -> ExitCode {
             let code = u8::try_from(err.exit_code()).unwrap_or(2);
             if err.use_stderr() {
                 if let Some(format) = parse_raw_format(std::env::args_os().skip(1)) {
-                    let mut reporter = Reporter::new(format);
+                    let mut reporter = Reporter::new(format, false);
                     reporter.push(Diagnostic::error(
                         codes::CLI_USAGE,
                         err.to_string().trim_end().to_string(),
@@ -903,7 +934,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
-    let mut reporter = Reporter::new(cli.format);
+    let mut reporter = Reporter::new(cli.format, cli.quiet);
     let result = match cli.command {
         Command::Check(options) => check_command(&options, &mut reporter),
         Command::Lock(options) => lock(&options, &mut reporter),
@@ -916,6 +947,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Release(options) => release_command(&options, &mut reporter),
         Command::Diff(options) => diff_command(&options, &mut reporter),
         Command::Freeze(options) => freeze_command(&options, &mut reporter),
+        Command::Completions(options) => Ok(completions_command(&options, &mut reporter)),
+        Command::Explain(options) => explain_command(&options, &mut reporter),
     };
     match result {
         Ok(code) => {
@@ -1900,6 +1933,85 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CheckViews {
+    wire: bool,
+    source: bool,
+    api: bool,
+}
+
+impl CheckViews {
+    fn all(self) -> bool {
+        self.wire && self.source && self.api
+    }
+
+    fn matches(self, change: &diff::Change) -> bool {
+        (self.wire && change.wire_breaking)
+            || (self.source && change.source_breaking)
+            || (self.api && change.api_breaking)
+    }
+
+    fn label(self) -> String {
+        let mut names = Vec::new();
+        if self.wire {
+            names.push("wire");
+        }
+        if self.source {
+            names.push("source");
+        }
+        if self.api {
+            names.push("api");
+        }
+        names.join(", ")
+    }
+}
+
+fn parse_check_views(raw: Option<&str>) -> Result<Option<CheckViews>> {
+    let Some(spec) = raw else {
+        return Ok(None);
+    };
+    if spec.is_empty() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "invalid `--check` view set: expected a non-empty comma-separated list of `wire`, \
+             `source`, `api`",
+            None,
+        ));
+    }
+    let mut views = CheckViews {
+        wire: false,
+        source: false,
+        api: false,
+    };
+    for part in spec.split(',') {
+        match part {
+            "wire" => views.wire = true,
+            "source" => views.source = true,
+            "api" => views.api = true,
+            "" => {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "invalid `--check={spec}`: empty view name; expected `wire`, `source`, \
+                         or `api`"
+                    ),
+                    None,
+                ));
+            }
+            other => {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "unknown `--check` view `{other}`; expected `wire`, `source`, or `api`"
+                    ),
+                    None,
+                ));
+            }
+        }
+    }
+    Ok(Some(views))
+}
+
 #[allow(clippy::too_many_lines)]
 fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     if options.json {
@@ -1907,6 +2019,7 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         // error, so a non-human `--format` never prints a diagnostic envelope instead of `--json`.
         reporter.suppress();
     }
+    let check_views = parse_check_views(options.check.as_deref())?;
     let (analysis, locations) = diff::compare_with_locations(&options.old, &options.new)?;
     let report = &analysis.report;
     if options.json {
@@ -1914,13 +2027,16 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             .context("failed to render the diff as JSON")?;
         reporter.write_stdout_line(&rendered);
     } else if reporter.human() {
-        reporter.write_stdout_line(&render_diff(report));
+        let rendered = render_diff(report, reporter.is_quiet());
+        if !rendered.is_empty() {
+            reporter.write_stdout_line(rendered.trim_end_matches('\n'));
+        }
     } else {
         for change in &report.changes {
             let (code, severity) = if change.is_breaking() {
                 (
                     "WF3001",
-                    if options.check {
+                    if check_views.is_some_and(|views| views.matches(change)) {
                         Severity::Error
                     } else {
                         Severity::Warning
@@ -2007,15 +2123,63 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             );
         }
     }
-    if options.check && report.summary.breaking > 0 {
-        if reporter.human() || reporter.is_suppressed() {
-            diagnostics::write_stderr_line(&format!(
-                "diff: {} breaking change(s); --check failed",
-                report.summary.breaking
-            ));
+    if let Some(views) = check_views {
+        let gated_breaking = report
+            .changes
+            .iter()
+            .filter(|change| views.matches(change))
+            .count();
+        if gated_breaking > 0 {
+            if reporter.human() || reporter.is_suppressed() {
+                if views.all() {
+                    diagnostics::write_stderr_line(&format!(
+                        "diff: {gated_breaking} breaking change(s); --check failed"
+                    ));
+                } else {
+                    diagnostics::write_stderr_line(&format!(
+                        "diff: {gated_breaking} breaking change(s) in gated view(s) ({}); \
+                         --check failed",
+                        views.label()
+                    ));
+                }
+            }
+            return Ok(ExitCode::from(1));
         }
-        return Ok(ExitCode::from(1));
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn completions_command(options: &CompletionsOptions, reporter: &mut Reporter) -> ExitCode {
+    let mut cmd = Cli::command();
+    let script = completions::generate(options.shell, &mut cmd);
+    reporter.suppress();
+    reporter.write_stdout_line(script.trim_end_matches('\n'));
+    ExitCode::SUCCESS
+}
+
+fn explain_command(options: &ExplainOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let normalized = options.code.trim().to_ascii_uppercase();
+    let Some(info) = witforge::diagnostic::lookup(&normalized) else {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!(
+                "unknown diagnostic code `{}`; codes have the form `WFxxxx` (for example \
+                 `WF1001`)",
+                options.code
+            ),
+            None,
+        ));
+    };
+    let meaning = witforge::diagnostic::explanation(info.code).unwrap_or(info.summary);
+    let mut out = String::new();
+    let _ = writeln!(out, "{} ({})", info.code, info.severity);
+    if let Some(prior) = info.supersedes {
+        let _ = writeln!(out, "Prior code: {prior}");
+    }
+    let _ = writeln!(out, "\n{meaning}");
+    let _ = write!(out, "\nDocs: {}", witforge::diagnostic::help_uri(info.code));
+    reporter.suppress();
+    reporter.write_stdout_line(&out);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -2028,7 +2192,7 @@ fn freeze_command(options: &FreezeOptions, reporter: &mut Reporter) -> Result<Ex
     for root in roots {
         let report = witforge::freeze::check_root(&root, &freeze_opts)?;
         if report.is_ok() {
-            if reporter.human() {
+            if reporter.human() && !reporter.is_quiet() {
                 if report.no_manifest {
                     reporter.write_stdout_line(&format!(
                         "no released manifest at {}; nothing to freeze",
@@ -2344,7 +2508,7 @@ fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> 
 
     let (latest_dir, target_dir, copied_lock) =
         workflow::create_new_version(&wit_root, options.major)?;
-    if reporter.human() {
+    if reporter.human() && !reporter.is_quiet() {
         let next_cmd = if copied_lock {
             format!(
                 "witforge lock {} --against {}",
@@ -2496,7 +2660,7 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
     }
 
     if already_listed {
-        if reporter.human() {
+        if reporter.human() && !reporter.is_quiet() {
             reporter.write_stdout_line(&format!(
                 "`{entry_name}` is already listed in {}",
                 manifest_path.display()
@@ -2506,7 +2670,7 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
     }
 
     workflow::append_released_entry(&manifest_path, &entry_name)?;
-    if reporter.human() {
+    if reporter.human() && !reporter.is_quiet() {
         reporter.write_stdout_line(&format!(
             "released `{entry_name}` in {}",
             manifest_path.display()
@@ -2632,26 +2796,28 @@ fn change_label(change: &diff::Change) -> (&'static str, String) {
     }
 }
 
-fn render_diff(report: &DiffReport) -> String {
+fn render_diff(report: &DiffReport, quiet: bool) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "old: {} ({} {})",
-        report.old.path.display(),
-        report.old.package,
-        report.old.version
-    );
-    let _ = writeln!(
-        out,
-        "new: {} ({} {})",
-        report.new.path.display(),
-        report.new.package,
-        report.new.version
-    );
-    if report.changes.is_empty() {
-        let _ = writeln!(out, "no contract changes");
+    if !quiet {
+        let _ = writeln!(
+            out,
+            "old: {} ({} {})",
+            report.old.path.display(),
+            report.old.package,
+            report.old.version
+        );
+        let _ = writeln!(
+            out,
+            "new: {} ({} {})",
+            report.new.path.display(),
+            report.new.package,
+            report.new.version
+        );
+        if report.changes.is_empty() {
+            let _ = writeln!(out, "no contract changes");
+        }
     }
     for change in &report.changes {
         let (kind, detail) = change_label(change);
@@ -2668,19 +2834,21 @@ fn render_diff(report: &DiffReport) -> String {
             status(change.api_breaking),
         );
     }
-    let _ = writeln!(
-        out,
-        "summary: {} change(s), {} breaking; wire identity: {}, source: {}, generated API: {}",
-        report.summary.changes,
-        report.summary.breaking,
-        report.summary.wire_breaking,
-        report.summary.source_breaking,
-        report.summary.api_breaking,
-    );
-    if report.summary.breaking > 0 {
-        let _ = writeln!(out, "result: BREAKING");
-    } else {
-        let _ = writeln!(out, "result: COMPATIBLE");
+    if !quiet {
+        let _ = writeln!(
+            out,
+            "summary: {} change(s), {} breaking; wire identity: {}, source: {}, generated API: {}",
+            report.summary.changes,
+            report.summary.breaking,
+            report.summary.wire_breaking,
+            report.summary.source_breaking,
+            report.summary.api_breaking,
+        );
+        if report.summary.breaking > 0 {
+            let _ = writeln!(out, "result: BREAKING");
+        } else {
+            let _ = writeln!(out, "result: COMPATIBLE");
+        }
     }
     out
 }

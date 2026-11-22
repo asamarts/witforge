@@ -4,12 +4,14 @@ Status: implemented 2026-11-05 (`W8-002`); `WF3003` conversion-impact notes 2026
 (`W11-036`); `WF3004` required-addition blockers 2026-11-18 (`W10-036`); per-rule subset codes,
 cross-command parity, usage-error reporting, and internal-only `WF9000` 2026-11-21 (`W10-079`);
 physical file/line/column positions, UTF-16 columns, `logicalLocations`, `relatedLocations`,
-normalized SARIF URIs, rule `helpUri`, and exit-aligned `diff` levels 2026-11-21 (`W10-080`).
+normalized SARIF URIs, rule `helpUri`, and exit-aligned `diff` levels 2026-11-21 (`W10-080`);
+`witforge explain <CODE>` and `--quiet` / `-q` 2026-11-21 (`W10-085`).
 
 Every command keeps its human output as the default. `--format json` and `--format sarif` replace
 the diagnostic stream with a stable machine-readable form. Command-specific reports are
 unchanged: `diff --json` remains the diff report, and `diff --format json|sarif` describes its
-changes as diagnostics.
+changes as diagnostics. Global `--quiet` (`-q`) removes human notes and informational summaries
+without removing errors, changing exit codes, or altering JSON or SARIF output.
 
 ## Diagnostic envelope
 
@@ -81,7 +83,9 @@ code, `level` equal to its severity (`error`, `warning`, or `note`), and a `mess
 ## Stable codes
 
 Codes are never reused for a different meaning. Every code below is registered in
-`witforge::diagnostic::CATALOG` and verified by automated parity tests against this table.
+`witforge::diagnostic::CATALOG` with its normative explanation in `witforge::diagnostic::explanation`
+(printed at run time by `witforge explain <CODE>`), and verified by automated parity tests against
+this table and every code literal in the workspace.
 
 In `W10-079`, subset violations previously reported under the single umbrella code `WF1001` were
 split into one code per subset rule (`WF1010`–`WF1030`). The **Prior** column records `WF1001`
@@ -174,8 +178,13 @@ exits with `2`. `--help` and `--version` continue to print text to stdout and ex
 `WF3002` for compatible), each guaranteed conversion-impact note as `WF3003`, and each
 required-addition or retype generation blocker as `WF3004`; it suppresses the human diff report.
 Without `--check`, `diff` exits `0` and emits `WF3001` at severity/level `warning` so SARIF
-results never carry `level: "error"` on a zero-exit run; with `--check`, `diff` exits `1` on
-breaking changes and emits `WF3001` at severity/level `error`.
+results never carry `level: "error"` on a zero-exit run; with `--check` or `--check=<views>`,
+`diff` emits `WF3001` at severity/level `error` for changes breaking a gated view (and exits `1`
+when any gated view is broken) and `warning` for changes breaking only non-gated views.
 `diff --json` remains the full diff report described in [`diff.md`](diff.md); when both `--json`
 and a non-human `--format` are given, `--json` wins and the diagnostic envelope is suppressed
 (including on command errors, which are written to stderr just as `diff --json` does).
+
+`witforge explain <CODE>` prints the code's severity, superseded prior code (if any), normative
+meaning from `witforge::diagnostic::explanation`, and documentation URL. An unknown code is a
+usage error (`WF9001`, exit `2`).

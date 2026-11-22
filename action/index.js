@@ -111,7 +111,16 @@ function buildCommands(binary, options) {
   if (old || next) {
     if (!old || !next) throw new Error('diff-old and diff-new must be set together');
     const args = [binary, 'diff', old, next];
-    if (String(options.diffCheck || 'true').toLowerCase() !== 'false') args.push('--check');
+    const diffCheckRaw = String(options.diffCheck ?? '').trim();
+    const diffCheck = diffCheckRaw === '' ? 'true' : diffCheckRaw;
+    const diffCheckLower = diffCheck.toLowerCase();
+    if (diffCheckLower === 'true') {
+      args.push('--check');
+    } else if (diffCheckLower !== 'false') {
+      const views = splitList(diffCheck).join(',');
+      if (!views) throw new Error('diff-check view list must not be empty');
+      args.push(`--check=${views}`);
+    }
     commands.push(args);
   }
   const config = String(options.config || '').trim();

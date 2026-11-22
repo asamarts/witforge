@@ -1144,7 +1144,7 @@ fn diagnostic_catalog_matches_docs_design_diagnostics_md() {
 
     let doc_path = repo().join("docs/design/diagnostics.md");
     let text = fs::read_to_string(&doc_path).unwrap();
-    let mut doc_entries: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    let mut doc_entries: BTreeMap<String, (String, Option<String>, String)> = BTreeMap::new();
     let mut in_table = false;
     for line in text.lines() {
         if line.starts_with("## Stable codes") {
@@ -1166,30 +1166,36 @@ fn diagnostic_catalog_matches_docs_design_diagnostics_md() {
         } else {
             Some(cols[3].trim_matches('`').to_string())
         };
+        let meaning = cols[4].to_string();
         assert!(
             doc_entries
-                .insert(code.clone(), (severity, prior))
+                .insert(code.clone(), (severity, prior, meaning))
                 .is_none(),
             "duplicate code `{code}` in docs/design/diagnostics.md"
         );
     }
 
-    let catalog_entries: BTreeMap<String, (String, Option<String>)> = witforge::diagnostic::CATALOG
-        .iter()
-        .map(|info| {
-            (
-                info.code.to_string(),
+    let catalog_entries: BTreeMap<String, (String, Option<String>, String)> =
+        witforge::diagnostic::CATALOG
+            .iter()
+            .map(|info| {
+                let meaning = witforge::diagnostic::explanation(info.code)
+                    .unwrap_or_else(|| panic!("missing explanation for {}", info.code))
+                    .to_string();
                 (
-                    info.severity.as_str().to_string(),
-                    info.supersedes.map(str::to_string),
-                ),
-            )
-        })
-        .collect();
+                    info.code.to_string(),
+                    (
+                        info.severity.as_str().to_string(),
+                        info.supersedes.map(str::to_string),
+                        meaning,
+                    ),
+                )
+            })
+            .collect();
 
     assert_eq!(
         catalog_entries, doc_entries,
-        "witforge::diagnostic::CATALOG and docs/design/diagnostics.md must stay 1-to-1"
+        "witforge::diagnostic::CATALOG / explanation() and docs/design/diagnostics.md must stay 1-to-1"
     );
 
     // Every code must also have a public anchor heading `### WFxxxx` in docs/guide/diagnostics.md
@@ -1207,6 +1213,53 @@ fn diagnostic_catalog_matches_docs_design_diagnostics_md() {
         catalog_codes, guide_codes,
         "witforge::diagnostic::CATALOG and docs/guide/diagnostics.md anchors must stay 1-to-1"
     );
+
+    // Every `"WFxxxx"` code literal emitted anywhere in library or CLI production source must be
+    // registered in CATALOG (and therefore in explanation(), diagnostics.md, and guide).
+    let mut emitted_codes = std::collections::BTreeSet::new();
+    for src_root in [
+        repo().join("crates/witforge/src"),
+        repo().join("crates/witforge-cli/src"),
+    ] {
+        collect_wf_code_literals(&src_root, &mut emitted_codes);
+    }
+    assert!(
+        !emitted_codes.is_empty(),
+        "expected to find WFxxxx code literals in production source"
+    );
+    for code in &emitted_codes {
+        assert!(
+            catalog_codes.contains(code),
+            "production source references unregistered diagnostic code `{code}`"
+        );
+    }
+}
+
+fn collect_wf_code_literals(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_wf_code_literals(&path, out);
+        } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs") {
+            let text = fs::read_to_string(&path).unwrap();
+            let prod = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            let bytes = prod.as_bytes();
+            let mut i = 0;
+            while i + 8 <= bytes.len() {
+                if bytes[i] == b'"'
+                    && bytes[i + 1] == b'W'
+                    && bytes[i + 2] == b'F'
+                    && bytes[i + 3..i + 7].iter().all(u8::is_ascii_digit)
+                    && bytes[i + 7] == b'"'
+                {
+                    out.insert(prod[i + 1..i + 7].to_string());
+                    i += 8;
+                    continue;
+                }
+                i += 1;
+            }
+        }
+    }
 }
 
 #[test]

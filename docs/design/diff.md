@@ -176,10 +176,16 @@ result: BREAKING
 `renumbered` changes carry numeric `from` and `to`. A change's `number` is the new member's wire
 number when the change concerns a numbered member, or the old number for a removal.
 
-`--check` exits `0` when no change breaks any view and `1` when at least one does. A plain
-`diff` exits `0` after reporting even a breaking change. Input, I/O, and parse errors use the
-normal `witforge` exit conventions: `1` for contract/lockfile violations and `2` for usage,
-I/O, and parse failures.
+`--check` (or `--check=wire,source,api`) exits `0` when no change breaks any view and `1` when at
+least one does. `--check=<views>` restricts the gate to a comma-separated subset of `wire`,
+`source`, and `api` (for example `--check=wire` to allow source/API-breaking minor additions while
+still failing on wire-breaking changes). An empty view set (`--check=`) or an unknown view name is
+a usage error (`WF9001`, exit `2`). The GitHub Action's `diff-check` input maps `'true'` onto
+`--check`, `'false'` onto omitting the flag, and any view list onto `--check=<views>`. A plain
+`diff` exits `0` after reporting even a breaking change. With `--quiet` (`-q`), human output omits
+headers, notes, and the `summary:` / `result:` lines while keeping errors and exit codes unchanged
+(JSON and SARIF output are unaffected). Input, I/O, and parse errors use the normal `witforge`
+exit conventions: `1` for contract/lockfile violations and `2` for usage, I/O, and parse failures.
 
 ## Conversion impact notes
 

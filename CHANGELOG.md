@@ -6,7 +6,44 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in release-freeze verification (`witforge freeze`, `W10-083`):**
+  - Added `witforge freeze [<WIT_ROOT>] [--config PATH] [--project NAME] [--base REV]` and the
+    `witforge::freeze` library module enforcing the Git-history release-freeze rule across
+    platforms (including shallow-clone refusal with exit `2` / `WF9004`, `core.autocrlf=true`,
+    full-history rename tracking stopping at copies, symlink/untracked/case-sensitive `wire.lock`
+    hygiene, multi-project config runs, and full violation collection under `WF1109`).
+  - Reduced `ci/check-release-freeze.sh` to a thin wrapper over `witforge freeze` and added the
+    `freeze` input to the GitHub Action.
+- **High-level contract workflow commands and upward `witforge.toml` discovery (`W10-084`):**
+  - Added `witforge generate`, `witforge new-version [--major]`, `witforge release <WIT_DIR>`,
+    whole-WIT-root and config-driven `witforge check`, and upward `witforge.toml` discovery
+    (stopping at `.git` or filesystem root, with `--no-config` opt-out and safe preservation of
+    self-contained explicit CLI invocations).
+- **Build identity, `--quiet`, per-view `diff --check`, shell completions, and `explain` (`W10-085`):**
+  - `witforge --version` now includes the short Git commit (and `-dirty` when tracked files have
+    local edits) on development builds, printing the bare version on exact clean release tags and
+    builds without Git metadata (with no embedded timestamps).
+  - Added global `--quiet` / `-q` to suppress human notes and summaries without suppressing errors,
+    changing exit codes, or modifying JSON/SARIF output.
+  - Extended `witforge diff --check` to accept `--check=<views>` (`wire`, `source`, `api`,
+    comma-separated; defaults to all three) and mapped the GitHub Action's `diff-check` input onto
+    it.
+  - Added `witforge completions <bash|zsh|fish>` generated directly from the `clap` command tree,
+    and `witforge explain <CODE>` backed by `witforge::diagnostic::explanation` as a single source
+    of truth verified against `docs/design/diagnostics.md`.
+
 ### Changed
+
+- **Source positions, SARIF 2.1.0 physical/logical/related locations, and public diagnostic guide (`W10-080`):**
+  - Structured diagnostics (JSON and SARIF) now report physical file paths (cwd-relative with `/`
+    or percent-encoded `file:///` URIs outside cwd, never `..` or Windows `\\?\`), 1-based UTF-16
+    line/column ranges (handling tabs, BMP/supplementary characters, CRLF, and leading UTF-8 BOMs),
+    `logical` / `logicalLocations`, `related` / `relatedLocations` (pairing WIT declarations with
+    their conflicting `wire.lock` line), SARIF rule `shortDescription` + `helpUri` pointing at
+    the new public `docs/guide/diagnostics.md` reference, rendered `wit-parser` error snippets,
+    and exit-aligned `diff` SARIF levels (`warning` on zero-exit runs, `error` on failing gates).
 
 - **Per-rule diagnostic codes and cross-command machine-readable parity (`W10-079`):**
   - Subset violations previously reported under the single umbrella code `WF1001` are now split
