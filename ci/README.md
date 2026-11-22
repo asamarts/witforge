@@ -158,19 +158,30 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
   dependency on `witforge` to require that version, a dated `CHANGELOG.md` section with entries
   for it, and a tag that matches the version, points at the checked-out commit, and is on `main`.
   For a tag push, it also requires a successful `ci ok` job whose head SHA is that exact commit.
-  Then it runs the tests, the semver check against the previous release, historical-generator
-  protobuf compatibility against every earlier release,
-  and `ci/publish.sh --dry-run`.
-- **publish** (environment `release`, which only `v*` tags may use): publishes, library first,
-  each crate whose version is not on crates.io yet (`ci/publish.sh`), with a crates.io token
-  minted through trusted publishing for that job. Nothing to publish skips the token request.
-- **github-release**: creates the GitHub release from the changelog section, unless it exists.
-- **binaries**: builds and uploads the four platform archives and SHA-256 checksum files.
-- **tagged Action smoke**: after all release archives are uploaded, invokes the checked-out tag's
-  Action on Linux x86_64, macOS arm64, macOS Intel, and Windows x86_64. Each job installs that
-  tag's platform asset, runs `check`, materializes all configured outputs, then invokes the
-  Action again to verify all four generators with `--check`. Main CI's pinned remote-ref matrix
-  independently proves published tag resolution.
+  Then it runs the tests, the semver check against the previous release, uncached
+  historical-generator protobuf compatibility against every earlier release,
+  `ci/publish.sh --dry-run`, and records the deterministic `.crate` SHA-256 digests as job outputs.
+- **binaries**: builds every platform archive and `.sha256` checksum, attaches a GitHub build
+  provenance attestation (`actions/attest-build-provenance`; `id-token: write` and
+  `attestations: write` exist ONLY in this job), and uploads the archive and checksum as a
+  workflow artifact.
+- **smoke-artifacts**: downloads each platform's workflow artifact onto its native runner, verifies
+  both the `.sha256` checksum and the build provenance attestation (`gh attestation verify`), and
+  exercises `--version`, `check`, `diff`, and `generate --check` on `examples/evolved` **before**
+  anything is published.
+- **publish** (environment `release`, which only `v*` tags may use): runs only after
+  `smoke-artifacts` passes. Compares deterministic `.crate` digests against `verify`'s outputs,
+  mints a short-lived crates.io token through trusted publishing only if a crate is not yet on
+  crates.io, and uploads missing crates with `ci/publish.sh --no-verify` (running zero dependency
+  build scripts while holding the publish token).
+- **github-release**: downloads all built workflow artifacts, creates the GitHub release as a
+  **draft** (or reuses an existing release on re-run), uploads each asset without `--clobber`
+  (verifying SHA-256 digests of any already-uploaded asset and failing on mismatch), and publishes
+  the draft only once every asset is attached.
+- **tagged Action smoke**: after the GitHub release is published, invokes the checked-out tag's
+  Action on every native platform runner to verify remote asset download, checksum/attestation
+  verification, `check`, `diff`, and all four configured generators with `--check`. Main CI's
+  pinned remote-ref matrix independently proves published tag resolution.
 
 A manual run (`gh workflow run release.yml`, from a branch or a tag) runs only **verify**:
 **publish** and **github-release** require a tag push (`github.event_name == 'push'`), not just

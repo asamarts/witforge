@@ -40,8 +40,11 @@ completeness alone is not enough.
       release; JSON Schema dependency references resolve from the generated files
 - [ ] aplan `check`, `verify`, `export-agents-md --check`, and `check-docs` pass
 - [ ] the tag commit has a successful `ci ok` job from the `push` event before the release
-      workflow publishes; the release owner records that exact commit, CI run URL, and publish
-      run URL in the changelog section
+      workflow publishes; platform binaries are built, attested with SLSA build provenance, and
+      smoke-tested from workflow artifacts before crates.io or the GitHub release is published;
+      the GitHub release is drafted until all assets are uploaded without overwriting existing
+      assets; `publish` verifies `.crate` digests and runs with `--no-verify`; the release owner
+      records that exact commit, CI run URL, and publish run URL in the changelog section
 
 ### Post-second-audit criteria
 

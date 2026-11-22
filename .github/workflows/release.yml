@@ -1,16 +1,22 @@
 name: Release
 
-# Pushing a tag `vX.Y.Z` on main publishes the crates not yet on crates.io and creates the
-# GitHub release from the CHANGELOG.md section. A manual run checks and dry-runs the release
-# from the selected branch or tag and publishes nothing: `publish` and `github-release` run only
-# for a tag push (a re-run of a run keeps its event, so re-running a tag push still publishes).
+# Pushing a tag `vX.Y.Z` on main builds, attests, and smoke-tests all platform binaries before
+# publishing anything:
+#   verify -> binaries (build + SLSA provenance attestation) -> smoke-artifacts (verify checksum,
+#   attestation, and binary behavior from workflow artifacts) -> publish (crates.io with
+#   --no-verify after checking packaged `.crate` digests against `verify`) -> github-release
+#   (create draft release -> verify/upload every asset without --clobber -> publish release) ->
+#   action-smoke (smoke the checked-out tag's Action against the published GitHub release).
 #
-# Publishing uses crates.io trusted publishing: the `publish` job exchanges its GitHub OIDC
-# token for a crates.io token that lasts minutes, so no crates.io secret is stored. Each crate
-# trusts this repository, this workflow file, and the `release` environment (crates.io: the
-# crate's Settings, Trusted Publishing). crates.io cannot trust a repository for a crate that
-# does not exist yet, so a new crate's first version is published by hand with an API token
-# (ci/release-checklist.md); this workflow then skips it.
+# A manual run (`workflow_dispatch`) runs `verify` only and publishes nothing: every downstream job
+# requires a tag push (`github.event_name == 'push' && github.ref_type == 'tag'`). A re-run of a
+# tag push keeps its event, skips crates already on crates.io, reuses an existing draft/release,
+# and verifies digests rather than overwriting existing release assets.
+#
+# Publishing uses crates.io trusted publishing: the `publish` job exchanges its GitHub OIDC token
+# for a short-lived crates.io token, so no crates.io secret is stored. Each crate trusts this
+# repository, this workflow file, and the `release` environment (crates.io: Settings, Trusted
+# Publishing). A new crate's first version is published by hand (ci/release-checklist.md).
 
 on:
   push:
@@ -36,6 +42,8 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.check.outputs.version }}
+      witforge_crate_sha256: ${{ steps.crate_digests.outputs.witforge_sha256 }}
+      witforge_cli_crate_sha256: ${{ steps.crate_digests.outputs.witforge_cli_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -110,75 +118,26 @@ jobs:
         # in the manual ci.yml `buf` job), so a poisoned cache can never pass the release gate.
         run: ci/check-buf-history.sh
       - run: ci/publish.sh --dry-run
-
-  publish:
-    name: publish to crates.io
-    needs: verify
-    # Not `ref_type` alone: a manual run from a tag has a tag ref too.
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: release
-    permissions:
-      contents: read
-      id-token: write # the OIDC token crates.io exchanges for a publish token
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: stable
-      - name: Find the crates not yet on crates.io
-        id: missing
-        shell: bash
-        # A crates.io error must fail the job, not read as "nothing to publish".
-        run: |
-          missing="$(ci/publish.sh --check)"
-          echo "crates=${missing//$'\n'/ }" >> "$GITHUB_OUTPUT"
-      # Only when something is left to publish, so a re-run, or a release whose crates were
-      # published by hand, needs no trusted-publisher configuration.
-      - name: Mint a short-lived crates.io token
-        id: auth
-        if: steps.missing.outputs.crates != ''
-        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
-      - name: Publish ${{ steps.missing.outputs.crates }}
-        if: steps.missing.outputs.crates != ''
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: ci/publish.sh
-
-  github-release:
-    name: GitHub release
-    needs: [verify, publish]
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write # create the release
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Create the release from the changelog
+      # Record deterministic `.crate` digests in this unprivileged verification job so the
+      # privileged `publish` job can prove it uploads the exact verified tarballs with
+      # `--no-verify` (running zero dependency build scripts while holding the crates.io token).
+      - name: Record verified crate package digests
+        id: crate_digests
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ needs.verify.outputs.version }}
+          VERSION: ${{ steps.check.outputs.version }}
         run: |
-          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "release ${TAG} already exists"
-            exit 0
-          fi
-          RELEASE_NOTES="${RUNNER_TEMP}/notes.md" ci/check-release.sh "${TAG}" >/dev/null
-          gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
-            --title "witforge ${VERSION}" --notes-file "${RUNNER_TEMP}/notes.md"
+          pkg_dir="$RUNNER_TEMP/verified-crates"
+          rm -rf "$pkg_dir"
+          cargo package --locked --no-verify -p witforge -p witforge-cli --target-dir "$pkg_dir"
+          lib_sha="$(sha256sum "${pkg_dir}/package/witforge-${VERSION}.crate" | awk '{print $1}')"
+          cli_sha="$(sha256sum "${pkg_dir}/package/witforge-cli-${VERSION}.crate" | awk '{print $1}')"
+          echo "witforge_sha256=${lib_sha}" >> "$GITHUB_OUTPUT"
+          echo "witforge_cli_sha256=${cli_sha}" >> "$GITHUB_OUTPUT"
 
   binaries:
     name: binary (${{ matrix.target }})
-    needs: [verify, github-release]
+    needs: verify
     if: github.event_name == 'push' && github.ref_type == 'tag'
     strategy:
       fail-fast: false
@@ -194,8 +153,11 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # Attestation permissions live ONLY in this build job.
     permissions:
-      contents: write # upload assets to the release
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -222,18 +184,220 @@ jobs:
           asset="$(ci/release-asset.sh "${VERSION}" "${TARGET}" "${binary}" dist)"
           echo "asset=${asset}" >> "$GITHUB_OUTPUT"
           echo "checksum=${asset}.sha256" >> "$GITHUB_OUTPUT"
-      - name: Upload the asset to the GitHub release
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.asset }}
+      - name: Upload built release asset as workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-asset-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+  smoke-artifacts:
+    name: pre-publish smoke (${{ matrix.target }})
+    needs: [verify, binaries]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Download built artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-asset-${{ matrix.target }}
+          path: ${{ runner.temp }}/artifact
+      - name: Verify checksum, provenance attestation, and binary behavior
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          asset="witforge-${VERSION}-${TARGET}.tar.gz"
+          cd "$RUNNER_TEMP/artifact"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "${asset}.sha256"
+          else
+            shasum -a 256 -c "${asset}.sha256"
+          fi
+          gh attestation verify "${asset}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+          mkdir -p "$RUNNER_TEMP/smoke-bin"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            tar -xf "${asset}" -C "$RUNNER_TEMP/smoke-bin"
+            bin="$RUNNER_TEMP/smoke-bin/witforge.exe"
+          else
+            tar -xzf "${asset}" -C "$RUNNER_TEMP/smoke-bin"
+            bin="$RUNNER_TEMP/smoke-bin/witforge"
+            chmod +x "$bin"
+          fi
+          cd "$GITHUB_WORKSPACE"
+          got="$("$bin" --version | tr -d '\r')"
+          if [[ "$got" != "witforge ${VERSION}" ]]; then
+            echo "::error::unexpected --version output: ${got} (expected witforge ${VERSION})"
+            exit 1
+          fi
+          "$bin" check examples/evolved/wit/v0.2
+          "$bin" diff examples/evolved/wit/v0.1 examples/evolved/wit/v0.2
+          "$bin" generate --config examples/evolved/witforge.toml --check
+
+  publish:
+    name: publish to crates.io
+    needs: [verify, smoke-artifacts]
+    # Not `ref_type` alone: a manual run from a tag has a tag ref too.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # the OIDC token crates.io exchanges for a publish token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - name: Find the crates not yet on crates.io
+        id: missing
+        shell: bash
+        # A crates.io error must fail the job, not read as "nothing to publish".
+        run: |
+          missing="$(ci/publish.sh --check)"
+          echo "crates=${missing//$'\n'/ }" >> "$GITHUB_OUTPUT"
+      - name: Verify packaged crate digests match the unprivileged verify job
+        if: steps.missing.outputs.crates != ''
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          EXPECTED_LIB: ${{ needs.verify.outputs.witforge_crate_sha256 }}
+          EXPECTED_CLI: ${{ needs.verify.outputs.witforge_cli_crate_sha256 }}
+        run: |
+          pkg_dir="$RUNNER_TEMP/publish-crates"
+          rm -rf "$pkg_dir"
+          cargo package --locked --no-verify -p witforge -p witforge-cli --target-dir "$pkg_dir"
+          got_lib="$(sha256sum "${pkg_dir}/package/witforge-${VERSION}.crate" | awk '{print $1}')"
+          got_cli="$(sha256sum "${pkg_dir}/package/witforge-cli-${VERSION}.crate" | awk '{print $1}')"
+          if [[ "$got_lib" != "$EXPECTED_LIB" ]]; then
+            echo "::error::witforge .crate digest mismatch: got ${got_lib}, expected ${EXPECTED_LIB}"
+            exit 1
+          fi
+          if [[ "$got_cli" != "$EXPECTED_CLI" ]]; then
+            echo "::error::witforge-cli .crate digest mismatch: got ${got_cli}, expected ${EXPECTED_CLI}"
+            exit 1
+          fi
+      # Only when something is left to publish, so a re-run, or a release whose crates were
+      # published by hand, needs no trusted-publisher configuration.
+      - name: Mint a short-lived crates.io token
+        id: auth
+        if: steps.missing.outputs.crates != ''
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca7638054cd9 # v1.0.6
+      # Uses `--no-verify` so no dependency build scripts execute while holding the publish token;
+      # the `.crate` tarballs were already verified and digest-checked against the unprivileged
+      # `verify` job above.
+      - name: Publish ${{ steps.missing.outputs.crates }}
+        if: steps.missing.outputs.crates != ''
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: ci/publish.sh --no-verify
+
+  github-release:
+    name: GitHub release (draft, upload, publish)
+    needs: [verify, binaries, smoke-artifacts, publish]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create draft release, upload assets, and publish
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download all built release assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-asset-*
+          path: dist
+          merge-multiple: true
+      - name: Create draft release, upload assets without clobbering, and publish
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          ASSET: ${{ steps.package.outputs.asset }}
-          CHECKSUM: ${{ steps.package.outputs.checksum }}
-        run: gh release upload "$TAG" "$ASSET" "$CHECKSUM" --clobber
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          if ! gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            RELEASE_NOTES="${RUNNER_TEMP}/notes.md" ci/check-release.sh "${TAG}" >/dev/null
+            gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft --verify-tag \
+              --title "witforge ${VERSION}" --notes-file "${RUNNER_TEMP}/notes.md"
+          else
+            echo "release ${TAG} already exists; reusing it without overwriting existing assets"
+          fi
+
+          existing_assets="$(
+            gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets \
+              --jq '.assets[].name'
+          )"
+
+          shopt -s nullglob
+          files=(dist/*)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::no release assets found in dist/"
+            exit 1
+          fi
+
+          verify_dir="$RUNNER_TEMP/existing-assets"
+          mkdir -p "$verify_dir"
+          for file in "${files[@]}"; do
+            name="$(basename "$file")"
+            if grep -qxF "$name" <<<"${existing_assets}"; then
+              gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+                --pattern "$name" --dir "$verify_dir" --clobber
+              local_sha="$(sha256sum "$file" | awk '{print $1}')"
+              remote_sha="$(sha256sum "${verify_dir}/${name}" | awk '{print $1}')"
+              if [[ "$local_sha" != "$remote_sha" ]]; then
+                echo "::error::existing release asset ${name} differs from freshly built digest (${remote_sha} != ${local_sha}); refusing to overwrite"
+                exit 1
+              fi
+              echo "verified existing asset ${name} (${local_sha})"
+            else
+              gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" "$file"
+            fi
+          done
+
+          is_draft="$(
+            gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft'
+          )"
+          if [[ "${is_draft}" == "true" ]]; then
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+          fi
 
   action-smoke:
     name: tagged Action smoke (${{ matrix.runner }})
-    needs: [verify, binaries]
+    needs: [verify, github-release]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     strategy:
       fail-fast: false

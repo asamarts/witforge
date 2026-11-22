@@ -117,23 +117,47 @@ explicit release-owner action.
 - [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass. Record the commit SHA
       and job URL; `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push
       --status success` must identify that run.
-- [ ] Tag that exact commit `vX.Y.Z` (annotated) and push the tag. `release.yml` independently
-      queries the Actions API for a successful `ci ok` job at the tag commit, then verifies the
-      release, reruns semver and historical-generator protobuf compatibility, publishes each
-      crate whose version is not on crates.io yet, library first, through trusted publishing,
-      creates the GitHub release from the changelog section, builds and uploads the Linux,
-      macOS, and Windows archives with `.sha256` checksums, then runs the tagged Action through
-      `check` and all four configured generator checks. A failed run is re-run and skips
-      what is already published; `gh release upload --clobber` repairs a partial asset upload.
+- [ ] Tag that exact commit `vX.Y.Z` (annotated; signed with `git tag -s` when a signing key is
+      available, while tag-protection rulesets, exact-commit `ci ok`, and SLSA provenance
+      attestations provide the CI-verifiable chain) and push the tag. `release.yml` independently
+      queries the Actions API for a successful `ci ok` job at the tag commit, verifies the release,
+      reruns semver and historical-generator protobuf compatibility (uncached), records
+      deterministic `.crate` digests, builds and attests every platform archive with
+      `actions/attest-build-provenance`, and smoke-tests the built workflow artifacts (checksum,
+      attestation, `--version`, `check`, `diff`, `generate --check`) **before** publishing
+      anything. Only after every platform artifact passes does `publish` compare the `.crate`
+      digests and upload missing crates with `ci/publish.sh --no-verify` (running zero dependency
+      build scripts while holding the crates.io OIDC token), followed by `github-release`, which
+      creates a **draft** release, uploads every asset without `--clobber` (verifying SHA-256
+      digests if an asset already exists on a re-run and failing on any difference), publishes the
+      draft once every asset is attached, and runs `action-smoke` against the published release.
+- [ ] Verify a downloaded archive independently:
+      `sha256sum -c witforge-X.Y.Z-<target>.tar.gz.sha256` and
+      `gh attestation verify witforge-X.Y.Z-<target>.tar.gz --repo asamarts/witforge --signer-workflow asamarts/witforge/.github/workflows/release.yml`.
 - [ ] Verify `cargo install witforge-cli --version X.Y.Z --locked` reports `witforge X.Y.Z`,
       the GitHub release exists, and docs.rs built the library.
 - [ ] Record the release commit, its exact-commit `ci ok` URL, and the release run URL under the
       changelog section.
 - [ ] Update CI's pinned published-Action ref and every Action `version` input in
       `.github/workflows/ci.yml` to X.Y.Z in one commit, push the release record, and require
-      all four hosted target jobs to pass. Do this directly after publishing: from the first
+      all hosted target jobs to pass. Do this directly after publishing: from the first
       commit after the tag, `ci/check-release.sh` fails while `ci.yml` still names the
       previous release.
+
+### Withdrawing a release and provenance/SBOM policy
+
+- **Withdrawing (yanking) a release:** `cargo yank --version X.Y.Z witforge-cli` and (if needed)
+  `cargo yank --version X.Y.Z witforge`. Tag-protection rulesets intentionally keep the immutable
+  `vX.Y.Z` tag in Git history; add `vX.Y.Z <reason>` to `ci/buf-history-skip` so
+  `ci/check-buf-history.sh` skips the yanked release with an explicit recorded reason.
+- **SBOM decision:** A separate CycloneDX/SPDX SBOM asset is not attached yet because the complete
+  resolved dependency graph is already locked in `Cargo.lock` at the attested release commit
+  bound by SLSA build provenance. Revisit and attach an SPDX SBOM asset when a downstream consumer
+  or registry requires one.
+- **Signed tags decision:** Annotated tags are required and signed tags (`git tag -s`) are
+  recommended when releasing from a signing environment; automated verification relies on
+  GitHub tag protection + exact-commit `ci ok` + `actions/attest-build-provenance` rather than
+  requiring consumers to distribute a maintainer PGP key.
 
 A new crate in the workspace needs its first version published by hand, as for 0.1.0 above. If
 trusted publishing itself fails (for example a changed workflow or environment name that no

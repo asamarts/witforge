@@ -29,8 +29,34 @@ time for a fix before public disclosure.
 - `cargo deny check advisories bans licenses sources` enforces the configuration in
   [`ci/deny.toml`](ci/deny.toml), including known advisories, yanked crates, wildcard
   dependencies, and unknown registries or Git sources.
-- Release binaries and archives are produced by the tagged release workflow from the checked
-  commit, with SHA-256 checksums attached to each archive.
-- The GitHub Action verifies the downloaded archive checksum before extracting it.
+- Release binaries and archives are built, attested with GitHub Artifact Attestations (SLSA v1
+  build provenance via `actions/attest-build-provenance`, starting with 0.7.0), and smoke-tested
+  from workflow artifacts before any crate or GitHub release is published.
+- GitHub releases are created as drafts, populated without overwriting existing assets (digest
+  verified on re-runs), and published only once every platform archive and `.sha256` checksum is
+  attached.
+- Crates are published to crates.io via short-lived OIDC trusted publishing with `--no-verify`
+  after matching the deterministic `.crate` SHA-256 digests produced in the unprivileged
+  verification job, so the publishing job executes no build scripts from dependencies.
 - Generated output and release freezes are checked separately in CI; see
   [`docs/design/quality.md`](docs/design/quality.md).
+
+## Verifying a downloaded archive
+
+Every release archive (`witforge-<version>-<target>.tar.gz`) carries a sibling `.sha256` file and
+(from 0.7.0 onward) a Sigstore/GitHub build provenance attestation signed by
+`asamarts/witforge/.github/workflows/release.yml`:
+
+```sh
+sha256sum -c "witforge-${VERSION}-${TARGET}.tar.gz.sha256"
+gh attestation verify "witforge-${VERSION}-${TARGET}.tar.gz" \
+  --repo asamarts/witforge \
+  --signer-workflow asamarts/witforge/.github/workflows/release.yml
+```
+
+On macOS, use `shasum -a 256 -c` where `sha256sum` is unavailable.
+
+The GitHub Action verifies the SHA-256 checksum on every release and runs `gh attestation verify`
+on releases 0.7.0 and later before extracting the binary. If `gh` is not installed on a container
+or self-hosted runner, the Action emits a warning and falls back to the verified SHA-256 checksum;
+if `gh` is present and verification fails, the Action aborts without extracting the archive.

@@ -19,6 +19,8 @@ const {
   request,
   resolveVersion,
   splitLines,
+  supportsAttestation,
+  verifyAttestation,
 } = require('./index');
 
 test('platform targets and archive names are stable', () => {
@@ -259,4 +261,71 @@ test('requests abort when the timeout expires', async () => {
   } finally {
     clearTimeout(keepAlive);
   }
+});
+
+test('attestation verification runs for >=0.7.0, warns when gh is absent, and fails on invalid provenance', () => {
+  assert.equal(supportsAttestation('0.6.0'), false);
+  assert.equal(supportsAttestation('0.7.0'), true);
+  assert.equal(supportsAttestation('1.0.0'), true);
+
+  const notices = [];
+  assert.equal(
+    verifyAttestation('/tmp/witforge-0.6.0.tar.gz', '0.6.0', {
+      notice: (msg) => notices.push(msg),
+      execFileSync: () => {
+        throw new Error('must not run gh for pre-0.7.0');
+      },
+    }),
+    'unsupported-version',
+  );
+  assert.equal(notices.length, 1);
+
+  let captured;
+  assert.equal(
+    verifyAttestation('/tmp/witforge-0.7.0.tar.gz', '0.7.0', {
+      token: 'tok',
+      execFileSync: (cmd, args, opts) => {
+        captured = { cmd, args, ghToken: opts.env.GH_TOKEN };
+      },
+    }),
+    'verified',
+  );
+  assert.equal(captured.cmd, 'gh');
+  assert.deepEqual(captured.args, [
+    'attestation',
+    'verify',
+    '/tmp/witforge-0.7.0.tar.gz',
+    '--repo',
+    'asamarts/witforge',
+    '--signer-workflow',
+    'asamarts/witforge/.github/workflows/release.yml',
+  ]);
+  assert.equal(captured.ghToken, 'tok');
+
+  const warnings = [];
+  assert.equal(
+    verifyAttestation('/tmp/witforge-0.7.0.tar.gz', '0.7.0', {
+      warn: (msg) => warnings.push(msg),
+      execFileSync: () => {
+        const err = new Error('spawnSync gh ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      },
+    }),
+    'skipped-no-gh',
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /falling back to the verified SHA-256 checksum/);
+
+  assert.throws(
+    () =>
+      verifyAttestation('/tmp/witforge-0.7.0.tar.gz', '0.7.0', {
+        execFileSync: () => {
+          const err = new Error('verification failed');
+          err.stderr = 'no matching attestation';
+          throw err;
+        },
+      }),
+    /attestation verification failed.*no matching attestation/,
+  );
 });

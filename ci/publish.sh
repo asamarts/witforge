@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Publish the workspace crates whose version is not on crates.io yet, library first.
 #
-# Usage: ci/publish.sh [--check | --dry-run]
-#   (none)     publish the missing crates. Credentials come from CARGO_REGISTRY_TOKEN (the
-#              release workflow mints a short-lived one with trusted publishing) or from
-#              `cargo login`.
-#   --check    print the crates still to publish, one per line, and publish nothing
-#   --dry-run  package and verify the missing crates without uploading
+# Usage: ci/publish.sh [--check | --dry-run | --no-verify]
+#   (none)       publish the missing crates (verifying them before upload). Credentials come from
+#                CARGO_REGISTRY_TOKEN (the release workflow mints a short-lived one with trusted
+#                publishing) or from `cargo login`.
+#   --check      print the crates still to publish, one per line, and publish nothing
+#   --dry-run    package and verify the missing crates without uploading
+#   --no-verify  publish the missing crates without running dependency build scripts (for a
+#                privileged job publishing crates whose `.crate` digests already matched the
+#                unprivileged verification job)
 #
 # A crate already on crates.io at its version is skipped, so a run that failed halfway can be
 # repeated.
@@ -22,7 +25,8 @@ case "${1:-}" in
     "") ;;
     --check) mode=check ;;
     --dry-run) mode=dry-run ;;
-    *) echo "usage: $0 [--check | --dry-run]" >&2; exit 2 ;;
+    --no-verify) mode=no-verify ;;
+    *) echo "usage: $0 [--check | --dry-run | --no-verify]" >&2; exit 2 ;;
 esac
 
 metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
@@ -89,6 +93,8 @@ rm -rf "${target}"
 
 if [[ "${mode}" == dry-run ]]; then
     cargo publish --locked --target-dir "${target}" --dry-run "${packages[@]}"
+elif [[ "${mode}" == no-verify ]]; then
+    cargo publish --locked --target-dir "${target}" --no-verify "${packages[@]}"
 else
     cargo publish --locked --target-dir "${target}" "${packages[@]}"
 fi

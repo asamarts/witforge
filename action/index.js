@@ -8,8 +8,64 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const REPOSITORY = 'asamarts/witforge';
+const RELEASE_SIGNER_WORKFLOW = `${REPOSITORY}/.github/workflows/release.yml`;
+const FIRST_ATTESTED_VERSION = [0, 7, 0];
 const GENERATORS = new Set(['rust', 'proto', 'schema', 'glue']);
 const REQUEST_TIMEOUT_MS = 30_000;
+
+function supportsAttestation(version) {
+  const parts = String(version || '')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return false;
+  for (let i = 0; i < 3; i += 1) {
+    if (parts[i] > FIRST_ATTESTED_VERSION[i]) return true;
+    if (parts[i] < FIRST_ATTESTED_VERSION[i]) return false;
+  }
+  return true;
+}
+
+function verifyAttestation(archivePath, version, options = {}) {
+  const exec = options.execFileSync ?? execFileSync;
+  const warn = options.warn ?? ((msg) => console.log(`::warning::${msg}`));
+  const notice = options.notice ?? ((msg) => console.log(`::notice::${msg}`));
+  if (!supportsAttestation(version)) {
+    notice(
+      `witforge ${version} predates build provenance attestations (added in 0.7.0); ` +
+        'verified by SHA-256 checksum only.',
+    );
+    return 'unsupported-version';
+  }
+  const env = { ...process.env };
+  if (options.token) env.GH_TOKEN = options.token;
+  try {
+    exec(
+      'gh',
+      [
+        'attestation',
+        'verify',
+        archivePath,
+        '--repo',
+        REPOSITORY,
+        '--signer-workflow',
+        RELEASE_SIGNER_WORKFLOW,
+      ],
+      { stdio: 'pipe', env },
+    );
+    return 'verified';
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      warn(
+        '`gh` CLI is not installed on this runner; skipping build provenance attestation ' +
+          'verification and falling back to the verified SHA-256 checksum.',
+      );
+      return 'skipped-no-gh';
+    }
+    const stderr = error && error.stderr ? String(error.stderr).trim() : '';
+    const detail = stderr || (error && error.message) || String(error);
+    throw new Error(`build provenance attestation verification failed for ${path.basename(archivePath)}: ${detail}`);
+  }
+}
 
 // The runner exports each input as `INPUT_<NAME>`: the name upper-cased, with spaces replaced
 // by underscores. A hyphen stays a hyphen, so `diff-old` arrives as `INPUT_DIFF-OLD`. This is
@@ -213,6 +269,7 @@ async function install(options) {
   if (actual !== expected) {
     throw new Error(`checksum mismatch for ${asset}: expected ${expected}, got ${actual}`);
   }
+  verifyAttestation(archive, version, { token: options.token });
   execFileSync('tar', process.platform === 'win32' ? ['-xf', archive, '-C', temporary] : ['-xzf', archive, '-C', temporary], { stdio: 'inherit' });
   const executable = process.platform === 'win32' ? 'witforge.exe' : 'witforge';
   const binary = path.join(temporary, executable);
@@ -238,6 +295,7 @@ async function main() {
 
 module.exports = {
   REQUEST_TIMEOUT_MS,
+  RELEASE_SIGNER_WORKFLOW,
   archiveName,
   assetTarget,
   buildCommands,
@@ -250,6 +308,8 @@ module.exports = {
   resolveVersion,
   splitLines,
   splitList,
+  supportsAttestation,
+  verifyAttestation,
   versionFromRef,
 };
 
