@@ -69,69 +69,90 @@ resolution, archive extraction, or PATH propagation.
     generators: rust,proto
 ```
 
-Floating refs such as `@main` have no version in the action ref, so they install the latest
-published release. A `version` input overrides either default:
+Floating refs such as `@main`, commit SHAs (`@<40-hex>`), and local `./` checkouts install the
+workspace version recorded in `Cargo.toml` in the Action's own tree at that ref rather than
+silently floating to `latest`. If that version has no published assets yet (for example on a
+release-preparation branch), the Action fails and names the `version` input. Pass `version: latest`
+only when floating latest is explicitly desired, or pass `version` to pin another release:
 
 ```yaml
-- uses: asamarts/witforge@main # floats, but installs a specific release
+- uses: asamarts/witforge@main # pins to the tree's version, or override explicitly:
   with:
     version: 0.6.0
 ```
 
-Pass `${{ github.token }}` as `github-token` when querying the latest release to avoid anonymous
-GitHub API rate limits; pinned versions do not query the API. The token is sent only to that API
-query. The release archive and its checksum are public and are downloaded without credentials.
+Pass `${{ github.token }}` as `github-token` when querying the latest release or verifying build
+provenance attestations (`gh attestation verify`) to avoid anonymous GitHub API rate limits. The
+token is never sent with public release-asset downloads. All inputs are validated before any
+network request; transient network/5xx errors retry up to 3 attempts while HTTP 4xx and SHA-256
+checksum mismatches are never retried. Downloaded archive and `.sha256` scratch files are removed
+immediately after extracting the binary under `$RUNNER_TEMP`.
 
 The runner exports an input as `INPUT_<NAME>` with the name upper-cased and spaces replaced by
 underscores; a hyphen stays a hyphen, so `diff-old` is `INPUT_DIFF-OLD`. Action releases through
 v0.5.0 replaced hyphens too and therefore read `diff-old`, `diff-new`, `diff-check`, and
 `github-token` as empty: they never ran `diff`, and every latest-release lookup was anonymous.
 `action/test.js` now reads every input declared in `action.yml` through the runner's names, and
-CI runs the checked-out Action twice on a breaking fixture pair: once reporting
-(`diff-check: false`) and once gating, where the step must fail.
+CI runs the checked-out Action both on a breaking fixture pair (asserting `outputs.failed-command`
+equals `witforge diff`, not `install`) and against the current commit's locally built binary via
+`binary:`.
 
-### Inputs
+### Inputs and outputs
+
+Every input and output is documented publicly on [`docs/guide/ci.md`](../guide/ci.md):
 
 | Input | Default | Behavior |
 |---|---|---|
-| `version` | empty | `X.Y.Z`/`vX.Y.Z`, or `latest`. Empty uses the action ref when it is a version tag, otherwise latest. |
-| `check` | empty | Version directories for `witforge check`, one per line. |
+| `version` | empty | `X.Y.Z`/`vX.Y.Z`, or `latest`. Empty uses the action ref tag or the Action tree's `Cargo.toml` version. Cannot be combined with `binary`. |
+| `binary` | empty | Path to an existing local `witforge` executable, skipping download. Cannot be combined with `version`. |
+| `check` | empty | Version directories or WIT roots for `witforge check`, one per line. |
+| `against` | empty | Baseline `wire.lock` path (single `check` entry) or `<check-dir>=<baseline>` lines (multiple `check` entries) for `check --against`. |
 | `diff-old` | empty | Old version directory or root for `witforge diff`. |
 | `diff-new` | empty | New version directory or root for `witforge diff`. |
-| `diff-check` | `true` | Pass `--check`, failing the step on breaking changes. Set `false` to report only. |
-| `config` | empty | `witforge.toml` used for generate/check runs. |
-| `project` | empty | Project name passed to each generator. |
+| `diff-check` | `true` | `true` (`--check`), `false` (report only), or comma-separated views (`wire`, `source`, `api`, `decode`). |
+| `config` | empty | `witforge.toml` used for generate/check/freeze runs. |
+| `project` | empty | Project name passed to each generator and `freeze --config`. |
 | `generators` | `rust` | Comma- or whitespace-separated `rust`, `proto`, `schema`, `glue`; each runs with `--config` and `--check`. Empty skips generation. |
-| `github-token` | empty | Token for the latest-release lookup; not sent with asset downloads. |
+| `freeze` | empty | WIT roots to verify with `witforge freeze` (one per line), or `true` to verify every project in `config` (requires `fetch-depth: 0`). |
+| `format` | `human` | `human`, `json`, or `sarif`. Failing checks always emit workflow annotations (`::error file=...,line=...,col=...::...`). |
+| `sarif-file` | empty | Combined SARIF 2.1.0 output file path when `format: sarif` is set (default `witforge.sarif`). |
+| `github-token` | empty | Token for GitHub API calls (`version: latest` and `gh attestation verify`); not sent with asset downloads. |
+
+Outputs: `failed-command` (`install` or `witforge <subcommand>` on failure; empty on success) and
+`sarif-file` (path to the written SARIF file when `format: sarif` is set).
 
 With `diff-old` and `diff-new` set and `diff-check` left at its default, the step fails on any
 wire-, source-, or generated-API-breaking change. That includes an added record field, so a
-workflow that only wants the report sets `diff-check: "false"`. Because releases through v0.5.0
-ignored these inputs, a workflow that already passes them starts gating when its pin moves to
-`v0.6.0` or later.
+workflow that only wants the report sets `diff-check: "false"` or `diff-check: "wire"`. Because
+releases through v0.5.0 ignored these inputs, a workflow that already passes them starts gating
+when its pin moves to `v0.6.0` or later.
 
 The action leaves `witforge` on `PATH` and exports `WITFORGE_BIN` for later steps. It runs, in
 order:
 
-1. every `check` entry;
+1. every `check` entry (with `--against` where configured);
 2. `diff` when both old and new are set;
-3. every configured generator with `--check`.
+3. `freeze` when enabled;
+4. every configured generator with `--check`.
 
 ### Checksums and supply chain
 
-The action downloads the archive and its `.sha256` file over HTTPS, verifies the digest with
-Node's built-in SHA-256 implementation, and only then extracts the executable. It does not
-download or execute a shell installer, and it has no npm dependencies. The action code itself is
-committed in [`action/`](../../action/), and the release workflow pins its GitHub Actions to
-immutable commits.
+The action downloads the archive and its `.sha256` file over HTTPS (without credentials), verifies
+the digest with Node's built-in SHA-256 implementation, verifies the GitHub build provenance
+attestation with `gh attestation verify` (for releases 0.7.0+; warns and falls back to checksum
+only if `gh` is absent from the runner), and only then extracts the executable and removes the
+downloaded archive and checksum scratch files. It does not download or execute a shell installer,
+and it has no npm dependencies. The action code itself is committed in [`action/`](../../action/),
+and the release workflow pins its GitHub Actions to immutable commits.
 
 ## Release workflow
 
-The `v*` tag workflow runs after the GitHub release is created. Its binary matrix builds the
-four targets, packages each with `ci/release-asset.sh`, verifies the generated checksum, and
-uploads the archive and checksum with `gh release upload --clobber`, so a rerun repairs a partial
-upload. The crates.io publish remains a separate, earlier job. After all four assets exist, the
-checked-out tag's Action installs and verifies each target on Linux x86_64, macOS arm64, macOS
-Intel, and Windows x86_64, runs `check`, and verifies all four configured generators. Main CI
-separately invokes the pinned remote release ref on the same four-target matrix, proving GitHub
-tag resolution rather than only the checked-out Action.
+The `v*` tag workflow (`release.yml`) runs `verify -> binaries -> smoke-artifacts -> publish ->
+github-release -> action-smoke`: platform archives are built for all five targets (Linux x86_64,
+Linux arm64, macOS Intel, macOS Apple silicon, Windows x86_64), attested with
+`actions/attest-build-provenance`, and smoke-tested from workflow artifacts before anything is
+published. `publish` verifies deterministic `.crate` digests and publishes with `--no-verify`;
+`github-release` creates a draft release, uploads assets without `--clobber` (verifying existing
+digests on re-run), and publishes the draft once all assets are attached. Main CI separately
+invokes the pinned remote release ref across hosted targets, proving GitHub tag resolution rather
+than only the checked-out Action.

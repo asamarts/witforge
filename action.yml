@@ -1,5 +1,5 @@
 name: witforge
-description: Install a prebuilt witforge release, then check, diff, and generate a WIT contract.
+description: Install a prebuilt witforge release, then check, diff, freeze-check, and generate a WIT contract.
 author: asamarts
 branding:
   icon: check-circle
@@ -7,13 +7,29 @@ branding:
 inputs:
   version:
     description: >-
-      Release version to install, with or without a leading `v`. Leave empty to use the action
-      ref when it is a version tag (for example `v0.3.0`), otherwise the latest release.
+      Release version to install (`X.Y.Z`, `vX.Y.Z`, or `latest`). Leave empty to install the
+      version named by the Action ref when it is a release tag, or the workspace version recorded
+      in the Action's own tree at a commit SHA, branch, or local `./` ref. Never falls back to
+      `latest` unless `version: latest` is passed explicitly. Cannot be combined with `binary`.
+    required: false
+    default: ''
+  binary:
+    description: >-
+      Optional path to an existing `witforge` executable to use instead of downloading a GitHub
+      release (for testing the checked-out Action against a local build or running air-gapped).
+      Cannot be combined with `version`.
     required: false
     default: ''
   check:
     description: >-
-      WIT version directories to pass to `witforge check`, one per line.
+      WIT version directories or WIT roots to pass to `witforge check`, one per line.
+    required: false
+    default: ''
+  against:
+    description: >-
+      Baseline `wire.lock` path(s) for `witforge check --against`. When `check` names a single
+      directory, pass a single lockfile path (for example `wit/v0.1/wire.lock`). When `check`
+      names multiple directories, pass one `<check-dir>=<baseline-lockfile>` line per entry.
     required: false
     default: ''
   diff-old:
@@ -32,7 +48,7 @@ inputs:
     required: false
     default: 'true'
   config:
-    description: Optional `witforge.toml` for generate/check runs.
+    description: Optional `witforge.toml` for generate/check/freeze runs.
     required: false
     default: ''
   project:
@@ -51,10 +67,32 @@ inputs:
       in `config`. Requires full Git history (`fetch-depth: 0` on `actions/checkout`).
     required: false
     default: ''
-  github-token:
-    description: Token used only to query the latest release; pass the workflow token for rate limits. Release assets are downloaded without it.
+  format:
+    description: >-
+      Diagnostic output format (`human`, `json`, or `sarif`). Failing checks always emit GitHub
+      workflow annotations when file/line positions are available.
+    required: false
+    default: 'human'
+  sarif-file:
+    description: >-
+      Path to write the combined SARIF 2.1.0 report when `format: sarif` is set (default
+      `witforge.sarif`).
     required: false
     default: ''
+  github-token:
+    description: >-
+      Token used for GitHub API queries (`version: latest` lookup and `gh attestation verify`);
+      pass `${{ github.token }}` for rate limits. Release assets are downloaded without it.
+    required: false
+    default: ''
+outputs:
+  failed-command:
+    description: >-
+      Empty on success; names the failing stage (`install` or `witforge <subcommand>`, such as
+      `witforge diff`) when the step fails.
+  sarif-file:
+    description: >-
+      Path to the written SARIF 2.1.0 report when `format: sarif` was requested.
 runs:
   using: node24
   main: action/index.js

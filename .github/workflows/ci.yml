@@ -136,12 +136,17 @@ jobs:
           diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
           diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
           github-token: ${{ github.token }}
-      - name: Require the diff gate to have failed
+      - name: Require the diff gate to have failed in witforge diff
         env:
           OUTCOME: ${{ steps.diff-gate.outcome }}
+          FAILED_COMMAND: ${{ steps.diff-gate.outputs.failed-command }}
         run: |
           if [ "$OUTCOME" != failure ]; then
             echo "::error::the Action's diff gate passed a breaking change (outcome: $OUTCOME)"
+            exit 1
+          fi
+          if [ "$FAILED_COMMAND" != "witforge diff" ]; then
+            echo "::error::expected diff gate to fail in 'witforge diff', got '${FAILED_COMMAND}'"
             exit 1
           fi
 
@@ -337,6 +342,30 @@ jobs:
       - run: ci/check-release-freeze.sh examples/evolved/wit
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
+      # Smoke the checked-out Action against the binary built from this exact commit, exercising
+      # the new `binary`, `against`, `freeze`, `diff-check: wire`, and `format: sarif` inputs on
+      # `examples/evolved` before a release exists.
+      - name: Smoke the local Action against the commit's binary
+        id: local-bin-action
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/debug/witforge
+          check: examples/evolved/wit/v0.2
+          against: examples/evolved/wit/v0.1/wire.lock
+          diff-old: examples/evolved/wit/v0.1
+          diff-new: examples/evolved/wit/v0.2
+          diff-check: wire
+          config: examples/evolved/witforge.toml
+          generators: rust,proto,schema,glue
+          freeze: "true"
+          format: sarif
+          sarif-file: ${{ runner.temp }}/witforge.sarif
+      - name: Verify the emitted SARIF report
+        shell: bash
+        env:
+          SARIF_FILE: ${{ steps.local-bin-action.outputs.sarif-file }}
+        run: |
+          jq -e '.version == "2.1.0" and (.runs | length) >= 6' "$SARIF_FILE" >/dev/null
       # The release script's version-reference check runs here so drift in README/docs/Action
       # references fails a normal main/PR run, not only a tag release.
       - run: ci/check-release.sh
