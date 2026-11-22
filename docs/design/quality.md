@@ -24,10 +24,19 @@ The existing lockfile property suite also checks idempotent reconciliation, stab
 append-only reservations. The properties are intentionally input-level: they exercise parser and
 emitter boundaries with shapes the hand-written golden fixtures may not cover.
 
-[`fuzz/`](../../fuzz/) is a separate `cargo-fuzz` workspace with `wit-package` and `lockfile`
-targets. It runs under pinned `nightly-2026-09-11` with `rust-src` and the GNU target, and is not
-a blocking stable-CI job. Stable CI still formats and checks the fuzz manifest, and the security
-job audits the fuzz lockfile and runs the dependency policy against it. See
+[`fuzz/`](../../fuzz/) is a separate `cargo-fuzz` workspace with three targets (`wit-package`,
+`lockfile`, and the structure-aware `structured-contract`), a tracked fixture-derived seed corpus
+under `fuzz/seeds/` (while `fuzz/corpus/` remains ignored), and a WIT keyword dictionary
+(`fuzz/wit.dict`). Instead of discarding emitter results, `wit-package` and `structured-contract`
+assert that any subset-clean contract builds, locks canonically and idempotently, generates
+deterministically across all four emitters, has an empty self-diff, and converts across two
+identical adjacent minors. The same structure-aware generator (including one-letter and upper-case
+words, multi-file roots, and `deps/` packages) and invariants run in the stable test suite as
+`structured_contracts_satisfy_fuzz_invariants` in `crates/witforge/tests/properties.rs`. The
+weekly scheduled `fuzz-smoke` job in `.github/workflows/ci.yml` runs all three targets under pinned
+`nightly-2026-09-11` for a bounded time and uploads `fuzz/artifacts/` on failure. Stable CI also
+formats and checks the fuzz manifest, and the security job audits the fuzz lockfile and runs the
+dependency policy against it. See [`fuzz/README.md`](../../fuzz/README.md) and
 [`ci/README.md`](../../ci/README.md) for the reproducible invocation.
 
 ## Compile and round-trip matrix

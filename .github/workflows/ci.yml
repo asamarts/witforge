@@ -463,9 +463,11 @@ jobs:
       - name: Run bounded fuzz targets
         shell: bash
         run: |
-          cargo +nightly-2026-09-11 fuzz run wit-package \
+          cargo +nightly-2026-09-11 fuzz run wit-package fuzz/seeds/wit-package \
+            --target x86_64-unknown-linux-gnu -- -dict=fuzz/wit.dict -max_total_time=45
+          cargo +nightly-2026-09-11 fuzz run lockfile fuzz/seeds/lockfile \
             --target x86_64-unknown-linux-gnu -- -max_total_time=45
-          cargo +nightly-2026-09-11 fuzz run lockfile \
+          cargo +nightly-2026-09-11 fuzz run structured-contract fuzz/seeds/structured-contract \
             --target x86_64-unknown-linux-gnu -- -max_total_time=45
       - name: Upload crashing inputs on failure
         if: failure()

@@ -1,8 +1,13 @@
-//! Property tests for lockfile parsing, model shapes, and emitters.
+//! Property tests for lockfile parsing, model shapes, structured contracts, and emitters.
 
+#[path = "../../../fuzz/fuzz_targets/structured_gen.rs"]
+mod structured_gen;
+
+use std::fs;
 use std::path::Path;
 
 use proptest::prelude::*;
+use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 
 use witforge::diff;
 use witforge::emit::{glue, json_schema, proto, rust};
@@ -293,5 +298,75 @@ fn two_version_fixture_plans_conversions_and_diffs() {
             .iter()
             .any(|change| change.path == "types/user.old-field"),
         "the fixture must expose its documented removal"
+    );
+}
+
+#[test]
+fn structured_contracts_satisfy_fuzz_invariants() {
+    // 1. Every tracked seed in `fuzz/seeds/structured-contract/` and `fuzz/seeds/wit-package/`
+    //    must satisfy all compiler invariants cleanly.
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let structured_seeds_dir = repo.join("fuzz/seeds/structured-contract");
+    let mut seed_count = 0usize;
+    let exercised = std::sync::atomic::AtomicUsize::new(0);
+    for entry in fs::read_dir(&structured_seeds_dir).unwrap() {
+        let bytes = fs::read(entry.unwrap().path()).unwrap();
+        let generated = structured_gen::generate_from_bytes(&bytes);
+        let scratch = structured_gen::ScratchDir::new("prop-seed");
+        let v01 = scratch.path().join("v0.1");
+        generated.write_to(&v01);
+        if structured_gen::assert_invariants_for_version_dir(scratch.path(), &v01) {
+            exercised.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        seed_count += 1;
+    }
+    assert!(seed_count >= 4, "expected tracked structured seeds");
+
+    let wit_seeds_dir = repo.join("fuzz/seeds/wit-package");
+    for entry in fs::read_dir(&wit_seeds_dir).unwrap() {
+        let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+        let scratch = structured_gen::ScratchDir::new("prop-wit-seed");
+        let v01 = scratch.path().join("v0.1");
+        fs::create_dir_all(&v01).unwrap();
+        fs::write(v01.join("contract.wit"), text).unwrap();
+        let _ = structured_gen::assert_invariants_for_version_dir(scratch.path(), &v01);
+    }
+
+    let lock_seeds_dir = repo.join("fuzz/seeds/lockfile");
+    for entry in fs::read_dir(&lock_seeds_dir).unwrap() {
+        let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+        let lock = WireLock::parse(&text).expect("tracked lockfile seed must parse");
+        let rendered = lock.render();
+        let reparsed = WireLock::parse(&rendered).expect("re-rendered lockfile seed must parse");
+        assert_eq!(rendered, reparsed.render());
+        assert!(reparsed.is_canonical(&rendered));
+    }
+
+    // 2. Fixed-seed bounded proptest over arbitrary byte sequences feeding the structure-aware
+    //    contract generator (including one-letter/upper-case names, multi-file roots, and deps).
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 48,
+            ..Config::default()
+        },
+        TestRng::from_seed(RngAlgorithm::ChaCha, &[0x57; 32]),
+    );
+    let strategy = prop::collection::vec(any::<u8>(), 16..96);
+    runner
+        .run(&strategy, |bytes| {
+            let generated = structured_gen::generate_from_bytes(&bytes);
+            let scratch = structured_gen::ScratchDir::new("prop-struct");
+            let v01 = scratch.path().join("v0.1");
+            generated.write_to(&v01);
+            if structured_gen::assert_invariants_for_version_dir(scratch.path(), &v01) {
+                exercised.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(())
+        })
+        .unwrap();
+    let total = exercised.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        total >= 10,
+        "expected at least 10 subset-clean structured contracts to exercise every invariant, got {total}"
     );
 }

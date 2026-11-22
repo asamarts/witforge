@@ -26,5 +26,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "structured-contract"
+path = "fuzz_targets/structured_contract.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 resolver = "3"

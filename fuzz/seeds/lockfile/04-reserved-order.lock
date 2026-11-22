@@ -1,0 +1,3 @@
+# witforge wire lockfile v2
+ex:a/t/r.old = 2 field string reserved
+ex:a/t/r.x = 1 field u32

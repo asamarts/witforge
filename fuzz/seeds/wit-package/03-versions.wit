@@ -1,0 +1,9 @@
+package example:evolve@0.1.0;
+
+interface types {
+    record user {
+        name: string,
+        old-field: u32,
+        rename-me: string,
+    }
+}

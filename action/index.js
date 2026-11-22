@@ -562,7 +562,7 @@ function annotationsFromJsonReport(report) {
     const severity = String(diag.severity || 'error').toLowerCase();
     if (severity === 'note') continue;
     const level = severity === 'warning' ? 'warning' : 'error';
-    const pos = diag.position || {};
+    const pos = diag.position || diag;
     lines.push(
       formatAnnotationLine({
         level,

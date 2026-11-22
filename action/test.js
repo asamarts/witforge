@@ -574,7 +574,10 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
         code: 'WF1010',
         severity: 'error',
         file: 'wit/v0.2/contract.wit',
-        position: { line: 4, column: 5, end_line: 4, end_column: 18 },
+        line: 4,
+        column: 5,
+        end_line: 4,
+        end_column: 18,
         message: 'resources are not supported',
       },
       {

@@ -1,0 +1,21 @@
+# witforge wire lockfile v2
+example:ingest/ingest#submit.item = 1 param types/item
+example:ingest/ingest.submit = 1 method types/event
+example:ingest/types/event.finished = 3 variant-case types/status
+example:ingest/types/event.item = 2 variant-case types/item
+example:ingest/types/event.started = 1 variant-case
+example:ingest/types/item.id = 1 field u64
+example:ingest/types/item.name = 2 field string
+example:ingest/types/item.note = 4 field option<string>
+example:ingest/types/item.tags = 3 field list<string>
+example:ingest/types/options.strict = 1 flag
+example:ingest/types/options.trace = 2 flag
+example:ingest/types/status.accepted = 1 enum-case
+example:ingest/types/status.rejected = 2 enum-case
+# witforge order v1
+# order example:ingest/ingest fc341b16e3e7957f = submit
+# order example:ingest/ingest#submit 3e7855bf4f40dc92 = item
+# order example:ingest/types/event cf63dd789f6121c7 = started item finished
+# order example:ingest/types/item f755c2b1774bf568 = id name tags note
+# order example:ingest/types/options 8fd1ae8e8d346687 = strict trace
+# order example:ingest/types/status 12b83a15a86ce0d6 = accepted rejected
