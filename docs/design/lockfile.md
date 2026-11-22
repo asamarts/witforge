@@ -73,15 +73,20 @@ frozen as a whole, which covers the remaining source-level cases.
   numbers and reserved names are append-only: a member removed in a later minor stays as a
   `reserved` number and name, while a type or function removed as a whole drops its messages
   from the schema and keeps its method number reserved.
-- `ci/check-release-freeze.sh [WIT_ROOT]` (the root resolved from the current directory) reads
-  the full history of the manifest, merges included: every entry a committed manifest listed
-  must still be listed, and each listed directory must not be or hold a symlink, must hold a
-  `wire.lock` that git tracks under exactly the entry's spelling (a case-insensitive file system
-  would otherwise match `V0.1` to `v0.1` and check nothing), must have no untracked files
-  (ignored ones included), and must match every commit that listed it, so a change that landed
-  in a push whose CI run was cancelled, or came in through a merge, is still caught. When the
-  WIT root was moved, the manifest's earlier paths (found by git's rename detection) are checked
-  too, against what each commit held at the earlier path. Only renames count: git reports a new
+- `witforge freeze [<WIT_ROOT>] [--config PATH] [--project NAME] [--base REV]` (also invoked by
+  the wrapper `ci/check-release-freeze.sh [WIT_ROOT]`) reads the full history of the manifest,
+  merges included: every entry a committed manifest listed must still be listed, and each listed
+  directory must not be or hold a symlink, must hold a `wire.lock` that git tracks under exactly
+  the entry's spelling (a case-insensitive file system would otherwise match `V0.1` to `v0.1` and
+  check nothing), must have no untracked files (ignored ones included), and must match every
+  commit that listed it, so a change that landed in a push whose CI run was cancelled, or came in
+  through a merge, is still caught. Every violation is collected and reported (exit `1`,
+  `WF1109`) rather than stopping at the first. A shallow clone, missing `git`, or directory
+  outside any Git repository fails with exit `2` (naming `fetch-depth: 0` for shallow clones).
+  `--base <REV>` optionally bounds the history scan to `<REV>` and `<REV>..HEAD`. When `--config`
+  is given without `--project`, every configured project's WIT root is verified. When the WIT
+  root was moved, the manifest's earlier paths (found by git's rename detection) are checked too,
+  against what each commit held at the earlier path. Only renames count: git reports a new
   manifest that resembles one that still exists, such as a second WIT root's, as a copy, and the
   history beyond a copy belongs to the other manifest. A move that also rewrites most of the
   manifest, or leaves a manifest at the earlier path, is not detected as one, so a WIT root is
@@ -90,8 +95,8 @@ frozen as a whole, which covers the remaining source-level cases.
   it is spelled.
   A commit that lists a directory therefore fixes its content for as long as the commit stays in
   the history the check reads; rewriting history to drop it is outside the check, so the branch
-  is protected. witforge's CI runs it on its fixture; a consumer can run it on its own WIT
-  root.
+  is protected. witforge's CI runs it on its fixture and on `examples/evolved/wit`; a consumer can
+  run `witforge freeze` directly or through the GitHub Action's `freeze` input.
 - `lock` refuses to modify a released version directory, and refuses a `--lock` path inside one.
   The refusal compares resolved paths, not names: the version directory, the lockfile's
   directory, and every listed directory are canonicalised, so `.` and `..` components and a

@@ -127,6 +127,7 @@ test('every input action.yml declares is read', () => {
     'config',
     'project',
     'generators',
+    'freeze',
     'github-token',
   ]);
   const { install, commands } = readInputs(
@@ -148,6 +149,40 @@ test('incomplete or unknown inputs are refused', () => {
     diffCheck: 'false',
   });
   assert.deepEqual(noCheck, [['witforge', 'diff', 'v0.1', 'v0.2']]);
+  assert.throws(() => buildCommands('witforge', { freeze: 'true' }), /freeze: true requires config/);
+});
+
+test('freeze input builds witforge freeze commands from roots or config', () => {
+  assert.deepEqual(
+    buildCommands('witforge', {
+      freeze: 'wit\nother/wit',
+    }),
+    [
+      ['witforge', 'freeze', 'wit'],
+      ['witforge', 'freeze', 'other/wit'],
+    ],
+  );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      freeze: 'true',
+      config: 'witforge.toml',
+      project: 'demo',
+      generators: 'rust',
+    }),
+    [
+      ['witforge', 'freeze', '--config', 'witforge.toml', '--project', 'demo'],
+      ['witforge', 'rust', '--config', 'witforge.toml', '--check', '--project', 'demo'],
+    ],
+  );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      freeze: 'true',
+      config: 'witforge.toml',
+      generators: '',
+    }),
+    [['witforge', 'freeze', '--config', 'witforge.toml']],
+  );
+  assert.deepEqual(buildCommands('witforge', { freeze: 'false' }), []);
 });
 
 test('requests carry a bounded abort signal and authorization', async () => {

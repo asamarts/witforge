@@ -12,6 +12,7 @@
 //! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
 //!                [--config PATH] [--project NAME] [--check] [--released PATH]
 //! witforge diff  <old> <new> [--json] [--check]
+//! witforge freeze [<wit-root>] [--config PATH] [--project NAME] [--base REV]
 //!
 //! All commands accept `--format human|json|sarif`; `human` is the default.
 //! ```
@@ -99,6 +100,8 @@ enum Command {
     Glue(GlueOptions),
     /// Compare two contract versions and classify breaking changes.
     Diff(DiffOptions),
+    /// Verify that released version directories have not changed in Git history.
+    Freeze(FreezeOptions),
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -219,6 +222,19 @@ struct DiffOptions {
 }
 
 #[derive(Debug, Args)]
+struct FreezeOptions {
+    /// WIT root containing version directories and `released` manifest.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Lower-bound Git revision to bound the manifest history scan (default: full history).
+    #[arg(long, value_name = "REV")]
+    base: Option<String>,
+    /// Configuration file with one or more projects whose WIT roots to verify.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
 struct Options {
     /// WIT version directory.
     #[arg(value_name = "WIT_DIR")]
@@ -322,6 +338,62 @@ struct ResolvedPaths {
     serde: bool,
 }
 
+fn load_config_file(config_path: &Path) -> Result<(ConfigFile, PathBuf)> {
+    let text = fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read configuration {}", config_path.display()))?;
+    if text.starts_with('\u{feff}') {
+        return Err(op_error(
+            codes::PARSE_ERROR,
+            format!(
+                "invalid configuration {}: file starts with a UTF-8 byte-order mark (BOM); save \
+                 the configuration as UTF-8 without a BOM",
+                config_path.display()
+            ),
+            Some(config_path.display().to_string()),
+        ));
+    }
+    let config: ConfigFile = toml::from_str(&text).map_err(|err| {
+        op_error(
+            codes::PARSE_ERROR,
+            format!("invalid configuration {}: {err}", config_path.display()),
+            Some(config_path.display().to_string()),
+        )
+    })?;
+    if config.version != 1 {
+        return Err(op_error(
+            codes::PARSE_ERROR,
+            format!(
+                "configuration {} has unsupported version {}; expected 1",
+                config_path.display(),
+                config.version
+            ),
+            Some(config_path.display().to_string()),
+        ));
+    }
+    if config.project.is_empty() {
+        return Err(op_error(
+            codes::PARSE_ERROR,
+            format!("configuration {} has no projects", config_path.display()),
+            Some(config_path.display().to_string()),
+        ));
+    }
+    validate_configured_paths(&config, config_path)?;
+    let base = config_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    Ok((config, base))
+}
+
+fn resolve_config_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn resolve_paths(
     emitter: Emitter,
@@ -375,45 +447,7 @@ fn resolve_paths(
         });
     };
 
-    let text = fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read configuration {}", config_path.display()))?;
-    if text.starts_with('\u{feff}') {
-        return Err(op_error(
-            codes::PARSE_ERROR,
-            format!(
-                "invalid configuration {}: file starts with a UTF-8 byte-order mark (BOM); save \
-                 the configuration as UTF-8 without a BOM",
-                config_path.display()
-            ),
-            Some(config_path.display().to_string()),
-        ));
-    }
-    let config: ConfigFile = toml::from_str(&text).map_err(|err| {
-        op_error(
-            codes::PARSE_ERROR,
-            format!("invalid configuration {}: {err}", config_path.display()),
-            Some(config_path.display().to_string()),
-        )
-    })?;
-    if config.version != 1 {
-        return Err(op_error(
-            codes::PARSE_ERROR,
-            format!(
-                "configuration {} has unsupported version {}; expected 1",
-                config_path.display(),
-                config.version
-            ),
-            Some(config_path.display().to_string()),
-        ));
-    }
-    if config.project.is_empty() {
-        return Err(op_error(
-            codes::PARSE_ERROR,
-            format!("configuration {} has no projects", config_path.display()),
-            Some(config_path.display().to_string()),
-        ));
-    }
-    validate_configured_paths(&config, config_path)?;
+    let (config, base) = load_config_file(config_path)?;
     let name = match &config_args.project {
         Some(name) => name.clone(),
         None if config.project.len() == 1 => config
@@ -440,17 +474,7 @@ fn resolve_paths(
             Some(config_path.display().to_string()),
         ));
     };
-    let base = config_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let from_config = |path: &Path| {
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            base.join(path)
-        }
-    };
+    let from_config = |path: &Path| resolve_config_path(&base, path);
     validate_configured_outputs(&config, &name, emitter, out.as_deref(), &from_config)?;
     validate_configured_module_roots(&config)?;
     let root = root.unwrap_or_else(|| from_config(&project.root));
@@ -762,6 +786,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Schema(options) => schema(&options, &mut reporter),
         Command::Glue(options) => glue(&options, &mut reporter),
         Command::Diff(options) => diff_command(&options, &mut reporter),
+        Command::Freeze(options) => freeze_command(&options, &mut reporter),
     };
     match result {
         Ok(code) => {
@@ -1599,6 +1624,85 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn freeze_command(options: &FreezeOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let roots = resolve_freeze_roots(options)?;
+    let freeze_opts = witforge::freeze::FreezeOptions {
+        base: options.base.clone(),
+    };
+    let mut failed = false;
+    for root in roots {
+        let report = witforge::freeze::check_root(&root, &freeze_opts)?;
+        if report.is_ok() {
+            if reporter.human() {
+                if report.no_manifest {
+                    reporter.write_stdout_line(&format!(
+                        "no released manifest at {}; nothing to freeze",
+                        report.manifest
+                    ));
+                } else {
+                    reporter.write_stdout_line(&format!(
+                        "release freeze check passed for {} ({} release check(s))",
+                        report.root, report.checks
+                    ));
+                }
+            }
+        } else {
+            failed = true;
+            for violation in report.violations {
+                if reporter.human() {
+                    diagnostics::write_stderr_line(&format!(
+                        "release freeze: {}",
+                        violation.diagnostic.message
+                    ));
+                } else {
+                    reporter.push_located(violation);
+                }
+            }
+        }
+    }
+    if failed {
+        Ok(ExitCode::from(1))
+    } else {
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<PathBuf>> {
+    if let Some(root) = &options.root {
+        return Ok(vec![root.clone()]);
+    }
+    let Some(config_path) = &options.config.config else {
+        if options.config.project.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--project` requires `--config`",
+                None,
+            ));
+        }
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "missing WIT_ROOT (or use --config)",
+            None,
+        ));
+    };
+    let (config, base) = load_config_file(config_path)?;
+    if let Some(name) = &options.config.project {
+        let Some(project) = config.project.get(name) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("configuration has no project `{name}`"),
+                Some(config_path.display().to_string()),
+            ));
+        };
+        return Ok(vec![resolve_config_path(&base, &project.root)]);
+    }
+    Ok(config
+        .project
+        .values()
+        .map(|project| resolve_config_path(&base, &project.root))
+        .collect())
 }
 
 fn conversion_blockers(report: &DiffReport) -> impl Iterator<Item = (&'static str, &diff::Change)> {

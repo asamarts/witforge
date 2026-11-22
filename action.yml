@@ -42,6 +42,12 @@ inputs:
       (`rust`, `proto`, `schema`, `glue`). Empty skips generation.
     required: false
     default: 'rust'
+  freeze:
+    description: >-
+      WIT roots to verify with `witforge freeze`, one per line, or `true` to verify every project
+      in `config`. Requires full Git history (`fetch-depth: 0` on `actions/checkout`).
+    required: false
+    default: ''
   github-token:
     description: Token used only to query the latest release; pass the workflow token for rate limits. Release assets are downloaded without it.
     required: false

@@ -125,6 +125,7 @@ beside each split code for consumers updating JSON or SARIF filters.
 | `WF1106` | error | — | The lockfile is not in canonical `lock` form. |
 | `WF1107` | note | — | The pinned dependency graph cannot be compared because the baseline is not a version-directory lockfile. |
 | `WF1108` | error | — | A draft removal can be restored; `lock --against` would un-reserve the member. |
+| `WF1109` | error | — | A released version directory changed after release, lost a manifest entry, or failed release-freeze hygiene (`witforge freeze`). |
 | `WF1201` | note | — | `lock` added a member. |
 | `WF1202` | note | — | `lock` reserved a removed member. |
 | `WF1203` | note | — | `lock` dropped a stale draft. |

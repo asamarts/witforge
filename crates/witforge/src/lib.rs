@@ -27,6 +27,7 @@
 pub mod diagnostic;
 pub mod diff;
 pub mod emit;
+pub mod freeze;
 pub mod lock;
 pub mod model;
 pub mod subset;
@@ -1365,8 +1366,8 @@ impl ReleasedManifest {
 }
 
 /// Whether `name` matches `^[A-Za-z0-9][A-Za-z0-9._-]*$`, the released-manifest entry rule shared
-/// with `ci/check-release-freeze.sh`.
-fn plain_directory_name(name: &str) -> bool {
+/// with [`freeze`].
+pub(crate) fn plain_directory_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     bytes
         .next()

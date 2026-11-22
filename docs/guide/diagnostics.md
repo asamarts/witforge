@@ -260,6 +260,15 @@ version-directory `wire.lock`.
 
 A draft removal can be restored; running `witforge lock --against` will un-reserve the member.
 
+### WF1109
+
+**Severity:** `error`
+
+A released version directory listed in `wit/released` changed after release, had an entry removed
+from `wit/released`, contains a symlink or untracked file, or lacks a git-tracked `wire.lock` under
+its exact spelling. Restore the released directory and manifest rather than editing a released
+version in place.
+
 ### WF1201
 
 **Severity:** `note`

@@ -321,6 +321,11 @@ jobs:
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
       - run: ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit
+        env:
+          WITFORGE: ${{ github.workspace }}/target/debug/witforge
+      - run: ci/check-release-freeze.sh examples/evolved/wit
+        env:
+          WITFORGE: ${{ github.workspace }}/target/debug/witforge
       # The release script's version-reference check runs here so drift in README/docs/Action
       # references fails a normal main/PR run, not only a tag release.
       - run: ci/check-release.sh

@@ -7,20 +7,31 @@ title: Continuous integration
 
 ## GitHub Action
 
-Pin the Action to the same release used for local generation, and run the contract diff as its
-own step. The Action leaves `witforge` on `PATH`:
+Check out with full Git history (`fetch-depth: 0`) so `witforge freeze` can inspect the history of
+`wit/released`, pin the Action to the same release used for local generation, and run the contract
+diff as its own step. The Action leaves `witforge` on `PATH`:
 
 ```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
 - uses: asamarts/witforge@v0.6.0
   with:
     check: wit/v0.2
     config: witforge.toml
     generators: rust,proto,schema,glue
+    freeze: "true"
 - run: witforge diff wit/v0.1 wit/v0.2
 ```
 
-The Action installs a checksum-verified release binary and runs configured generators with
-`--check`. The `diff` step prints what changed between the two versions.
+The Action installs a checksum-verified release binary, verifies that released directories listed
+in `wit/released` have not changed since their release (`witforge freeze`), and runs configured
+generators with `--check`. The `diff` step prints what changed between the two versions.
+
+`witforge freeze` refuses shallow clones with exit code `2` and names `fetch-depth: 0`; never
+skip it with a shallow checkout. It protects the committed WIT contract sources and `wire.lock`
+files under every released directory. Generated per-version modules (such as `v0_1.rs`) are frozen
+by committing the generated copies and verifying them with `--check`, not by `witforge freeze`.
 
 Add `--check` to the `diff` step to fail the job on any wire-, source-, or generated-API-breaking
 change. An added record field is source-breaking even when its type is defaultable, so this gate
@@ -45,6 +56,7 @@ passing on source-breaking changes.
 ## Direct commands
 
 ```sh
+witforge freeze --config witforge.toml
 witforge check wit/v0.2 --against wit/v0.1/wire.lock
 witforge diff wit/v0.1 wit/v0.2 --check
 witforge rust --config witforge.toml --check
@@ -53,7 +65,7 @@ witforge schema --config witforge.toml --check
 witforge glue --config witforge.toml --check
 ```
 
-Run both `diff --check` and at least one generator over the whole WIT root. `check` validates one package version; whole-root generation also checks dependency-graph continuity.
+Run `witforge freeze` (with full Git history), `diff --check`, and at least one generator over the whole WIT root. `check` validates one package version; whole-root generation also checks dependency-graph continuity, and `--check` on committed generated files keeps generated per-version modules frozen alongside the released WIT directories.
 
 ## Consumer tests
 

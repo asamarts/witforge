@@ -3817,3 +3817,195 @@ fn check_explains_drift_with_config_command_crlf_hint_and_unified_diff() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed in {}: {}",
+        args,
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn witforge_freeze_checks_history_shallow_clones_multiple_violations_and_config_projects() {
+    let base = std::env::temp_dir().join(format!("witforge-freeze-cli-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let repo = base.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    git_in(&repo, &["init", "-q"]);
+    git_in(&repo, &["config", "user.name", "test"]);
+    git_in(&repo, &["config", "user.email", "test@example.invalid"]);
+
+    // Two WIT roots in one repo configured via witforge.toml.
+    for (root_name, pkg) in [("alpha", "ex:alpha"), ("beta", "ex:beta")] {
+        let v1 = repo.join(root_name).join("v0.1");
+        let v2 = repo.join(root_name).join("v0.2");
+        fs::create_dir_all(&v1).unwrap();
+        fs::create_dir_all(&v2).unwrap();
+        fs::write(
+            v1.join("contract.wit"),
+            format!("package {pkg}@0.1.0;\ninterface a {{ record r {{ id: u32 }} }}\n"),
+        )
+        .unwrap();
+        fs::write(
+            v1.join("wire.lock"),
+            format!("# witforge wire lockfile v2\n{pkg}/a/r.id = 1 field u32\n"),
+        )
+        .unwrap();
+        fs::write(
+            v2.join("contract.wit"),
+            format!("package {pkg}@0.2.0;\ninterface a {{ record r {{ id: u32, n: u32 }} }}\n"),
+        )
+        .unwrap();
+        fs::write(
+            v2.join("wire.lock"),
+            format!(
+                "# witforge wire lockfile v2\n{pkg}/a/r.id = 1 field u32\n{pkg}/a/r.n = 2 field u32\n"
+            ),
+        )
+        .unwrap();
+        fs::write(repo.join(root_name).join("released"), "v0.1\n").unwrap();
+    }
+    let cfg = repo.join("witforge.toml");
+    fs::write(
+        &cfg,
+        "version = 1\n\
+         [project.alpha]\nroot = \"alpha\"\n\
+         [project.beta]\nroot = \"beta\"\n",
+    )
+    .unwrap();
+    git_in(&repo, &["add", "-A"]);
+    git_in(&repo, &["commit", "-qm", "release alpha and beta v0.1"]);
+
+    // 1. Clean multi-project config check passes (exit 0).
+    let ok = witforge()
+        .current_dir(&repo)
+        .args(["freeze", "--config", "witforge.toml"])
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{ok:?}");
+    let stdout = String::from_utf8_lossy(&ok.stdout);
+    assert!(
+        stdout.contains("alpha") && stdout.contains("beta"),
+        "{stdout}"
+    );
+
+    // 2. Shallow clone MUST exit 2 and explicitly name `fetch-depth: 0`.
+    let shallow = base.join("shallow");
+    let clone_url = format!("file://{}", repo.display());
+    let cloned = Command::new("git")
+        .args(["clone", "-q", "--depth", "1", &clone_url])
+        .arg(&shallow)
+        .output()
+        .unwrap();
+    assert!(cloned.status.success(), "{cloned:?}");
+    let shallow_out = witforge()
+        .current_dir(&shallow)
+        .args(["freeze", "alpha", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(shallow_out.status.code(), Some(2), "{shallow_out:?}");
+    let shallow_json: serde_json::Value = serde_json::from_slice(&shallow_out.stdout).unwrap();
+    assert_eq!(shallow_json["diagnostics"][0]["code"], "WF9004");
+    assert!(
+        shallow_json["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("fetch-depth: 0"),
+        "{shallow_json}"
+    );
+
+    // 3. CRLF checkout under core.autocrlf=true still passes when Git blob is unchanged.
+    let autocrlf_clone = base.join("autocrlf");
+    let cloned_crlf = Command::new("git")
+        .args(["clone", "-q", "-c", "core.autocrlf=true", &clone_url])
+        .arg(&autocrlf_clone)
+        .output()
+        .unwrap();
+    assert!(cloned_crlf.status.success(), "{cloned_crlf:?}");
+    let checked_out_bytes = fs::read(autocrlf_clone.join("alpha/v0.1/contract.wit")).unwrap();
+    assert!(
+        checked_out_bytes.windows(2).any(|w| w == b"\r\n"),
+        "expected core.autocrlf=true clone to write CRLF bytes on disk"
+    );
+    let crlf_out = witforge()
+        .current_dir(&autocrlf_clone)
+        .args(["freeze", "alpha"])
+        .output()
+        .unwrap();
+    assert!(
+        crlf_out.status.success(),
+        "core.autocrlf=true checkout failed: {crlf_out:?}"
+    );
+
+    // 4. Multiple violations across BOTH projects and BOTH files inside v0.1 are ALL reported (exit 1).
+    let base_sha_out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let release_sha = String::from_utf8_lossy(&base_sha_out.stdout)
+        .trim()
+        .to_string();
+
+    fs::write(
+        repo.join("alpha/v0.1/contract.wit"),
+        "package ex:alpha@0.1.0;\ninterface a { record r { id: u64 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("alpha/v0.1/wire.lock"),
+        "# witforge wire lockfile v2\nex:alpha/a/r.id = 1 field u64\n",
+    )
+    .unwrap();
+    fs::write(repo.join("beta/released"), "# removed v0.1\n").unwrap();
+    git_in(&repo, &["add", "-A"]);
+    git_in(&repo, &["commit", "-qm", "tamper alpha and unrelease beta"]);
+
+    let multi = witforge()
+        .current_dir(&repo)
+        .args(["freeze", "--config", "witforge.toml", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(multi.status.code(), Some(1), "{multi:?}");
+    let multi_json: serde_json::Value = serde_json::from_slice(&multi.stdout).unwrap();
+    let diags = multi_json["diagnostics"].as_array().unwrap();
+    assert!(
+        diags.len() >= 3,
+        "expected all violations across both projects: {diags:?}"
+    );
+    assert!(diags.iter().all(|d| d["code"] == "WF1109"), "{diags:?}");
+    let paths: Vec<&str> = diags.iter().filter_map(|d| d["path"].as_str()).collect();
+    assert!(paths.contains(&"alpha/v0.1/contract.wit"), "{paths:?}");
+    assert!(paths.contains(&"alpha/v0.1/wire.lock"), "{paths:?}");
+    assert!(paths.contains(&"beta/released"), "{paths:?}");
+
+    // 5. `--base` bounds history while still catching edits after `--base`.
+    let bounded = witforge()
+        .current_dir(&repo)
+        .args(["freeze", "alpha", "--base", &release_sha])
+        .output()
+        .unwrap();
+    assert_eq!(bounded.status.code(), Some(1), "{bounded:?}");
+
+    // 6. Outside any git repository -> exit 2.
+    let outside = base.join("outside/wit");
+    fs::create_dir_all(&outside).unwrap();
+    let no_repo = witforge()
+        .env("GIT_CEILING_DIRECTORIES", &base)
+        .args(["freeze"])
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert_eq!(no_repo.status.code(), Some(2), "{no_repo:?}");
+
+    fs::remove_dir_all(&base).unwrap();
+}

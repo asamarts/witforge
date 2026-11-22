@@ -86,6 +86,9 @@ pub mod codes {
     pub const LOCKFILE_BASELINE_NO_DEPS: &str = "WF1107";
     /// A draft removal can be restored; `lock --against` would un-reserve the member.
     pub const LOCKFILE_RESTORABLE_DRAFT: &str = "WF1108";
+    /// A released version directory changed after release, lost a manifest entry, or failed
+    /// release-freeze hygiene.
+    pub const RELEASE_FREEZE_VIOLATION: &str = "WF1109";
 
     /// `lock` added a member.
     pub const LOCK_ADDED: &str = "WF1201";
@@ -353,6 +356,12 @@ pub const CATALOG: &[CodeInfo] = &[
         code: codes::LOCKFILE_RESTORABLE_DRAFT,
         severity: Severity::Error,
         summary: "A draft removal can be restored; `lock --against` would un-reserve the member.",
+        supersedes: None,
+    },
+    CodeInfo {
+        code: codes::RELEASE_FREEZE_VIOLATION,
+        severity: Severity::Error,
+        summary: "A released version directory changed after release, lost a manifest entry, or failed release-freeze hygiene.",
         supersedes: None,
     },
     CodeInfo {

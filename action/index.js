@@ -34,6 +34,7 @@ function readInputs(env = process.env) {
       config: input('config', env),
       project: input('project', env),
       generators: input('generators', env),
+      freeze: input('freeze', env),
     },
   };
 }
@@ -114,15 +115,34 @@ function buildCommands(binary, options) {
     commands.push(args);
   }
   const config = String(options.config || '').trim();
+  const project = String(options.project || '').trim();
+  const freeze = String(options.freeze || '').trim();
+  const freezeEnabled = freeze && freeze.toLowerCase() !== 'false';
+  const freezeUsesConfig = freeze.toLowerCase() === 'true';
+  if (freezeEnabled) {
+    if (freezeUsesConfig) {
+      if (!config) {
+        throw new Error('freeze: true requires config, or pass WIT root paths');
+      }
+      const args = [binary, 'freeze', '--config', config];
+      if (project) args.push('--project', project);
+      commands.push(args);
+    } else {
+      for (const root of splitLines(freeze)) {
+        commands.push([binary, 'freeze', root]);
+      }
+    }
+  }
   if (config) {
     const generators = splitList(options.generators);
-    if (generators.length === 0) throw new Error('config is set but generators is empty');
+    if (generators.length === 0 && !freezeUsesConfig) {
+      throw new Error('config is set but generators is empty');
+    }
     for (const generator of generators) {
       if (!GENERATORS.has(generator)) {
         throw new Error(`unknown generator \`${generator}\`; expected rust, proto, schema, or glue`);
       }
       const args = [binary, generator, '--config', config, '--check'];
-      const project = String(options.project || '').trim();
       if (project) args.push('--project', project);
       commands.push(args);
     }
