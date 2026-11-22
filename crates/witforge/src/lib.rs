@@ -921,6 +921,60 @@ fn canonical_number(digits: &str) -> bool {
         && (digits == "0" || !digits.starts_with('0'))
 }
 
+/// Format `path` as one POSIX shell word that witforge reads back as the same path.
+///
+/// Unchanged when it holds only characters no shell treats specially, and single-quoted
+/// otherwise. A relative path starting with `-` gets a leading `./` so the command line does not
+/// read it as an option.
+pub(crate) fn shell_quote(path: &Path) -> String {
+    let mut text = path.to_string_lossy().into_owned();
+    if text.starts_with('-') {
+        text.insert_str(0, "./");
+    }
+    let plain = !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"%+,-./:=@_".contains(&byte));
+    if plain {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// The highest sibling `v<major>.<minor>` version directory of `dir` in the same major whose
+/// `wire.lock` exists, if any.
+pub(crate) fn sibling_predecessor(dir: &Path) -> Option<(u64, u64, PathBuf)> {
+    let canonical = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let name = canonical.file_name()?.to_str()?;
+    let (major, minor) = parse_version_directory(name).ok()??;
+    let parent = dir.parent().filter(|parent| !parent.as_os_str().is_empty());
+    let scan_parent = parent.or_else(|| canonical.parent())?;
+    let mut best: Option<(u64, PathBuf)> = None;
+    for entry in fs::read_dir(scan_parent).ok()?.flatten() {
+        let entry_path = entry.path();
+        if !entry_path.is_dir() {
+            continue;
+        }
+        let Some(entry_name) = entry_path.file_name().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        let Ok(Some((sibling_major, sibling_minor))) = parse_version_directory(entry_name) else {
+            continue;
+        };
+        if sibling_major == major
+            && sibling_minor < minor
+            && best
+                .as_ref()
+                .is_none_or(|(best_minor, _)| sibling_minor > *best_minor)
+        {
+            best = Some((sibling_minor, entry_path));
+        }
+    }
+    let (prev_minor, prev_path) = best?;
+    Some((major, prev_minor, prev_path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1033,7 +1033,12 @@ interface types { record task { id: u64, note: option<string> } }
         let output = diff(old, new, &[]);
         assert_eq!(output.status.code(), Some(2), "{label}: {output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("cannot diff version 0.2.0 against older version 0.1.0"),
+            "{label}: {stderr}"
+        );
         assert!(stderr.contains("older contract first"), "{label}: {stderr}");
+        assert!(stderr.contains("run `witforge diff "), "{label}: {stderr}");
     }
 
     fs::remove_dir_all(&root).unwrap();
@@ -1279,6 +1284,145 @@ interface i { record r { x: u8 } }
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("example:one"), "{stderr}");
     assert!(stderr.contains("example:two"), "{stderr}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+fn extract_backticked_witforge_command(text: &str) -> String {
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('`') else { break };
+        let inside = &rest[..end];
+        rest = &rest[end + 1..];
+        if inside.starts_with("witforge ") && inside != "witforge lock" {
+            return inside.to_string();
+        }
+    }
+    panic!("no runnable `witforge ...` command found in:\n{text}");
+}
+
+fn split_posix_args(command: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut started = false;
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            } else {
+                cur.push(ch);
+            }
+        } else {
+            match ch {
+                '\'' => {
+                    in_single = true;
+                    started = true;
+                }
+                '\\' if chars.peek() == Some(&'\'') => {
+                    cur.push(chars.next().unwrap());
+                    started = true;
+                }
+                c if c.is_ascii_whitespace() => {
+                    if started {
+                        args.push(std::mem::take(&mut cur));
+                        started = false;
+                    }
+                }
+                c => {
+                    cur.push(c);
+                    started = true;
+                }
+            }
+        }
+    }
+    assert!(!in_single, "unterminated quote in `{command}`");
+    if started {
+        args.push(cur);
+    }
+    args
+}
+
+#[test]
+fn diff_remedy_messages_quote_spaces_and_run_as_printed() {
+    let root = std::env::temp_dir().join(format!("witforge diff remedies {}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let old = root.join("old dir/v0.1");
+    let new = root.join("new dir/v0.2");
+    fs::create_dir_all(&old).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    fs::write(
+        old.join("contract.wit"),
+        "package example:tasks@0.1.0;\ninterface types { record task { id: u64 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        new.join("contract.wit"),
+        "package example:tasks@0.2.0;\ninterface types { record task { id: u64, note: option<string> } }\n",
+    )
+    .unwrap();
+
+    // 1. Missing lockfile remedy quotes paths with spaces and runs verbatim.
+    let locked_new = run(&["lock", &new.display().to_string(), "--first"]);
+    assert!(locked_new.status.success(), "{locked_new:?}");
+    let missing = diff(&old, &new, &[]);
+    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(!stderr.contains("--against <"), "{stderr}");
+    let cmd = extract_backticked_witforge_command(&stderr);
+    let tokens = split_posix_args(&cmd);
+    let ran = Command::new(env!("CARGO_BIN_EXE_witforge"))
+        .args(&tokens[1..])
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{cmd}: {ran:?}");
+
+    // 2. Reversed-endpoints message names versions in argument order, quotes spaced paths,
+    // appears in JSON/SARIF too, and its printed swapped command runs verbatim.
+    let reversed = diff(&new, &old, &[]);
+    assert_eq!(reversed.status.code(), Some(2), "{reversed:?}");
+    let stderr = String::from_utf8_lossy(&reversed.stderr);
+    assert!(
+        stderr.contains("cannot diff version 0.2.0 against older version 0.1.0"),
+        "{stderr}"
+    );
+    let cmd = extract_backticked_witforge_command(&stderr);
+    let tokens = split_posix_args(&cmd);
+    let ran = Command::new(env!("CARGO_BIN_EXE_witforge"))
+        .args(&tokens[1..])
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{cmd}: {ran:?}");
+
+    let reversed_json = diff(&new, &old, &["--format", "json"]);
+    assert_eq!(reversed_json.status.code(), Some(2), "{reversed_json:?}");
+    let stdout = String::from_utf8_lossy(&reversed_json.stdout);
+    assert!(
+        stdout.contains("cannot diff version 0.2.0 against older version 0.1.0"),
+        "{stdout}"
+    );
+
+    // 3. Stale lockfile in `diff` prints a runnable `witforge lock <dir>` command (never bare
+    // `witforge lock`) that fixes the lockfile when run.
+    fs::write(
+        new.join("contract.wit"),
+        "package example:tasks@0.2.0;\ninterface types { record task { id: u64, note: option<string>, extra: option<u32> } }\n",
+    )
+    .unwrap();
+    let stale = diff(&old, &new, &[]);
+    assert_eq!(stale.status.code(), Some(1), "{stale:?}");
+    let stderr = String::from_utf8_lossy(&stale.stderr);
+    assert!(!stderr.contains("run `witforge lock`"), "{stderr}");
+    let cmd = extract_backticked_witforge_command(&stderr);
+    let tokens = split_posix_args(&cmd);
+    let ran = Command::new(env!("CARGO_BIN_EXE_witforge"))
+        .args(&tokens[1..])
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{cmd}: {ran:?}");
+    assert!(diff(&old, &new, &[]).status.success());
 
     fs::remove_dir_all(&root).unwrap();
 }

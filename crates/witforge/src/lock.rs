@@ -504,7 +504,7 @@ impl WireLock {
             bail!("{}", discrepancy.message);
         }
         if let Some((key, _)) = report.restored.first() {
-            bail!("draft removal of `{key}` can be restored; run `witforge lock`");
+            bail!("draft removal of `{key}` can be restored by locking against the baseline");
         }
         Ok(report.changes)
     }
@@ -823,7 +823,7 @@ impl WireLock {
             bail!("{}", discrepancy.message);
         }
         if let Some((key, _)) = report.restored.first() {
-            bail!("draft removal of `{key}` can be restored; run `witforge lock`");
+            bail!("draft removal of `{key}` can be restored by locking against the baseline");
         }
         Ok(report.changes)
     }

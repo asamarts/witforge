@@ -2312,11 +2312,12 @@ fn missing_lockfile_hint_is_quoted_and_keeps_the_options() {
             "{command}: {stderr}"
         );
         assert!(
-            stderr.contains(&format!(
-                "run `{}`",
-                options("--against <previous minor's wire.lock>")
-            )),
+            stderr.contains("with --against pointing at the previous minor's wire.lock"),
             "{command}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("--against <"),
+            "must not emit an unrunnable placeholder inside a command: {command}: {stderr}"
         );
         assert!(!lock.exists(), "{command}");
     }
@@ -3485,6 +3486,235 @@ fn check_reports_generator_refusals_and_accepts_proto_keyword_packages() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"WF1003\""), "{stdout}");
     assert!(stdout.contains("ApiXMethod"), "{stdout}");
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+/// Extract every backticked `` `witforge ...` `` command printed in `text`.
+fn extract_witforge_commands(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('`') else { break };
+        let inside = &rest[..end];
+        rest = &rest[end + 1..];
+        if inside.starts_with("witforge ") && inside != "witforge lock" {
+            out.push(inside.to_string());
+        }
+    }
+    out
+}
+
+/// Split a POSIX-quoted `witforge ...` command line into argv tokens (works on every OS).
+fn split_posix_command(command: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut started = false;
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            } else {
+                current.push(ch);
+            }
+        } else {
+            match ch {
+                '\'' => {
+                    in_single = true;
+                    started = true;
+                }
+                '\\' if chars.peek() == Some(&'\'') => {
+                    current.push(chars.next().unwrap());
+                    started = true;
+                }
+                c if c.is_ascii_whitespace() => {
+                    if started {
+                        args.push(std::mem::take(&mut current));
+                        started = false;
+                    }
+                }
+                c => {
+                    current.push(c);
+                    started = true;
+                }
+            }
+        }
+    }
+    assert!(!in_single, "unterminated single quote in `{command}`");
+    if started {
+        args.push(current);
+    }
+    args
+}
+
+/// Execute a printed `witforge ...` remedy command directly via the compiled binary.
+fn run_printed_command(command: &str) -> std::process::Output {
+    let tokens = split_posix_command(command);
+    assert_eq!(
+        tokens.first().map(String::as_str),
+        Some("witforge"),
+        "not a witforge command: {command}"
+    );
+    witforge().args(&tokens[1..]).output().unwrap()
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn cli_remedy_messages_are_accurate_and_run_as_printed() {
+    let base = std::env::temp_dir().join(format!("witforge cli remedies {}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("my wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    let out_dir = base.join("out");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package example:rem@0.1.0;\ninterface types { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package example:rem@0.2.0;\ninterface types { record item { id: u32, name: option<string> } }\n",
+    )
+    .unwrap();
+
+    // 1. Generator run with missing `wire.lock` on v0.1 names the file and both ways forward,
+    // quotes paths with spaces, prints no unrunnable placeholder command, and its printed
+    // `--first` command runs verbatim.
+    let gen_missing = witforge()
+        .args(["rust"])
+        .arg(&wit_root)
+        .arg("--out")
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert_eq!(gen_missing.status.code(), Some(2), "{gen_missing:?}");
+    let stderr = String::from_utf8_lossy(&gen_missing.stderr);
+    assert!(stderr.contains("wire.lock"), "{stderr}");
+    assert!(stderr.contains("--first"), "{stderr}");
+    assert!(stderr.contains("--against"), "{stderr}");
+    assert!(!stderr.contains("--against <"), "{stderr}");
+    assert!(!stderr.contains("run `witforge lock`"), "{stderr}");
+    let cmds = extract_witforge_commands(&stderr);
+    assert_eq!(cmds.len(), 1, "expected 1 runnable remedy in: {stderr}");
+    let ran = run_printed_command(&cmds[0]);
+    assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
+    assert!(v01.join("wire.lock").is_file());
+
+    // 2. Generator run with missing `wire.lock` on v0.2 (sibling v0.1 exists) gives a copy +
+    // runnable `--against` command that works after copying v0.1/wire.lock.
+    let gen_missing_v02 = witforge()
+        .args(["rust"])
+        .arg(&wit_root)
+        .arg("--out")
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        gen_missing_v02.status.code(),
+        Some(2),
+        "{gen_missing_v02:?}"
+    );
+    let stderr = String::from_utf8_lossy(&gen_missing_v02.stderr);
+    assert!(stderr.contains("wire.lock"), "{stderr}");
+    assert!(stderr.contains("--against"), "{stderr}");
+    assert!(stderr.contains("--first"), "{stderr}");
+    let cmds = extract_witforge_commands(&stderr);
+    assert_eq!(cmds.len(), 1, "expected 1 runnable remedy in: {stderr}");
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    let ran = run_printed_command(&cmds[0]);
+    assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
+
+    // 3. `witforge check` on a WIT root says a version directory is expected, lists all found
+    // version directories, carries the text in JSON/SARIF, and its printed command runs verbatim.
+    let root_check = witforge().arg("check").arg(&wit_root).output().unwrap();
+    assert_eq!(root_check.status.code(), Some(2), "{root_check:?}");
+    let stderr = String::from_utf8_lossy(&root_check.stderr);
+    assert!(stderr.contains("WIT root"), "{stderr}");
+    assert!(stderr.contains("v0.1, v0.2"), "{stderr}");
+    assert!(stderr.contains("version directory"), "{stderr}");
+    let cmds = extract_witforge_commands(&stderr);
+    assert_eq!(cmds.len(), 1, "expected 1 runnable remedy in: {stderr}");
+    let ran = run_printed_command(&cmds[0]);
+    assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
+
+    // JSON & SARIF also carry the corrected WIT-root message.
+    let json_out = witforge()
+        .args(["--format", "json", "check"])
+        .arg(&wit_root)
+        .output()
+        .unwrap();
+    assert_eq!(json_out.status.code(), Some(2), "{json_out:?}");
+    let json_stdout = String::from_utf8_lossy(&json_out.stdout);
+    assert!(json_stdout.contains("v0.1, v0.2"), "{json_stdout}");
+    let sarif_out = witforge()
+        .args(["--format", "sarif", "check"])
+        .arg(&wit_root)
+        .output()
+        .unwrap();
+    assert_eq!(sarif_out.status.code(), Some(2), "{sarif_out:?}");
+    let sarif_stdout = String::from_utf8_lossy(&sarif_out.stdout);
+    assert!(sarif_stdout.contains("v0.1, v0.2"), "{sarif_stdout}");
+
+    // 4. Generator run with stale `wire.lock` prints a quoted runnable `witforge lock ...` command
+    // (never bare `witforge lock`), and running it fixes generation.
+    fs::write(
+        v02.join("contract.wit"),
+        "package example:rem@0.2.0;\ninterface types { record item { id: u32, name: option<string>, extra: option<u32> } }\n",
+    )
+    .unwrap();
+    let gen_stale = witforge()
+        .args(["rust"])
+        .arg(&wit_root)
+        .arg("--out")
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert_eq!(gen_stale.status.code(), Some(1), "{gen_stale:?}");
+    let stderr = String::from_utf8_lossy(&gen_stale.stderr);
+    assert!(!stderr.contains("run `witforge lock`"), "{stderr}");
+    let cmds = extract_witforge_commands(&stderr);
+    assert_eq!(cmds.len(), 1, "expected 1 runnable remedy in: {stderr}");
+    let ran = run_printed_command(&cmds[0]);
+    assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
+
+    // 5. Generator run with missing order section prints a quoted runnable command too.
+    let lock_text = fs::read_to_string(v02.join("wire.lock")).unwrap();
+    let without_order = lock_text
+        .split("# witforge order v1")
+        .next()
+        .unwrap()
+        .to_string();
+    fs::write(v02.join("wire.lock"), without_order).unwrap();
+    let gen_order = witforge()
+        .args(["rust"])
+        .arg(&wit_root)
+        .arg("--out")
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert_eq!(gen_order.status.code(), Some(1), "{gen_order:?}");
+    let stderr = String::from_utf8_lossy(&gen_order.stderr);
+    assert!(!stderr.contains("run `witforge lock`"), "{stderr}");
+    let cmds = extract_witforge_commands(&stderr);
+    assert_eq!(cmds.len(), 1, "expected 1 runnable remedy in: {stderr}");
+    let ran = run_printed_command(&cmds[0]);
+    assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
+
+    // Generation now succeeds.
+    let gen_ok = witforge()
+        .args(["rust"])
+        .arg(&wit_root)
+        .arg("--out")
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert!(gen_ok.status.success(), "{gen_ok:?}");
 
     fs::remove_dir_all(&base).unwrap();
 }

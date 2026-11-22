@@ -288,9 +288,9 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                 )));
             }
         }
+        let previous = versions.last().filter(|previous| previous.major == major);
         let lock_path = directory.join("wire.lock");
-        let lock_text = fs::read_to_string(&lock_path)
-            .with_context(|| format!("failed to read {}", lock_path.display()))?;
+        let lock_text = read_version_lock(&directory, major, &lock_path, previous)?;
         let lock =
             WireLock::parse(&lock_text).with_context(|| format!("in {}", lock_path.display()))?;
         let package = PackageName {
@@ -300,14 +300,18 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
         lock.check_package(&package).map_err(|err| {
             ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
         })?;
-        if let Some(previous) = versions.last().filter(|previous| previous.major == major) {
+        if let Some(previous) = previous {
             let previous_path = previous.directory.join("wire.lock");
             lock.check_append_only(&previous.lock).map_err(|err| {
                 ContractError::new(format!(
-                    "{} does not continue {}: {err:#}; a new minor starts as a copy of the \
-                     previous minor's wire.lock and is developed with `witforge lock --against`",
+                    "{} does not continue {}: {err:#}; copy {} to {} and run `witforge lock {} \
+                     --against {}`",
                     lock_path.display(),
-                    previous_path.display()
+                    previous_path.display(),
+                    previous_path.display(),
+                    lock_path.display(),
+                    crate::shell_quote(&directory),
+                    crate::shell_quote(&previous_path),
                 ))
             })?;
         }
@@ -321,18 +325,18 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
         })?;
         if !drift.is_empty() {
             bail!(ContractError::new(format!(
-                "{}: lockfile is stale; run `witforge lock`",
-                directory.display()
+                "{}: lockfile is stale; {}",
+                directory.display(),
+                version_lock_remedy(&directory, previous, is_released)
             )));
         }
         lock.validate_order_section(&members, is_released)
             .map_err(|err| {
-                let remedy = if is_released {
-                    "the directory is released; restore its released lockfile"
-                } else {
-                    "run `witforge lock`"
-                };
-                ContractError::new(format!("{}: {err:#}; {remedy}", lock_path.display()))
+                ContractError::new(format!(
+                    "{}: {err:#}; {}",
+                    lock_path.display(),
+                    version_lock_remedy(&directory, previous, is_released)
+                ))
             })?;
         versions.push(Version {
             major,
@@ -342,6 +346,63 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
         });
     }
     Ok(versions)
+}
+
+fn read_version_lock(
+    directory: &Path,
+    major: u64,
+    lock_path: &Path,
+    previous: Option<&Version>,
+) -> Result<String> {
+    match fs::read_to_string(lock_path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let quoted_dir = crate::shell_quote(directory);
+            if let Some(previous) = previous {
+                let prev_lock = previous.directory.join("wire.lock");
+                bail!(
+                    "lockfile {} does not exist; major {major} already has {}, so copy {} to \
+                     {} and run `witforge lock {} --against {}` (or for a new major, create a \
+                     fresh lockfile with `--first`)",
+                    lock_path.display(),
+                    previous.directory.display(),
+                    prev_lock.display(),
+                    lock_path.display(),
+                    quoted_dir,
+                    crate::shell_quote(&prev_lock),
+                );
+            }
+            bail!(
+                "lockfile {} does not exist; for the first version of a package or of a new \
+                 major, create it with `witforge lock {} --first`; for a new minor, copy the \
+                 previous minor's wire.lock to {} and run witforge lock on that directory with \
+                 --against pointing at the previous minor's wire.lock",
+                lock_path.display(),
+                quoted_dir,
+                lock_path.display(),
+            );
+        }
+        Err(err) => Err(err).with_context(|| format!("failed to read {}", lock_path.display())),
+    }
+}
+
+fn version_lock_remedy(directory: &Path, previous: Option<&Version>, is_released: bool) -> String {
+    if is_released {
+        format!(
+            "`{}` is released, so `witforge lock` refuses it; restore its released WIT and \
+             wire.lock",
+            directory.display()
+        )
+    } else if let Some(previous) = previous {
+        let previous_path = previous.directory.join("wire.lock");
+        format!(
+            "run `witforge lock {} --against {}`",
+            crate::shell_quote(directory),
+            crate::shell_quote(&previous_path)
+        )
+    } else {
+        format!("run `witforge lock {}`", crate::shell_quote(directory))
+    }
 }
 
 fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {

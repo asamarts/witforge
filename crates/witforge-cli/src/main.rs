@@ -525,6 +525,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 #[allow(clippy::too_many_lines)]
 fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_version_directory(&options.dir)?;
+    ensure_not_wit_root(&options.dir, "check")?;
     // `check` may verify a released directory; the manifest only has to be valid.
     load_released_manifest(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
@@ -680,6 +681,7 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
 
 fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_not_released(&options.dir, options.released.as_deref())?;
+    ensure_not_wit_root(&options.dir, "lock")?;
     let contract = load(&options.dir)?;
     let violations = subset::check_diagnostics(&contract);
     for violation in &violations {
@@ -1402,24 +1404,82 @@ fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>
             if let Some(previous) = &options.against {
                 bail!(
                     "lockfile {} does not exist; a new minor starts as a copy of the previous \
-                     minor's lockfile: copy {} to {} first, then rerun with `--against`",
+                     minor's lockfile: copy {} to {} first, then rerun `{}`",
                     path.display(),
                     previous.display(),
-                    path.display()
+                    path.display(),
+                    lock_command(options),
                 );
+            }
+            let current = fs::canonicalize(&options.dir).unwrap_or_else(|_| options.dir.clone());
+            if let Some((major, _)) = version_directory(&current)
+                && let Some((_, predecessor)) = sibling_predecessor(&current)
+            {
+                let prev_lock = predecessor.join("wire.lock");
+                if prev_lock.is_file() {
+                    bail!(
+                        "lockfile {path} does not exist; major {major} already has {prev_dir}, so \
+                         copy {prev_lock} to {path} and run `{against}` (or for a new major, \
+                         create a fresh lockfile with `--first`)",
+                        path = path.display(),
+                        prev_dir = predecessor.display(),
+                        prev_lock = prev_lock.display(),
+                        against = against_command(options, "lock", &prev_lock),
+                    );
+                }
             }
             bail!(
                 "lockfile {path} does not exist; for the first version of a package or of a new \
                  major, create it with `{first}`; for a new minor, copy the previous minor's \
-                 wire.lock to {path} and run `{against}`",
+                 wire.lock to {path} and run witforge lock on that directory with --against \
+                 pointing at the previous minor's wire.lock",
                 path = path.display(),
                 first = lock_command_with(options, Some("--first")),
-                against =
-                    lock_command_with(options, Some("--against <previous minor's wire.lock>")),
             );
         }
         Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
     }
+}
+
+/// Refuse a WIT root passed to a single-version command (`check` or `lock`) with a clear list of
+/// the version directories found inside it.
+fn ensure_not_wit_root(dir: &Path, verb: &str) -> Result<()> {
+    let mut has_wit_files = false;
+    let mut found: Vec<(u64, u64, String, PathBuf)> = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if entry_path.is_file()
+            && entry_path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("wit"))
+        {
+            has_wit_files = true;
+            break;
+        }
+        if entry_path.is_dir()
+            && let Some((major, minor)) = version_directory(&entry_path)
+            && let Some(name) = entry_path.file_name().and_then(std::ffi::OsStr::to_str)
+        {
+            found.push((major, minor, name.to_string(), entry_path));
+        }
+    }
+    if has_wit_files || found.is_empty() {
+        return Ok(());
+    }
+    found.sort_by_key(|(major, minor, _, _)| (*major, *minor));
+    let names: Vec<&str> = found.iter().map(|(_, _, name, _)| name.as_str()).collect();
+    let example = &found.last().expect("non-empty").3;
+    bail!(
+        "`{}` is a WIT root containing version directories ({}), not a version directory; \
+         `{verb}` expects a single version directory (for example `witforge {verb} {}`)",
+        dir.display(),
+        names.join(", "),
+        shell_quote(example),
+    );
 }
 
 fn read_required_lock(path: &Path) -> Result<WireLock> {
