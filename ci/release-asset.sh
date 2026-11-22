@@ -35,7 +35,9 @@ sha256() {
 }
 
 mkdir -p "$out"
-staging=$(mktemp -d)
+scratch="${TMPDIR:-${HOME}/.tmp}"
+mkdir -p "${scratch}"
+staging=$(mktemp -d "${scratch}/witforge-asset.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 cp "$binary" "$staging/"
 name="witforge-${version}-${target}.tar.gz"

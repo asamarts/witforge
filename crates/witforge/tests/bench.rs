@@ -79,6 +79,14 @@ fn workspace(name: &str) -> PathBuf {
     root
 }
 
+fn budget(release_ms: u64, debug_ms: u64) -> Duration {
+    if cfg!(debug_assertions) {
+        Duration::from_millis(debug_ms)
+    } else {
+        Duration::from_millis(release_ms)
+    }
+}
+
 #[test]
 fn small_and_large_contracts_stay_within_benchmark_budget() {
     let small = workspace("small");
@@ -91,10 +99,13 @@ fn small_and_large_contracts_stay_within_benchmark_budget() {
     let large_elapsed = measure(&large);
     println!("large contract: {large_elapsed:?}");
 
-    // These are deliberately generous catastrophic-regression ceilings, not microbenchmarks.
-    // The release CI job runs this test with `--release`; the normal test matrix still runs it.
-    assert!(small_elapsed < Duration::from_secs(5), "{small_elapsed:?}");
-    assert!(large_elapsed < Duration::from_secs(15), "{large_elapsed:?}");
+    // Ceilings are set within one order of magnitude (~10x) of the GitHub-hosted `ubuntu-latest`
+    // `--release` baselines measured in CI runs 44982292667, 44991017901, and 44995465696
+    // (2026-11-22):
+    //   - small contract: 1.46 ms - 2.91 ms  -> release ceiling 25 ms  (debug baseline ~8 ms -> 250 ms)
+    //   - large contract: 41.9 ms - 92.2 ms  -> release ceiling 800 ms (debug baseline ~335 ms -> 4000 ms)
+    assert!(small_elapsed < budget(25, 250), "{small_elapsed:?}");
+    assert!(large_elapsed < budget(800, 4_000), "{large_elapsed:?}");
 
     fs::remove_dir_all(&small).unwrap();
     fs::remove_dir_all(&large).unwrap();
@@ -122,10 +133,11 @@ fn two_version_diff_and_conversion_stay_within_budget() {
     assert!(files.files().keys().any(|name| name == "convert.rs"));
     println!("two-version conversion plan: {plan_elapsed:?}");
 
-    // Catastrophic-regression ceilings; the large diff is normally measured in tens of
-    // milliseconds, and conversion planning covers both generated versions and the adapters.
-    assert!(diff_elapsed < Duration::from_secs(5), "{diff_elapsed:?}");
-    assert!(plan_elapsed < Duration::from_secs(5), "{plan_elapsed:?}");
+    // Hosted `ubuntu-latest` `--release` baselines (CI runs 44982292667, 44991017901, 44995465696):
+    //   - two-version diff:            100.6 ms - 144.5 ms -> release ceiling 1400 ms (debug ~760 ms -> 8000 ms)
+    //   - two-version conversion plan: 112.5 ms - 163.0 ms -> release ceiling 1600 ms (debug ~765 ms -> 8000 ms)
+    assert!(diff_elapsed < budget(1_400, 8_000), "{diff_elapsed:?}");
+    assert!(plan_elapsed < budget(1_600, 8_000), "{plan_elapsed:?}");
 
     fs::remove_dir_all(&root).unwrap();
 }
@@ -148,7 +160,9 @@ fn a_wide_contract_locks_within_budget() {
     lock.reconcile(&members).unwrap();
     let elapsed = started.elapsed();
     println!("wide contract lock: {elapsed:?}");
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    // Hosted `ubuntu-latest` `--release` baseline (CI runs 44982292667, 44991017901, 44995465696):
+    //   - wide contract lock (16,000 fields): 45.6 ms - 70.3 ms -> release ceiling 700 ms (debug ~250 ms -> 3000 ms)
+    assert!(elapsed < budget(700, 3_000), "{elapsed:?}");
     assert_eq!(lock.entries().count(), 16_000);
     fs::remove_dir_all(root).unwrap();
 }

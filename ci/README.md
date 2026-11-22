@@ -1,40 +1,32 @@
 # CI
 
-CI runs on GitHub-hosted runners: Ubuntu for lint, docs, and generation, and the full
-Linux/macOS/Windows matrix for tests. Before 0.1.0, while the repository was private, it ran on
-one self-hosted Linux runner (labels `self-hosted`, `linux`, `witforge`), because hosted minutes
-are billed for private repositories. The workflow still selects that runner only when
-`github.event.repository.private` is true. A self-hosted runner must never serve a public
-repository, where pull requests from forks could run code on it, so the release checklist retired
-it when the repository went public; the setup below is kept for reference.
+CI runs exclusively on GitHub-hosted runners: Ubuntu for lint, docs, packaging, security, plan,
+and generation, and the full Linux/macOS/Windows matrix for tests and published-Action smoke.
+A self-hosted runner must never serve this public repository, where pull requests from forks could
+execute code on it; the pre-0.1.0 self-hosted runner setup (`ci/Containerfile` and `ci/runner/`)
+was retired when the repository became public and removed.
 
-## The runner
+## Concurrency, toolchains, and schedule
 
-A rootless podman container managed as a systemd user service through quadlet:
-
-- `ci/Containerfile`: Debian with Rust stable (plus clippy and rustfmt) and 1.88 for the MSRV
-  job, and the GitHub Actions runner agent, checksum-verified.
-- `ci/runner/entrypoint.sh`: registers once (`register`), or runs the agent with the stored
-  credentials. The long-running service never holds a token.
-- `ci/runner/setup.sh`: builds the image, registers the runner if no registration is stored
-  (minting a one-hour registration token with `gh`), and installs and restarts
-  `witforge-runner.service`. Re-run it after changing the image.
-- `ci/runner/teardown.sh`: stops the service and removes its unit; `--purge` also deregisters
-  the runner and deletes its volumes and image.
-
-The container is capped at 4 CPUs and 8 GiB of memory, and keeps two volumes: the registration
-(`witforge-runner-config`) and the cargo registry cache (`witforge-runner-cargo`). Each job
-checks out and builds from scratch, which takes well under a minute.
-
-```sh
-ci/runner/setup.sh                       # install or update
-journalctl --user -fu witforge-runner    # agent log
-ci/runner/teardown.sh [--purge]          # remove
-```
-
-Both scripts need podman and the `gh` CLI logged in to the account that owns the repository
-(`asamarts` by default; override with `WITFORGE_GH_USER` and `WITFORGE_REPO`). `teardown.sh
---purge` refuses to change anything unless the runner is registered on `WITFORGE_REPO`.
+- **Per-commit `main` concurrency:** pushes to `main` are grouped by `ci-<commit-sha>` with
+  `cancel-in-progress: false`, so GitHub's single-pending-run concurrency limit can never cancel a
+  queued `main` commit before it gets a `ci ok` result (which `release.yml` requires on the exact
+  tag commit). Pull requests keep one group per ref with `cancel-in-progress: true`, and scheduled
+  runs use `ci-schedule`. (The five retried CI runs on 2026-11-18 — runs `44371903590`,
+  `44374904070`, `44380880018`, `44383409557`, and `44397862664` — were cancelled at ~15 minutes
+  because `macos-15` runner queue delays hit their 10–15 minute job timeouts, not concurrency
+  cancellation; `test` and `published-action` now allow 25 and 15 minutes respectively.)
+- **Pinned lint/gate toolchain:** `ci.yml` pins `CI_RUST_TOOLCHAIN` (`1.100.0`) so a newly shipped
+  Clippy or rustfmt lint arrives via a reviewed toolchain bump rather than breaking `main` mid-week.
+  No top-level `rust-toolchain.toml` is committed, so contributors build with whatever Rust
+  toolchain they already have installed (>= MSRV 1.88), and the `msrv` job stays pinned to `1.88`.
+- **Weekly schedule:** every Monday at 06:00 UTC (and on `workflow_dispatch` with
+  `scheduled_checks: true`), `ci.yml` runs on `main` including `security` (`cargo-audit` +
+  `cargo-deny`), `floating-stable` (builds, formats, lints, docs, and tests on floating current
+  `stable` to give early notice of upcoming toolchain lints), and `fuzz-smoke` (bounded `cargo-fuzz`
+  runs under pinned nightly, uploading `fuzz/artifacts/` on failure). GitHub automatically disables
+  scheduled workflows after 60 days without repository activity; failures alert the repository
+  maintainers subscribed to GitHub Actions workflow failure notifications.
 
 ## Gates
 
@@ -93,12 +85,15 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   every release tag at which it exists, so a new release or fixture joins the comparison without
   an edit. Each release is installed with `cargo install`, so a release that cannot be
   installed (yanked, or tagged and never published) fails the run until it is listed, with its
-  reason, in `ci/buf-history-skip`. The job installs pinned buf 1.74 and fails if any tool
-  cannot run.
+  reason, in `ci/buf-history-skip`. The manual `ci.yml` job caches compiled historical baseline
+  binaries between runs (`actions/cache` keyed by runner OS and the release-tag list); `release.yml`
+  deliberately does **not** cache them so a poisoned cache cannot pass the release gate. The job
+  installs pinned buf 1.74 and fails if any tool cannot run.
 
-- **ci ok**: passes only when every job above passed (the optional buf job may be skipped).
-  It is the one check the repository's `main` ruleset requires before a pull request merges,
-  so adding or renaming a job never leaves the rule waiting on a check that no longer runs.
+- **ci ok**: passes only when every job above passed (the optional/scheduled jobs `buf`,
+  `floating-stable`, and `fuzz-smoke` may be skipped on normal pushes/PRs). It is the one check
+  the repository's `main` ruleset requires before a pull request merges, so adding or renaming a
+  job never leaves the rule waiting on a check that no longer runs.
 
 ## Fuzzing
 
@@ -129,17 +124,16 @@ committed regression fixture under the relevant test suite, not only an artifact
 
 ## Local test scratch
 
-Repository tests and shell helpers create scratch files through `std::env::temp_dir()` or
-`${TMPDIR:-/tmp}`. On a shared host `/tmp` may be a small tmpfs, so point local runs at a
-disk-backed directory:
+Every `ci/*.sh` script takes its scratch directory from `TMPDIR` and defaults to `$HOME/.tmp` when
+`TMPDIR` is unset (never `/tmp`, which may be a small tmpfs on a shared host). Rust tests use
+`std::env::temp_dir()`, which also follows `TMPDIR`:
 
 ```sh
 mkdir -p "$HOME/.tmp"
 TMPDIR="$HOME/.tmp" cargo test --workspace --locked
 ```
 
-`ci/test-release-version.sh` already uses `$HOME/.tmp`; the Action's own temporary directory is
-inside the disposable GitHub runner, not the shared host.
+The Action's own temporary directory is inside the disposable GitHub runner, not a shared host.
 
 ## Repository settings
 

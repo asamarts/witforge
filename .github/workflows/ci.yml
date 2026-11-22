@@ -4,34 +4,43 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly Monday 06:00 UTC: exercises security advisories, bounded fuzz smoke, and floating
+    # current stable without blocking pushes to main. GitHub disables scheduled workflows after
+    # 60 days without repository activity; failures notify maintainers via GitHub Actions alerts.
+    - cron: "0 6 * * 1"
   workflow_dispatch:
     inputs:
       buf_breaking:
         description: Run the optional buf breaking check
         type: boolean
         default: false
+      scheduled_checks:
+        description: Also run the weekly floating-stable and fuzz-smoke checks
+        type: boolean
+        default: false
 
 permissions: {}
 
-# A newer push to a pull request cancels the older run; runs on main always finish, so every
-# commit on main gets a result.
+# Pull requests cancel superseded runs on the same PR ref. Every push to main gets its own
+# per-commit group so GitHub's single-pending-run concurrency limit can never cancel a commit on
+# main before it produces a `ci ok` result.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || (github.event_name == 'schedule' && 'schedule' || github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-
-# While the repository is private, jobs use the self-hosted runner of ci/README.md. Once it is
-# public, the same workflow selects GitHub-hosted runners: Ubuntu for lint/docs/generation
-# and the full Linux/macOS/Windows test matrix. A self-hosted runner must never serve a public
-# repository; the release checklist retires it explicitly.
+  # Pinned lint/gate toolchain so new rustfmt/Clippy lints arrive through a reviewed change rather
+  # than breaking main mid-week; contributors are not pinned by a repo-wide rust-toolchain.toml,
+  # MSRV stays on 1.88, and the weekly `floating-stable` job tracks current stable.
+  CI_RUST_TOOLCHAIN: "1.100.0"
 
 jobs:
   lint:
     name: fmt, clippy, docs
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -41,7 +50,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - name: Reject whitespace errors in tracked files
         shell: bash
@@ -60,7 +69,7 @@ jobs:
 
   workflows:
     name: workflows and scripts
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
@@ -96,7 +105,7 @@ jobs:
       - run: shellcheck --version && actionlint -color
         env:
           SHELLCHECK_OPTS: --enable=check-extra-masked-returns
-      - run: shellcheck ci/*.sh ci/runner/*.sh
+      - run: shellcheck ci/*.sh
       - run: bash ci/test-release-asset.sh
       - run: bash ci/test-release-version.sh
       - run: node --test action/test.js
@@ -143,7 +152,7 @@ jobs:
       matrix:
         runner: [ubuntu-latest, macos-15, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -165,9 +174,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event.repository.private && '["ubuntu-latest"]' || '["ubuntu-latest","macos-15","windows-latest"]') }}
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || matrix.os }}
-    timeout-minutes: 15
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -176,7 +185,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - run: cargo test --workspace --locked
       # /bin/bash is 3.2 on macOS, which consumers of the freeze script may run it with.
@@ -185,7 +194,7 @@ jobs:
 
   msrv:
     name: MSRV (1.88)
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -202,7 +211,7 @@ jobs:
 
   package:
     name: package (publish dry run)
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
@@ -212,7 +221,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
       # Packages and verifies both crates, the CLI against the library through a temporary
       # registry, so a packaging mistake shows up before a release tag.
       - run: cargo publish --workspace --dry-run --locked
@@ -303,7 +312,7 @@ jobs:
 
   generated:
     name: generated output and release freeze
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
@@ -314,7 +323,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - run: cargo build --locked -p witforge-cli
       - run: ci/check-generated.sh
@@ -333,7 +342,7 @@ jobs:
   buf:
     name: optional historical buf breaking
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.buf_breaking }}
-    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","witforge"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -344,8 +353,23 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
       - run: cargo build --locked -p witforge-cli
+      - name: Compute release-tag cache key for baseline binaries
+        id: tags
+        shell: bash
+        run: |
+          hash="$(git tag --list 'v*' --sort=v:refname | sha256sum | awk '{print $1}')"
+          echo "hash=${hash}" >> "$GITHUB_OUTPUT"
+      # Reuse previously compiled historical release binaries in manual CI runs only;
+      # release.yml deliberately builds every baseline fresh with no cache.
+      - name: Cache historical witforge baseline binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/witforge-baselines
+          key: witforge-buf-baselines-${{ runner.os }}-${{ steps.tags.outputs.hash }}
+          restore-keys: |
+            witforge-buf-baselines-${{ runner.os }}-
       - name: Install buf
         shell: bash
         env:
@@ -366,13 +390,68 @@ jobs:
         # Every fixture WIT root against every published release tag.
         run: ci/check-buf-history.sh
 
-  # The one check branch protection requires: every job above passed, or, for the optional buf
-  # job only, was skipped. Requiring this instead of each job keeps the rule valid when a job is
-  # added or renamed (the MSRV job's name carries its version).
+  floating-stable:
+    name: weekly floating stable check
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scheduled_checks) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - run: rustc --version && cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo test --workspace --locked
+
+  fuzz-smoke:
+    name: weekly fuzz smoke
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scheduled_checks) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: nightly-2026-09-11
+          components: rust-src
+      - name: Install pinned cargo-fuzz
+        run: cargo install --locked cargo-fuzz --version 0.13.2
+      - name: Run bounded fuzz targets
+        shell: bash
+        run: |
+          cargo +nightly-2026-09-11 fuzz run wit-package \
+            --target x86_64-unknown-linux-gnu -- -max_total_time=45
+          cargo +nightly-2026-09-11 fuzz run lockfile \
+            --target x86_64-unknown-linux-gnu -- -max_total_time=45
+      - name: Upload crashing inputs on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crash-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
+  # The one check branch protection requires: every job above passed, or, for the optional/
+  # scheduled jobs only (`buf`, `floating-stable`, `fuzz-smoke`), was skipped. Requiring this
+  # instead of each job keeps the rule valid when a job is added or renamed (the MSRV job's name
+  # carries its version).
   ok:
     name: ci ok
     if: always()
-    needs: [lint, workflows, published-action, test, msrv, package, semver, generated, plan, benchmark, security, buf]
+    needs: [lint, workflows, published-action, test, msrv, package, semver, generated, plan, benchmark, security, buf, floating-stable, fuzz-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -384,7 +463,7 @@ jobs:
         run: |
           failed="$(jq -r 'to_entries[]
             | select(.value.result != "success")
-            | select(.key != "buf" or .value.result != "skipped")
+            | select((.key != "buf" and .key != "floating-stable" and .key != "fuzz-smoke") or .value.result != "skipped")
             | "\(.key): \(.value.result)"' <<<"${NEEDS}")"
           if [[ -n "${failed}" ]]; then
             echo "::error title=ci::jobs that did not pass: ${failed//$'\n'/, }"

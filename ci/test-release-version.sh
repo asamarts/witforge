@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-version-references.sh"
-tmp_root="${HOME:-/tmp}/.tmp"
+tmp_root="${TMPDIR:-${HOME}/.tmp}"
 mkdir -p "${tmp_root}"
 tmp="$(mktemp -d "${tmp_root}/witforge-release-version.XXXXXX")"
 trap 'rm -rf "${tmp}"' EXIT

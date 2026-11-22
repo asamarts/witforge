@@ -3,7 +3,9 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp=$(mktemp -d)
+scratch="${TMPDIR:-${HOME}/.tmp}"
+mkdir -p "${scratch}"
+tmp=$(mktemp -d "${scratch}/witforge-asset-test.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 printf '#!/bin/sh\necho fake witforge\n' >"$tmp/witforge"
 chmod +x "$tmp/witforge"

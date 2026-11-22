@@ -11,7 +11,9 @@
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-release-freeze.sh"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/witforge-freeze.XXXXXX")"
+scratch="${TMPDIR:-${HOME}/.tmp}"
+mkdir -p "${scratch}"
+TMP="$(mktemp -d "${scratch}/witforge-freeze.XXXXXX")"
 trap 'rm -rf "${TMP}"' EXIT
 
 failures=0

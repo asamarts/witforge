@@ -106,7 +106,8 @@ jobs:
           BUF_REQUIRED: "1"
           WITFORGE_BASE_CACHE: ${{ runner.temp }}/witforge-baselines
         # Every fixture WIT root against every published release tag; the tag being released
-        # points at HEAD and is skipped.
+        # points at HEAD and is skipped. Baseline binaries are deliberately NOT cached here (only
+        # in the manual ci.yml `buf` job), so a poisoned cache can never pass the release gate.
         run: ci/check-buf-history.sh
       - run: ci/publish.sh --dry-run
 

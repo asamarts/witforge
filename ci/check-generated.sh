@@ -7,7 +7,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WIT_ROOT="${1:-${ROOT}/crates/witforge/tests/fixtures/versions/wit}"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/witforge-generated.XXXXXX")"
+scratch="${TMPDIR:-${HOME}/.tmp}"
+mkdir -p "${scratch}"
+TMP="$(mktemp -d "${scratch}/witforge-generated.XXXXXX")"
 trap 'rm -rf "${TMP}"' EXIT
 
 if [[ -n "${WITFORGE:-}" ]]; then

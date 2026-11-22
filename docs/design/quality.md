@@ -86,12 +86,13 @@ wall-clock); CI budget is 180s on a shared GitHub-hosted runner.
 [`crates/witforge/tests/bench.rs`](../../crates/witforge/tests/bench.rs) measures representative
 small and large single-version contracts through loading, modeling, lockfile reconciliation, and
 all four emitters; the generated contracts include records, enums, variants, flags, and functions.
-It also measures `diff::compare_with_impacts` and Rust conversion planning across a generated
-two-version contract. The CI benchmark job runs both tests in release mode. The budgets are
-deliberately catastrophic-regression ceilings rather than microbenchmark claims: 5 seconds for
-the small contract, 15 seconds for the large one, and 5 seconds each for the two-version diff and
-conversion plan on a shared GitHub-hosted runner. The printed timings make a regression visible
-in the job log.
+It also measures `diff::compare_with_impacts`, Rust conversion planning across a generated
+two-version contract, and linear lockfile reconciliation over a 16,000-field wide contract. The CI
+benchmark job runs all three tests in release mode. Ceilings are set within one order of magnitude
+(~10x) of the GitHub-hosted `ubuntu-latest` `--release` baselines recorded beside the assertions
+(`25 ms` small, `800 ms` large, `1400 ms` two-version diff, `1600 ms` conversion plan, and `700 ms`
+wide lock; debug-mode runs under `cargo test --workspace` use separate debug ceilings). The printed
+timings make a regression visible in the job log.
 
 ## Dependency and advisory gates
 

@@ -15,7 +15,9 @@ BASE="$(jq -r '.packages[] | select(.name == "witforge") | .version' <<<"${metad
 # the library matches only the temporary registry's copy. (A pre-release of the workspace
 # version would also match the published release, which sorts above it.)
 VERSION="9999.0.0-publishtest"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/witforge-publish.XXXXXX")"
+scratch="${TMPDIR:-${HOME}/.tmp}"
+mkdir -p "${scratch}"
+TMP="$(mktemp -d "${scratch}/witforge-publish.XXXXXX")"
 cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
 cleanup() {
     rm -rf "${TMP}"
