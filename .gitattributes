@@ -1,1 +1,4 @@
 * text=auto eol=lf
+
+# Binary fuzz seed inputs
+fuzz/seeds/structured-contract/*.bin binary
