@@ -53,8 +53,11 @@ cargo install witforge-cli --version 0.6.0 --locked
 witforge --version
 ```
 
-Prebuilt checksum files and archives are also published for Linux x86_64, macOS Intel and Apple
-silicon, and Windows x86_64.
+Prebuilt archives (carrying `LICENSE-APACHE`, `LICENSE-MIT`, and `README.md` beside the binary),
+`.sha256` checksums, and (from 0.7.0) SLSA build provenance attestations are published for Linux
+x86_64, Linux arm64 (from 0.7.0, glibc >= 2.39), macOS Intel and Apple silicon, and Windows x86_64
+(`witforge-cli` also publishes `cargo-binstall` metadata). Static musl and Windows arm64 builds
+are not provided; install from crates.io with `cargo install` on those platforms.
 
 ## Five-minute example
 

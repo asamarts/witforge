@@ -6,9 +6,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/witforge"
 readme = "../../README.md"
 keywords = ["wit", "wasm", "protobuf", "codegen", "idl"]
 categories = ["development-tools", "wasm", "encoding"]
+# Exclude integration tests and fixtures from the published library crate; nothing in `src/`
+# includes them at compile time.
+exclude = ["tests/"]
 publish = true
 
 [dependencies]

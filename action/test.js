@@ -25,13 +25,15 @@ const {
 
 test('platform targets and archive names are stable', () => {
   assert.equal(assetTarget('linux', 'x64'), 'x86_64-unknown-linux-gnu');
+  assert.equal(assetTarget('linux', 'arm64'), 'aarch64-unknown-linux-gnu');
+  assert.equal(assetTarget('darwin', 'x64'), 'x86_64-apple-darwin');
   assert.equal(assetTarget('darwin', 'arm64'), 'aarch64-apple-darwin');
   assert.equal(assetTarget('win32', 'x64'), 'x86_64-pc-windows-msvc');
   assert.equal(
     archiveName('0.3.0', 'x86_64-unknown-linux-gnu'),
     'witforge-0.3.0-x86_64-unknown-linux-gnu.tar.gz',
   );
-  assert.throws(() => assetTarget('linux', 'ia32'), /no prebuilt/);
+  assert.throws(() => assetTarget('linux', 'ia32'), /no prebuilt.*linux\/ia32/);
 });
 
 test('pinned action refs select the same release and floating refs use latest', () => {

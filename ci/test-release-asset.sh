@@ -17,7 +17,9 @@ asset=$(bash "$root/ci/release-asset.sh" v0.4.1 x86_64-unknown-linux-gnu "$tmp/w
 }
 [ -f "$asset" ] || { echo "missing archive: $asset" >&2; exit 1; }
 [ -f "${asset}.sha256" ] || { echo "missing checksum" >&2; exit 1; }
-tar -tzf "$asset" | grep -qx witforge
+for entry in witforge LICENSE-APACHE LICENSE-MIT README.md; do
+  tar -tzf "$asset" | grep -qx "$entry" || { echo "missing archive entry: $entry" >&2; exit 1; }
+done
 expected=$(awk '{print $1}' "${asset}.sha256")
 if command -v sha256sum >/dev/null 2>&1; then
   actual=$(sha256sum "$asset" | awk '{print $1}')

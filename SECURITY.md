@@ -23,6 +23,29 @@ Include:
 We will acknowledge a report, investigate it, and coordinate disclosure and a fix. Please allow
 time for a fix before public disclosure.
 
+## Threat model
+
+witforge is frequently run in CI against untrusted pull-request changes to `.wit` files,
+`wire.lock`, `wit/released`, and `witforge.toml`:
+
+- **Untrusted WIT and lockfile input:** The compiler parses WIT packages and lockfiles without
+  executing code from them. Type nesting (32 levels), alias chains (32 links), canonical type
+  strings (1024 bytes), and synthesized wrapper names (1024 bytes) are bounded so adversarial
+  inputs fail cleanly as contract or parse errors rather than exhausting stack or memory.
+- **Filesystem write boundaries:** Generators refuse any output root that coincides with, nests
+  inside, or contains the WIT root or any directory listed in `wit/released` (resolving symlinks
+  and `..` components before writing). Every generated file carries a contract- and
+  generator-scoped ownership header; generators refuse symlinks, directories, foreign-owner files,
+  and unowned files at expected output paths, leave unrelated unowned files untouched, and replace
+  files atomically via process-unique temporary siblings. `witforge lock` refuses to modify any
+  released directory or write a lockfile inside one, and refuses symlinks inside listed released
+  directories.
+- **Network isolation:** The `witforge` library and CLI open no network connections.
+- **GitHub Action credentials:** `github-token` is sent only to GitHub API calls (latest-release
+  resolution when explicitly requested, and `gh attestation verify`). Release archives and `.sha256`
+  files are public downloads fetched without credentials, verified by SHA-256 and (from 0.7.0)
+  build provenance attestation before extraction.
+
 ## Dependency and artifact policy
 
 - `cargo audit` checks `Cargo.lock` against the RustSec advisory database in CI.

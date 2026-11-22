@@ -34,15 +34,24 @@ sha256() {
   fi
 }
 
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for doc in LICENSE-APACHE LICENSE-MIT README.md; do
+  if [ ! -f "$root/$doc" ]; then
+    echo "required release file not found: $root/$doc" >&2
+    exit 1
+  fi
+done
+
 mkdir -p "$out"
 scratch="${TMPDIR:-${HOME}/.tmp}"
 mkdir -p "${scratch}"
 staging=$(mktemp -d "${scratch}/witforge-asset.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 cp "$binary" "$staging/"
+cp "$root/LICENSE-APACHE" "$root/LICENSE-MIT" "$root/README.md" "$staging/"
 name="witforge-${version}-${target}.tar.gz"
 archive="$out/$name"
-tar -czf "$archive" -C "$staging" "$(basename "$binary")"
+tar -czf "$archive" -C "$staging" "$(basename "$binary")" LICENSE-APACHE LICENSE-MIT README.md
 
 digest=$(sha256 "$archive")
 printf '%s  %s\n' "$digest" "$name" >"${archive}.sha256"

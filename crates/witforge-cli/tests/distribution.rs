@@ -57,6 +57,24 @@ fn release_asset_script_packages_the_binary_and_writes_a_checksum() {
     assert_eq!(fields[0].len(), 64);
     assert_eq!(fields[1], "witforge-0.3.0-x86_64-unknown-linux-gnu.tar.gz");
 
+    let listing = Command::new("tar")
+        .args(["-tzf"])
+        .arg(&asset)
+        .output()
+        .unwrap();
+    assert!(listing.status.success(), "tar -tzf failed");
+    let entries: Vec<&str> = std::str::from_utf8(&listing.stdout)
+        .unwrap()
+        .lines()
+        .map(str::trim)
+        .collect();
+    for required in ["witforge", "LICENSE-APACHE", "LICENSE-MIT", "README.md"] {
+        assert!(
+            entries.contains(&required),
+            "archive missing `{required}`: {entries:?}"
+        );
+    }
+
     fs::remove_dir_all(&root).unwrap();
 }
 

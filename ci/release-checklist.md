@@ -108,6 +108,9 @@ explicit release-owner action.
       the release before it there, and requires one release throughout the file. It stops
       accepting the release before it once `vX.Y.Z` is tagged on an earlier commit, which is
       what makes the last step of this list mandatory.
+- [ ] Verify GitHub Private Vulnerability Reporting is enabled
+      (`gh api repos/asamarts/witforge/private-vulnerability-reporting` returns `{"enabled": true}`;
+      enabled and verified 2026-11-22).
 - [ ] Run the gates of [Before publishing](#before-publishing), then
       `cargo semver-checks check-release -p witforge --release-type minor`,
       `ci/check-release.sh`, `ci/publish.sh --dry-run`, `BUF_REQUIRED=1 ci/check-buf-history.sh`,

@@ -29,8 +29,12 @@ completeness alone is not enough.
       --no-deps`, `ci/check-generated.sh`, `ci/check-release-freeze.sh
       crates/witforge/tests/fixtures/versions/wit`, and `ci/check-security.sh` pass; cargo-deny
       refuses yanked crates
-- [ ] the checked-out Action and the pinned published Action pass on Linux x86_64, macOS arm64,
-      macOS Intel, and Windows x86_64; each platform installs and verifies its own release archive
+- [ ] the checked-out Action and the pinned published Action pass on Linux x86_64, Linux arm64,
+      macOS arm64, macOS Intel, and Windows x86_64; each platform installs and verifies its own
+      release archive (checksum + build provenance attestation)
+- [ ] GitHub Private Vulnerability Reporting is enabled on `asamarts/witforge` (verified via
+      `gh api repos/asamarts/witforge/private-vulnerability-reporting`) and `SECURITY.md` states
+      the threat model and archive verification steps
 - [ ] the alint consumer pin and its CI are green against the 1.0 candidate
 - [ ] independent external consumer validation is recorded (`W10-001`; unchanged by the second
       audit)

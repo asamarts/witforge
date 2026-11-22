@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/asamarts/witforge"
+homepage = "https://asamarts.github.io/witforge/"
 
 [workspace.dependencies]
 # Pinned exactly: wit-parser makes breaking 0.x releases roughly monthly and its

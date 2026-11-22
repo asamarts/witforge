@@ -27,6 +27,13 @@ cargo install witforge-cli --version 0.6.0 --locked
 witforge --version
 ```
 
+Prebuilt archives (with `.sha256` checksums, `LICENSE-APACHE`, `LICENSE-MIT`, `README.md`, and
+from 0.7.0 SLSA build provenance attestations) are published on GitHub Releases for Linux x86_64
+and Linux arm64 (glibc >= 2.39, from 0.7.0), macOS Intel and Apple silicon, and Windows x86_64;
+`cargo binstall witforge-cli` is also configured. Static musl Linux builds and Windows arm64 builds
+are not provided — use `cargo install witforge-cli --locked` on those platforms (or see the
+[wiring and installation guide](guide/wiring.md) for manual download and verification commands).
+
 From this repository, before or after publication:
 
 ```sh

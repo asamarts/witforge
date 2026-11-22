@@ -12,19 +12,23 @@ Each `vX.Y.Z` release attaches one gzip-compressed tar archive per target:
 
 | Platform | Target | Archive |
 |---|---|---|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` | `witforge-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux x86_64 (glibc >= 2.39) | `x86_64-unknown-linux-gnu` | `witforge-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 (glibc >= 2.39, from 0.7.0) | `aarch64-unknown-linux-gnu` | `witforge-X.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Intel | `x86_64-apple-darwin` | `witforge-X.Y.Z-x86_64-apple-darwin.tar.gz` |
 | macOS Apple silicon | `aarch64-apple-darwin` | `witforge-X.Y.Z-aarch64-apple-darwin.tar.gz` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `witforge-X.Y.Z-x86_64-pc-windows-msvc.tar.gz` |
 
-Every archive has a sibling `.sha256` file containing the archive's SHA-256 digest and filename.
-The release workflow verifies the digest before uploading, and the Action verifies it again after
-download. The archive contains the executable (`witforge`, or `witforge.exe` on Windows) at its
-root.
+Every archive has a sibling `.sha256` file containing the archive's SHA-256 digest and filename,
+and (from 0.7.0 onward) a GitHub Artifact Attestation (SLSA build provenance). The release workflow
+verifies both the digest and provenance before publishing, and the Action verifies them again after
+download. Each archive contains the executable (`witforge`, or `witforge.exe` on Windows) at its
+root alongside `LICENSE-APACHE`, `LICENSE-MIT`, and `README.md`.
 
-The macOS archives are built for both architectures by the release job; the Linux and Windows
-assets are x86_64. An unsupported platform/architecture combination fails with a named error
-rather than running the wrong binary.
+Linux binaries are built natively on Ubuntu 24.04 hosted runners (`ubuntu-latest` and
+`ubuntu-24.04-arm`, targeting glibc 2.39). Static `musl` Linux builds and Windows `arm64` builds
+are **not** provided; revisit if a consumer requests either target or reports the Action failing in
+an Alpine container. An unsupported platform/architecture combination fails with an error naming
+the detected platform/arch rather than running the wrong binary.
 
 ## Installing a prebuilt archive
 
