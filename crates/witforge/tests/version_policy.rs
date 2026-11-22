@@ -104,18 +104,22 @@ fn near_miss_version_directories_and_files_are_refused() {
     fs::write(wit.join(".v0.3"), "").unwrap();
     rust::plan(&wit).unwrap();
 
-    let near_misses = [
+    // Use `V0.3` (not `V0.2`, which collides with existing `v0.2` on case-insensitive APFS/NTFS);
+    // Win32 strips trailing dots from created entries (`v1.` becomes `v1`), so test `v1.` off Windows.
+    let near_misses: &[&str] = &[
         "v0.2.0",
-        "V0.2",
+        "V0.3",
         "v0.2-rc1",
         "v00.2",
         "v0.02",
         "v1",
+        "v1.x",
+        #[cfg(not(windows))]
         "v1.",
         "v99999999999999999999999999.0",
         "v0.99999999999999999999999999",
     ];
-    for name in near_misses {
+    for &name in near_misses {
         // As a directory:
         let dir_path = wit.join(name);
         fs::create_dir_all(&dir_path).unwrap();
