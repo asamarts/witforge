@@ -26,9 +26,9 @@ inputs:
     default: ''
   diff-check:
     description: >-
-      Gate `witforge diff` on breaking changes: `true` for all views (`--check`), `false` to
-      report without failing, or a comma-separated list of views such as `wire` or `wire,api`
-      (`--check=<views>`).
+      Gate `witforge diff` on breaking changes: `true` for the default views (`--check`), `false`
+      to report without failing, or a comma-separated list of views such as `wire`, `wire,decode`,
+      or `wire,api` (`--check=<views>`).
     required: false
     default: 'true'
   config:

@@ -304,3 +304,84 @@ fn compare_with_impacts_matches_compare_on_the_versions_fixture() {
             && impact.to_version == analysis.report.old.version
     }));
 }
+
+#[test]
+fn decode_verdicts_cover_retypes_kind_changes_renumbering_and_interfaces() {
+    use witforge::diff::DecodeVerdict;
+
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diff-decode-matrix-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let old = write_contract(
+        &root,
+        "v0.1",
+        "package ex:dec@0.1.0;\n\
+         interface types {\n\
+           record r { a: u32, b: u32 }\n\
+           enum k { one, two }\n\
+           type ids = list<u32>;\n\
+           record gone { id: u32 }\n\
+         }\n\
+         interface old-api { ping: func(); }\n",
+    );
+    let old_lock = generated_lock(&old);
+    fs::write(old.join("wire.lock"), &old_lock).unwrap();
+
+    let new = write_contract(
+        &root,
+        "v0.2",
+        "package ex:dec@0.2.0;\n\
+         interface types {\n\
+           record r { a: string, b: u32 }\n\
+           record k { x: u32 }\n\
+           type ids = list<u64>;\n\
+         }\n\
+         interface new-types { record fresh { id: u32 } }\n\
+         interface new-api { call: func(); }\n",
+    );
+    // Reconcile fresh to trigger retype + kind change + renumber + interface add/remove.
+    let mut new_lock = generated_lock(&new);
+    new_lock = new_lock.replace(
+        "ex:dec/types/r.b = 2 field u32",
+        "ex:dec/types/r.b = 9 field u32",
+    );
+    fs::write(new.join("wire.lock"), new_lock).unwrap();
+
+    let full = witforge::diff::compare_full(&old, &new).unwrap();
+    let find = |path: &str, element: &str| {
+        full.analysis
+            .report
+            .changes
+            .iter()
+            .zip(full.decode_verdicts.iter())
+            .find(|(c, _)| c.path == path && c.element == element)
+            .map_or_else(|| panic!("missing ({path}, {element})"), |(_, v)| *v)
+    };
+
+    assert_eq!(
+        find("types/r.a", "record field"),
+        DecodeVerdict::INCOMPATIBLE
+    );
+    assert_eq!(
+        find("types/r.b", "record field"),
+        DecodeVerdict::INCOMPATIBLE
+    );
+    assert_eq!(find("types/k", "type"), DecodeVerdict::INCOMPATIBLE);
+    assert_eq!(find("types/ids", "type"), DecodeVerdict::INCOMPATIBLE);
+    assert_eq!(find("new-types", "interface"), DecodeVerdict::COMPATIBLE);
+    assert_eq!(
+        find("new-api", "interface"),
+        DecodeVerdict {
+            new_reads_old: true,
+            old_reads_new: false,
+        }
+    );
+    assert_eq!(
+        find("old-api", "interface"),
+        DecodeVerdict::INCOMPATIBLE // unreserved removal
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

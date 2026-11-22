@@ -241,7 +241,7 @@ struct DiffOptions {
     #[arg(long)]
     json: bool,
     /// Exit non-zero when a breaking change hits any gated view (comma-separated: wire, source,
-    /// api; defaults to all views when given without `=...`).
+    /// api, decode; defaults to wire,source,api without decode when given without `=...`).
     #[arg(
         long,
         value_name = "VIEWS",
@@ -1941,21 +1941,25 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 struct CheckViews {
     wire: bool,
     source: bool,
     api: bool,
+    decode: bool,
 }
 
 impl CheckViews {
-    fn all(self) -> bool {
-        self.wire && self.source && self.api
+    /// Whether this is the default `--check` view set (`wire,source,api`; excludes `decode`).
+    fn is_default_set(self) -> bool {
+        self.wire && self.source && self.api && !self.decode
     }
 
-    fn matches(self, change: &diff::Change) -> bool {
+    fn matches(self, change: &diff::Change, verdict: diff::DecodeVerdict) -> bool {
         (self.wire && change.wire_breaking)
             || (self.source && change.source_breaking)
             || (self.api && change.api_breaking)
+            || (self.decode && verdict.is_breaking())
     }
 
     fn label(self) -> String {
@@ -1969,6 +1973,9 @@ impl CheckViews {
         if self.api {
             names.push("api");
         }
+        if self.decode {
+            names.push("decode");
+        }
         names.join(", ")
     }
 }
@@ -1981,7 +1988,7 @@ fn parse_check_views(raw: Option<&str>) -> Result<Option<CheckViews>> {
         return Err(op_error(
             codes::CLI_USAGE,
             "invalid `--check` view set: expected a non-empty comma-separated list of `wire`, \
-             `source`, `api`",
+             `source`, `api`, `decode`",
             None,
         ));
     }
@@ -1989,18 +1996,20 @@ fn parse_check_views(raw: Option<&str>) -> Result<Option<CheckViews>> {
         wire: false,
         source: false,
         api: false,
+        decode: false,
     };
     for part in spec.split(',') {
         match part {
             "wire" => views.wire = true,
             "source" => views.source = true,
             "api" => views.api = true,
+            "decode" => views.decode = true,
             "" => {
                 return Err(op_error(
                     codes::CLI_USAGE,
                     format!(
                         "invalid `--check={spec}`: empty view name; expected `wire`, `source`, \
-                         or `api`"
+                         `api`, or `decode`"
                     ),
                     None,
                 ));
@@ -2009,7 +2018,8 @@ fn parse_check_views(raw: Option<&str>) -> Result<Option<CheckViews>> {
                 return Err(op_error(
                     codes::CLI_USAGE,
                     format!(
-                        "unknown `--check` view `{other}`; expected `wire`, `source`, or `api`"
+                        "unknown `--check` view `{other}`; expected `wire`, `source`, `api`, or \
+                         `decode`"
                     ),
                     None,
                 ));
@@ -2027,25 +2037,30 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         reporter.suppress();
     }
     let check_views = parse_check_views(options.check.as_deref())?;
-    let (analysis, omissions, locations) =
-        diff::compare_with_omissions(&options.old, &options.new)?;
+    let full = diff::compare_full(&options.old, &options.new)?;
+    let analysis = &full.analysis;
+    let omissions = &full.conversion_omissions;
+    let decode_verdicts = &full.decode_verdicts;
+    let decode_summary = full.decode_summary;
+    let locations = &full.locations;
     let report = &analysis.report;
     let cross_major = report.old.version.major != report.new.version.major;
     if options.json {
-        let rendered = serde_json::to_string_pretty(&diff_json(&analysis, &omissions))
+        let rendered = serde_json::to_string_pretty(&diff_json(&full))
             .context("failed to render the diff as JSON")?;
         reporter.write_stdout_line(&rendered);
     } else if reporter.human() {
-        let rendered = render_diff(report, reporter.is_quiet());
+        let rendered = render_diff(report, decode_verdicts, decode_summary, reporter.is_quiet());
         if !rendered.is_empty() {
             reporter.write_stdout_line(rendered.trim_end_matches('\n'));
         }
     } else {
-        for change in &report.changes {
-            let (code, severity) = if change.is_breaking() {
+        for (change, &verdict) in report.changes.iter().zip(decode_verdicts.iter()) {
+            let gated_hit = check_views.is_some_and(|views| views.matches(change, verdict));
+            let (code, severity) = if change.is_breaking() || gated_hit {
                 (
                     "WF3001",
-                    if check_views.is_some_and(|views| views.matches(change)) {
+                    if gated_hit {
                         Severity::Error
                     } else {
                         Severity::Warning
@@ -2095,7 +2110,7 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             );
         }
         if cross_major {
-            for omission in &omissions {
+            for omission in omissions {
                 let human = format!(
                     "note: conversion {} -> {} for `{}` is omitted: {}",
                     omission.from_version, omission.to_version, omission.type_path, omission.reason
@@ -2159,11 +2174,12 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         let gated_breaking = report
             .changes
             .iter()
-            .filter(|change| views.matches(change))
+            .zip(decode_verdicts.iter())
+            .filter(|(change, verdict)| views.matches(change, **verdict))
             .count();
         if gated_breaking > 0 {
             if reporter.human() || reporter.is_suppressed() {
-                if views.all() {
+                if views.is_default_set() {
                     diagnostics::write_stderr_line(&format!(
                         "diff: {gated_breaking} breaking change(s); --check failed"
                     ));
@@ -2760,7 +2776,9 @@ fn conversion_blockers(report: &DiffReport) -> impl Iterator<Item = (&'static st
         })
 }
 
-fn diff_json(analysis: &diff::DiffAnalysis, omissions: &[diff::ConversionOmission]) -> Value {
+fn diff_json(full: &diff::FullDiff) -> Value {
+    let analysis = &full.analysis;
+    let omissions = &full.conversion_omissions;
     let report = &analysis.report;
     let cross_major = report.old.version.major != report.new.version.major;
     let endpoint = |endpoint: &diff::Endpoint| {
@@ -2770,7 +2788,12 @@ fn diff_json(analysis: &diff::DiffAnalysis, omissions: &[diff::ConversionOmissio
             "version": endpoint.version.to_string(),
         })
     };
-    let changes: Vec<Value> = report.changes.iter().map(change_json).collect();
+    let changes: Vec<Value> = report
+        .changes
+        .iter()
+        .zip(full.decode_verdicts.iter())
+        .map(|(change, verdict)| change_json(change, *verdict))
+        .collect();
     let conversion_impacts: Vec<Value> = analysis
         .conversion_impacts
         .iter()
@@ -2817,6 +2840,9 @@ fn diff_json(analysis: &diff::DiffAnalysis, omissions: &[diff::ConversionOmissio
             "wire_breaking": report.summary.wire_breaking,
             "source_breaking": report.summary.source_breaking,
             "api_breaking": report.summary.api_breaking,
+            "decode_breaking": full.decode_summary.breaking,
+            "new_reads_old_breaking": full.decode_summary.new_reads_old_breaking,
+            "old_reads_new_breaking": full.decode_summary.old_reads_new_breaking,
         },
         "conversion_impacts": conversion_impacts,
         "conversion_blockers": conversion_blockers,
@@ -2824,7 +2850,7 @@ fn diff_json(analysis: &diff::DiffAnalysis, omissions: &[diff::ConversionOmissio
     })
 }
 
-fn change_json(change: &diff::Change) -> Value {
+fn change_json(change: &diff::Change, decode: diff::DecodeVerdict) -> Value {
     let mut value = json!({
         "element": &change.element,
         "path": &change.path,
@@ -2832,6 +2858,9 @@ fn change_json(change: &diff::Change) -> Value {
         "wire_breaking": change.wire_breaking,
         "source_breaking": change.source_breaking,
         "api_breaking": change.api_breaking,
+        "decode_breaking": decode.is_breaking(),
+        "new_reads_old": decode.new_reads_old,
+        "old_reads_new": decode.old_reads_new,
     });
     let object = value.as_object_mut().expect("JSON object");
     let (kind, extra) = match &change.kind {
@@ -2874,7 +2903,12 @@ fn change_label(change: &diff::Change) -> (&'static str, String) {
     }
 }
 
-fn render_diff(report: &DiffReport, quiet: bool) -> String {
+fn render_diff(
+    report: &DiffReport,
+    decode_verdicts: &[diff::DecodeVerdict],
+    decode_summary: diff::DecodeSummary,
+    quiet: bool,
+) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
@@ -2897,30 +2931,35 @@ fn render_diff(report: &DiffReport, quiet: bool) -> String {
             let _ = writeln!(out, "no contract changes");
         }
     }
-    for change in &report.changes {
+    for (change, &verdict) in report.changes.iter().zip(decode_verdicts.iter()) {
         let (kind, detail) = change_label(change);
         let number = change
             .number
             .map_or_else(String::new, |number| format!(" number={number}"));
         let _ = writeln!(
             out,
-            "{kind:<17} {:<18} {:<32}{number:<10}  wire:{} source:{} api:{}  {detail}",
+            "{kind:<17} {:<18} {:<32}{number:<10}  wire:{} source:{} api:{} decode:{}  {detail}",
             change.element,
             change.path,
             status(change.wire_breaking),
             status(change.source_breaking),
             status(change.api_breaking),
+            decode_status(verdict),
         );
     }
     if !quiet {
         let _ = writeln!(
             out,
-            "summary: {} change(s), {} breaking; wire identity: {}, source: {}, generated API: {}",
+            "summary: {} change(s), {} breaking; wire identity: {}, source: {}, generated API: {}, \
+             decode: {} (new<-old: {}, old<-new: {})",
             report.summary.changes,
             report.summary.breaking,
             report.summary.wire_breaking,
             report.summary.source_breaking,
             report.summary.api_breaking,
+            decode_summary.breaking,
+            decode_summary.new_reads_old_breaking,
+            decode_summary.old_reads_new_breaking,
         );
         if report.summary.breaking > 0 {
             let _ = writeln!(out, "result: BREAKING");
@@ -2929,6 +2968,15 @@ fn render_diff(report: &DiffReport, quiet: bool) -> String {
         }
     }
     out
+}
+
+fn decode_status(verdict: diff::DecodeVerdict) -> &'static str {
+    match (verdict.new_reads_old, verdict.old_reads_new) {
+        (true, true) => "compatible",
+        (false, true) => "BREAKING(new<-old)",
+        (true, false) => "BREAKING(old<-new)",
+        (false, false) => "BREAKING(both)",
+    }
 }
 
 fn status(breaking: bool) -> &'static str {

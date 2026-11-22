@@ -1707,3 +1707,171 @@ fn diff_and_check_across_major_report_omissions_and_support_retirement() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn diff_decode_view_gates_only_when_selected_and_preserves_json_fields() {
+    let root = workspace("decode-cli");
+
+    // Case 1: Adding a new interface with a function is compatible under default `--check`
+    // (`wire,source,api`), yet decode-breaking (`old_reads_new = false`) when `--check=decode`
+    // is explicitly selected!
+    contract(
+        &root,
+        "iface/v0.1",
+        "package example:svc@0.1.0;\ninterface core { ping: func(); }\n",
+    );
+    contract(
+        &root,
+        "iface/v0.2",
+        "package example:svc@0.2.0;\n\
+         interface core { ping: func(); }\n\
+         interface extra { greet: func(); }\n",
+    );
+    let i_old = root.join("iface/v0.1");
+    let i_new = root.join("iface/v0.2");
+    lock(&root, "iface/v0.1");
+    fs::copy(i_old.join("wire.lock"), i_new.join("wire.lock")).unwrap();
+    let lock_i = witforge()
+        .args(["lock"])
+        .arg(&i_new)
+        .args(["--against"])
+        .arg(i_old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_i.status.success(), "{lock_i:?}");
+
+    // Default `--check` does NOT gate on `decode`: exits 0!
+    let default_check = diff(&i_old, &i_new, &["--check"]);
+    assert!(
+        default_check.status.success(),
+        "default --check must not gate on decode: {default_check:?}"
+    );
+
+    // Explicit `--check=decode` gates on decode: exits 1, SARIF level = error!
+    let decode_check = diff(&i_old, &i_new, &["--check=decode"]);
+    assert_eq!(decode_check.status.code(), Some(1), "{decode_check:?}");
+    assert!(
+        String::from_utf8_lossy(&decode_check.stderr).contains("gated view(s) (decode)"),
+        "{decode_check:?}"
+    );
+    let decode_sarif = diff(&i_old, &i_new, &["--check=decode", "--format", "sarif"]);
+    assert_eq!(decode_sarif.status.code(), Some(1), "{decode_sarif:?}");
+    let sarif_val: serde_json::Value = serde_json::from_slice(&decode_sarif.stdout).unwrap();
+    assert!(
+        sarif_val["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["ruleId"] == "WF3001" && r["level"] == "error"),
+        "{sarif_val}"
+    );
+
+    // Case 2: Wire-compatible minor additions:
+    // - added `option<string>` field: wire:compatible, decode:compatible
+    // - added required `string` field: wire:compatible, decode:BREAKING(new<-old)
+    // - added enum case: wire:compatible, decode:BREAKING(old<-new)
+    contract(
+        &root,
+        "minor/v0.1",
+        "package example:min@0.1.0;\n\
+         interface types {\n\
+           record r { id: u32 }\n\
+           enum st { a, b }\n\
+         }\n",
+    );
+    contract(
+        &root,
+        "minor/v0.2",
+        "package example:min@0.2.0;\n\
+         interface types {\n\
+           record r { id: u32, opt: option<string>, req: string }\n\
+           enum st { a, b, c }\n\
+         }\n",
+    );
+    let m_old = root.join("minor/v0.1");
+    let m_new = root.join("minor/v0.2");
+    lock(&root, "minor/v0.1");
+    fs::copy(m_old.join("wire.lock"), m_new.join("wire.lock")).unwrap();
+    let lock_m = witforge()
+        .args(["lock"])
+        .arg(&m_new)
+        .args(["--against"])
+        .arg(m_old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_m.status.success(), "{lock_m:?}");
+
+    // `--check=wire` passes (all wire-compatible), while `--check=wire,decode` fails!
+    assert!(diff(&m_old, &m_new, &["--check=wire"]).status.success());
+    let wire_decode = diff(&m_old, &m_new, &["--check=wire,decode"]);
+    assert_eq!(wire_decode.status.code(), Some(1), "{wire_decode:?}");
+    assert!(
+        String::from_utf8_lossy(&wire_decode.stderr)
+            .contains("2 breaking change(s) in gated view(s) (wire, decode)"),
+        "{wire_decode:?}"
+    );
+
+    // Human output shows directional decode verdicts.
+    let human = diff(&m_old, &m_new, &[]);
+    assert!(human.status.success(), "{human:?}");
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("decode:compatible"), "{text}");
+    assert!(text.contains("decode:BREAKING(new<-old)"), "{text}");
+    assert!(text.contains("decode:BREAKING(old<-new)"), "{text}");
+    assert!(
+        text.contains("decode: 2 (new<-old: 1, old<-new: 1)"),
+        "{text}"
+    );
+
+    // JSON output retains every existing field and adds decode fields.
+    let json_out = diff(&m_old, &m_new, &["--json"]);
+    assert!(json_out.status.success(), "{json_out:?}");
+    let val: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(val["summary"]["wire_breaking"], 0);
+    assert_eq!(val["summary"]["decode_breaking"], 2);
+    assert_eq!(val["summary"]["new_reads_old_breaking"], 1);
+    assert_eq!(val["summary"]["old_reads_new_breaking"], 1);
+    let changes = val["changes"].as_array().unwrap();
+    let by_path = |p: &str| changes.iter().find(|c| c["path"] == p).unwrap();
+    assert_eq!(by_path("types/r.opt")["decode_breaking"], false);
+    assert_eq!(by_path("types/r.opt")["new_reads_old"], true);
+    assert_eq!(by_path("types/r.opt")["old_reads_new"], true);
+    assert_eq!(by_path("types/r.req")["decode_breaking"], true);
+    assert_eq!(by_path("types/r.req")["new_reads_old"], false);
+    assert_eq!(by_path("types/r.req")["old_reads_new"], true);
+    assert_eq!(by_path("types/st.c")["decode_breaking"], true);
+    assert_eq!(by_path("types/st.c")["new_reads_old"], true);
+    assert_eq!(by_path("types/st.c")["old_reads_new"], false);
+
+    // Case 3: Purely decode-compatible minor addition (`option<T>` only) passes `--check=wire,decode`!
+    contract(
+        &root,
+        "opt/v0.1",
+        "package example:opt@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    );
+    contract(
+        &root,
+        "opt/v0.2",
+        "package example:opt@0.2.0;\ninterface types { record r { id: u32, opt: option<u32> } }\n",
+    );
+    let o_old = root.join("opt/v0.1");
+    let o_new = root.join("opt/v0.2");
+    lock(&root, "opt/v0.1");
+    fs::copy(o_old.join("wire.lock"), o_new.join("wire.lock")).unwrap();
+    let lock_o = witforge()
+        .args(["lock"])
+        .arg(&o_new)
+        .args(["--against"])
+        .arg(o_old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_o.status.success(), "{lock_o:?}");
+    assert!(
+        diff(&o_old, &o_new, &["--check=wire,decode"])
+            .status
+            .success()
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

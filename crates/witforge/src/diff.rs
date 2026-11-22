@@ -33,7 +33,9 @@ use crate::emit::defaults::default_expr;
 use crate::emit::versions::ensure_same_dependency_graph;
 use crate::emit::{TypeRenderStyle, type_kind_name, type_shape};
 use crate::lock::{PackageName, WireLock};
-use crate::model::{Interface, Member, Model, TypeDef, TypeDefKind, Version, WorldInterface};
+use crate::model::{
+    Dependency, Interface, Member, Model, TypeDef, TypeDefKind, TypeExpr, Version, WorldInterface,
+};
 use crate::{
     ContractError, ensure_directory_version, ensure_version_directory, load, operational_error,
     operational_error_at, subset,
@@ -197,6 +199,70 @@ pub struct ConversionOmission {
     pub reason: String,
 }
 
+/// Decode-compatibility verdict for one contract change under the protobuf binary decode profile
+/// within a single major version.
+///
+/// The decode view models two processes speaking the same major's protobuf schema over binary
+/// protobuf encoding (`prost` / generated glue / the non-Rust decode profile). Two different
+/// majors have two distinct protobuf packages negotiated separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeVerdict {
+    /// Whether a reader compiled against the newer version accepts protobuf binary messages
+    /// encoded by a writer at the older version.
+    pub new_reads_old: bool,
+    /// Whether a reader compiled against the older version accepts protobuf binary messages
+    /// encoded by a writer at the newer version.
+    pub old_reads_new: bool,
+}
+
+impl DecodeVerdict {
+    /// Both directions accept each other's messages.
+    pub const COMPATIBLE: Self = Self {
+        new_reads_old: true,
+        old_reads_new: true,
+    };
+
+    /// Neither direction can safely decode the other's messages.
+    pub const INCOMPATIBLE: Self = Self {
+        new_reads_old: false,
+        old_reads_new: false,
+    };
+
+    /// Whether either decode direction rejects messages under the decode profile.
+    #[must_use]
+    pub const fn is_breaking(self) -> bool {
+        !self.new_reads_old || !self.old_reads_new
+    }
+}
+
+/// Counts of decode-breaking changes over a [`DiffReport`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecodeSummary {
+    /// Changes breaking at least one decode direction (`!new_reads_old || !old_reads_new`).
+    pub breaking: usize,
+    /// Changes where a newer reader rejects messages from an older writer (`!new_reads_old`).
+    pub new_reads_old_breaking: usize,
+    /// Changes where an older reader rejects messages from a newer writer (`!old_reads_new`).
+    pub old_reads_new_breaking: usize,
+}
+
+/// Complete comparison result including conversion impacts, cross-major omissions, decode
+/// compatibility verdicts (aligned 1:1 with `analysis.report.changes`), and physical source
+/// locations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullDiff {
+    /// The compatibility report and guaranteed new-to-old conversion-impact notes.
+    pub analysis: DiffAnalysis,
+    /// Per-direction cross-major conversion omissions matching `convert.rs`.
+    pub conversion_omissions: Vec<ConversionOmission>,
+    /// Decode-compatibility verdict for each change in `analysis.report.changes`, in order.
+    pub decode_verdicts: Vec<DecodeVerdict>,
+    /// Counts over `decode_verdicts`.
+    pub decode_summary: DecodeSummary,
+    /// Physical source locations indexed by logical contract path.
+    pub locations: BTreeMap<String, (String, Position)>,
+}
+
 /// A complete comparison plus its guaranteed conversion-impact notes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffAnalysis {
@@ -217,7 +283,7 @@ pub struct DiffAnalysis {
 /// different package names, or (within one major) mismatched dependency graphs. Contract
 /// violations carry [`ContractError`].
 pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
-    compare_report(old, new, false).map(|(report, _, _, _)| report)
+    compare_report(old, new, false).map(|full| full.analysis.report)
 }
 
 /// Compare two version directories, or the highest version under two WIT roots, and report
@@ -235,11 +301,7 @@ pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
 ///
 /// Returns the same errors as [`compare`].
 pub fn compare_with_impacts(old: &Path, new: &Path) -> Result<DiffAnalysis> {
-    let (report, conversion_impacts, _, _) = compare_report(old, new, true)?;
-    Ok(DiffAnalysis {
-        report,
-        conversion_impacts,
-    })
+    compare_report(old, new, true).map(|full| full.analysis)
 }
 
 /// Compare two version directories or WIT roots and return the per-direction cross-major
@@ -252,8 +314,7 @@ pub fn compare_with_impacts(old: &Path, new: &Path) -> Result<DiffAnalysis> {
 ///
 /// Returns the same errors as [`compare`].
 pub fn compare_omissions(old: &Path, new: &Path) -> Result<Vec<ConversionOmission>> {
-    let (_, _, omissions, _) = compare_report(old, new, true)?;
-    Ok(omissions)
+    compare_report(old, new, true).map(|full| full.conversion_omissions)
 }
 
 /// Compare two version directories or WIT roots and also return the physical source locations
@@ -270,14 +331,8 @@ pub fn compare_with_locations(
     old: &Path,
     new: &Path,
 ) -> Result<(DiffAnalysis, BTreeMap<String, (String, Position)>)> {
-    let (report, conversion_impacts, _, locations) = compare_report(old, new, true)?;
-    Ok((
-        DiffAnalysis {
-            report,
-            conversion_impacts,
-        },
-        locations,
-    ))
+    let full = compare_report(old, new, true)?;
+    Ok((full.analysis, full.locations))
 }
 
 /// Compare two version directories or WIT roots and return the compatibility analysis,
@@ -295,30 +350,24 @@ pub fn compare_with_omissions(
     Vec<ConversionOmission>,
     BTreeMap<String, (String, Position)>,
 )> {
-    let (report, conversion_impacts, omissions, locations) = compare_report(old, new, true)?;
-    Ok((
-        DiffAnalysis {
-            report,
-            conversion_impacts,
-        },
-        omissions,
-        locations,
-    ))
+    let full = compare_report(old, new, true)?;
+    Ok((full.analysis, full.conversion_omissions, full.locations))
+}
+
+/// Compare two version directories or WIT roots and return every compatibility view: wire
+/// identity, source, generated API, protobuf binary decode compatibility, conversion impacts,
+/// cross-major conversion omissions, and physical source locations.
+///
+/// # Errors
+///
+/// Returns the same errors as [`compare`].
+pub fn compare_full(old: &Path, new: &Path) -> Result<FullDiff> {
+    compare_report(old, new, true)
 }
 
 /// Build the report, optionally collecting conversion-impact notes, cross-major omissions, and
 /// source locations.
-#[allow(clippy::type_complexity)]
-fn compare_report(
-    old_arg: &Path,
-    new_arg: &Path,
-    collect_impacts: bool,
-) -> Result<(
-    DiffReport,
-    Vec<ConversionImpact>,
-    Vec<ConversionOmission>,
-    BTreeMap<String, (String, Position)>,
-)> {
+fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Result<FullDiff> {
     let old = load_endpoint(old_arg)
         .with_context(|| format!("failed to read the old contract {}", old_arg.display()))?;
     let new = load_endpoint(new_arg)
@@ -366,14 +415,16 @@ fn compare_report(
     };
     builder.compare_interfaces()?;
     builder.compare_worlds();
-    let mut changes = builder.changes;
-    changes.sort_by(|left, right| {
+    let mut entries = builder.changes;
+    entries.sort_by(|(left, _), (right, _)| {
         left.path
             .cmp(&right.path)
             .then_with(|| left.kind.rank().cmp(&right.kind.rank()))
             .then_with(|| left.element.cmp(&right.element))
     });
+    let (changes, decode_verdicts): (Vec<Change>, Vec<DecodeVerdict>) = entries.into_iter().unzip();
     let summary = summarize(&changes);
+    let decode_summary = summarize_decode(&decode_verdicts);
     let conversion_omissions = if collect_impacts {
         crate::emit::convert::analyze_cross_major_omissions(&old.model, &new.model)?
     } else {
@@ -394,17 +445,94 @@ fn compare_report(
     };
     let mut locations = old.locations;
     locations.extend(new.locations);
-    Ok((
-        DiffReport {
-            old: old.endpoint,
-            new: new.endpoint,
-            changes,
-            summary,
+    Ok(FullDiff {
+        analysis: DiffAnalysis {
+            report: DiffReport {
+                old: old.endpoint,
+                new: new.endpoint,
+                changes,
+                summary,
+            },
+            conversion_impacts,
         },
-        conversion_impacts,
         conversion_omissions,
+        decode_verdicts,
+        decode_summary,
         locations,
-    ))
+    })
+}
+
+fn summarize_decode(verdicts: &[DecodeVerdict]) -> DecodeSummary {
+    DecodeSummary {
+        breaking: verdicts.iter().filter(|v| v.is_breaking()).count(),
+        new_reads_old_breaking: verdicts.iter().filter(|v| !v.new_reads_old).count(),
+        old_reads_new_breaking: verdicts.iter().filter(|v| !v.old_reads_new).count(),
+    }
+}
+
+/// Whether omitting a field or parameter of type `ty` from protobuf wire bytes is accepted by the
+/// decode profile (and generated Rust glue) without returning `MissingField`.
+///
+/// Only `option<T>` (including `option<list<u8>>`) and non-byte `list<T>` (emitted as `repeated`)
+/// accept absence on the wire. Required `list<u8>` (including alias chains resolving to `u8`) is
+/// emitted as proto3 `optional bytes`, whose absence is rejected with `MissingField`.
+fn is_absent_ok_on_wire(model: &Model, ty: &TypeExpr) -> bool {
+    is_absent_ok_in(model, None, ty, 0)
+}
+
+fn is_absent_ok_in(
+    model: &Model,
+    context: Option<&Dependency>,
+    ty: &TypeExpr,
+    depth: usize,
+) -> bool {
+    if depth > crate::model::MAX_ALIAS_CHAIN {
+        return false;
+    }
+    match ty {
+        TypeExpr::Option(_) => true,
+        TypeExpr::List(elem) => !resolves_to_u8_in(model, context, elem, 0),
+        TypeExpr::Named(name) => {
+            let Some((resolved, def)) = model.type_def_in(context, name) else {
+                return false;
+            };
+            match &def.kind {
+                TypeDefKind::Option(_) => true,
+                TypeDefKind::List(elem) => !resolves_to_u8_in(model, resolved, elem, 0),
+                TypeDefKind::Alias(target) => is_absent_ok_in(model, resolved, target, depth + 1),
+                TypeDefKind::Record(_)
+                | TypeDefKind::Variant(_)
+                | TypeDefKind::Enum(_)
+                | TypeDefKind::Flags(_)
+                | TypeDefKind::Result(_) => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn resolves_to_u8_in(
+    model: &Model,
+    context: Option<&Dependency>,
+    ty: &TypeExpr,
+    depth: usize,
+) -> bool {
+    if depth > crate::model::MAX_ALIAS_CHAIN {
+        return false;
+    }
+    match ty {
+        TypeExpr::U8 => true,
+        TypeExpr::Named(name) => {
+            let Some((resolved, def)) = model.type_def_in(context, name) else {
+                return false;
+            };
+            match &def.kind {
+                TypeDefKind::Alias(target) => resolves_to_u8_in(model, resolved, target, depth + 1),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 fn conversion_impacts(
@@ -848,7 +976,7 @@ fn load_version(path: &Path) -> Result<Loaded> {
 struct Builder<'a> {
     old: &'a Loaded,
     new: &'a Loaded,
-    changes: Vec<Change>,
+    changes: Vec<(Change, DecodeVerdict)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -886,12 +1014,29 @@ impl Breaking {
     };
 }
 
+/// How additions and removals of one member kind affect protobuf binary decode compatibility.
+#[derive(Clone, Copy)]
+enum MemberDecodeRule<'a> {
+    /// Record fields and function parameters: absence is accepted only when the member's type is
+    /// absent-ok on the wire (`option<T>` or non-byte `list<T>`). Unknown fields are ignored.
+    WireFields {
+        old_absent_ok: &'a BTreeSet<String>,
+        new_absent_ok: &'a BTreeSet<String>,
+    },
+    /// Closed enum cases and variant cases: adding breaks `old_reads_new`, removing breaks
+    /// `new_reads_old`.
+    ClosedCases,
+    /// Flags bits: proto3 bool defaults to `false` on absence and ignores unknown fields.
+    Flags,
+}
+
 struct MemberComparison<'a> {
     element: &'a str,
     path: &'a str,
     parent: &'a str,
     api_on_reorder: bool,
     defaulted: &'a BTreeSet<String>,
+    decode_rule: MemberDecodeRule<'a>,
 }
 
 impl Builder<'_> {
@@ -902,16 +1047,20 @@ impl Builder<'_> {
         path: impl Into<String>,
         number: Option<u32>,
         breaking: Breaking,
+        decode: DecodeVerdict,
     ) {
-        self.changes.push(Change {
-            kind,
-            element: element.into(),
-            path: path.into(),
-            number,
-            wire_breaking: breaking.wire,
-            source_breaking: breaking.source,
-            api_breaking: breaking.api,
-        });
+        self.changes.push((
+            Change {
+                kind,
+                element: element.into(),
+                path: path.into(),
+                number,
+                wire_breaking: breaking.wire,
+                source_breaking: breaking.source,
+                api_breaking: breaking.api,
+            },
+            decode,
+        ));
     }
 
     fn compare_interfaces(&mut self) -> Result<()> {
@@ -929,27 +1078,48 @@ impl Builder<'_> {
             .iter()
             .map(|interface| (interface.name.as_str(), interface))
             .collect();
-        for name in new.keys().filter(|name| !old.contains_key(*name)) {
+        for (name, new_iface) in new.iter().filter(|(name, _)| !old.contains_key(*name)) {
+            let decode = if new_iface.functions.is_empty() {
+                DecodeVerdict::COMPATIBLE
+            } else {
+                DecodeVerdict {
+                    new_reads_old: true,
+                    old_reads_new: false,
+                }
+            };
             self.push(
                 ChangeKind::Added { defaulted: false },
                 "interface",
                 *name,
                 None,
                 Breaking::NONE,
+                decode,
             );
         }
-        for name in old.keys().filter(|name| !new.contains_key(*name)) {
+        for (name, old_iface) in old.iter().filter(|(name, _)| !new.contains_key(*name)) {
             let prefix = format!("{}/{name}", self.old.endpoint.package);
+            let wire = !self.new.preserves_scope(self.old, &prefix);
+            let decode = if wire {
+                DecodeVerdict::INCOMPATIBLE
+            } else if old_iface.types.is_empty() && old_iface.functions.is_empty() {
+                DecodeVerdict::COMPATIBLE
+            } else {
+                DecodeVerdict {
+                    new_reads_old: false,
+                    old_reads_new: true,
+                }
+            };
             self.push(
                 ChangeKind::Removed,
                 "interface",
                 *name,
                 None,
                 Breaking {
-                    wire: !self.new.preserves_scope(self.old, &prefix),
+                    wire,
                     source: true,
                     api: true,
                 },
+                decode,
             );
         }
         for (name, old_interface) in &old {
@@ -983,6 +1153,7 @@ impl Builder<'_> {
                 format!("{}/{}", old.name, name),
                 None,
                 Breaking::NONE,
+                DecodeVerdict::COMPATIBLE,
             );
         }
         for name in old_types
@@ -990,16 +1161,26 @@ impl Builder<'_> {
             .filter(|name| !new_types.contains_key(*name))
         {
             let prefix = format!("{}/{}/{name}", self.old.endpoint.package, old.name);
+            let wire = !self.new.preserves_scope(self.old, &prefix);
+            let decode = if wire {
+                DecodeVerdict::INCOMPATIBLE
+            } else {
+                DecodeVerdict {
+                    new_reads_old: false,
+                    old_reads_new: true,
+                }
+            };
             self.push(
                 ChangeKind::Removed,
                 "type",
                 format!("{}/{}", old.name, name),
                 None,
                 Breaking {
-                    wire: !self.new.preserves_scope(self.old, &prefix),
+                    wire,
                     source: true,
                     api: true,
                 },
+                decode,
             );
         }
         for (name, old_def) in &old_types {
@@ -1033,6 +1214,7 @@ impl Builder<'_> {
                     source: true,
                     api: true,
                 },
+                DecodeVerdict::INCOMPATIBLE,
             );
             return Ok(());
         }
@@ -1060,6 +1242,7 @@ impl Builder<'_> {
                         parent: &parent,
                         api_on_reorder: false,
                         defaulted: &BTreeSet::new(),
+                        decode_rule: MemberDecodeRule::Flags,
                     },
                 )
             }
@@ -1076,6 +1259,7 @@ impl Builder<'_> {
                         path,
                         None,
                         Breaking::SOURCE_API,
+                        DecodeVerdict::INCOMPATIBLE,
                     );
                 }
                 Ok(())
@@ -1095,9 +1279,19 @@ impl Builder<'_> {
         let old_names: Vec<String> = old_fields.iter().map(|field| field.name.clone()).collect();
         let new_names: Vec<String> = new_fields.iter().map(|field| field.name.clone()).collect();
         let mut defaulted = BTreeSet::new();
+        let mut old_absent_ok = BTreeSet::new();
+        let mut new_absent_ok = BTreeSet::new();
+        for field in old_fields {
+            if is_absent_ok_on_wire(&self.old.model, &field.ty) {
+                old_absent_ok.insert(field.name.clone());
+            }
+        }
         for field in new_fields {
             if default_expr(&self.new.model, &field.ty)?.is_some() {
                 defaulted.insert(field.name.clone());
+            }
+            if is_absent_ok_on_wire(&self.new.model, &field.ty) {
+                new_absent_ok.insert(field.name.clone());
             }
         }
         self.compare_members(
@@ -1109,6 +1303,10 @@ impl Builder<'_> {
                 parent: &parent,
                 api_on_reorder: false,
                 defaulted: &defaulted,
+                decode_rule: MemberDecodeRule::WireFields {
+                    old_absent_ok: &old_absent_ok,
+                    new_absent_ok: &new_absent_ok,
+                },
             },
         )
     }
@@ -1134,6 +1332,7 @@ impl Builder<'_> {
                 parent: &parent,
                 api_on_reorder: false,
                 defaulted: &BTreeSet::new(),
+                decode_rule: MemberDecodeRule::ClosedCases,
             },
         )
     }
@@ -1151,6 +1350,7 @@ impl Builder<'_> {
             parent,
             api_on_reorder,
             defaulted,
+            decode_rule,
         } = spec;
         let old_map: BTreeMap<&str, &str> = old
             .iter()
@@ -1166,6 +1366,21 @@ impl Builder<'_> {
             // Reusing a number the old lockfile reserved changes the wire even though the
             // member is newly added: the old number belonged to a removed member.
             let wire = reserved_numbers.contains(&number);
+            let decode = if wire {
+                DecodeVerdict::INCOMPATIBLE
+            } else {
+                match decode_rule {
+                    MemberDecodeRule::WireFields { new_absent_ok, .. } => DecodeVerdict {
+                        new_reads_old: new_absent_ok.contains(*name),
+                        old_reads_new: true,
+                    },
+                    MemberDecodeRule::ClosedCases => DecodeVerdict {
+                        new_reads_old: true,
+                        old_reads_new: false,
+                    },
+                    MemberDecodeRule::Flags => DecodeVerdict::COMPATIBLE,
+                }
+            };
             self.push(
                 ChangeKind::Added {
                     defaulted: defaulted.contains(*name),
@@ -1178,21 +1393,35 @@ impl Builder<'_> {
                     source: true,
                     api: true,
                 },
+                decode,
             );
         }
         for name in old_map.keys().filter(|name| !new_map.contains_key(**name)) {
             let number = self.old.number(parent, name)?;
             let key = format!("{}/{parent}.{name}", self.old.endpoint.package);
+            let wire = !self.new.preserves(self.old, &key);
+            let decode = match decode_rule {
+                MemberDecodeRule::WireFields { old_absent_ok, .. } => DecodeVerdict {
+                    new_reads_old: true,
+                    old_reads_new: old_absent_ok.contains(*name),
+                },
+                MemberDecodeRule::ClosedCases => DecodeVerdict {
+                    new_reads_old: false,
+                    old_reads_new: true,
+                },
+                MemberDecodeRule::Flags => DecodeVerdict::COMPATIBLE,
+            };
             self.push(
                 ChangeKind::Removed,
                 *element,
                 format!("{path}.{name}"),
                 Some(number),
                 Breaking {
-                    wire: !self.new.preserves(self.old, &key),
+                    wire,
                     source: true,
                     api: true,
                 },
+                decode,
             );
         }
         for (name, old_ty) in &old_map {
@@ -1210,6 +1439,7 @@ impl Builder<'_> {
                     format!("{path}.{name}"),
                     Some(self.new.number(parent, name)?),
                     Breaking::ALL,
+                    DecodeVerdict::INCOMPATIBLE,
                 );
             }
             let new_number = self.new.number(parent, name)?;
@@ -1223,6 +1453,7 @@ impl Builder<'_> {
                     format!("{path}.{name}"),
                     Some(new_number),
                     Breaking::WIRE,
+                    DecodeVerdict::INCOMPATIBLE,
                 );
             }
         }
@@ -1247,6 +1478,7 @@ impl Builder<'_> {
                     source: true,
                     api: *api_on_reorder,
                 },
+                DecodeVerdict::COMPATIBLE,
             );
         }
         Ok(())
@@ -1281,6 +1513,18 @@ impl Builder<'_> {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut old_absent_ok = BTreeSet::new();
+        let mut new_absent_ok = BTreeSet::new();
+        for param in &old.params {
+            if is_absent_ok_on_wire(&self.old.model, &param.ty) {
+                old_absent_ok.insert(param.name.clone());
+            }
+        }
+        for param in &new.params {
+            if is_absent_ok_on_wire(&self.new.model, &param.ty) {
+                new_absent_ok.insert(param.name.clone());
+            }
+        }
         self.compare_members(
             &old_params,
             &new_params,
@@ -1290,6 +1534,10 @@ impl Builder<'_> {
                 parent: &parent,
                 api_on_reorder: true,
                 defaulted: &BTreeSet::new(),
+                decode_rule: MemberDecodeRule::WireFields {
+                    old_absent_ok: &old_absent_ok,
+                    new_absent_ok: &new_absent_ok,
+                },
             },
         )?;
         let old_result = self.old.member_type(interface, name)?;
@@ -1304,6 +1552,7 @@ impl Builder<'_> {
                 path.clone(),
                 Some(self.new.number(interface, name)?),
                 Breaking::ALL,
+                DecodeVerdict::INCOMPATIBLE,
             );
         }
         let old_method = self.old.number(interface, name)?;
@@ -1318,6 +1567,7 @@ impl Builder<'_> {
                 path,
                 Some(new_method),
                 Breaking::WIRE,
+                DecodeVerdict::INCOMPATIBLE,
             );
         }
         Ok(())
@@ -1338,6 +1588,14 @@ impl Builder<'_> {
         for name in new_map.keys().filter(|name| !old_map.contains_key(*name)) {
             let number = self.new.number(&old.name, name)?;
             let wire = reserved_methods.contains(&number);
+            let decode = if wire {
+                DecodeVerdict::INCOMPATIBLE
+            } else {
+                DecodeVerdict {
+                    new_reads_old: true,
+                    old_reads_new: false,
+                }
+            };
             self.push(
                 ChangeKind::Added { defaulted: false },
                 "function",
@@ -1348,6 +1606,7 @@ impl Builder<'_> {
                     source: true,
                     api: true,
                 },
+                decode,
             );
         }
         for name in old_map.keys().filter(|name| !new_map.contains_key(*name)) {
@@ -1363,6 +1622,10 @@ impl Builder<'_> {
                         || !self.new.preserves_scope(self.old, &params),
                     source: true,
                     api: true,
+                },
+                DecodeVerdict {
+                    new_reads_old: false,
+                    old_reads_new: true,
                 },
             );
         }
@@ -1391,6 +1654,7 @@ impl Builder<'_> {
                 old.name.clone(),
                 None,
                 Breaking::SOURCE,
+                DecodeVerdict::COMPATIBLE,
             );
         }
         Ok(())
@@ -1418,10 +1682,18 @@ impl Builder<'_> {
                 *name,
                 None,
                 Breaking::NONE,
+                DecodeVerdict::COMPATIBLE,
             );
         }
         for name in old.keys().filter(|name| !new.contains_key(*name)) {
-            self.push(ChangeKind::Removed, "world", *name, None, Breaking::SOURCE);
+            self.push(
+                ChangeKind::Removed,
+                "world",
+                *name,
+                None,
+                Breaking::SOURCE,
+                DecodeVerdict::COMPATIBLE,
+            );
         }
         for (name, old_world) in &old {
             let Some(new_world) = new.get(name) else {
@@ -1451,6 +1723,7 @@ impl Builder<'_> {
                 format!("{world}/{side}/{}", interface.qualified_name()),
                 None,
                 Breaking::SOURCE,
+                DecodeVerdict::COMPATIBLE,
             );
         }
         for interface in old
@@ -1463,6 +1736,7 @@ impl Builder<'_> {
                 format!("{world}/{side}/{}", interface.qualified_name()),
                 None,
                 Breaking::SOURCE,
+                DecodeVerdict::COMPATIBLE,
             );
         }
         let before: Vec<String> = old
@@ -1482,6 +1756,7 @@ impl Builder<'_> {
                 format!("{world}/{side}"),
                 None,
                 Breaking::SOURCE,
+                DecodeVerdict::COMPATIBLE,
             );
         }
     }

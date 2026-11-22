@@ -1631,3 +1631,517 @@ fn main() {
 
     fs::remove_dir_all(&out).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn cross_version_glue_decode_matrix_observes_both_directions() {
+    use support::{HarnessBatch, QualityChecks, RustEdition};
+    use witforge::lock::LockMode;
+
+    let scratch = ScratchDir::new("cross-ver-decode");
+    let old_root = scratch.path().join("old_wit");
+    let new_root = scratch.path().join("new_wit");
+    let old_v01 = old_root.join("v0.1");
+    let new_v02 = new_root.join("v0.2");
+    fs::create_dir_all(&old_v01).unwrap();
+    fs::create_dir_all(&new_v02).unwrap();
+
+    // Every single-major evolution category that keeps valid append-only wire.lock continuity.
+    let old_wit = "\
+package example:compat@0.1.0;
+
+interface types {
+    type byte = u8;
+
+    record rec-add-req { id: u32 }
+    record rec-add-opt { id: u32 }
+    record rec-add-list { id: u32 }
+    record rec-add-bytes { id: u32 }
+    record rec-add-byte-alias { id: u32 }
+
+    record rec-rem-req { id: u32, gone: string }
+    record rec-rem-opt { id: u32, gone: option<string> }
+    record rec-rem-list { id: u32, gone: list<string> }
+    record rec-rem-bytes { id: u32, gone: list<u8> }
+
+    record rec-reord { a: u32, b: string }
+
+    enum status-add { open, closed }
+    enum status-rem { open, closed, legacy }
+
+    variant event-add { ping, msg(string) }
+    variant event-rem { ping, msg(string), legacy(u32) }
+
+    flags perms-add { read }
+    flags perms-rem { read, legacy }
+
+    keep-fn: func(x: u32) -> u32;
+    rem-fn: func(x: u32) -> u32;
+    param-add-req: func(x: u32);
+    param-add-opt: func(x: u32);
+    param-add-list: func(x: u32);
+    param-add-bytes: func(x: u32);
+    param-rem-req: func(x: u32, gone: string);
+    param-rem-opt: func(x: u32, gone: option<string>);
+    param-reord: func(first: u32, second: string);
+}
+";
+
+    let new_wit = "\
+package example:compat@0.2.0;
+
+interface types {
+    type byte = u8;
+
+    record rec-add-req { id: u32, req: string }
+    record rec-add-opt { id: u32, opt: option<string> }
+    record rec-add-list { id: u32, tags: list<string> }
+    record rec-add-bytes { id: u32, raw: list<u8> }
+    record rec-add-byte-alias { id: u32, raw: list<byte> }
+
+    record rec-rem-req { id: u32 }
+    record rec-rem-opt { id: u32 }
+    record rec-rem-list { id: u32 }
+    record rec-rem-bytes { id: u32 }
+
+    record rec-reord { b: string, a: u32 }
+
+    enum status-add { open, closed, pending }
+    enum status-rem { open, closed }
+
+    variant event-add { ping, msg(string), done(u32) }
+    variant event-rem { ping, msg(string) }
+
+    flags perms-add { read, write }
+    flags perms-rem { read }
+
+    keep-fn: func(x: u32) -> u32;
+    add-fn: func(x: u32) -> u32;
+    param-add-req: func(x: u32, req: string);
+    param-add-opt: func(x: u32, opt: option<string>);
+    param-add-list: func(x: u32, tags: list<string>);
+    param-add-bytes: func(x: u32, raw: list<u8>);
+    param-rem-req: func(x: u32);
+    param-rem-opt: func(x: u32);
+    param-reord: func(second: string, first: u32);
+}
+";
+
+    fs::write(old_v01.join("contract.wit"), old_wit).unwrap();
+    fs::write(new_v02.join("contract.wit"), new_wit).unwrap();
+
+    let old_model = model::build(&load(&old_v01).unwrap()).unwrap();
+    let mut old_lock = WireLock::default();
+    old_lock
+        .reconcile_with(&old_model.members().unwrap(), LockMode::First)
+        .unwrap();
+    fs::write(old_v01.join("wire.lock"), old_lock.render()).unwrap();
+
+    let new_model = model::build(&load(&new_v02).unwrap()).unwrap();
+    // Strip the order section from the copied baseline so the single-version v0.2 root can
+    // exercise reordered record fields / parameters while preserving every wire number and
+    // reservation from v0.1.
+    let old_rendered = old_lock.render();
+    let without_order = old_rendered
+        .split_once("# witforge order v1")
+        .map_or(old_rendered.as_str(), |(head, _)| head);
+    let mut new_lock = WireLock::parse(without_order).unwrap();
+    new_lock.reconcile(&new_model.members().unwrap()).unwrap();
+    fs::write(new_v02.join("wire.lock"), new_lock.render()).unwrap();
+
+    let mut batch = HarnessBatch::new(
+        "cross-ver-decode",
+        RustEdition::E2024,
+        QualityChecks {
+            fmt: false,
+            clippy: false,
+            missing_docs: false,
+            rustdoc: false,
+            doctest: false,
+        },
+    );
+
+    // Mount old (v0.1) and new (v0.2) in the same binary and run real prost binary + pbjson
+    // cross-version decode tests in BOTH directions!
+    batch.add_wit_root("old_ver", &old_root, true, false, "");
+    batch.add_wit_root(
+        "new_ver",
+        &new_root,
+        true,
+        false,
+        r#"
+        use prost::Message as _;
+        use crate::old_ver::{glue as og, plain as op, proto as opr};
+        use crate::new_ver::{glue as ng, plain as np, proto as npr};
+
+        // 1. Added required field (`rec-add-req`):
+        //    new_reads_old = FALSE (MissingField), old_reads_new = TRUE (unknown field ignored in binary).
+        let old_bytes = og::v0::types::rec_add_req::to_proto(&op::v0_1::types::RecAddReq { id: 1 }).encode_to_vec();
+        let new_from_old = ng::v0::types::rec_add_req::from_proto(
+            npr::v0::TypesRecAddReq::decode(old_bytes.as_slice()).unwrap()
+        );
+        assert!(matches!(new_from_old, Err(ng::GlueError::MissingField { .. })), "{new_from_old:?}");
+
+        let new_bytes = ng::v0::types::rec_add_req::to_proto(&np::v0_2::types::RecAddReq {
+            id: 1,
+            req: "hi".to_string(),
+        }).encode_to_vec();
+        let old_from_new = og::v0::types::rec_add_req::from_proto(
+            opr::v0::TypesRecAddReq::decode(new_bytes.as_slice()).unwrap()
+        ).unwrap();
+        assert_eq!(old_from_new.id, 1);
+
+        // 2. Added option<T> field (`rec-add-opt`): BOTH directions succeed in binary!
+        let old_bytes = og::v0::types::rec_add_opt::to_proto(&op::v0_1::types::RecAddOpt { id: 2 }).encode_to_vec();
+        let new_from_old = ng::v0::types::rec_add_opt::from_proto(
+            npr::v0::TypesRecAddOpt::decode(old_bytes.as_slice()).unwrap()
+        ).unwrap();
+        assert_eq!(new_from_old, np::v0_2::types::RecAddOpt { id: 2, opt: None });
+
+        let new_proto = ng::v0::types::rec_add_opt::to_proto(&np::v0_2::types::RecAddOpt {
+            id: 2,
+            opt: Some("x".to_string()),
+        });
+        let new_bytes = new_proto.encode_to_vec();
+        let old_from_new = og::v0::types::rec_add_opt::from_proto(
+            opr::v0::TypesRecAddOpt::decode(new_bytes.as_slice()).unwrap()
+        ).unwrap();
+        assert_eq!(old_from_new.id, 2);
+
+        //    Verify binary vs strict proto3-JSON (pbjson) difference:
+        //    pbjson rejects the unknown JSON field `opt` when old reads new JSON!
+        let new_json = serde_json::to_string(&new_proto).unwrap();
+        let old_json_res: Result<opr::v0::TypesRecAddOpt, _> = serde_json::from_str(&new_json);
+        assert!(old_json_res.is_err(), "strict pbjson should reject unknown field in {new_json}");
+
+        // 3. Added list<string> field (`rec-add-list`): BOTH directions succeed!
+        let old_bytes = og::v0::types::rec_add_list::to_proto(&op::v0_1::types::RecAddList { id: 3 }).encode_to_vec();
+        let new_from_old = ng::v0::types::rec_add_list::from_proto(
+            npr::v0::TypesRecAddList::decode(old_bytes.as_slice()).unwrap()
+        ).unwrap();
+        assert_eq!(new_from_old, np::v0_2::types::RecAddList { id: 3, tags: vec![] });
+
+        let new_bytes = ng::v0::types::rec_add_list::to_proto(&np::v0_2::types::RecAddList {
+            id: 3,
+            tags: vec!["t".to_string()],
+        }).encode_to_vec();
+        let old_from_new = og::v0::types::rec_add_list::from_proto(
+            opr::v0::TypesRecAddList::decode(new_bytes.as_slice()).unwrap()
+        ).unwrap();
+        assert_eq!(old_from_new.id, 3);
+
+        // 4. Added required list<u8> and list<byte> (`optional bytes`):
+        //    new_reads_old = FALSE (MissingField!), old_reads_new = TRUE!
+        let old_bytes = og::v0::types::rec_add_bytes::to_proto(&op::v0_1::types::RecAddBytes { id: 4 }).encode_to_vec();
+        let new_from_old = ng::v0::types::rec_add_bytes::from_proto(
+            npr::v0::TypesRecAddBytes::decode(old_bytes.as_slice()).unwrap()
+        );
+        assert!(matches!(new_from_old, Err(ng::GlueError::MissingField { .. })), "{new_from_old:?}");
+
+        let new_bytes = ng::v0::types::rec_add_bytes::to_proto(&np::v0_2::types::RecAddBytes {
+            id: 4,
+            raw: vec![1, 2],
+        }).encode_to_vec();
+        assert_eq!(
+            og::v0::types::rec_add_bytes::from_proto(
+                opr::v0::TypesRecAddBytes::decode(new_bytes.as_slice()).unwrap()
+            ).unwrap().id,
+            4
+        );
+
+        let old_bytes = og::v0::types::rec_add_byte_alias::to_proto(&op::v0_1::types::RecAddByteAlias { id: 4 }).encode_to_vec();
+        let new_from_old = ng::v0::types::rec_add_byte_alias::from_proto(
+            npr::v0::TypesRecAddByteAlias::decode(old_bytes.as_slice()).unwrap()
+        );
+        assert!(matches!(new_from_old, Err(ng::GlueError::MissingField { .. })), "{new_from_old:?}");
+
+        // 5. Removed required field (`rec-rem-req`):
+        //    new_reads_old = TRUE, old_reads_new = FALSE (MissingField).
+        let old_bytes = og::v0::types::rec_rem_req::to_proto(&op::v0_1::types::RecRemReq {
+            id: 5,
+            gone: "bye".to_string(),
+        }).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::rec_rem_req::from_proto(
+                npr::v0::TypesRecRemReq::decode(old_bytes.as_slice()).unwrap()
+            ).unwrap().id,
+            5
+        );
+        let new_bytes = ng::v0::types::rec_rem_req::to_proto(&np::v0_2::types::RecRemReq { id: 5 }).encode_to_vec();
+        let old_from_new = og::v0::types::rec_rem_req::from_proto(
+            opr::v0::TypesRecRemReq::decode(new_bytes.as_slice()).unwrap()
+        );
+        assert!(matches!(old_from_new, Err(og::GlueError::MissingField { .. })), "{old_from_new:?}");
+
+        // 6. Removed option<T> / list<string> fields: BOTH directions succeed!
+        let new_bytes = ng::v0::types::rec_rem_opt::to_proto(&np::v0_2::types::RecRemOpt { id: 6 }).encode_to_vec();
+        assert_eq!(
+            og::v0::types::rec_rem_opt::from_proto(
+                opr::v0::TypesRecRemOpt::decode(new_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            op::v0_1::types::RecRemOpt { id: 6, gone: None }
+        );
+        let new_bytes = ng::v0::types::rec_rem_list::to_proto(&np::v0_2::types::RecRemList { id: 7 }).encode_to_vec();
+        assert_eq!(
+            og::v0::types::rec_rem_list::from_proto(
+                opr::v0::TypesRecRemList::decode(new_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            op::v0_1::types::RecRemList { id: 7, gone: vec![] }
+        );
+
+        // 7. Removed list<u8> (`optional bytes`): new_reads_old = TRUE, old_reads_new = FALSE (MissingField)!
+        let old_bytes = og::v0::types::rec_rem_bytes::to_proto(&op::v0_1::types::RecRemBytes {
+            id: 8,
+            gone: vec![9],
+        }).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::rec_rem_bytes::from_proto(
+                npr::v0::TypesRecRemBytes::decode(old_bytes.as_slice()).unwrap()
+            ).unwrap().id,
+            8
+        );
+        let new_bytes = ng::v0::types::rec_rem_bytes::to_proto(&np::v0_2::types::RecRemBytes { id: 8 }).encode_to_vec();
+        let old_from_new = og::v0::types::rec_rem_bytes::from_proto(
+            opr::v0::TypesRecRemBytes::decode(new_bytes.as_slice()).unwrap()
+        );
+        assert!(matches!(old_from_new, Err(og::GlueError::MissingField { .. })), "{old_from_new:?}");
+
+        // 8. Reordered record fields (`rec-reord`): BOTH directions succeed!
+        let old_bytes = og::v0::types::rec_reord::to_proto(&op::v0_1::types::RecReord {
+            a: 10,
+            b: "ok".to_string(),
+        }).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::rec_reord::from_proto(
+                npr::v0::TypesRecReord::decode(old_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            np::v0_2::types::RecReord { b: "ok".to_string(), a: 10 }
+        );
+
+        // 9. Added enum case (`status-add`): new_reads_old = TRUE, old_reads_new = FALSE (UnknownEnumValue).
+        let old_val = og::v0::types::status_add::to_proto(&op::v0_1::types::StatusAdd::Open);
+        assert_eq!(ng::v0::types::status_add::from_proto(old_val).unwrap(), np::v0_2::types::StatusAdd::Open);
+        let new_val = ng::v0::types::status_add::to_proto(&np::v0_2::types::StatusAdd::Pending);
+        let old_res = og::v0::types::status_add::from_proto(new_val);
+        assert!(matches!(old_res, Err(og::GlueError::UnknownEnumValue { .. })), "{old_res:?}");
+
+        // 10. Removed enum case (`status-rem`): new_reads_old = FALSE (UnknownEnumValue), old_reads_new = TRUE.
+        let old_val = og::v0::types::status_rem::to_proto(&op::v0_1::types::StatusRem::Legacy);
+        let new_res = ng::v0::types::status_rem::from_proto(old_val);
+        assert!(matches!(new_res, Err(ng::GlueError::UnknownEnumValue { .. })), "{new_res:?}");
+        let new_val = ng::v0::types::status_rem::to_proto(&np::v0_2::types::StatusRem::Closed);
+        assert_eq!(og::v0::types::status_rem::from_proto(new_val).unwrap(), op::v0_1::types::StatusRem::Closed);
+
+        // 11. Added variant case (`event-add`): new_reads_old = TRUE, old_reads_new = FALSE (UnknownCase).
+        let old_bytes = og::v0::types::event_add::to_proto(&op::v0_1::types::EventAdd::Ping).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::event_add::from_proto(
+                npr::v0::TypesEventAdd::decode(old_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            np::v0_2::types::EventAdd::Ping
+        );
+        let new_bytes = ng::v0::types::event_add::to_proto(&np::v0_2::types::EventAdd::Done(7)).encode_to_vec();
+        let old_res = og::v0::types::event_add::from_proto(
+            opr::v0::TypesEventAdd::decode(new_bytes.as_slice()).unwrap()
+        );
+        assert!(matches!(old_res, Err(og::GlueError::UnknownCase { .. })), "{old_res:?}");
+
+        // 12. Removed variant case (`event-rem`): new_reads_old = FALSE (UnknownCase), old_reads_new = TRUE.
+        let old_bytes = og::v0::types::event_rem::to_proto(&op::v0_1::types::EventRem::Legacy(9)).encode_to_vec();
+        let new_res = ng::v0::types::event_rem::from_proto(
+            npr::v0::TypesEventRem::decode(old_bytes.as_slice()).unwrap()
+        );
+        assert!(matches!(new_res, Err(ng::GlueError::UnknownCase { .. })), "{new_res:?}");
+        let new_bytes = ng::v0::types::event_rem::to_proto(&np::v0_2::types::EventRem::Msg("m".to_string())).encode_to_vec();
+        assert_eq!(
+            og::v0::types::event_rem::from_proto(
+                opr::v0::TypesEventRem::decode(new_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            op::v0_1::types::EventRem::Msg("m".to_string())
+        );
+
+        // 13. Added & removed flags (`perms-add`, `perms-rem`): BOTH directions succeed!
+        let old_bytes = og::v0::types::perms_add::to_proto(&op::v0_1::types::PermsAdd { read: true }).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::perms_add::from_proto(
+                npr::v0::TypesPermsAdd::decode(old_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            np::v0_2::types::PermsAdd { read: true, write: false }
+        );
+        let new_bytes = ng::v0::types::perms_add::to_proto(&np::v0_2::types::PermsAdd {
+            read: true,
+            write: true,
+        }).encode_to_vec();
+        assert_eq!(
+            og::v0::types::perms_add::from_proto(
+                opr::v0::TypesPermsAdd::decode(new_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            op::v0_1::types::PermsAdd { read: true }
+        );
+        let old_bytes = og::v0::types::perms_rem::to_proto(&op::v0_1::types::PermsRem {
+            read: true,
+            legacy: true,
+        }).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::perms_rem::from_proto(
+                npr::v0::TypesPermsRem::decode(old_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            np::v0_2::types::PermsRem { read: true }
+        );
+        let new_bytes = ng::v0::types::perms_rem::to_proto(&np::v0_2::types::PermsRem { read: true }).encode_to_vec();
+        assert_eq!(
+            og::v0::types::perms_rem::from_proto(
+                opr::v0::TypesPermsRem::decode(new_bytes.as_slice()).unwrap()
+            ).unwrap(),
+            op::v0_1::types::PermsRem { read: true, legacy: false }
+        );
+
+        // 14. Added & removed functions (method enum):
+        //     Added: new accepts old keep-fn, old rejects new add-fn method id.
+        //     Removed: new rejects old rem-fn method id, old accepts remaining keep-fn.
+        let add_method_num = ng::v0::types::functions::add_fn::METHOD as i32;
+        assert!(opr::v0::TypesMethod::try_from(add_method_num).is_err());
+        let rem_method_num = og::v0::types::functions::rem_fn::METHOD as i32;
+        assert!(npr::v0::TypesMethod::try_from(rem_method_num).is_err());
+        let keep_method_num = og::v0::types::functions::keep_fn::METHOD as i32;
+        assert_eq!(
+            npr::v0::TypesMethod::try_from(keep_method_num).unwrap(),
+            ng::v0::types::functions::keep_fn::METHOD
+        );
+
+        // 15. Function parameters (required / option / list<string> / list<u8> / reordered):
+        //     Added required param: new_reads_old = FALSE, old_reads_new = TRUE.
+        let old_req = og::v0::types::functions::param_add_req::to_request(&1).encode_to_vec();
+        assert!(matches!(
+            ng::v0::types::functions::param_add_req::from_request(
+                npr::v0::TypesParamAddReqRequest::decode(old_req.as_slice()).unwrap()
+            ),
+            Err(ng::GlueError::MissingField { .. })
+        ));
+        let new_req = ng::v0::types::functions::param_add_req::to_request(&1, &"s".to_string()).encode_to_vec();
+        assert_eq!(
+            og::v0::types::functions::param_add_req::from_request(
+                opr::v0::TypesParamAddReqRequest::decode(new_req.as_slice()).unwrap()
+            ).unwrap(),
+            1
+        );
+
+        //     Added option<T> / list<string> param: BOTH directions succeed.
+        let old_req = og::v0::types::functions::param_add_opt::to_request(&2).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::functions::param_add_opt::from_request(
+                npr::v0::TypesParamAddOptRequest::decode(old_req.as_slice()).unwrap()
+            ).unwrap(),
+            (2, None)
+        );
+        let old_req = og::v0::types::functions::param_add_list::to_request(&3).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::functions::param_add_list::from_request(
+                npr::v0::TypesParamAddListRequest::decode(old_req.as_slice()).unwrap()
+            ).unwrap(),
+            (3, vec![])
+        );
+
+        //     Added list<u8> param: new_reads_old = FALSE (MissingField)!
+        let old_req = og::v0::types::functions::param_add_bytes::to_request(&4).encode_to_vec();
+        assert!(matches!(
+            ng::v0::types::functions::param_add_bytes::from_request(
+                npr::v0::TypesParamAddBytesRequest::decode(old_req.as_slice()).unwrap()
+            ),
+            Err(ng::GlueError::MissingField { .. })
+        ));
+
+        //     Removed required param: new_reads_old = TRUE, old_reads_new = FALSE.
+        let new_req = ng::v0::types::functions::param_rem_req::to_request(&5).encode_to_vec();
+        assert!(matches!(
+            og::v0::types::functions::param_rem_req::from_request(
+                opr::v0::TypesParamRemReqRequest::decode(new_req.as_slice()).unwrap()
+            ),
+            Err(og::GlueError::MissingField { .. })
+        ));
+
+        //     Removed option<T> param: BOTH directions succeed.
+        let new_req = ng::v0::types::functions::param_rem_opt::to_request(&6).encode_to_vec();
+        assert_eq!(
+            og::v0::types::functions::param_rem_opt::from_request(
+                opr::v0::TypesParamRemOptRequest::decode(new_req.as_slice()).unwrap()
+            ).unwrap(),
+            (6, None)
+        );
+
+        //     Reordered parameters: BOTH directions succeed!
+        let old_req = og::v0::types::functions::param_reord::to_request(&7, &"hi".to_string()).encode_to_vec();
+        assert_eq!(
+            ng::v0::types::functions::param_reord::from_request(
+                npr::v0::TypesParamReordRequest::decode(old_req.as_slice()).unwrap()
+            ).unwrap(),
+            ("hi".to_string(), 7)
+        );
+        "#,
+    );
+
+    batch.verify_and_run("cross_ver_decode");
+
+    // Verify that `witforge::diff::compare_full` assigns the exact same (new_reads_old, old_reads_new)
+    // verdict to every single change kind observed above!
+    let full = witforge::diff::compare_full(&old_v01, &new_v02).unwrap();
+    let verdict_for = |path: &str, element: &str| -> witforge::diff::DecodeVerdict {
+        full.analysis
+            .report
+            .changes
+            .iter()
+            .zip(full.decode_verdicts.iter())
+            .find(|(c, _)| c.path == path && c.element == element)
+            .map_or_else(
+                || {
+                    panic!(
+                        "missing change ({path}, {element}) in {:?}",
+                        full.analysis.report.changes
+                    )
+                },
+                |(_, v)| *v,
+            )
+    };
+    let expected: &[(&str, &str, bool, bool)] = &[
+        // (path, element, new_reads_old, old_reads_new)
+        ("types/rec-add-req.req", "record field", false, true),
+        ("types/rec-add-opt.opt", "record field", true, true),
+        ("types/rec-add-list.tags", "record field", true, true),
+        ("types/rec-add-bytes.raw", "record field", false, true),
+        ("types/rec-add-byte-alias.raw", "record field", false, true),
+        ("types/rec-rem-req.gone", "record field", true, false),
+        ("types/rec-rem-opt.gone", "record field", true, true),
+        ("types/rec-rem-list.gone", "record field", true, true),
+        ("types/rec-rem-bytes.gone", "record field", true, false),
+        ("types/rec-reord", "record field order", true, true),
+        ("types/status-add.pending", "enum case", true, false),
+        ("types/status-rem.legacy", "enum case", false, true),
+        ("types/event-add.done", "variant case", true, false),
+        ("types/event-rem.legacy", "variant case", false, true),
+        ("types/perms-add.write", "flag", true, true),
+        ("types/perms-rem.legacy", "flag", true, true),
+        ("types.add-fn", "function", true, false),
+        ("types.rem-fn", "function", false, true),
+        ("types.param-add-req.req", "parameter", false, true),
+        ("types.param-add-opt.opt", "parameter", true, true),
+        ("types.param-add-list.tags", "parameter", true, true),
+        ("types.param-add-bytes.raw", "parameter", false, true),
+        ("types.param-rem-req.gone", "parameter", true, false),
+        ("types.param-rem-opt.gone", "parameter", true, true),
+        ("types.param-reord", "parameter order", true, true),
+    ];
+    for &(path, element, new_reads_old, old_reads_new) in expected {
+        let actual = verdict_for(path, element);
+        assert_eq!(
+            actual,
+            witforge::diff::DecodeVerdict {
+                new_reads_old,
+                old_reads_new,
+            },
+            "decode verdict mismatch for ({path}, {element})"
+        );
+    }
+    assert_eq!(full.decode_summary.breaking, 14);
+    assert_eq!(full.decode_summary.new_reads_old_breaking, 8);
+    assert_eq!(full.decode_summary.old_reads_new_breaking, 6);
+}

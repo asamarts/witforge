@@ -10,17 +10,23 @@ dependency-alias endpoints 2026-11-20 (`W10-056`). The 2026-11-18 through 2026-1
 reserved numbers, alias spellings, released-manifest checks, and dependency-alias endpoints)
 shipped in 0.6.0.
 
-`witforge diff <old> <new>` compares two contract versions and reports what changed in three
+`witforge diff <old> <new>` compares two contract versions and reports what changed in four
 independent compatibility views:
 
 - **wire identity** — the append-only lockfile's numbers, kinds, and canonical member types;
 - **source** — the WIT/component type shape;
-- **generated API** — the Rust types, traits, and functions the Rust emitter generates.
+- **generated API** — the Rust types, traits, and functions the Rust emitter generates;
+- **decode** — whether a newer reader accepts older messages (`new_reads_old`) and whether an
+  older reader accepts newer messages (`old_reads_new`) under the protobuf **binary** decode
+  profile (the generated Rust glue and the [non-Rust decode profile](../guide/non-rust.md)).
 
 A change can be compatible in one view and breaking in another. For example, adding an
-`option<T>` record field is wire-compatible (the old data can be decoded and the generated
-conversion defaults the field), but it changes the component type and breaks struct literals in
-the generated Rust API.
+`option<T>` record field is wire-compatible and decode-compatible (the old data decodes as `None`
+and older binary readers ignore the unknown field), while changing the component type and breaking
+struct literals in the generated Rust API. Adding a required record field or a closed enum case is
+wire-compatible (no number changed meaning) yet **decode-breaking** (the new reader rejects old
+messages with `MissingField`, or the old reader rejects the new enum value with
+`UnknownEnumValue`).
 
 Root-package docs and stability attributes are not compared: they are not wire identity and do
 not change generated code. Dependency docs and stability are part of the exact pinned dependency
@@ -131,18 +137,62 @@ The generated Rust API view tracks the exhaustive shapes in `rust` output:
 These rules deliberately do not run `rustc` or compare generated files. They describe the
 contract-level API surface, and `--check` is a gate, not a semantic-versioning replacement.
 
+### Decode compatibility (protobuf binary)
+
+The **decode** view answers two directional questions for every change between two versions
+sharing **one major's** protobuf package, under **protobuf binary** encoding and the documented
+decode profile ([`non-rust.md`](../guide/non-rust.md), [`emitters.md`](emitters.md) section 7):
+
+- `new_reads_old`: whether a reader compiled against the newer version accepts every protobuf
+  binary message produced by a writer at the older version;
+- `old_reads_new`: whether a reader compiled against the older version accepts every protobuf
+  binary message produced by a writer at the newer version.
+
+A change is `decode_breaking` when either `new_reads_old` or `old_reads_new` is `false`.
+
+| Change | `new_reads_old` | `old_reads_new` | Observed decode-profile behavior (binary) |
+|---|---|---|---|
+| Added `option<T>` or non-byte `list<T>` record field / parameter | `true` | `true` | Absence decodes as `None` / empty `Vec`; old binary reader skips unknown field |
+| Added required record field / parameter (including required `list<u8>` / byte alias) | `false` | `true` | New reader rejects absent field (`MissingField`); old binary reader skips unknown field |
+| Removed `option<T>` or non-byte `list<T>` record field / parameter | `true` | `true` | New binary reader skips unknown field; old reader decodes absence as `None` / empty `Vec` |
+| Removed required record field / parameter (including required `list<u8>` / byte alias) | `true` | `false` | New binary reader skips unknown field; old reader rejects absent field (`MissingField`) |
+| Added enum or variant case | `true` | `false` | New reader accepts all old cases; old reader rejects the new case (`UnknownEnumValue` / `UnknownCase`) |
+| Removed enum or variant case | `false` | `true` | New reader rejects the removed case (`UnknownEnumValue` / `UnknownCase`); old reader accepts remaining cases |
+| Added or removed flag | `true` | `true` | Flags are proto3 `bool` fields (absent defaults to `false`, unknown bool skipped in binary) |
+| Added function (or added interface with functions) | `true` | `false` | New server accepts all old methods; old server rejects the added method id (`UnknownEnumValue`) |
+| Removed function (or removed non-empty interface / type) | `false` | `true` | New reader no longer accepts the removed method/type; old reader accepts remaining ones |
+| Added standalone type, type-only interface, or world change | `true` | `true` | No existing wire message fails to decode |
+| Reordered record fields, cases, flags, functions, or parameters | `true` | `true` | Protobuf matches members by field number, not declaration order |
+| Retyped, kind-changed, renumbered, or reused reserved number | `false` | `false` | Wire encoding or field-number identity disagrees in both directions |
+
+Important boundaries of this view:
+
+- **Single major:** the decode view describes two endpoints sharing one major version's protobuf
+  package (`v<major>.proto`). Two majors have two distinct protobuf packages negotiated separately
+  at handshake.
+- **Binary vs proto3-JSON:** this view describes **protobuf binary** encoding, where unknown field
+  numbers are silently skipped by older/newer readers. Strict proto3-JSON parsers (including
+  `pbjson`'s generated `Deserialize` impls by default) reject unknown JSON field names, so even an
+  added `option<T>` field fails `old_reads_new` over strict proto3-JSON unless unknown fields are
+  ignored.
+- **Distinct from `convert.rs`:** `convert.rs` converts plain Rust values inside one process (and
+  defaults `list<u8>` to empty `Vec::new()`). The decode view describes two separate processes
+  communicating over the wire (where required `list<u8>` is proto3 `optional bytes`, whose absence
+  returns `MissingField`).
+
 ## Output
 
 The human report has one line per change:
 
 ```text
-retyped           record field       types/task.id                    number=1   wire:BREAKING source:BREAKING api:BREAKING  u8 -> u64
-added-defaulted   record field       types/task.note                  number=3   wire:compatible source:BREAKING api:BREAKING
-summary: 2 change(s), 2 breaking; wire identity: 1, source: 2, generated API: 2
+retyped           record field       types/task.id                    number=1   wire:BREAKING source:BREAKING api:BREAKING decode:BREAKING(both)  u8 -> u64
+added-defaulted   record field       types/task.note                  number=3   wire:compatible source:BREAKING api:BREAKING decode:compatible
+summary: 2 change(s), 2 breaking; wire identity: 1, source: 2, generated API: 2, decode: 1 (new<-old: 1, old<-new: 1)
 result: BREAKING
 ```
 
-`--json` emits the same information as JSON:
+`--json` emits the same information as JSON (gaining decode fields without removing any existing
+fields):
 
 ```json
 {
@@ -158,7 +208,10 @@ result: BREAKING
       "to": "u64",
       "wire_breaking": true,
       "source_breaking": true,
-      "api_breaking": true
+      "api_breaking": true,
+      "decode_breaking": true,
+      "new_reads_old": false,
+      "old_reads_new": false
     }
   ],
   "summary": {
@@ -166,7 +219,10 @@ result: BREAKING
     "breaking": 1,
     "wire_breaking": 1,
     "source_breaking": 1,
-    "api_breaking": 1
+    "api_breaking": 1,
+    "decode_breaking": 1,
+    "new_reads_old_breaking": 1,
+    "old_reads_new_breaking": 1
   },
   "conversion_impacts": [],
   "conversion_blockers": [],
@@ -178,16 +234,19 @@ result: BREAKING
 `renumbered` changes carry numeric `from` and `to`. A change's `number` is the new member's wire
 number when the change concerns a numbered member, or the old number for a removal.
 
-`--check` (or `--check=wire,source,api`) exits `0` when no change breaks any view and `1` when at
-least one does. `--check=<views>` restricts the gate to a comma-separated subset of `wire`,
-`source`, and `api` (for example `--check=wire` to allow source/API-breaking minor additions while
-still failing on wire-breaking changes). An empty view set (`--check=`) or an unknown view name is
-a usage error (`WF9001`, exit `2`). The GitHub Action's `diff-check` input maps `'true'` onto
-`--check`, `'false'` onto omitting the flag, and any view list onto `--check=<views>`. A plain
-`diff` exits `0` after reporting even a breaking change. With `--quiet` (`-q`), human output omits
-headers, notes, and the `summary:` / `result:` lines while keeping errors and exit codes unchanged
-(JSON and SARIF output are unaffected). Input, I/O, and parse errors use the normal `witforge`
-exit conventions: `1` for contract/lockfile violations and `2` for usage, I/O, and parse failures.
+`--check` (equivalent to `--check=wire,source,api`) exits `0` when no change breaks the default
+three views and `1` when at least one does; **`decode` is not part of the default `--check` set**
+and only gates when explicitly selected. `--check=<views>` restricts or extends the gate to any
+comma-separated subset of `wire`, `source`, `api`, and `decode` (for example `--check=wire,decode`
+to allow source/API-breaking minor additions that remain wire- and binary-decode-compatible while
+rejecting added required fields or closed enum/variant cases, or `--check=decode` to gate on
+decode compatibility alone). An empty view set (`--check=`) or an unknown view name is a usage
+error (`WF9001`, exit `2`). The GitHub Action's `diff-check` input maps `'true'` onto `--check`,
+`'false'` onto omitting the flag, and any view list onto `--check=<views>`. A plain `diff` exits
+`0` after reporting even a breaking change. With `--quiet` (`-q`), human output omits headers,
+notes, and the `summary:` / `result:` lines while keeping errors and exit codes unchanged (JSON
+and SARIF output are unaffected). Input, I/O, and parse errors use the normal `witforge` exit
+conventions: `1` for contract/lockfile violations and `2` for usage, I/O, and parse failures.
 
 ## Conversion impact notes
 

@@ -29,6 +29,32 @@ Never create a minor version with a fresh lockfile (`lock --first`). Copying pre
 field is source-breaking even when its type is defaultable, because Rust code that constructs
 the record must be updated.
 
+## Wire identity vs. decode compatibility
+
+`witforge diff` separates **wire identity** (`wire`) from **protobuf binary decode compatibility**
+(`decode`):
+
+- **Wire identity (`wire`)** checks whether lockfile numbers, kinds, and canonical types changed
+  meaning. Adding a new field or enum case gets a fresh wire number, so it is `wire:compatible`.
+- **Decode compatibility (`decode`)** checks whether two separate processes running different
+  minors of the same major can actually decode each other's protobuf binary messages under the
+  decode profile ([`non-rust.md`](non-rust.html) / generated Rust glue):
+  - `new<-old` (`new_reads_old`): whether a newer reader accepts messages sent by an older writer.
+    Adding a required record field or parameter — including required `list<u8>` (`optional bytes`)
+    — breaks `new<-old` (`MissingField`), as does removing an enum case, variant case, or function.
+    Adding an `option<T>` field, a non-byte `list<T>` field, or a flag stays compatible.
+  - `old<-new` (`old_reads_new`): whether an older reader accepts messages sent by a newer writer.
+    Adding an enum case, variant case, or function breaks `old<-new` (`UnknownEnumValue` /
+    `UnknownCase`), as does removing a required field (`MissingField`). Adding any field or flag
+    stays compatible in protobuf **binary** encoding because unknown fields are ignored (note that
+    strict proto3-JSON parsers such as `pbjson` reject unknown JSON field names by default).
+
+`decode` applies within one major (two majors have two distinct protobuf packages negotiated
+separately) and is distinct from in-process `convert.rs` adapters. Bare `witforge diff --check`
+gates on `wire,source,api` and does not gate on `decode` by default; pass `--check=decode` or
+`--check=wire,decode` when rolling upgrades require two services at different minors to talk on
+the wire.
+
 ## Version adapters
 
 `witforge rust` emits `convert.rs` for adjacent versions in both directions.

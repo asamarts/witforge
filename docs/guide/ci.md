@@ -48,8 +48,9 @@ ran `check` and the generators and never ran `diff`. Fixed in `v0.6.0`. From `v0
 - `diff-old` and `diff-new` run `witforge diff <old> <new> --check`, because `diff-check`
   defaults to `true`;
 - `diff-check: "false"` prints the diff without failing the job;
-- `diff-check: "wire"` (or another comma-separated subset of `wire`, `source`, `api`) passes
-  `--check=<views>` to gate only on those compatibility views.
+- `diff-check: "wire"` (or another comma-separated subset of `wire`, `source`, `api`, `decode`)
+  passes `--check=<views>` to gate only on those compatibility views (for example
+  `diff-check: "wire,decode"` to enforce rolling-upgrade protobuf binary decode compatibility).
 
 A workflow that already passes `diff-old` and `diff-new` therefore starts gating when its pin
 moves to `v0.6.0` or later. Set `diff-check: "false"` or `diff-check: "wire"` before moving the

@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Protobuf binary decode-compatibility view in `diff` (`W10-097`):**
+  - Added a directional **decode** compatibility view (`new_reads_old` and `old_reads_new`) to
+    `witforge diff`, modelling two processes speaking the same major's protobuf schema over binary
+    encoding under the documented decode profile (distinguishing `option<T>` and non-byte `list<T>`
+    from required fields and `optional bytes` `list<u8>`, closed enum/variant cases, flags,
+    functions, and parameters).
+  - Extended `diff --check=<views>` to accept `decode` (for example `--check=decode` or
+    `--check=wire,decode`); bare `--check` continues to gate on `wire,source,api` without `decode`
+    by default.
+  - Added additive JSON fields (`decode_breaking`, `new_reads_old`, `old_reads_new` per change and
+    `decode_breaking`, `new_reads_old_breaking`, `old_reads_new_breaking` in `summary`) and
+    additive library types/functions (`diff::DecodeVerdict`, `diff::DecodeSummary`,
+    `diff::FullDiff`, `diff::compare_full`).
 - **Major-version boundaries, partial cross-major adapters, per-major dependencies, and version retirement (`W10-093`):**
   - Across a major-version boundary (`old.major != new.major`), `witforge rust` no longer refuses
     breaking changes: plain types for every live version are always written, `convert.rs` generates
