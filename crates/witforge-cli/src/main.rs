@@ -314,6 +314,13 @@ fn resolve_paths(
 
     let text = fs::read_to_string(config_path)
         .with_context(|| format!("failed to read configuration {}", config_path.display()))?;
+    if text.starts_with('\u{feff}') {
+        bail!(
+            "invalid configuration {}: file starts with a UTF-8 byte-order mark (BOM); save the \
+             configuration as UTF-8 without a BOM",
+            config_path.display()
+        );
+    }
     let config: ConfigFile = toml::from_str(&text)
         .with_context(|| format!("invalid configuration {}", config_path.display()))?;
     if config.version != 1 {
@@ -326,6 +333,7 @@ fn resolve_paths(
     if config.project.is_empty() {
         bail!("configuration {} has no projects", config_path.display());
     }
+    validate_configured_paths(&config)?;
     let name = match &config_args.project {
         Some(name) => name.clone(),
         None if config.project.len() == 1 => config
@@ -447,6 +455,68 @@ fn validate_configured_outputs(
         .map(|(label, path)| (label.as_str(), path.as_path()))
         .collect();
     emit::output::ensure_distinct_output_roots(&refs)
+}
+
+fn validate_configured_paths(config: &ConfigFile) -> Result<()> {
+    for (proj_name, proj) in &config.project {
+        check_config_path(&format!("project.{proj_name}.root"), &proj.root)?;
+        if let Some(released) = &proj.released {
+            check_config_path(&format!("project.{proj_name}.released"), released)?;
+        }
+        if let Some(rust) = &proj.rust {
+            check_config_path(&format!("project.{proj_name}.rust.out"), &rust.out)?;
+        }
+        if let Some(proto) = &proj.proto {
+            check_config_path(&format!("project.{proj_name}.proto.out"), &proto.out)?;
+        }
+        if let Some(schema) = &proj.schema {
+            check_config_path(&format!("project.{proj_name}.schema.out"), &schema.out)?;
+        }
+        if let Some(glue) = &proj.glue {
+            check_config_path(&format!("project.{proj_name}.glue.out"), &glue.out)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_config_path(label: &str, path: &Path) -> Result<()> {
+    let raw = path.to_string_lossy();
+    if raw.starts_with('~') {
+        bail!(
+            "invalid {label} `{raw}`: configuration paths are not shell-expanded (`~` is not \
+             expanded); use a path relative to the configuration file or an absolute path"
+        );
+    }
+    if raw.contains('$') || contains_windows_env_var(&raw) {
+        bail!(
+            "invalid {label} `{raw}`: configuration paths are not shell-expanded (environment \
+             variables are not expanded); use a path relative to the configuration file or an \
+             absolute path"
+        );
+    }
+    Ok(())
+}
+
+fn contains_windows_env_var(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(end_offset) = bytes[i + 1..].iter().position(|&b| b == b'%')
+        {
+            let name = &bytes[i + 1..i + 1 + end_offset];
+            if !name.is_empty()
+                && (name[0].is_ascii_alphabetic() || name[0] == b'_')
+                && name.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            {
+                return true;
+            }
+            i += 1 + end_offset + 1;
+            continue;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn validate_configured_module_roots(config: &ConfigFile) -> Result<()> {

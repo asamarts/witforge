@@ -494,8 +494,9 @@ created then.
 
 No consumer needs docs-only patch versions or a separate memberless inventory. The supported
 version shape remains `v<major>.<minor>` with a package version `<major>.<minor>.0`; a directory
-named `v0.1.1` is not a version directory and is ignored by root discovery, so it cannot be used
-as a docs-only patch. A docs-only change in a draft version is already accepted: it changes
+or file under a WIT root named `v0.1.1` (or any other near-miss starting with `v` or `V` followed
+by a digit) is refused by root discovery, so a mistyped version cannot be used as a docs-only
+patch or silently dropped from generation. A docs-only change in a draft version is already accepted: it changes
 generated documentation, not wire numbers or the generated type/trait shape. A docs-only change
 to a released version is forbidden and is caught by the release-freeze check.
 

@@ -744,12 +744,18 @@ fn version_directories_refuse_symlinks_and_non_canonical_names() {
         assert_eq!(names, ["contract.wit", "wire.lock"]);
         fs::remove_file(root.join("v0.2")).unwrap();
     }
-    // Names that are not versions are ignored; numbers spelled with a sign or leading zeros are
-    // refused instead of silently changing which versions are generated.
-    fs::create_dir_all(root.join("v0.1-old")).unwrap();
+    // Unrelated names that do not start with `v`/`V` + digit are ignored; near-miss version names
+    // and numbers spelled with a sign or leading zeros are refused instead of silently changing
+    // which versions are generated.
     fs::create_dir_all(root.join("vendor")).unwrap();
+    fs::write(root.join("versions.md"), "# notes\n").unwrap();
+    fs::write(root.join(".hidden"), "").unwrap();
     rust::plan(&root).unwrap();
-    for name in ["v00.2", "v0.02", "v+0.2"] {
+    fs::create_dir_all(root.join("v0.1-old")).unwrap();
+    let near_miss = format!("{:#}", rust::plan(&root).unwrap_err());
+    assert!(near_miss.contains("v0.1-old"), "{near_miss}");
+    fs::remove_dir_all(root.join("v0.1-old")).unwrap();
+    for name in ["v00.2", "v0.02", "v+0.2", "V0.2"] {
         fs::rename(store.join("v0.2"), root.join(name)).unwrap();
         let message = format!("{:#}", rust::plan(&root).unwrap_err());
         assert!(

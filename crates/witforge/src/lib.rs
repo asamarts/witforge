@@ -452,20 +452,49 @@ fn sorted_wit_files(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn parse_sorted_dir(dir: &Path) -> Result<UnresolvedPackageGroup> {
+    let files = sorted_wit_files(dir)?;
     let mut map = SourceMap::new();
-    for file in sorted_wit_files(dir)? {
-        map.push_file(&file)?;
+    for file in &files {
+        map.push_file(file)?;
     }
-    map.parse()
-        .map_err(|(source_map, err)| anyhow!("{}", err.render(&source_map)))
+    map.parse().map_err(|(source_map, err)| {
+        let rendered = err.render(&source_map);
+        if let Some(bom_file) = files.iter().find(|path| file_has_utf8_bom(path)) {
+            anyhow!(
+                "{rendered} (note: {} starts with a UTF-8 byte-order mark (BOM))",
+                bom_file.display()
+            )
+        } else {
+            anyhow!("{rendered}")
+        }
+    })
 }
 
 fn parse_single_wit_file(path: &Path) -> Result<UnresolvedPackageGroup> {
     let mut map = SourceMap::new();
     map.push_file(path)?;
     map.parse()
-        .map_err(|(source_map, err)| anyhow!("{}", err.render(&source_map)))
+        .map_err(|(source_map, err)| {
+            let rendered = err.render(&source_map);
+            if file_has_utf8_bom(path) {
+                anyhow!(
+                    "{rendered} (note: {} starts with a UTF-8 byte-order mark (BOM))",
+                    path.display()
+                )
+            } else {
+                anyhow!("{rendered}")
+            }
+        })
         .with_context(|| format!("failed to parse package: {}", path.display()))
+}
+
+fn file_has_utf8_bom(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut prefix = [0u8; 3];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut prefix))
+        .is_ok()
+        && prefix == [0xEF, 0xBB, 0xBF]
 }
 
 /// Refuse two models whose pinned dependency graphs cannot share one generated binding surface.
@@ -509,6 +538,7 @@ impl ReleasedManifest {
     pub fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read released manifest {}", path.display()))?;
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let mut directories = Vec::new();
         let mut seen = BTreeSet::new();
@@ -896,23 +926,37 @@ fn lexical_absolute(path: &Path) -> Result<PathBuf> {
 
 /// The version a `v<major>.<minor>` directory name spells, or `None` for any other name.
 ///
-/// Both numbers must be ASCII digits without a sign or leading zeros. A name the numbers parse
-/// from but that spells them otherwise (`v+0.1`, `v00.02`) is an error rather than a skipped
-/// directory, so no version silently drops out of the generated output.
+/// Both numbers must be unsigned 64-bit ASCII digits without a sign or leading zeros. Any name
+/// starting with `v` or `V` followed by an ASCII digit (such as `v0.2.0`, `V0.2`, `v0.2-rc1`,
+/// `v00.2`, `v0.02`, `v1`, `v1.`, or an overflowing number), or a signed spelling such as
+/// `v+0.2`, is an error rather than a skipped entry so a mistyped version cannot silently drop
+/// out of generated output.
 pub(crate) fn parse_version_directory(name: &str) -> Result<Option<(u64, u64)>> {
-    let Some((major, minor)) = name.strip_prefix('v').and_then(|rest| rest.split_once('.')) else {
-        return Ok(None);
-    };
-    let (Ok(major_number), Ok(minor_number)) = (major.parse::<u64>(), minor.parse::<u64>()) else {
-        return Ok(None);
-    };
-    if !canonical_number(major) || !canonical_number(minor) {
+    if let Some((major, minor)) = name.strip_prefix('v').and_then(|rest| rest.split_once('.'))
+        && canonical_number(major)
+        && canonical_number(minor)
+        && let (Ok(major_number), Ok(minor_number)) = (major.parse::<u64>(), minor.parse::<u64>())
+    {
+        return Ok(Some((major_number, minor_number)));
+    }
+    if let Some((major, minor)) = name
+        .strip_prefix(['v', 'V'])
+        .and_then(|rest| rest.split_once('.'))
+        && let (Ok(major_number), Ok(minor_number)) = (major.parse::<u64>(), minor.parse::<u64>())
+    {
         bail!(
             "version directory `{name}` must be spelled `v{major_number}.{minor_number}`: ASCII \
              digits without a sign or leading zeros"
         );
     }
-    Ok(Some((major_number, minor_number)))
+    let bytes = name.as_bytes();
+    if bytes.len() >= 2 && matches!(bytes[0], b'v' | b'V') && bytes[1].is_ascii_digit() {
+        bail!(
+            "invalid version entry `{name}`: expected `v<major>.<minor>` with unsigned 64-bit \
+             ASCII digits and no leading zeros, patch version, or suffix"
+        );
+    }
+    Ok(None)
 }
 
 fn canonical_number(digits: &str) -> bool {

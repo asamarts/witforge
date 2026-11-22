@@ -338,3 +338,112 @@ fn config_refuses_coinciding_nested_or_symlinked_output_roots() {
     assert!(!root.join("generated/shared").exists());
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn config_refuses_unexpanded_paths_and_bom_but_accepts_absolute_and_parent_paths() {
+    let root = project("unexpanded-paths");
+
+    for (label, value) in [
+        ("tilde", "~"),
+        ("tilde-slash", "~/gen-out"),
+        ("tilde-user", "~alice/gen-out"),
+        ("dollar-var", "$HOME/gen-out"),
+        ("dollar-braces", "${OUT_DIR}/rust"),
+        ("windows-percent", "%USERPROFILE%/gen-out"),
+    ] {
+        // Test in `out`, `root`, and `released`:
+        for (slot, cfg_text) in [
+            (
+                "rust.out",
+                format!(
+                    "version = 1\n[project.demo]\nroot = \"wit\"\n[project.demo.rust]\nout = \"{value}\"\n"
+                ),
+            ),
+            (
+                "root",
+                format!(
+                    "version = 1\n[project.demo]\nroot = \"{value}\"\n[project.demo.rust]\nout = \"out\"\n"
+                ),
+            ),
+            (
+                "released",
+                format!(
+                    "version = 1\n[project.demo]\nroot = \"wit\"\nreleased = \"{value}\"\n[project.demo.rust]\nout = \"out\"\n"
+                ),
+            ),
+        ] {
+            let config = write_config(&root, &cfg_text);
+            let output = witforge()
+                .current_dir(&root)
+                .args(["rust", "--config"])
+                .arg(&config)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{label} in {slot}: {output:?}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("not shell-expanded"),
+                "{label} in {slot}: {stderr}"
+            );
+            assert!(
+                !root.join("~").exists(),
+                "must never create literal `~` directory"
+            );
+        }
+    }
+
+    // A UTF-8 BOM in `witforge.toml` is refused with a message naming the byte-order mark.
+    let bom_cfg = write_config(
+        &root,
+        "\u{feff}version = 1\n[project.demo]\nroot = \"wit\"\n[project.demo.rust]\nout = \"out\"\n",
+    );
+    let bom_out = witforge()
+        .current_dir(&root)
+        .args(["rust", "--config"])
+        .arg(&bom_cfg)
+        .output()
+        .unwrap();
+    assert_eq!(bom_out.status.code(), Some(2), "{bom_out:?}");
+    let bom_stderr = String::from_utf8_lossy(&bom_out.stderr);
+    assert!(bom_stderr.contains("byte-order mark"), "{bom_stderr}");
+
+    // Absolute paths and `..` paths remain accepted in `witforge.toml`, and CLI paths are not
+    // subject to the config shell-expansion rejection.
+    let sub = root.join("nested");
+    fs::create_dir_all(&sub).unwrap();
+    let abs_out = root.join("abs-out");
+    let ok_cfg = sub.join("witforge.toml");
+    let abs_out_toml = abs_out.display().to_string().replace('\\', "\\\\");
+    fs::write(
+        &ok_cfg,
+        format!(
+            "version = 1\n[project.demo]\nroot = \"../wit\"\n[project.demo.rust]\nout = \"{abs_out_toml}\"\n"
+        ),
+    )
+    .unwrap();
+    let ok = witforge()
+        .current_dir(&root)
+        .args(["rust", "--config"])
+        .arg(&ok_cfg)
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{ok:?}");
+    assert!(abs_out.join("mod.rs").is_file());
+
+    // CLI `--out` with a literal `$` character stays accepted (shell already ran).
+    let dollar_cli_out = root.join("cli-$out");
+    let cli_ok = witforge()
+        .current_dir(&root)
+        .args(["rust", "wit", "--out"])
+        .arg(&dollar_cli_out)
+        .output()
+        .unwrap();
+    assert!(cli_ok.status.success(), "{cli_ok:?}");
+    assert!(dollar_cli_out.join("mod.rs").is_file());
+
+    fs::remove_dir_all(&root).unwrap();
+}

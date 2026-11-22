@@ -406,11 +406,19 @@ fn version_lock_remedy(directory: &Path, previous: Option<&Version>, is_released
 }
 
 fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
-    let mut versions = Vec::new();
+    let mut entries = Vec::new();
     for entry in fs::read_dir(wit_root)
         .with_context(|| format!("failed to read WIT root {}", wit_root.display()))?
     {
-        let entry = entry?;
+        entries.push(entry?);
+    }
+    entries.sort_by(|left, right| {
+        left.file_name()
+            .as_encoded_bytes()
+            .cmp(right.file_name().as_encoded_bytes())
+    });
+    let mut versions = Vec::new();
+    for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some((major, minor)) = crate::parse_version_directory(&name)? else {
             continue;
@@ -426,7 +434,10 @@ fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
             crate::ensure_version_directory(&path)?;
         }
         if !file_type.is_dir() {
-            continue;
+            bail!(
+                "version entry `{}` is not a directory; expected a `v<major>.<minor>` directory",
+                path.display()
+            );
         }
         versions.push((major, minor, path));
     }
