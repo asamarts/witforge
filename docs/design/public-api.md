@@ -17,7 +17,7 @@ The public surface is the modules and items below. Within 1.x:
 
 | Module | Stable surface |
 |---|---|
-| crate root | `Contract`, `ContractError`, `DiagnosticError`, `load`, `is_contract_error`, `error_diagnostics`, `error_located_diagnostics`, `ReleasedManifest`, `discover_version_directories`, `ensure_no_symlinks_in_dir`, release-manifest helpers, version-directory and released-directory helpers |
+| crate root | `Contract`, `ContractError`, `DiagnosticError`, `load`, `is_contract_error`, `error_diagnostics`, `error_located_diagnostics`, `ReleasedManifest` (including `is_retired`, `retired_directories`, `live_directories`), `validate_retirement_order`, `discover_version_directories`, `ensure_no_symlinks_in_dir`, release-manifest helpers, version-directory and released-directory helpers |
 | `model` | `Version`, `Stability`, `QualifiedName`, `TypeExpr`, `ResultExpr`, `Field`, `Case`, `Flag`, `TypeDef`, `TypeDefKind`, `Param`, `Function`, `Interface`, `WorldInterface`, `World`, `Package`, `Dependency`, `Model`, `MemberKind`, `Member`, `build`, and `members` |
 | `lock` | `HEADER`, `ORDER_HEADER`, `PackageName`, `MemberKey`, `Entry`, `WireLock`, `LockMode`, `Changes`, `Discrepancy`, `Reconciliation`, and their documented methods |
 | `emit::rust` | `HEADER`, `plan`, `plan_with_serde`, `generate`, `generate_with_serde`, `check`, `check_with_serde`, `version_module_name`, `emit_version`, `emit_version_with_serde` |
@@ -25,7 +25,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::json_schema` | `HEADER`, `plan`, `generate`, `check`, `emit_version` |
 | `emit::glue` | `HEADER`, `plan`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
 | `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root`, `absolute` |
-| `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `DiffAnalysis`, `compare`, `compare_with_impacts`, `compare_with_locations` |
+| `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `ConversionOmission`, `DiffAnalysis`, `compare`, `compare_with_impacts`, `compare_omissions`, `compare_with_locations`, `compare_with_omissions` |
 | `diagnostic` | `codes`, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity` |
 | `freeze` | `FreezeOptions`, `FreezeReport`, `check_root` |
 | `subset` | `Violation`, `check`, `check_diagnostics`, `check_located_diagnostics` |

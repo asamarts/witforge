@@ -49,8 +49,9 @@ world plugin {
 The model stores the interface name and the dependency package metadata separately; its
 qualified name is `example:shared/types`. The dependency version is not part of a lockfile key
 or canonical type: the dependency pin is the versioned `use` path plus the content under
-`deps/`, and a dependency version bump does not renumber local members. The cross-version rule
-below still refuses that bump inside one generated WIT root.
+`deps/`, and a dependency version bump does not renumber local members. Within one major, the
+cross-version rule below still refuses a dependency change; across majors, a new major may change,
+add, remove, or upgrade dependencies.
 
 ## Generated references
 
@@ -108,11 +109,24 @@ changed dependency type is not a local conversion and must be handled by a new c
 
 ## Cross-version invariant
 
-Every version directory in one generated WIT root MUST resolve the identical pinned dependency
-graph. Identity covers the package namespace, name, and version; interface, type, and function
-inventories and their source order; shapes and signatures; stability metadata; and docs. The
-emitters write one shared dependency binding surface, so allowing any of those inputs to vary
-would make the generated result depend on which contract version happened to supply it.
+Within each major version of a WIT root, every live version directory MUST resolve the identical
+pinned dependency graph. Identity covers the package namespace, name, and version; interface,
+type, and function inventories and their source order; shapes and signatures; stability metadata;
+and docs. Across different majors, a new major MAY add, remove, change, or upgrade dependencies:
+
+- A dependency whose definition and transitive dependency subgraph are identical across every live
+  major that uses it stays at the single shared binding path (`witforge_deps::<ns>_<pkg>`,
+  `<ns>.<pkg>.v<dep_major>.proto`, `<ns>.<pkg>.v<dep_major>.schema.json`).
+- A dependency that differs across live majors (or transitively references one) is scoped per root
+  major under `witforge_deps::v<root_major>::<ns>_<pkg>` in plain Rust and glue (with canonical
+  `pub use super::v<owner>::<ns>_<pkg>;` re-exports whenever two live majors share an identical
+  definition while a third differs). Its protobuf and JSON Schema files use owner-major
+  disambiguation (`v<owner>.<ns>.<pkg>.v<dep_major>.proto`, `package <ns>.<pkg>.v<dep_major>_m<owner>;`,
+  `v<owner>.<ns>.<pkg>.v<dep_major>.schema.json`) only when two live majors with different
+  definitions share the same dependency major version.
+- In `convert.rs`, a foreign type converts across a major boundary only when both majors pin the
+  identical dependency package and transitive subgraph; otherwise types referencing it are omitted
+  from cross-major adapters and listed with the other cross-major omissions.
 
 One dependency graph MUST contain at most one version of a `namespace:name` package. A dependency
 type's identity is `namespace:name/interface/type`; the version is not part of a lockfile key or

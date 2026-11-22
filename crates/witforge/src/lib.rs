@@ -1314,18 +1314,19 @@ pub const RELEASED_MANIFEST: &str = "released";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReleasedManifest {
     directories: Vec<String>,
+    retired: BTreeSet<String>,
 }
 
 impl ReleasedManifest {
     /// Parse and validate a released manifest.
     ///
-    /// Entries are plain directory names relative to the manifest's directory: an ASCII letter
-    /// or digit followed by ASCII letters, digits, `.`, `_`, or `-`
-    /// (`^[A-Za-z0-9][A-Za-z0-9._-]*$`). That excludes `.`, `..`, hidden names, whitespace,
-    /// separators, and absolute paths. Leading and trailing ASCII whitespace (space, tab, CR,
-    /// VT, FF) is trimmed; blank lines and `#` comments are ignored. Invalid, duplicate,
-    /// missing, symlinked, and lockfile-less directories are errors, as is any symlink inside a
-    /// listed directory.
+    /// Entries are plain directory names relative to the manifest's directory, optionally followed
+    /// by ASCII spaces/tabs and the literal token `retired`:
+    /// `^[A-Za-z0-9][A-Za-z0-9._-]*$` (`v0.1` or `v0.1 retired`). That excludes `.`, `..`, hidden
+    /// names, whitespace inside names, separators, and absolute paths. Leading and trailing ASCII
+    /// whitespace (space, tab, CR, VT, FF) is trimmed; blank lines and `#` comments are ignored.
+    /// Invalid, duplicate, missing, symlinked, and lockfile-less directories are errors, as is any
+    /// symlink inside a listed directory.
     ///
     /// # Errors
     ///
@@ -1337,6 +1338,7 @@ impl ReleasedManifest {
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let mut directories = Vec::new();
+        let mut retired = BTreeSet::new();
         let mut seen = BTreeSet::new();
         for (index, raw) in text.lines().enumerate() {
             let line_no = index + 1;
@@ -1344,34 +1346,35 @@ impl ReleasedManifest {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if !plain_directory_name(line) {
+            let Some((entry_name, is_retired)) = parse_manifest_entry(line) else {
                 return Err(operational_error_at(
                     diagnostic::codes::PARSE_ERROR,
                     format!(
                         "line {line_no}: released entry `{line}` is not a plain directory name \
-                         (`^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
+                         (expected `<name>` or `<name> retired` where `<name>` matches \
+                         `^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
                     ),
                     path.display().to_string(),
                     Some(line_position(line_no, raw)),
                 ));
-            }
-            if !seen.insert(line.to_string()) {
+            };
+            if !seen.insert(entry_name.to_string()) {
                 return Err(operational_error_at(
                     diagnostic::codes::PARSE_ERROR,
-                    format!("line {line_no}: duplicate released entry `{line}`"),
+                    format!("line {line_no}: duplicate released entry `{entry_name}`"),
                     path.display().to_string(),
                     Some(line_position(line_no, raw)),
                 ));
             }
-            let directory = parent.join(line);
+            let directory = parent.join(entry_name);
             if fs::symlink_metadata(&directory)
                 .is_ok_and(|metadata| metadata.file_type().is_symlink())
             {
                 return Err(operational_error(
                     diagnostic::codes::GUARD_REFUSED,
                     format!(
-                        "line {line_no}: released directory `{line}` is a symlink; witforge refuses \
-                         symlinked version directories"
+                        "line {line_no}: released directory `{entry_name}` is a symlink; witforge \
+                         refuses symlinked version directories"
                     ),
                     Some(directory.display().to_string()),
                 ));
@@ -1379,34 +1382,134 @@ impl ReleasedManifest {
             if !directory.is_dir() {
                 return Err(operational_error(
                     diagnostic::codes::IO_ERROR,
-                    format!("line {line_no}: released directory `{line}` does not exist"),
+                    format!("line {line_no}: released directory `{entry_name}` does not exist"),
                     Some(directory.display().to_string()),
                 ));
             }
             if !directory.join("wire.lock").is_file() {
                 return Err(operational_error(
                     diagnostic::codes::IO_ERROR,
-                    format!("line {line_no}: released directory `{line}` has no wire.lock"),
+                    format!("line {line_no}: released directory `{entry_name}` has no wire.lock"),
                     Some(directory.join("wire.lock").display().to_string()),
                 ));
             }
-            ensure_no_symlinks(&directory, line)?;
-            directories.push(line.to_string());
+            ensure_no_symlinks(&directory, entry_name)?;
+            directories.push(entry_name.to_string());
+            if is_retired {
+                retired.insert(entry_name.to_string());
+            }
         }
-        Ok(Self { directories })
+        Ok(Self {
+            directories,
+            retired,
+        })
     }
 
-    /// The released directory names in manifest order.
+    /// All released directory names in manifest order (both live and retired).
     #[must_use]
     pub fn directories(&self) -> &[String] {
         &self.directories
     }
 
-    /// Whether `directory` is listed.
+    /// Whether `directory` is listed (either live or retired).
     #[must_use]
     pub fn contains(&self, directory: &str) -> bool {
         self.directories.iter().any(|entry| entry == directory)
     }
+
+    /// Whether `directory` is listed and marked `retired`.
+    #[must_use]
+    pub fn is_retired(&self, directory: &str) -> bool {
+        self.retired.contains(directory)
+    }
+
+    /// Retired directory names in manifest order.
+    #[must_use]
+    pub fn retired_directories(&self) -> Vec<&str> {
+        self.directories
+            .iter()
+            .filter(|entry| self.retired.contains(entry.as_str()))
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// Live (non-retired) released directory names in manifest order.
+    #[must_use]
+    pub fn live_directories(&self) -> Vec<&str> {
+        self.directories
+            .iter()
+            .filter(|entry| !self.retired.contains(entry.as_str()))
+            .map(String::as_str)
+            .collect()
+    }
+}
+
+/// Parse one trimmed non-comment `released` manifest line as `(entry_name, is_retired)`.
+///
+/// Accepts `<name>` or `<name> retired` separated by ASCII spaces or tabs, where `<name>`
+/// matches `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
+pub(crate) fn parse_manifest_entry(line: &str) -> Option<(&str, bool)> {
+    let mut parts = line.split([' ', '\t']).filter(|part| !part.is_empty());
+    let name = parts.next()?;
+    if !plain_directory_name(name) {
+        return None;
+    }
+    match (parts.next(), parts.next()) {
+        (None, None) => Some((name, false)),
+        (Some("retired"), None) => Some((name, true)),
+        _ => None,
+    }
+}
+
+/// Validate that retired versions in `manifest` form a contiguous oldest prefix of `versions`
+/// (which must be sorted in ascending `(major, minor)` order) and leave at least one live version.
+///
+/// # Errors
+///
+/// Returns a [`ContractError`] (`WF1100`) if a live version precedes a retired version or if
+/// every version under `wit_root` is retired.
+pub fn validate_retirement_order(
+    versions: &[(u64, u64, PathBuf)],
+    manifest: &ReleasedManifest,
+    wit_root: &Path,
+) -> Result<()> {
+    let mut first_live: Option<String> = None;
+    for (_, _, dir) in versions {
+        let name = dir
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        if manifest.is_retired(name) {
+            if let Some(ref older_live) = first_live {
+                bail!(ContractError::with_diagnostic(
+                    diagnostic::Diagnostic::error(
+                        diagnostic::codes::LOCKFILE_ERROR,
+                        format!(
+                            "cannot retire `{name}` while older version `{older_live}` is still \
+                             live; only the oldest versions of a WIT root may be retired"
+                        ),
+                    )
+                    .with_path(wit_root.join(RELEASED_MANIFEST).display().to_string())
+                ));
+            }
+        } else if first_live.is_none() {
+            first_live = Some(name.to_string());
+        }
+    }
+    if first_live.is_none() && !versions.is_empty() {
+        bail!(ContractError::with_diagnostic(
+            diagnostic::Diagnostic::error(
+                diagnostic::codes::LOCKFILE_ERROR,
+                format!(
+                    "every version directory under {} is retired; at least one live version is \
+                     required",
+                    wit_root.display()
+                ),
+            )
+            .with_path(wit_root.join(RELEASED_MANIFEST).display().to_string())
+        ));
+    }
+    Ok(())
 }
 
 /// Whether `name` matches `^[A-Za-z0-9][A-Za-z0-9._-]*$`, the released-manifest entry rule shared

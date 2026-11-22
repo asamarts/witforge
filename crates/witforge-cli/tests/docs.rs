@@ -360,19 +360,56 @@ fn evolution_guide_commands_run_verbatim() {
     }
 
     let mut edits = 0;
+    let mut major_edits = 0;
     let mut ran = 0;
     for (language, body) in fenced_blocks(&guide) {
-        assert_eq!(language, "sh", "unexpected block in the evolution guide");
-        ran += run_block(&directory, &body, &mut |comment| {
-            edit_copied_contract(&directory, comment, &mut edits);
-        });
+        match language.as_str() {
+            "sh" => {
+                ran += run_block(&directory, &body, &mut |comment| {
+                    if comment.starts_with("Edit wit/v1.0/contract.wit") {
+                        let path = directory.join("wit/v1.0/contract.wit");
+                        let text = fs::read_to_string(&path).unwrap();
+                        assert!(text.contains("@1.0.0;"), "v1.0 contract was not bumped");
+                        let open = text.find("record ").unwrap();
+                        let brace = open + text[open..].find('{').unwrap();
+                        let close = brace + text[brace..].find('}').unwrap();
+                        let fields = text[brace + 1..close].trim_end();
+                        let sep = if fields.ends_with(',') { "" } else { "," };
+                        let edited = format!(
+                            "{}{fields}{sep}\n    required-in-v1: u64,\n  {}",
+                            &text[..=brace],
+                            &text[close..]
+                        );
+                        fs::write(&path, edited).unwrap();
+                        major_edits += 1;
+                    } else {
+                        edit_copied_contract(&directory, comment, &mut edits);
+                    }
+                });
+            }
+            "text" => {}
+            other => panic!("unexpected `{other}` block in the evolution guide"),
+        }
     }
-    assert_eq!(edits, 1, "the guide's sequence has one edit step");
-    assert_eq!(ran, 4, "the guide runs lock, check, diff, and diff --check");
+    assert_eq!(edits, 1, "the guide's minor sequence has one edit step");
+    assert_eq!(
+        major_edits, 1,
+        "the guide's major sequence has one edit step"
+    );
+    assert_eq!(
+        ran, 9,
+        "the guide runs minor lock/check/diff/diff --check and major new-version/lock/check/diff/rust"
+    );
     let lock = fs::read_to_string(directory.join("wit/v0.2/wire.lock")).unwrap();
     assert!(
         lock.contains("example:ingest/types/item.added-in-v2 = 5 field option<string>"),
         "the edit step did not change the contract:\n{lock}"
+    );
+    assert!(directory.join("generated/rust/v1_0.rs").is_file());
+    let convert = fs::read_to_string(directory.join("generated/rust/convert.rs")).unwrap();
+    assert!(
+        convert.contains("required-in-v1"),
+        "expected cross-major omission comment in convert.rs:\n{convert}"
     );
 
     fs::remove_dir_all(&directory).unwrap();

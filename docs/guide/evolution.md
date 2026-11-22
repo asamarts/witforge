@@ -37,6 +37,77 @@ Old-to-new conversion defaults an added record field only when its type is `opti
 
 New-to-old conversion drops fields and flags that the older version does not have; it does not report them. It returns `MissingMember` when the older version requires a field the newer version removed. In either direction, a value whose enum or variant case the target version does not have returns `UnknownCase`. Retypes and kind changes are refused.
 
+## Starting a new major
+
+A breaking change — retyping a field, changing a type's kind, adding a required field without a
+default, renaming a type, or upgrading a dependency — belongs in a new major version (`v1.0` after
+`v0.x`, or `v2.0` after `v1.x`). A new major starts with a fresh lockfile (`--first`) and gets its
+own protobuf package (`v1.proto`) and glue module (`v1.rs`).
+
+### In the same WIT root (recommended)
+
+Keeping the new major in the same WIT root gives you all versions under one generated module tree
+and generates adapters automatically for every type that still converts:
+
+```sh
+witforge new-version wit --major
+# Edit wit/v1.0/contract.wit to make breaking changes (and wit/v1.0/deps/ if upgrading dependencies).
+witforge lock wit/v1.0 --first
+witforge check wit
+witforge diff wit/v0.2 wit/v1.0
+witforge rust wit --out generated/rust
+```
+
+Across a major boundary:
+
+- **Plain types always generate.** `witforge rust` never refuses a major boundary, so `v1_0.rs`
+  and every earlier live version's types are always written.
+- **Partial adapters generate per direction.** Types that still convert under the normal rules get
+  adapters in `convert.rs`. Types that do not — retypes, kind changes, required additions (in the
+  old-to-new direction only; new-to-old drops the new field and still generates), payload-presence
+  changes, types with no namesake, types using an upgraded dependency, and any containing type
+  transitively — are omitted in that direction.
+- **Every omission is listed twice.** The top of `convert.rs` carries a sorted, deterministic
+  comment block listing every omitted `(from -> to, type, reason)` pair (`--check` covers it), and
+  `witforge diff wit/v0.2 wit/v1.0` reports the exact same list. Write manual adapters for those
+  types in your own crate beside the generated ones.
+- **Dependencies may change or upgrade.** Within one major, every minor still shares an identical
+  pinned dependency graph. Across majors, unchanged dependencies stay in `witforge_deps::<dep>`
+  and still convert across the major; dependencies that changed or were upgraded move into
+  per-major modules (`witforge_deps::v0::<dep>`, `witforge_deps::v1::<dep>`), and proto/schema
+  files disambiguate only if two live majors pin conflicting definitions with the same dependency
+  major version.
+- **`diff --check` still reports breaking changes.** Because a new major is expected to break, run
+  `witforge diff wit/v0.2 wit/v1.0` without `--check` when reviewing a major boundary.
+
+### Retiring old versions
+
+Once consumers no longer need the oldest versions in a WIT root, mark them `retired` in
+`wit/released` (first supported in 0.7.0; earlier releases reject the syntax):
+
+```text
+v0.1 retired
+v0.2 retired
+v1.0
+```
+
+- Only a contiguous oldest prefix of versions may be retired, and at least one live version must
+  remain. Retiring `v0.2` while `v0.1` is still live (or retiring every version) is refused.
+- Never delete an entry or directory from `wit/released`. Retired directories remain in Git and
+  stay frozen; `witforge freeze` accepts the one-way transition from live to `retired` and refuses
+  un-retiring (`retired` back to live) or editing a retired directory.
+- Retired versions stop being generated: running the generators removes their plain Rust modules,
+  JSON Schema files, and adapters through normal stale-file cleanup. Retiring an older minor of a
+  live major leaves `v<major>.proto` unchanged (the highest minor carries every reservation);
+  retiring every version of a major removes that major's `.proto` file and glue module as well.
+
+### Separate WIT root per major (alternative)
+
+If you prefer completely isolated generated crates or output trees with no shared `convert.rs` or
+`witforge_deps.rs`, place each major in its own WIT root (`wit-v1/`, `wit-v2/`) with separate
+output directories (or separate `[project.<name>]` entries in `witforge.toml`) and write any
+cross-major bridge in your own crate.
+
 ## Released versions
 
 List immutable version directories in `wit/released` using `witforge release wit/v0.1` (which
@@ -45,4 +116,5 @@ released version's WIT, lockfile, dependency packages, or generated per-version 
 Create a new version directory instead (`witforge new-version wit` for a minor, or
 `witforge new-version wit --major` for a new major).
 
-Use `witforge freeze` (with `fetch-depth: 0`) in CI to verify released history.
+Use `witforge freeze` (with `fetch-depth: 0`) in CI to verify released history (including one-way
+live-to-retired transitions).

@@ -1114,8 +1114,10 @@ fn check_wit_root(
 ) -> Result<ExitCode> {
     let manifest = load_root_released_manifest(wit_root, explicit_released)?;
     let versions = discover_version_directories(wit_root)?;
+    witforge::validate_retirement_order(&versions, &manifest, wit_root)?;
     let mut prev_by_major: BTreeMap<u64, PathBuf> = BTreeMap::new();
     let mut first_model: Option<model::Model> = None;
+    let mut first_model_by_major: BTreeMap<u64, model::Model> = BTreeMap::new();
     let mut failed = false;
     for (major, _minor, dir) in versions {
         let dir_name = dir
@@ -1188,8 +1190,13 @@ fn check_wit_root(
                         ),
                         Some(dir.display().to_string()),
                     );
-                } else if let Err(err) =
-                    witforge::ensure_same_dependency_graph(baseline, &current_model)
+                }
+            } else {
+                first_model = Some(current_model.clone());
+            }
+            if let Some(major_baseline) = first_model_by_major.get(&major) {
+                if let Err(err) =
+                    witforge::ensure_same_dependency_graph(major_baseline, &current_model)
                 {
                     failed = true;
                     reporter.error(
@@ -1199,7 +1206,7 @@ fn check_wit_root(
                     );
                 }
             } else {
-                first_model = Some(current_model);
+                first_model_by_major.insert(major, current_model);
             }
             if released
                 && let Some(ref pred) = prev_dir
@@ -2020,10 +2027,12 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         reporter.suppress();
     }
     let check_views = parse_check_views(options.check.as_deref())?;
-    let (analysis, locations) = diff::compare_with_locations(&options.old, &options.new)?;
+    let (analysis, omissions, locations) =
+        diff::compare_with_omissions(&options.old, &options.new)?;
     let report = &analysis.report;
+    let cross_major = report.old.version.major != report.new.version.major;
     if options.json {
-        let rendered = serde_json::to_string_pretty(&diff_json(&analysis))
+        let rendered = serde_json::to_string_pretty(&diff_json(&analysis, &omissions))
             .context("failed to render the diff as JSON")?;
         reporter.write_stdout_line(&rendered);
     } else if reporter.human() {
@@ -2085,42 +2094,65 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
                 located_note("WF3003", message, impact.missing_path.clone(), loc, None),
             );
         }
-        for (kind, blocker) in conversion_blockers(report) {
-            let (human, message) = match kind {
-                "required-addition" => (
-                    format!(
-                        "note: conversion generation refuses `{}`: a required record field was \
-                         added without a default; use option<T>, list<T>, or a new member",
-                        blocker.path
+        if cross_major {
+            for omission in &omissions {
+                let human = format!(
+                    "note: conversion {} -> {} for `{}` is omitted: {}",
+                    omission.from_version, omission.to_version, omission.type_path, omission.reason
+                );
+                let message = format!(
+                    "conversion {} -> {} for `{}` is omitted: {}",
+                    omission.from_version, omission.to_version, omission.type_path, omission.reason
+                );
+                reporter.note_located(
+                    &human,
+                    located_note(
+                        "WF3004",
+                        message,
+                        omission.type_path.clone(),
+                        locations.get(&omission.type_path),
+                        None,
                     ),
-                    format!(
-                        "conversion generation refuses `{}`: a required record field was added \
-                         without a default",
-                        blocker.path
+                );
+            }
+        } else {
+            for (kind, blocker) in conversion_blockers(report) {
+                let (human, message) = match kind {
+                    "required-addition" => (
+                        format!(
+                            "note: conversion generation refuses `{}`: a required record field was \
+                             added without a default; use option<T>, list<T>, or a new member",
+                            blocker.path
+                        ),
+                        format!(
+                            "conversion generation refuses `{}`: a required record field was added \
+                             without a default",
+                            blocker.path
+                        ),
                     ),
-                ),
-                _ => (
-                    format!(
-                        "note: conversion generation refuses `{}`: the type changed; add a new \
-                         member or type instead",
-                        blocker.path
+                    _ => (
+                        format!(
+                            "note: conversion generation refuses `{}`: the type changed; add a new \
+                             member or type instead",
+                            blocker.path
+                        ),
+                        format!(
+                            "conversion generation refuses `{}`: the type changed",
+                            blocker.path
+                        ),
                     ),
-                    format!(
-                        "conversion generation refuses `{}`: the type changed",
-                        blocker.path
+                };
+                reporter.note_located(
+                    &human,
+                    located_note(
+                        "WF3004",
+                        message,
+                        blocker.path.clone(),
+                        locations.get(&blocker.path),
+                        None,
                     ),
-                ),
-            };
-            reporter.note_located(
-                &human,
-                located_note(
-                    "WF3004",
-                    message,
-                    blocker.path.clone(),
-                    locations.get(&blocker.path),
-                    None,
-                ),
-            );
+                );
+            }
         }
     }
     if let Some(views) = check_views {
@@ -2728,8 +2760,9 @@ fn conversion_blockers(report: &DiffReport) -> impl Iterator<Item = (&'static st
         })
 }
 
-fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
+fn diff_json(analysis: &diff::DiffAnalysis, omissions: &[diff::ConversionOmission]) -> Value {
     let report = &analysis.report;
+    let cross_major = report.old.version.major != report.new.version.major;
     let endpoint = |endpoint: &diff::Endpoint| {
         json!({
             "path": endpoint.path.display().to_string(),
@@ -2751,11 +2784,26 @@ fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
             })
         })
         .collect();
-    let conversion_blockers: Vec<Value> = conversion_blockers(report)
-        .map(|(kind, change)| {
+    let conversion_blockers: Vec<Value> = if cross_major {
+        Vec::new()
+    } else {
+        conversion_blockers(report)
+            .map(|(kind, change)| {
+                json!({
+                    "kind": kind,
+                    "path": &change.path,
+                })
+            })
+            .collect()
+    };
+    let conversion_omissions: Vec<Value> = omissions
+        .iter()
+        .map(|omission| {
             json!({
-                "kind": kind,
-                "path": &change.path,
+                "from_version": omission.from_version.to_string(),
+                "to_version": omission.to_version.to_string(),
+                "type_path": &omission.type_path,
+                "reason": &omission.reason,
             })
         })
         .collect();
@@ -2772,6 +2820,7 @@ fn diff_json(analysis: &diff::DiffAnalysis) -> Value {
         },
         "conversion_impacts": conversion_impacts,
         "conversion_blockers": conversion_blockers,
+        "conversion_omissions": conversion_omissions,
     })
 }
 

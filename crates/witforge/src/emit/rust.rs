@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
-use crate::emit::versions::{Version, load_versions, shared_dependencies};
+use crate::emit::versions::{DepLayout, Version, load_versions};
 use crate::emit::{docs, pascal_case, rust_ident, rustfmt, snake_case};
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
@@ -57,7 +57,7 @@ pub(crate) fn plan_versions_with_serde(
     versions: &[Version],
     serde: bool,
 ) -> Result<GeneratedFiles> {
-    let dependencies = shared_dependencies(versions)?;
+    let dep_layout = DepLayout::from_versions(versions)?;
     let package = &versions
         .first()
         .context("no version directories found under WIT root")?
@@ -76,7 +76,19 @@ pub(crate) fn plan_versions_with_serde(
                 version.directory.display()
             );
         }
-        let generated = emit_version_with_serde(&version.model, serde)
+        let major = version.major;
+        let resolver = |ns: &str, pkg: &str| -> Result<String> {
+            let pkg_mod = rust_ident(
+                &format!("{}_{}", snake_case(ns), snake_case(pkg)),
+                "dependency package module",
+            )?;
+            if dep_layout.is_scoped(ns, pkg) {
+                Ok(format!("super::super::witforge_deps::v{major}::{pkg_mod}"))
+            } else {
+                Ok(format!("super::super::witforge_deps::{pkg_mod}"))
+            }
+        };
+        let generated = emit_version_with_resolver(&version.model, serde, &resolver)
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("{module}.rs"), generated)?;
         module_entries.push((
@@ -91,8 +103,8 @@ pub(crate) fn plan_versions_with_serde(
             "pub mod convert;".to_string(),
         ));
     }
-    if !dependencies.is_empty() {
-        let dependency_source = emit_dependency_bindings(&header, dependencies, serde)?;
+    if !dep_layout.is_empty() {
+        let dependency_source = emit_dependency_bindings_layout(&header, &dep_layout, serde)?;
         files.insert("witforge_deps.rs", dependency_source)?;
         module_entries.push((
             "Pinned dependency types.".to_string(),
@@ -208,6 +220,21 @@ pub fn emit_version(model: &Model) -> Result<String> {
 ///
 /// Returns the same errors as [`emit_version`].
 pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
+    let resolver = |ns: &str, pkg: &str| -> Result<String> {
+        let pkg_mod = rust_ident(
+            &format!("{}_{}", snake_case(ns), snake_case(pkg)),
+            "dependency package module",
+        )?;
+        Ok(format!("super::super::witforge_deps::{pkg_mod}"))
+    };
+    emit_version_with_resolver(model, serde, &resolver)
+}
+
+fn emit_version_with_resolver(
+    model: &Model,
+    serde: bool,
+    foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
+) -> Result<String> {
     let mut out = String::new();
     writeln!(
         out,
@@ -282,14 +309,7 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
             writeln!(out, "pub mod {module} {{}}")?;
         } else {
             writeln!(out, "pub mod {module} {{")?;
-            emit_interface(
-                &mut out,
-                4,
-                model,
-                interface,
-                serde,
-                "super::super::witforge_deps",
-            )?;
+            emit_interface(&mut out, 4, model, interface, serde, foreign_resolver)?;
             writeln!(out, "}}")?;
         }
     }
@@ -313,7 +333,7 @@ fn emit_interface(
     model: &Model,
     interface: &crate::model::Interface,
     serde: bool,
-    foreign_base: &str,
+    foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let mut type_names: BTreeMap<String, String> = BTreeMap::new();
     let trait_name = if interface.functions.is_empty() {
@@ -339,13 +359,13 @@ fn emit_interface(
             writeln!(out)?;
         }
         first = false;
-        emit_type_def(out, indent, model, interface, def, serde, foreign_base)?;
+        emit_type_def(out, indent, model, interface, def, serde, foreign_resolver)?;
     }
     if let Some(trait_name) = trait_name {
         if !first {
             writeln!(out)?;
         }
-        emit_trait(out, indent, model, interface, &trait_name, foreign_base)?;
+        emit_trait(out, indent, model, interface, &trait_name, foreign_resolver)?;
     }
     Ok(())
 }
@@ -353,6 +373,22 @@ fn emit_interface(
 fn emit_dependency_bindings(
     header: &str,
     dependencies: &[crate::model::Dependency],
+    serde: bool,
+) -> Result<String> {
+    let mut layout = DepLayout::default();
+    for dep in dependencies {
+        layout.shared.insert(
+            (dep.package.namespace.clone(), dep.package.name.clone()),
+            dep.clone(),
+        );
+    }
+    emit_dependency_bindings_layout(header, &layout, serde)
+}
+
+#[allow(clippy::too_many_lines)]
+fn emit_dependency_bindings_layout(
+    header: &str,
+    layout: &DepLayout,
     serde: bool,
 ) -> Result<String> {
     let mut out = String::new();
@@ -364,8 +400,78 @@ fn emit_dependency_bindings(
             "// serde derives require the consumer's `serde` crate with `derive`."
         )?;
     }
+    let shared_slice: Vec<crate::model::Dependency> = layout.shared.values().cloned().collect();
+    let shared_resolver = |ns: &str, pkg: &str| -> Result<String> {
+        let pkg_mod = rust_ident(
+            &format!("{}_{}", snake_case(ns), snake_case(pkg)),
+            "dependency package module",
+        )?;
+        Ok(format!("super::super::{pkg_mod}"))
+    };
+    emit_dep_group(
+        &mut out,
+        0,
+        "witforge_deps",
+        &shared_slice,
+        &shared_slice,
+        serde,
+        &shared_resolver,
+        None,
+    )?;
+
+    for (&major, scoped_deps) in &layout.per_major {
+        let major_mod = format!("v{major}");
+        writeln!(out)?;
+        writeln!(
+            out,
+            "/// Pinned dependencies for major version `{major_mod}`."
+        )?;
+        writeln!(out, "pub mod {major_mod} {{")?;
+        let major_all = layout
+            .by_major
+            .get(&major)
+            .map_or(scoped_deps.as_slice(), Vec::as_slice);
+        let major_resolver = |ns: &str, pkg: &str| -> Result<String> {
+            let pkg_mod = rust_ident(
+                &format!("{}_{}", snake_case(ns), snake_case(pkg)),
+                "dependency package module",
+            )?;
+            if layout.is_scoped(ns, pkg) {
+                Ok(format!("super::super::{pkg_mod}"))
+            } else {
+                Ok(format!("super::super::super::{pkg_mod}"))
+            }
+        };
+        emit_dep_group(
+            &mut out,
+            4,
+            &major_mod,
+            scoped_deps,
+            major_all,
+            serde,
+            &major_resolver,
+            Some((major, layout)),
+        )?;
+        writeln!(out, "}}")?;
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_dep_group(
+    out: &mut String,
+    indent: usize,
+    parent_mod: &str,
+    emitted: &[crate::model::Dependency],
+    all_in_scope: &[crate::model::Dependency],
+    serde: bool,
+    foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
+    scoped_context: Option<(u64, &DepLayout)>,
+) -> Result<()> {
+    let prefix = " ".repeat(indent);
+    let iface_prefix = " ".repeat(indent + 4);
     let mut module_names = BTreeMap::new();
-    for dependency in dependencies {
+    for (dep_idx, dependency) in emitted.iter().enumerate() {
         let module = rust_ident(
             &format!(
                 "{}_{}",
@@ -381,25 +487,38 @@ fn emit_dependency_bindings(
                 dependency.package.name
             );
         }
-        writeln!(out)?;
+        if indent == 0 || dep_idx > 0 {
+            writeln!(out)?;
+        }
+        if let Some((major, layout)) = scoped_context {
+            let owner = layout.canonical_owner_major(
+                major,
+                &dependency.package.namespace,
+                &dependency.package.name,
+            );
+            if owner < major {
+                writeln!(out, "{prefix}pub use super::v{owner}::{module};")?;
+                continue;
+            }
+        }
         rustfmt::write_docs_or(
-            &mut out,
-            0,
+            out,
+            indent,
             &dependency.package.docs,
             &format!(
                 "Dependency package `{}:{}`.",
                 dependency.package.namespace, dependency.package.name
             ),
         )?;
-        if module == "witforge_deps" {
-            writeln!(out, "#[allow(clippy::module_inception)]")?;
+        if module == parent_mod {
+            writeln!(out, "{prefix}#[allow(clippy::module_inception)]")?;
         }
         if dependency.interfaces.is_empty() {
-            writeln!(out, "pub mod {module} {{}}")?;
+            writeln!(out, "{prefix}pub mod {module} {{}}")?;
             continue;
         }
-        writeln!(out, "pub mod {module} {{")?;
-        let dep_model = dependency_model(dependency, dependencies);
+        writeln!(out, "{prefix}pub mod {module} {{")?;
+        let dep_model = dependency_model(dependency, all_in_scope);
         for (idx, interface) in dependency.interfaces.iter().enumerate() {
             if idx > 0 {
                 writeln!(out)?;
@@ -407,8 +526,8 @@ fn emit_dependency_bindings(
             let interface_module =
                 rust_ident(&snake_case(&interface.name), "dependency interface module")?;
             rustfmt::write_docs_or(
-                &mut out,
-                4,
+                out,
+                indent + 4,
                 &interface.docs,
                 &format!(
                     "Interface `{}:{}/{}`.",
@@ -416,19 +535,26 @@ fn emit_dependency_bindings(
                 ),
             )?;
             if interface_module == module {
-                writeln!(out, "    #[allow(clippy::module_inception)]")?;
+                writeln!(out, "{iface_prefix}#[allow(clippy::module_inception)]")?;
             }
             if interface.types.is_empty() && interface.functions.is_empty() {
-                writeln!(out, "    pub mod {interface_module} {{}}")?;
+                writeln!(out, "{iface_prefix}pub mod {interface_module} {{}}")?;
             } else {
-                writeln!(out, "    pub mod {interface_module} {{")?;
-                emit_interface(&mut out, 8, &dep_model, interface, serde, "super::super")?;
-                writeln!(out, "    }}")?;
+                writeln!(out, "{iface_prefix}pub mod {interface_module} {{")?;
+                emit_interface(
+                    out,
+                    indent + 8,
+                    &dep_model,
+                    interface,
+                    serde,
+                    foreign_resolver,
+                )?;
+                writeln!(out, "{iface_prefix}}}")?;
             }
         }
-        writeln!(out, "}}")?;
+        writeln!(out, "{prefix}}}")?;
     }
-    Ok(out)
+    Ok(())
 }
 
 fn dependency_model(
@@ -473,7 +599,7 @@ fn emit_record(
     name: &str,
     fields: &[crate::model::Field],
     serde: bool,
-    foreign_base: &str,
+    foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     write_derives(out, indent, serde)?;
@@ -497,7 +623,7 @@ fn emit_record(
             &field.docs,
             &format!("Field `{}/{}.{}`.", interface.name, def.name, field.name),
         )?;
-        let ty = map_type(model, &interface.name, &field.ty, foreign_base)?;
+        let ty = map_type(model, &interface.name, &field.ty, foreign_resolver)?;
         writeln!(
             out,
             "{}",
@@ -516,7 +642,7 @@ fn emit_type_def(
     interface: &crate::model::Interface,
     def: &TypeDef,
     serde: bool,
-    foreign_base: &str,
+    foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     let member_prefix = " ".repeat(indent + 4);
@@ -543,7 +669,7 @@ fn emit_type_def(
                 &name,
                 fields,
                 serde,
-                foreign_base,
+                foreign_resolver,
             )?;
         }
         TypeDefKind::Variant(cases) => {
@@ -572,7 +698,7 @@ fn emit_type_def(
                     &format!("Case `{}/{}.{}`.", interface.name, def.name, case.name),
                 )?;
                 if let Some(payload) = &case.payload {
-                    let ty = map_type(model, &interface.name, payload, foreign_base)?;
+                    let ty = map_type(model, &interface.name, payload, foreign_resolver)?;
                     writeln!(
                         out,
                         "{}",
@@ -637,7 +763,7 @@ fn emit_type_def(
             writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Alias(target) => {
-            let ty = map_type(model, &interface.name, target, foreign_base)?;
+            let ty = map_type(model, &interface.name, target, foreign_resolver)?;
             writeln!(
                 out,
                 "{}",
@@ -650,7 +776,7 @@ fn emit_type_def(
             } else {
                 format!(
                     "::std::vec::Vec<{}>",
-                    map_type(model, &interface.name, element, foreign_base)?
+                    map_type(model, &interface.name, element, foreign_resolver)?
                 )
             };
             writeln!(
@@ -662,7 +788,7 @@ fn emit_type_def(
         TypeDefKind::Option(payload) => {
             let ty = format!(
                 "::std::option::Option<{}>",
-                map_type(model, &interface.name, payload, foreign_base)?
+                map_type(model, &interface.name, payload, foreign_resolver)?
             );
             writeln!(
                 out,
@@ -673,11 +799,11 @@ fn emit_type_def(
         TypeDefKind::Result(result) => {
             let ok = result.ok.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, &interface.name, ty, foreign_base),
+                |ty| map_type(model, &interface.name, ty, foreign_resolver),
             )?;
             let err = result.err.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, &interface.name, ty, foreign_base),
+                |ty| map_type(model, &interface.name, ty, foreign_resolver),
             )?;
             let ty = format!("::std::result::Result<{ok}, {err}>");
             writeln!(
@@ -696,7 +822,7 @@ fn emit_trait(
     model: &Model,
     interface: &crate::model::Interface,
     trait_name: &str,
-    foreign_base: &str,
+    foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     writeln!(out, "{prefix}/// Trait for interface `{}`.", interface.name)?;
@@ -729,13 +855,13 @@ fn emit_trait(
                 &format!("parameter {}", param.name),
                 &format!("function {}/{}", interface.name, function.name),
             )?;
-            let ty = map_type(model, &interface.name, &param.ty, foreign_base)?;
+            let ty = map_type(model, &interface.name, &param.ty, foreign_resolver)?;
             params.push(format!("{param_name}: {ty}"));
         }
         let ret = function
             .result
             .as_ref()
-            .map(|result| map_type(model, &interface.name, result, foreign_base))
+            .map(|result| map_type(model, &interface.name, result, foreign_resolver))
             .transpose()?;
         let method_prefix = " ".repeat(indent + 4);
         if params.len() > 7 {
@@ -875,7 +1001,7 @@ fn map_type(
     model: &Model,
     current_interface: &str,
     ty: &TypeExpr,
-    foreign_base: &str,
+    foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<String> {
     match ty {
         TypeExpr::Bool => Ok("bool".to_string()),
@@ -892,18 +1018,13 @@ fn map_type(
         TypeExpr::String => Ok("::std::string::String".to_string()),
         TypeExpr::Named(name) => {
             if let Some((namespace, package)) = name.package() {
-                let package = rust_ident(
-                    &format!("{}_{}", snake_case(namespace), snake_case(package)),
-                    "dependency package module",
-                )?;
+                let package_path = foreign_resolver(namespace, package)?;
                 let interface = rust_ident(
                     &snake_case(name.interface_name()),
                     "dependency interface module",
                 )?;
                 let type_name = rust_ident(&pascal_case(&name.name), "type")?;
-                return Ok(format!(
-                    "{foreign_base}::{package}::{interface}::{type_name}"
-                ));
+                return Ok(format!("{package_path}::{interface}::{type_name}"));
             }
             model.type_def(name).with_context(|| {
                 format!(
@@ -925,22 +1046,22 @@ fn map_type(
             } else {
                 Ok(format!(
                     "::std::vec::Vec<{}>",
-                    map_type(model, current_interface, element, foreign_base)?
+                    map_type(model, current_interface, element, foreign_resolver)?
                 ))
             }
         }
         TypeExpr::Option(payload) => Ok(format!(
             "::std::option::Option<{}>",
-            map_type(model, current_interface, payload, foreign_base)?
+            map_type(model, current_interface, payload, foreign_resolver)?
         )),
         TypeExpr::Result(result) => {
             let ok = result.ok.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, current_interface, ty, foreign_base),
+                |ty| map_type(model, current_interface, ty, foreign_resolver),
             )?;
             let err = result.err.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, current_interface, ty, foreign_base),
+                |ty| map_type(model, current_interface, ty, foreign_resolver),
             )?;
             Ok(format!("::std::result::Result<{ok}, {err}>"))
         }

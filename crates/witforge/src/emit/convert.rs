@@ -6,14 +6,15 @@
 //! deliberately explicit and fallible: evolution can remove a field or a case, and a conversion
 //! must report that it cannot reconstruct it instead of inventing a value.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail};
 
+use crate::diff::ConversionOmission;
 use crate::emit::defaults::default_expr;
 use crate::emit::rust::{header_for, version_module_name};
-use crate::emit::versions::Version;
+use crate::emit::versions::{Version, same_effective_dependency};
 use crate::emit::{
     TypeRenderStyle, pascal_case, render_type, rust_ident, rustfmt, snake_case, type_kind_name,
 };
@@ -52,6 +53,29 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
         return Ok(None);
     }
 
+    let mut all_omissions: Vec<ConversionOmission> = Vec::new();
+    let mut omitted_by_dir: BTreeMap<
+        (crate::model::Version, crate::model::Version),
+        BTreeSet<String>,
+    > = BTreeMap::new();
+    for &(old, new) in &pairs {
+        let omissions = analyze_cross_major_omissions(&old.model, &new.model)?;
+        for omission in &omissions {
+            omitted_by_dir
+                .entry((omission.from_version, omission.to_version))
+                .or_default()
+                .insert(omission.type_path.clone());
+        }
+        all_omissions.extend(omissions);
+    }
+    all_omissions.sort_by(|left, right| {
+        left.from_version
+            .cmp(&right.from_version)
+            .then_with(|| left.to_version.cmp(&right.to_version))
+            .then_with(|| left.type_path.cmp(&right.type_path))
+            .then_with(|| left.reason.cmp(&right.reason))
+    });
+
     let package = &versions
         .first()
         .context("no version directories found under WIT root")?
@@ -60,17 +84,338 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
     let mut out = String::new();
     writeln!(out, "{}", header_for(&package.namespace, &package.name))?;
     writeln!(out, "// source: {}:{}", package.namespace, package.name)?;
+    if !all_omissions.is_empty() {
+        writeln!(out, "//")?;
+        writeln!(
+            out,
+            "// Omitted cross-major conversions (write manual adapters for these):"
+        )?;
+        for omission in &all_omissions {
+            writeln!(
+                out,
+                "// - {} -> {} {}: {}",
+                omission.from_version, omission.to_version, omission.type_path, omission.reason
+            )?;
+        }
+    }
     writeln!(out)?;
     write_error(&mut out)?;
+    let empty_omitted = BTreeSet::new();
     for &(old, new) in &pairs {
+        let fwd_omitted = omitted_by_dir
+            .get(&(old.model.package.version, new.model.package.version))
+            .unwrap_or(&empty_omitted);
+        let rev_omitted = omitted_by_dir
+            .get(&(new.model.package.version, old.model.package.version))
+            .unwrap_or(&empty_omitted);
         writeln!(out)?;
-        emit_pair(&mut out, old, new, Direction::Forward)
+        emit_pair(&mut out, old, new, Direction::Forward, fwd_omitted)
             .map_err(|err| attach_pair_locations(err, new, old))?;
         writeln!(out)?;
-        emit_pair(&mut out, new, old, Direction::Reverse)
+        emit_pair(&mut out, new, old, Direction::Reverse, rev_omitted)
             .map_err(|err| attach_pair_locations(err, old, new))?;
     }
     Ok(Some(out))
+}
+
+/// Analyze which type conversions are omitted across a major-version boundary, per direction.
+///
+/// Within one major (`old.major == new.major`), conversion generation never omits and returns an
+/// empty list (incompatible evolutions are refused instead). Across a major boundary, every type
+/// without a namesake, every directly incompatible type, and every type that transitively
+/// contains an omitted type is reported per direction in deterministic sorted order.
+pub(crate) fn analyze_cross_major_omissions(
+    old: &Model,
+    new: &Model,
+) -> Result<Vec<ConversionOmission>> {
+    if old.package.version.major == new.package.version.major {
+        return Ok(Vec::new());
+    }
+    let mut omissions = Vec::new();
+    for (source, target, direction) in [
+        (old, new, Direction::Forward),
+        (new, old, Direction::Reverse),
+    ] {
+        let omitted = analyze_direction_omissions(source, target, direction)?;
+        for (type_path, reason) in omitted {
+            omissions.push(ConversionOmission {
+                from_version: source.package.version,
+                to_version: target.package.version,
+                type_path,
+                reason,
+            });
+        }
+    }
+    omissions.sort_by(|left, right| {
+        left.from_version
+            .cmp(&right.from_version)
+            .then_with(|| left.to_version.cmp(&right.to_version))
+            .then_with(|| left.type_path.cmp(&right.type_path))
+            .then_with(|| left.reason.cmp(&right.reason))
+    });
+    Ok(omissions)
+}
+
+fn analyze_direction_omissions(
+    source: &Model,
+    target: &Model,
+    direction: Direction,
+) -> Result<BTreeMap<String, String>> {
+    let mut omitted: BTreeMap<String, String> = BTreeMap::new();
+    let mut shared: Vec<(&Interface, &TypeDef, &TypeDef)> = Vec::new();
+    for source_interface in &source.interfaces {
+        let target_interface = target.interface(&source_interface.name);
+        for source_def in &source_interface.types {
+            let type_path = format!("{}/{}", source_interface.name, source_def.name);
+            let target_def = target_interface.and_then(|iface| {
+                iface
+                    .types
+                    .iter()
+                    .find(|candidate| candidate.name == source_def.name)
+            });
+            if let Some(target_def) = target_def {
+                shared.push((source_interface, source_def, target_def));
+            } else {
+                omitted.insert(
+                    type_path,
+                    format!("no namesake in {}", target.package.version),
+                );
+            }
+        }
+    }
+
+    loop {
+        let mut grew = false;
+        for &(source_interface, source_def, target_def) in &shared {
+            let type_path = format!("{}/{}", source_interface.name, source_def.name);
+            if omitted.contains_key(&type_path) {
+                continue;
+            }
+            if let Some(reason) =
+                check_type_convertible(source, target, source_def, target_def, direction, &omitted)?
+            {
+                omitted.insert(type_path, reason);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    Ok(omitted)
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_type_convertible(
+    source: &Model,
+    target: &Model,
+    source_def: &TypeDef,
+    target_def: &TypeDef,
+    direction: Direction,
+    omitted: &BTreeMap<String, String>,
+) -> Result<Option<String>> {
+    match (&source_def.kind, &target_def.kind) {
+        (TypeDefKind::Record(source_fields), TypeDefKind::Record(target_fields)) => {
+            for target_field in target_fields {
+                if let Some(source_field) = source_fields
+                    .iter()
+                    .find(|field| field.name == target_field.name)
+                    && let Some(reason) = check_type_expr_convertible(
+                        source,
+                        target,
+                        &source_field.ty,
+                        &target_field.ty,
+                        &format!("field `{}`", source_field.name),
+                        omitted,
+                    )?
+                {
+                    return Ok(Some(reason));
+                }
+            }
+            if matches!(direction, Direction::Forward) {
+                for target_field in target_fields {
+                    if source_fields
+                        .iter()
+                        .any(|field| field.name == target_field.name)
+                    {
+                        continue;
+                    }
+                    if default_expr(target, &target_field.ty)?.is_none() {
+                        return Ok(Some(format!(
+                            "field `{}` is required in {} and has no default",
+                            target_field.name, target.package.version
+                        )));
+                    }
+                }
+            }
+            Ok(None)
+        }
+        (TypeDefKind::Variant(source_cases), TypeDefKind::Variant(target_cases)) => {
+            for source_case in source_cases {
+                let Some(target_case) = target_cases
+                    .iter()
+                    .find(|case| case.name == source_case.name)
+                else {
+                    continue;
+                };
+                match (&source_case.payload, &target_case.payload) {
+                    (Some(_), None) | (None, Some(_)) => {
+                        return Ok(Some(format!(
+                            "case `{}` changes payload presence",
+                            source_case.name
+                        )));
+                    }
+                    (Some(source_payload), Some(target_payload)) => {
+                        if let Some(reason) = check_type_expr_convertible(
+                            source,
+                            target,
+                            source_payload,
+                            target_payload,
+                            &format!("case `{}`", source_case.name),
+                            omitted,
+                        )? {
+                            return Ok(Some(reason));
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+            Ok(None)
+        }
+        (TypeDefKind::Enum(_), TypeDefKind::Enum(_))
+        | (TypeDefKind::Flags(_), TypeDefKind::Flags(_)) => Ok(None),
+        (TypeDefKind::Alias(source_target), TypeDefKind::Alias(target_target)) => {
+            check_type_expr_convertible(
+                source,
+                target,
+                source_target,
+                target_target,
+                "alias target",
+                omitted,
+            )
+        }
+        (TypeDefKind::List(source_target), TypeDefKind::List(target_target)) => {
+            check_type_expr_convertible(
+                source,
+                target,
+                &TypeExpr::List(Box::new(source_target.clone())),
+                &TypeExpr::List(Box::new(target_target.clone())),
+                "element",
+                omitted,
+            )
+        }
+        (TypeDefKind::Option(source_target), TypeDefKind::Option(target_target)) => {
+            check_type_expr_convertible(
+                source,
+                target,
+                &TypeExpr::Option(Box::new(source_target.clone())),
+                &TypeExpr::Option(Box::new(target_target.clone())),
+                "payload",
+                omitted,
+            )
+        }
+        (TypeDefKind::Result(source_result), TypeDefKind::Result(target_result)) => {
+            check_type_expr_convertible(
+                source,
+                target,
+                &TypeExpr::Result(source_result.clone()),
+                &TypeExpr::Result(target_result.clone()),
+                "result",
+                omitted,
+            )
+        }
+        _ => Ok(Some(format!(
+            "changes kind from {} to {}",
+            type_kind_name(&source_def.kind),
+            type_kind_name(&target_def.kind)
+        ))),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_type_expr_convertible(
+    source: &Model,
+    target: &Model,
+    source_type: &TypeExpr,
+    target_type: &TypeExpr,
+    context_label: &str,
+    omitted: &BTreeMap<String, String>,
+) -> Result<Option<String>> {
+    let resolved_source = resolve_expr(source, None, source_type, "source", &mut HashSet::new())?;
+    let resolved_target = resolve_expr(target, None, target_type, "target", &mut HashSet::new())?;
+    match (&resolved_source, &resolved_target) {
+        (TypeExpr::Bool, TypeExpr::Bool)
+        | (TypeExpr::U8, TypeExpr::U8)
+        | (TypeExpr::U16, TypeExpr::U16)
+        | (TypeExpr::U32, TypeExpr::U32)
+        | (TypeExpr::U64, TypeExpr::U64)
+        | (TypeExpr::S8, TypeExpr::S8)
+        | (TypeExpr::S16, TypeExpr::S16)
+        | (TypeExpr::S32, TypeExpr::S32)
+        | (TypeExpr::S64, TypeExpr::S64)
+        | (TypeExpr::F32, TypeExpr::F32)
+        | (TypeExpr::F64, TypeExpr::F64)
+        | (TypeExpr::String, TypeExpr::String) => Ok(None),
+        (TypeExpr::Named(source_name), TypeExpr::Named(target_name))
+            if source_name == target_name =>
+        {
+            if let Some((ns, pkg)) = source_name.package() {
+                if !same_effective_dependency(source, target, ns, pkg) {
+                    return Ok(Some(format!(
+                        "{context_label} uses foreign type `{source_name}` from changed \
+                         dependency `{ns}:{pkg}`"
+                    )));
+                }
+                return Ok(None);
+            }
+            let ref_path = source_name.to_string();
+            if omitted.contains_key(&ref_path) || target.type_def(target_name).is_none() {
+                return Ok(Some(format!(
+                    "{context_label} references omitted type `{ref_path}`"
+                )));
+            }
+            Ok(None)
+        }
+        (TypeExpr::List(sa), TypeExpr::List(tb)) | (TypeExpr::Option(sa), TypeExpr::Option(tb)) => {
+            check_type_expr_convertible(source, target, sa, tb, context_label, omitted)
+        }
+        (TypeExpr::Result(sa), TypeExpr::Result(tb)) => {
+            match (&sa.ok, &tb.ok) {
+                (Some(a), Some(b)) => {
+                    if let Some(reason) =
+                        check_type_expr_convertible(source, target, a, b, context_label, omitted)?
+                    {
+                        return Ok(Some(reason));
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    return Ok(Some(format!(
+                        "{context_label} changes result success shape"
+                    )));
+                }
+            }
+            match (&sa.err, &tb.err) {
+                (Some(a), Some(b)) => {
+                    if let Some(reason) =
+                        check_type_expr_convertible(source, target, a, b, context_label, omitted)?
+                    {
+                        return Ok(Some(reason));
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    return Ok(Some(format!("{context_label} changes result error shape")));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(Some(format!(
+            "{context_label} changes type from `{}` to `{}`",
+            render_type(&resolved_source, TypeRenderStyle::Spaced),
+            render_type(&resolved_target, TypeRenderStyle::Spaced)
+        ))),
+    }
 }
 
 fn attach_pair_locations(
@@ -220,6 +565,7 @@ fn emit_pair(
     source: &Version,
     target: &Version,
     direction: Direction,
+    omitted: &BTreeSet<String>,
 ) -> Result<()> {
     let source_module = version_module_name(&source.model);
     let target_module = version_module_name(&target.model);
@@ -228,7 +574,8 @@ fn emit_pair(
         let Some(target_interface) = target.model.interface(&source_interface.name) else {
             continue;
         };
-        let functions = shared_functions(source, target, source_interface, target_interface)?;
+        let functions =
+            shared_functions(source, target, source_interface, target_interface, omitted)?;
         if !functions.is_empty() {
             shared_interfaces.push((source_interface, target_interface, functions));
         }
@@ -296,16 +643,21 @@ fn emit_pair(
     Ok(())
 }
 
-/// The types defined by both versions of one interface, in the old version's source order.
+/// The types defined by both versions of one interface, in the old version's source order,
+/// excluding any type omitted for this direction across a major boundary.
 fn shared_functions<'a>(
     source: &Version,
     target: &Version,
     old: &'a Interface,
     new: &'a Interface,
+    omitted: &BTreeSet<String>,
 ) -> Result<Vec<(&'a TypeDef, &'a TypeDef)>> {
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     let mut functions = Vec::new();
     for old_def in &old.types {
+        if omitted.contains(&format!("{}/{}", old.name, old_def.name)) {
+            continue;
+        }
         let Some(new_def) = new
             .types
             .iter()
@@ -960,7 +1312,12 @@ struct ValueExpr {
     returns_result: bool,
 }
 
-fn is_infallible_pair(source_type: &TypeExpr, target_type: &TypeExpr) -> bool {
+fn is_infallible_pair(
+    source: &Model,
+    target: &Model,
+    source_type: &TypeExpr,
+    target_type: &TypeExpr,
+) -> bool {
     match (source_type, target_type) {
         (TypeExpr::Bool, TypeExpr::Bool)
         | (TypeExpr::U8, TypeExpr::U8)
@@ -974,18 +1331,20 @@ fn is_infallible_pair(source_type: &TypeExpr, target_type: &TypeExpr) -> bool {
         | (TypeExpr::F32, TypeExpr::F32)
         | (TypeExpr::F64, TypeExpr::F64)
         | (TypeExpr::String, TypeExpr::String) => true,
-        (TypeExpr::Named(a), TypeExpr::Named(b)) if a == b => a.is_foreign() || b.is_foreign(),
+        (TypeExpr::Named(a), TypeExpr::Named(b)) if a == b => a
+            .package()
+            .is_some_and(|(ns, pkg)| same_effective_dependency(source, target, ns, pkg)),
         (TypeExpr::List(a), TypeExpr::List(b)) | (TypeExpr::Option(a), TypeExpr::Option(b)) => {
-            is_infallible_pair(a, b)
+            is_infallible_pair(source, target, a, b)
         }
         (TypeExpr::Result(a), TypeExpr::Result(b)) => {
             let ok = match (&a.ok, &b.ok) {
-                (Some(sa), Some(sb)) => is_infallible_pair(sa, sb),
+                (Some(sa), Some(sb)) => is_infallible_pair(source, target, sa, sb),
                 (None, None) => true,
                 _ => false,
             };
             let err = match (&a.err, &b.err) {
-                (Some(sa), Some(sb)) => is_infallible_pair(sa, sb),
+                (Some(sa), Some(sb)) => is_infallible_pair(source, target, sa, sb),
                 (None, None) => true,
                 _ => false,
             };
@@ -1160,6 +1519,16 @@ fn emit_convert_value(
                 );
             }
             if source_name.is_foreign() || target_name.is_foreign() {
+                let same_dep = source_name.package().is_some_and(|(ns, pkg)| {
+                    same_effective_dependency(&source.model, &target.model, ns, pkg)
+                });
+                if !same_dep {
+                    convert_bail!(
+                        path,
+                        "conversion {from_ver} -> {to_ver}: {path} uses foreign type \
+                         `{source_name}` from a dependency that differs between versions"
+                    );
+                }
                 return Ok(ValueExpr {
                     expr: format!("::core::clone::Clone::clone({expression})"),
                     returns_result: false,
@@ -1190,7 +1559,7 @@ fn emit_convert_value(
             })
         }
         (TypeExpr::List(source_element), TypeExpr::List(target_element)) => {
-            if is_infallible_pair(source_element, target_element) {
+            if is_infallible_pair(&source.model, &target.model, source_element, target_element) {
                 return Ok(ValueExpr {
                     expr: format!("::core::clone::Clone::clone({expression})"),
                     returns_result: false,
@@ -1242,7 +1611,7 @@ fn emit_convert_value(
             })
         }
         (TypeExpr::Option(source_payload), TypeExpr::Option(target_payload)) => {
-            if is_infallible_pair(source_payload, target_payload) {
+            if is_infallible_pair(&source.model, &target.model, source_payload, target_payload) {
                 return Ok(ValueExpr {
                     expr: copy_or_clone(source_payload, expression),
                     returns_result: false,
@@ -1339,7 +1708,7 @@ fn emit_result_value(
         (Some(sa), Some(sb)) => {
             let ra = resolve_expr(&source.model, None, sa, "source", &mut HashSet::new())?;
             let rb = resolve_expr(&target.model, None, sb, "target", &mut HashSet::new())?;
-            check_ok_infallible = is_infallible_pair(&ra, &rb);
+            check_ok_infallible = is_infallible_pair(&source.model, &target.model, &ra, &rb);
             let mut scratch = Vec::new();
             let mut scratch_id = 0;
             emit_convert_value(
@@ -1371,7 +1740,7 @@ fn emit_result_value(
         (Some(sa), Some(sb)) => {
             let ra = resolve_expr(&source.model, None, sa, "source", &mut HashSet::new())?;
             let rb = resolve_expr(&target.model, None, sb, "target", &mut HashSet::new())?;
-            check_err_infallible = is_infallible_pair(&ra, &rb);
+            check_err_infallible = is_infallible_pair(&source.model, &target.model, &ra, &rb);
             let mut scratch = Vec::new();
             let mut scratch_id = 0;
             emit_convert_value(

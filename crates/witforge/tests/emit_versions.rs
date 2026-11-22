@@ -1,5 +1,7 @@
 //! Version-to-version conversion tests.
 
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -824,5 +826,595 @@ fn main() {
         String::from_utf8_lossy(&run.stderr)
     );
 
+    fs::remove_dir_all(&base).unwrap();
+}
+
+/// Extract `// - <from> -> <to> <type_path>: <reason>` lines from `convert.rs`'s top comment block.
+fn parse_convert_omission_lines(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| line.strip_prefix("// - ").map(str::to_string))
+        .collect()
+}
+
+fn format_diff_omissions(omissions: &[diff::ConversionOmission]) -> Vec<String> {
+    omissions
+        .iter()
+        .map(|o| {
+            format!(
+                "{} -> {} {}: {}",
+                o.from_version, o.to_version, o.type_path, o.reason
+            )
+        })
+        .collect()
+}
+
+fn write_dep(version_dir: &Path, dep_dir: &str, file: &str, body: &str) {
+    let dir = version_dir.join("deps").join(dep_dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(file), body).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn major_boundary_reproduction_and_dependencies_compile_and_match_diff() {
+    use support::{HarnessBatch, QualityChecks, RustEdition};
+    use witforge::emit::{json_schema, proto};
+
+    let base = temp("major-boundary");
+    let mut batch = HarnessBatch::new(
+        "major-boundary",
+        RustEdition::E2024,
+        QualityChecks {
+            fmt: true,
+            clippy: true,
+            missing_docs: false,
+            rustdoc: false,
+            doctest: false,
+        },
+    );
+
+    // Base v0.1 / v0.2 contracts shared across the reproduction rows (v0.2 adds an optional field).
+    let v01_body = "\
+interface types {
+    record keep { x: u32 }
+    record item { id: u32, label: string }
+    record outer { child: item, items: list<item>, maybe: option<item>, res: result<item, string> }
+    variant wrap { carried(item), empty }
+}
+";
+    let v02_body = "\
+interface types {
+    record keep { x: u32, note: option<string> }
+    record item { id: u32, label: string }
+    record outer { child: item, items: list<item>, maybe: option<item>, res: result<item, string> }
+    variant wrap { carried(item), empty }
+}
+";
+
+    let build_pair = |name: &str, v10_body: &str| -> PathBuf {
+        let root = base.join(name);
+        write_version(&root, "v0.1", "0.1.0", v01_body);
+        write_version(&root, "v0.2", "0.2.0", v02_body);
+        write_version(&root, "v1.0", "1.0.0", v10_body);
+        root
+    };
+
+    // Row 1: identical contract across major — zero omissions, both directions generated.
+    let row1 = build_pair("row1_identical", v02_body);
+    let r1_plan = rust::plan(&row1).unwrap();
+    let r1_convert = r1_plan.files().get("convert.rs").unwrap();
+    assert!(
+        parse_convert_omission_lines(r1_convert).is_empty(),
+        "{r1_convert}"
+    );
+    assert_eq!(
+        diff::compare_omissions(&row1.join("v0.2"), &row1.join("v1.0")).unwrap(),
+        Vec::new()
+    );
+    batch.add_wit_root(
+        "row1_identical",
+        &row1,
+        false,
+        false,
+        r#"
+        use crate::row1_identical::plain;
+        let old = plain::v0_2::types::Keep { x: 7, note: Some("hi".to_string()) };
+        let new = plain::convert::v0_2_to_v1_0::types::keep(&old).unwrap();
+        assert_eq!(new.x, 7);
+        let back = plain::convert::v1_0_to_v0_2::types::keep(&new).unwrap();
+        assert_eq!(back, old);
+        "#,
+    );
+
+    // Row 2: removed required field — forward drops it, reverse exists & returns MissingMember.
+    let row2 = build_pair(
+        "row2_removed_req",
+        "\
+interface types {
+    record keep { x: u32, note: option<string> }
+    record item { id: u32 }
+    record outer { child: item, items: list<item>, maybe: option<item>, res: result<item, string> }
+    variant wrap { carried(item), empty }
+}
+",
+    );
+    let r2_plan = rust::plan(&row2).unwrap();
+    let r2_convert = r2_plan.files().get("convert.rs").unwrap();
+    assert!(
+        parse_convert_omission_lines(r2_convert).is_empty(),
+        "{r2_convert}"
+    );
+    let r2_analysis = diff::compare_with_impacts(&row2.join("v0.2"), &row2.join("v1.0")).unwrap();
+    assert_eq!(r2_analysis.conversion_impacts.len(), 1);
+    assert_eq!(
+        r2_analysis.conversion_impacts[0].missing_path,
+        "types/item.label"
+    );
+    batch.add_wit_root(
+        "row2_removed_req",
+        &row2,
+        false,
+        false,
+        r#"
+        use crate::row2_removed_req::plain;
+        let v02 = plain::v0_2::types::Item { id: 1, label: "a".to_string() };
+        let v10 = plain::convert::v0_2_to_v1_0::types::item(&v02).unwrap();
+        assert_eq!(v10.id, 1);
+        let err = plain::convert::v1_0_to_v0_2::types::item(&v10).unwrap_err();
+        assert!(format!("{err}").contains("types/item.label"), "{err}");
+        "#,
+    );
+
+    // Row 3: retyped field (`u32` -> `string`) — omits `item` and containing types in both
+    // directions, while `keep` still converts in both directions.
+    let row3 = build_pair(
+        "row3_retype",
+        "\
+interface types {
+    record keep { x: u32, note: option<string> }
+    record item { id: string, label: string }
+    record outer { child: item, items: list<item>, maybe: option<item>, res: result<item, string> }
+    variant wrap { carried(item), empty }
+}
+",
+    );
+    let r3_convert = rust::plan(&row3)
+        .unwrap()
+        .files()
+        .get("convert.rs")
+        .unwrap()
+        .clone();
+    let r3_diff = diff::compare_omissions(&row3.join("v0.2"), &row3.join("v1.0")).unwrap();
+    assert_eq!(
+        parse_convert_omission_lines(&r3_convert),
+        format_diff_omissions(&r3_diff)
+    );
+    assert_eq!(r3_diff.len(), 6, "{r3_diff:?}"); // item, outer, wrap x 2 directions
+    assert!(r3_convert.contains("pub fn keep("), "{r3_convert}");
+    batch.add_wit_root(
+        "row3_retype",
+        &row3,
+        false,
+        false,
+        r#"
+        use crate::row3_retype::plain;
+        let old = plain::v0_2::types::Keep { x: 9, note: None };
+        let new = plain::convert::v0_2_to_v1_0::types::keep(&old).unwrap();
+        assert_eq!(new.x, 9);
+        let item = plain::v1_0::types::Item { id: "s".to_string(), label: "l".to_string() };
+        assert_eq!(item.id, "s");
+        "#,
+    );
+
+    // Row 4: kind change (`record` -> `enum`) + variant payload-presence change.
+    let row4 = build_pair(
+        "row4_kind_change",
+        "\
+interface types {
+    record keep { x: u32, note: option<string> }
+    enum item { a, b }
+    record outer { child: item, items: list<item>, maybe: option<item>, res: result<item, string> }
+    variant wrap { carried, empty }
+}
+",
+    );
+    let r4_convert = rust::plan(&row4)
+        .unwrap()
+        .files()
+        .get("convert.rs")
+        .unwrap()
+        .clone();
+    let r4_diff = diff::compare_omissions(&row4.join("v0.2"), &row4.join("v1.0")).unwrap();
+    assert_eq!(
+        parse_convert_omission_lines(&r4_convert),
+        format_diff_omissions(&r4_diff)
+    );
+    assert!(
+        r4_diff
+            .iter()
+            .any(|o| o.type_path == "types/item" && o.reason.contains("changes kind"))
+    );
+    assert!(
+        r4_diff
+            .iter()
+            .any(|o| o.type_path == "types/wrap" && o.reason.contains("payload presence"))
+    );
+    batch.add_wit_root(
+        "row4_kind_change",
+        &row4,
+        false,
+        false,
+        r"
+        use crate::row4_kind_change::plain;
+        let old = plain::v0_2::types::Keep { x: 2, note: None };
+        let new = plain::convert::v0_2_to_v1_0::types::keep(&old).unwrap();
+        assert_eq!(new.x, 2);
+        let _ = plain::v1_0::types::Item::A;
+        ",
+    );
+
+    // Row 5: required addition — omitted ONLY in forward (`0.2.0 -> 1.0.0`, including transitive
+    // containers `outer` and `wrap`), while reverse (`1.0.0 -> 0.2.0`) IS generated for ALL types!
+    let row5_v10 = "\
+interface types {
+    record keep { x: u32, note: option<string> }
+    record item { id: u32, label: string, required-new: u64 }
+    record outer { child: item, items: list<item>, maybe: option<item>, res: result<item, string> }
+    variant wrap { carried(item), empty }
+}
+";
+    let row5 = build_pair("row5_req_add", row5_v10);
+    let r5_convert = rust::plan(&row5)
+        .unwrap()
+        .files()
+        .get("convert.rs")
+        .unwrap()
+        .clone();
+    let r5_diff = diff::compare_omissions(&row5.join("v0.2"), &row5.join("v1.0")).unwrap();
+    assert_eq!(
+        parse_convert_omission_lines(&r5_convert),
+        format_diff_omissions(&r5_diff)
+    );
+    // Only 0.2.0 -> 1.0.0 omits item, outer, wrap; 1.0.0 -> 0.2.0 has ZERO omissions!
+    assert_eq!(r5_diff.len(), 3, "{r5_diff:?}");
+    assert!(
+        r5_diff
+            .iter()
+            .all(|o| o.from_version.major == 0 && o.to_version.major == 1),
+        "{r5_diff:?}"
+    );
+    batch.add_wit_root(
+        "row5_req_add",
+        &row5,
+        false,
+        false,
+        r#"
+        use crate::row5_req_add::plain;
+        // Reverse 1.0 -> 0.2 IS generated for item, outer, and wrap (drops required-new)!
+        let item_v1 = plain::v1_0::types::Item {
+            id: 5,
+            label: "ok".to_string(),
+            required_new: 99,
+        };
+        let outer_v1 = plain::v1_0::types::Outer {
+            child: item_v1.clone(),
+            items: vec![item_v1.clone()],
+            maybe: Some(item_v1.clone()),
+            res: Ok(item_v1.clone()),
+        };
+        let outer_v0 = plain::convert::v1_0_to_v0_2::types::outer(&outer_v1).unwrap();
+        assert_eq!(outer_v0.child.id, 5);
+        assert_eq!(outer_v0.items.len(), 1);
+        let wrap_v0 = plain::convert::v1_0_to_v0_2::types::wrap(
+            &plain::v1_0::types::Wrap::Carried(item_v1),
+        )
+        .unwrap();
+        assert!(matches!(wrap_v0, plain::v0_2::types::Wrap::Carried(ref i) if i.id == 5));
+        "#,
+    );
+
+    // Verify the EXACT SAME required addition inside a major (`v0.2` -> `v0.3`) is STILL refused!
+    let intra = base.join("intra_major_refused");
+    write_version(&intra, "v0.2", "0.2.0", v02_body);
+    write_version(&intra, "v0.3", "0.3.0", row5_v10);
+    let intra_err = rust::plan(&intra).unwrap_err();
+    assert!(is_contract_error(&intra_err), "{intra_err:#}");
+    assert!(
+        format!("{intra_err:#}").contains("required-new"),
+        "{intra_err:#}"
+    );
+
+    // Row 6: renamed type used by a record (`item` -> `entry`).
+    let row6 = build_pair(
+        "row6_rename",
+        "\
+interface types {
+    record keep { x: u32, note: option<string> }
+    record entry { id: u32, label: string }
+    record outer { child: entry, items: list<entry>, maybe: option<entry>, res: result<entry, string> }
+    variant wrap { carried(entry), empty }
+}
+",
+    );
+    let r6_convert = rust::plan(&row6)
+        .unwrap()
+        .files()
+        .get("convert.rs")
+        .unwrap()
+        .clone();
+    let r6_diff = diff::compare_omissions(&row6.join("v0.2"), &row6.join("v1.0")).unwrap();
+    assert_eq!(
+        parse_convert_omission_lines(&r6_convert),
+        format_diff_omissions(&r6_diff)
+    );
+    assert!(r6_diff.iter().any(|o| {
+        o.from_version.major == 0
+            && o.type_path == "types/item"
+            && o.reason.contains("no namesake in 1.0.0")
+    }));
+    assert!(r6_diff.iter().any(|o| {
+        o.from_version.major == 1
+            && o.type_path == "types/entry"
+            && o.reason.contains("no namesake in 0.2.0")
+    }));
+    assert!(
+        r6_diff
+            .iter()
+            .any(|o| o.type_path == "types/outer" && o.reason.contains("changes type"))
+    );
+    batch.add_wit_root(
+        "row6_rename",
+        &row6,
+        false,
+        false,
+        r#"
+        use crate::row6_rename::plain;
+        let old = plain::v0_2::types::Keep { x: 4, note: None };
+        assert_eq!(plain::convert::v0_2_to_v1_0::types::keep(&old).unwrap().x, 4);
+        let _ = plain::v1_0::types::Entry { id: 1, label: "e".to_string() };
+        "#,
+    );
+
+    // Row 7a: changed in-place dep (same dep major), upgraded dep (0.1.0 -> 1.0.0), unchanged
+    // shared dep, and newly added dep in v1.0.
+    let row7 = base.join("row7_deps_mixed");
+    let v0_stable =
+        "package example:stable@0.1.0;\ninterface common { record tag { key: string } }\n";
+    let v0_tweaked = "package example:tweaked@0.1.0;\ninterface common { record rec { n: u32 } }\n";
+    let v1_tweaked =
+        "package example:tweaked@0.1.0;\ninterface common { record rec { n: string } }\n";
+    let v0_upgraded =
+        "package example:upgraded@0.1.0;\ninterface common { record val { x: u32 } }\n";
+    let v1_upgraded =
+        "package example:upgraded@1.0.0;\ninterface common { record val { x: u64 } }\n";
+    let v1_added =
+        "package example:extra@0.1.0;\ninterface common { record bonus { flag: bool } }\n";
+
+    let v02_dep_wit = "\
+interface api {
+    use example:stable/common@0.1.0.{tag};
+    use example:tweaked/common@0.1.0.{rec};
+    use example:upgraded/common@0.1.0.{val};
+    record stable-holder { t: tag }
+    record tweaked-holder { r: rec }
+    record upgraded-holder { v: list<val> }
+}
+";
+    let v10_dep_wit = "\
+interface api {
+    use example:stable/common@0.1.0.{tag};
+    use example:tweaked/common@0.1.0.{rec};
+    use example:upgraded/common@1.0.0.{val};
+    use example:extra/common@0.1.0.{bonus};
+    record stable-holder { t: tag }
+    record tweaked-holder { r: rec }
+    record upgraded-holder { v: list<val> }
+    record extra-holder { b: bonus }
+}
+";
+    let r7_v02 = row7.join("v0.2");
+    write_dep(&r7_v02, "stable", "c.wit", v0_stable);
+    write_dep(&r7_v02, "tweaked", "c.wit", v0_tweaked);
+    write_dep(&r7_v02, "upgraded", "c.wit", v0_upgraded);
+    write_version(&row7, "v0.2", "0.2.0", v02_dep_wit);
+
+    let r7_v10 = row7.join("v1.0");
+    write_dep(&r7_v10, "stable", "c.wit", v0_stable);
+    write_dep(&r7_v10, "tweaked", "c.wit", v1_tweaked);
+    write_dep(&r7_v10, "upgraded", "c.wit", v1_upgraded);
+    write_dep(&r7_v10, "extra", "c.wit", v1_added);
+    write_version(&row7, "v1.0", "1.0.0", v10_dep_wit);
+
+    let r7_rust = rust::plan(&row7).unwrap();
+    let r7_proto = proto::plan(&row7).unwrap();
+    let r7_schema = json_schema::plan(&row7).unwrap();
+    let r7_convert = r7_rust.files().get("convert.rs").unwrap();
+    let r7_diff = diff::compare_omissions(&r7_v02, &r7_v10).unwrap();
+    assert_eq!(
+        parse_convert_omission_lines(r7_convert),
+        format_diff_omissions(&r7_diff)
+    );
+    // `stable-holder` converts cleanly across the major; tweaked/upgraded/extra-holder are omitted.
+    assert!(r7_convert.contains("pub fn stable_holder("), "{r7_convert}");
+    assert!(
+        !r7_convert.contains("pub fn tweaked_holder("),
+        "{r7_convert}"
+    );
+    assert!(
+        !r7_convert.contains("pub fn upgraded_holder("),
+        "{r7_convert}"
+    );
+    // Proto & schema disambiguate same-dep-major `tweaked`, keep standard names for `upgraded` v0/v1.
+    assert!(r7_proto.files().contains_key("v0.example.tweaked.v0.proto"));
+    assert!(r7_proto.files().contains_key("v1.example.tweaked.v0.proto"));
+    assert!(r7_proto.files().contains_key("example.upgraded.v0.proto"));
+    assert!(r7_proto.files().contains_key("example.upgraded.v1.proto"));
+    assert!(r7_proto.files().contains_key("example.stable.v0.proto"));
+    assert!(r7_proto.files().contains_key("example.extra.v0.proto"));
+    assert!(
+        r7_schema
+            .files()
+            .contains_key("v0.example.tweaked.v0.schema.json")
+    );
+    assert!(
+        r7_schema
+            .files()
+            .contains_key("v1.example.tweaked.v0.schema.json")
+    );
+    assert!(
+        r7_schema
+            .files()
+            .contains_key("example.upgraded.v0.schema.json")
+    );
+    assert!(
+        r7_schema
+            .files()
+            .contains_key("example.upgraded.v1.schema.json")
+    );
+
+    batch.add_wit_root(
+        "row7_deps_mixed",
+        &row7,
+        true,
+        true,
+        r#"
+        use crate::row7_deps_mixed::{glue, plain, proto};
+        use prost::Message as _;
+        let h0 = plain::v0_2::api::StableHolder {
+            t: plain::witforge_deps::example_stable::common::Tag { key: "k".to_string() },
+        };
+        let h1 = plain::convert::v0_2_to_v1_0::api::stable_holder(&h0).unwrap();
+        assert_eq!(h1.t.key, "k");
+
+        let t0 = plain::v0_2::api::TweakedHolder {
+            r: plain::witforge_deps::v0::example_tweaked::common::Rec { n: 42 },
+        };
+        let p0 = glue::v0::api::tweaked_holder::to_proto(&t0);
+        let rt0 = glue::v0::api::tweaked_holder::from_proto(
+            proto::ex::t::v0::ApiTweakedHolder::decode(p0.encode_to_vec().as_slice()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rt0, t0);
+
+        let t1 = plain::v1_0::api::TweakedHolder {
+            r: plain::witforge_deps::v1::example_tweaked::common::Rec { n: "hi".to_string() },
+        };
+        let p1 = glue::v1::api::tweaked_holder::to_proto(&t1);
+        let rt1 = glue::v1::api::tweaked_holder::from_proto(
+            proto::ex::t::v1::ApiTweakedHolder::decode(p1.encode_to_vec().as_slice()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rt1, t1);
+        "#,
+    );
+
+    // Row 7b: v0 has NO dependencies and v1 ADDS a dependency (verifies glue proto_base_override).
+    let dep_added_root = base.join("row7b_dep_added");
+    write_version(
+        &dep_added_root,
+        "v0.1",
+        "0.1.0",
+        "interface api { record item { id: u32 } }\n",
+    );
+    write_dep(&dep_added_root.join("v1.0"), "extra", "c.wit", v1_added);
+    write_version(
+        &dep_added_root,
+        "v1.0",
+        "1.0.0",
+        "interface api {\n\
+           use example:extra/common@0.1.0.{bonus};\n\
+           record item { id: u32, extra: option<bonus> }\n\
+         }\n",
+    );
+    batch.add_wit_root(
+        "row7b_dep_added",
+        &dep_added_root,
+        false,
+        false,
+        r"
+        use crate::row7b_dep_added::{glue, plain};
+        let v0 = plain::v0_1::api::Item { id: 3 };
+        let v1 = plain::convert::v0_1_to_v1_0::api::item(&v0).unwrap();
+        assert_eq!(v1.id, 3);
+        assert_eq!(v1.extra, None);
+        let p0 = glue::v0::api::item::to_proto(&v0);
+        assert_eq!(glue::v0::api::item::from_proto(p0).unwrap(), v0);
+        ",
+    );
+
+    // Row 7c: 3 majors where v0 and v1 share identical dep `0.1.0` and v2 upgrades it to `1.0.0`!
+    // `witforge_deps::v1` re-exports `super::v0::example_upgraded` so `v0.1 <-> v1.0` still converts!
+    let three_majors_root = base.join("row7c_three_majors");
+    for (dir, ver, dep_src, dep_ver) in [
+        ("v0.1", "0.1.0", v0_upgraded, "0.1.0"),
+        ("v1.0", "1.0.0", v0_upgraded, "0.1.0"),
+        ("v2.0", "2.0.0", v1_upgraded, "1.0.0"),
+    ] {
+        write_dep(&three_majors_root.join(dir), "upgraded", "c.wit", dep_src);
+        write_version(
+            &three_majors_root,
+            dir,
+            ver,
+            &format!(
+                "interface api {{\n\
+                   use example:upgraded/common@{dep_ver}.{{val}};\n\
+                   record holder {{ v: val }}\n\
+                 }}\n"
+            ),
+        );
+    }
+    let r7c_deps = rust::plan(&three_majors_root)
+        .unwrap()
+        .files()
+        .get("witforge_deps.rs")
+        .unwrap()
+        .clone();
+    assert!(
+        r7c_deps.contains("pub use super::v0::example_upgraded;"),
+        "{r7c_deps}"
+    );
+    assert_eq!(
+        diff::compare_omissions(
+            &three_majors_root.join("v0.1"),
+            &three_majors_root.join("v1.0")
+        )
+        .unwrap(),
+        Vec::new()
+    );
+    let three_major_omissions = diff::compare_omissions(
+        &three_majors_root.join("v1.0"),
+        &three_majors_root.join("v2.0"),
+    )
+    .unwrap();
+    // Both `api/holder` and the local `use` alias `api/val` reference the upgraded dependency,
+    // so both are omitted in each direction (4 total), matching `convert.rs`.
+    let three_majors_convert = rust::plan(&three_majors_root)
+        .unwrap()
+        .files()
+        .get("convert.rs")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        parse_convert_omission_lines(&three_majors_convert),
+        format_diff_omissions(&three_major_omissions)
+    );
+    assert_eq!(three_major_omissions.len(), 4, "{three_major_omissions:?}");
+    batch.add_wit_root(
+        "row7c_three_majors",
+        &three_majors_root,
+        false,
+        false,
+        r"
+        use crate::row7c_three_majors::plain;
+        let v0 = plain::v0_1::api::Holder {
+            v: plain::witforge_deps::v0::example_upgraded::common::Val { x: 11 },
+        };
+        let v1 = plain::convert::v0_1_to_v1_0::api::holder(&v0).unwrap();
+        assert_eq!(v1.v.x, 11);
+        ",
+    );
+
+    batch.verify_and_run("major_boundary");
     fs::remove_dir_all(&base).unwrap();
 }

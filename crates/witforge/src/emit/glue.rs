@@ -13,7 +13,7 @@ use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::rustfmt;
-use crate::emit::versions::{Version, load_versions, shared_dependencies};
+use crate::emit::versions::{DepLayout, Version, load_versions};
 use crate::emit::{RUST_KEYWORDS, pascal_case, rust_ident, snake_case};
 use crate::lock::WireLock;
 use crate::model::{
@@ -120,13 +120,14 @@ pub(crate) fn plan_versions(
     plain_root: &str,
     proto_root: &str,
 ) -> Result<GeneratedFiles> {
-    let dependencies = shared_dependencies(versions)?;
+    let dep_layout = DepLayout::from_versions(versions)?;
     // Versions are in ascending order, so the last one of each major is its highest minor.
     let mut highest: BTreeMap<u64, &Version> = BTreeMap::new();
     for version in versions {
         highest.insert(version.major, version);
     }
-    let generated_modules = collect_plan_module_names(&highest, dependencies);
+    let all_deps: Vec<Dependency> = dep_layout.by_major.values().flatten().cloned().collect();
+    let generated_modules = collect_plan_module_names(&highest, &all_deps);
     validate_module_root_against_generated(plain_root, &generated_modules)?;
     validate_module_root_against_generated(proto_root, &generated_modules)?;
     // Glue converts to and from the prost types produced from `proto`, so run the proto emitter's
@@ -138,15 +139,26 @@ pub(crate) fn plan_versions(
     let package = &first.model.package;
     let header = header_for(&package.namespace, &package.name);
     let mut files = GeneratedFiles::new(&header);
-    if !dependencies.is_empty() {
+    if !dep_layout.is_empty() {
         files.insert(
             "witforge_deps.rs",
-            emit_dependency_glue(&header, dependencies, plain_root, proto_root)?,
+            emit_dependency_glue_layout(&header, &dep_layout, plain_root, proto_root)?,
         )?;
     }
     let mut majors = Vec::new();
     for (major, version) in &highest {
-        let generated = Emitter::new(&version.model, &version.lock, plain_root, proto_root)?
+        let mut emitter = Emitter::new(&version.model, &version.lock, plain_root, proto_root)?;
+        emitter.root_major = *major;
+        emitter.dep_layout = Some(&dep_layout);
+        if !dep_layout.is_empty() {
+            emitter.proto_base_override = Some(dependency_proto_base(
+                proto_root,
+                &version.model.package.namespace,
+                &version.model.package.name,
+                *major,
+            ));
+        }
+        let generated = emitter
             .emit()
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.rs"), generated)?;
@@ -158,7 +170,7 @@ pub(crate) fn plan_versions(
             &package.namespace,
             &package.name,
             &majors,
-            !first.model.dependencies.is_empty(),
+            !dep_layout.is_empty(),
         )?,
     )?;
     Ok(files)
@@ -197,13 +209,87 @@ fn emit_dependency_glue(
     plain_root: &str,
     proto_root: &str,
 ) -> Result<String> {
+    let mut layout = DepLayout::default();
+    for dep in dependencies {
+        layout.shared.insert(
+            (dep.package.namespace.clone(), dep.package.name.clone()),
+            dep.clone(),
+        );
+    }
+    emit_dependency_glue_layout(header, &layout, plain_root, proto_root)
+}
+
+#[allow(clippy::too_many_lines)]
+fn emit_dependency_glue_layout(
+    header: &str,
+    layout: &DepLayout,
+    plain_root: &str,
+    proto_root: &str,
+) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{header}")?;
     writeln!(out, "// source: wit/deps")?;
     writeln!(out)?;
     writeln!(out, "pub use super::GlueError;")?;
+    let shared_slice: Vec<Dependency> = layout.shared.values().cloned().collect();
+    emit_dep_glue_group(
+        &mut out,
+        0,
+        "witforge_deps",
+        &shared_slice,
+        &shared_slice,
+        plain_root,
+        proto_root,
+        0,
+        layout,
+        false,
+    )?;
+    for (&major, scoped_deps) in &layout.per_major {
+        let major_mod = format!("v{major}");
+        writeln!(out)?;
+        writeln!(
+            out,
+            "/// Protobuf glue for dependencies pinned by major version `{major_mod}`."
+        )?;
+        writeln!(out, "pub mod {major_mod} {{")?;
+        writeln!(out, "    pub use super::GlueError;")?;
+        let all_in_major = layout
+            .by_major
+            .get(&major)
+            .map_or(scoped_deps.as_slice(), Vec::as_slice);
+        emit_dep_glue_group(
+            &mut out,
+            4,
+            &major_mod,
+            scoped_deps,
+            all_in_major,
+            plain_root,
+            proto_root,
+            major,
+            layout,
+            true,
+        )?;
+        writeln!(out, "}}")?;
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_dep_glue_group(
+    out: &mut String,
+    indent: usize,
+    parent_mod: &str,
+    targets: &[Dependency],
+    all_in_scope: &[Dependency],
+    plain_root: &str,
+    proto_root: &str,
+    root_major: u64,
+    layout: &DepLayout,
+    scoped: bool,
+) -> Result<()> {
+    let prefix = " ".repeat(indent);
     let mut modules = BTreeMap::new();
-    for dependency in dependencies {
+    for dependency in targets {
         let module =
             dependency_module_name(&dependency.package.namespace, &dependency.package.name)?;
         if let Some(previous) = modules.insert(module.clone(), dependency.package.clone()) {
@@ -215,11 +301,23 @@ fn emit_dependency_glue(
                 dependency.package.name
             );
         }
+        if scoped {
+            let owner = layout.canonical_owner_major(
+                root_major,
+                &dependency.package.namespace,
+                &dependency.package.name,
+            );
+            if owner < root_major {
+                writeln!(out)?;
+                writeln!(out, "{prefix}pub use super::v{owner}::{module};")?;
+                continue;
+            }
+        }
         let model = Model {
             package: dependency.package.clone(),
             interfaces: dependency.interfaces.clone(),
             worlds: Vec::new(),
-            dependencies: dependencies
+            dependencies: all_in_scope
                 .iter()
                 .filter(|other| {
                     other.package.namespace != dependency.package.namespace
@@ -231,27 +329,36 @@ fn emit_dependency_glue(
         let members = model.members()?;
         let mut lock = WireLock::default();
         lock.reconcile(&members)?;
-        let emitter =
-            Emitter::new_dependency(&model, &lock, plain_root, proto_root, dependency, 4)?;
+        let emitter = Emitter::new_dependency(
+            &model,
+            &lock,
+            plain_root,
+            proto_root,
+            dependency,
+            indent + 4,
+            root_major,
+            Some(layout),
+            scoped,
+        )?;
         let body = emitter.emit_body()?;
         writeln!(out)?;
         let fallback = format!(
             "Protobuf glue for dependency package `{}:{}`.",
             dependency.package.namespace, dependency.package.name
         );
-        rustfmt::write_docs_or(&mut out, 0, &dependency.package.docs, &fallback)?;
-        if module == "witforge_deps" {
-            writeln!(out, "#[allow(clippy::module_inception)]")?;
+        rustfmt::write_docs_or(out, indent, &dependency.package.docs, &fallback)?;
+        if module == parent_mod {
+            writeln!(out, "{prefix}#[allow(clippy::module_inception)]")?;
         }
         if body.is_empty() {
-            writeln!(out, "pub mod {module} {{}}")?;
+            writeln!(out, "{prefix}pub mod {module} {{}}")?;
         } else {
-            writeln!(out, "pub mod {module} {{")?;
+            writeln!(out, "{prefix}pub mod {module} {{")?;
             out.push_str(&body);
-            writeln!(out, "}}")?;
+            writeln!(out, "{prefix}}}")?;
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Validate a Rust module path used as a generated reference root.
@@ -574,6 +681,9 @@ struct Emitter<'a> {
     proto_root: String,
     major: u64,
     minor: u64,
+    root_major: u64,
+    dep_layout: Option<&'a DepLayout>,
+    dep_scoped: bool,
     type_prefix: String,
     plain_base_override: Option<String>,
     proto_base_override: Option<String>,
@@ -609,6 +719,9 @@ impl<'a> Emitter<'a> {
             proto_root: proto_root.to_string(),
             major: model.package.version.major,
             minor: model.package.version.minor,
+            root_major: model.package.version.major,
+            dep_layout: None,
+            dep_scoped: false,
             type_prefix: "super::super".to_string(),
             plain_base_override: None,
             proto_base_override,
@@ -617,6 +730,7 @@ impl<'a> Emitter<'a> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_dependency(
         model: &'a Model,
         lock: &'a WireLock,
@@ -624,22 +738,57 @@ impl<'a> Emitter<'a> {
         proto_root: &str,
         dependency: &Dependency,
         base_indent: usize,
+        root_major: u64,
+        dep_layout: Option<&'a DepLayout>,
+        dep_scoped: bool,
     ) -> Result<Self> {
         let mut emitter = Self::new(model, lock, plain_root, proto_root)?;
-        emitter.plain_base_override = Some(format!(
-            "{}::witforge_deps::{}",
-            emitter.plain_root,
-            dependency_module_name(&dependency.package.namespace, &dependency.package.name)?
+        let dep_mod =
+            dependency_module_name(&dependency.package.namespace, &dependency.package.name)?;
+        emitter.plain_base_override = Some(if dep_scoped {
+            format!(
+                "{}::witforge_deps::v{root_major}::{dep_mod}",
+                emitter.plain_root
+            )
+        } else {
+            format!("{}::witforge_deps::{dep_mod}", emitter.plain_root)
+        });
+        emitter.proto_base_override = Some(dep_layout.map_or_else(
+            || {
+                dependency_proto_base(
+                    &emitter.proto_root,
+                    &dependency.package.namespace,
+                    &dependency.package.name,
+                    dependency.package.version.major,
+                )
+            },
+            |layout| layout.prost_base(&emitter.proto_root, root_major, dependency),
         ));
-        emitter.proto_base_override = Some(dependency_proto_base(
-            &emitter.proto_root,
-            &dependency.package.namespace,
-            &dependency.package.name,
-            dependency.package.version.major,
-        ));
+        emitter.root_major = root_major;
+        emitter.dep_layout = dep_layout;
+        emitter.dep_scoped = dep_scoped;
         emitter.dependency = true;
         emitter.base_indent = base_indent;
         Ok(emitter)
+    }
+
+    fn is_dep_scoped(&self, namespace: &str, package: &str) -> bool {
+        self.dep_layout
+            .is_some_and(|layout| layout.is_scoped(namespace, package))
+    }
+
+    fn dep_prost_base(&self, dependency: &Dependency) -> String {
+        self.dep_layout.map_or_else(
+            || {
+                dependency_proto_base(
+                    &self.proto_root,
+                    &dependency.package.namespace,
+                    &dependency.package.name,
+                    dependency.package.version.major,
+                )
+            },
+            |layout| layout.prost_base(&self.proto_root, self.root_major, dependency),
+        )
     }
 
     fn with_type_prefix(&self, prefix: &str) -> Self {
@@ -650,6 +799,9 @@ impl<'a> Emitter<'a> {
             proto_root: self.proto_root.clone(),
             major: self.major,
             minor: self.minor,
+            root_major: self.root_major,
+            dep_layout: self.dep_layout,
+            dep_scoped: self.dep_scoped,
             type_prefix: prefix.to_string(),
             plain_base_override: self.plain_base_override.clone(),
             proto_base_override: self.proto_base_override.clone(),
@@ -878,15 +1030,7 @@ impl<'a> Emitter<'a> {
 
     fn dependency_proto_path(&self, dependency: &Dependency, proto_name: &str) -> String {
         let rust_name = ident::prost_type_ident(proto_name);
-        format!(
-            "{}::{rust_name}",
-            dependency_proto_base(
-                &self.proto_root,
-                &dependency.package.namespace,
-                &dependency.package.name,
-                dependency.package.version.major
-            )
-        )
+        format!("{}::{rust_name}", self.dep_prost_base(dependency))
     }
 
     fn resolve_type_def<'b>(
@@ -1389,15 +1533,7 @@ impl<'a> Emitter<'a> {
     fn dependency_proto_type(&self, name: &QualifiedName, dependency: &Dependency) -> String {
         let proto_name = ident::proto_type_name(name.interface_name(), &name.name);
         let rust_name = ident::prost_type_ident(&proto_name);
-        format!(
-            "{}::{rust_name}",
-            dependency_proto_base(
-                &self.proto_root,
-                &dependency.package.namespace,
-                &dependency.package.name,
-                dependency.package.version.major
-            )
-        )
+        format!("{}::{rust_name}", self.dep_prost_base(dependency))
     }
 
     fn foreign_form(&self, name: &QualifiedName) -> Result<Form> {
@@ -1464,11 +1600,17 @@ impl<'a> Emitter<'a> {
             )
         })?;
         if let Some((namespace, package)) = name.package() {
-            let package = dependency_module_name(namespace, package)?;
+            let pkg_mod = dependency_module_name(namespace, package)?;
             let interface = rust_ident(&snake_case(name.interface_name()), "interface module")?;
             let ty = rust_ident(&pascal_case(&name.name), "type")?;
+            if self.is_dep_scoped(namespace, package) {
+                return Ok(format!(
+                    "{}::witforge_deps::v{}::{pkg_mod}::{interface}::{ty}",
+                    self.plain_root, self.root_major
+                ));
+            }
             return Ok(format!(
-                "{}::witforge_deps::{package}::{interface}::{ty}",
+                "{}::witforge_deps::{pkg_mod}::{interface}::{ty}",
                 self.plain_root
             ));
         }
@@ -1487,15 +1629,29 @@ impl<'a> Emitter<'a> {
         let (namespace, package) = name
             .package()
             .context("foreign type module needs a dependency package")?;
-        let package = dependency_module_name(namespace, package)?;
+        let pkg_mod = dependency_module_name(namespace, package)?;
         let interface = rust_ident(&snake_case(name.interface_name()), "interface module")?;
         let ty = rust_ident(&snake_case(&name.name), "type module")?;
-        let base = if self.dependency {
-            format!("{}::super", self.type_prefix)
+        let target_scoped = self.is_dep_scoped(namespace, package);
+        let base = if !self.dependency {
+            if target_scoped {
+                format!(
+                    "{}::super::witforge_deps::v{}",
+                    self.type_prefix, self.root_major
+                )
+            } else {
+                format!("{}::super::witforge_deps", self.type_prefix)
+            }
+        } else if self.dep_scoped {
+            if target_scoped {
+                format!("{}::super", self.type_prefix)
+            } else {
+                format!("{}::super::super", self.type_prefix)
+            }
         } else {
-            format!("{}::super::witforge_deps", self.type_prefix)
+            format!("{}::super", self.type_prefix)
         };
-        Ok(format!("{base}::{package}::{interface}::{ty}"))
+        Ok(format!("{base}::{pkg_mod}::{interface}::{ty}"))
     }
 
     fn proto_type(&self, ty: &TypeExpr) -> Result<String> {

@@ -47,16 +47,32 @@ frozen as a whole, which covers the remaining source-level cases.
 - Each version directory has its own `wire.lock`.
 - Rust module: `v<major>_<minor>`.
 - Protobuf package/file: `v<major>` and `v<major>.proto`.
-- `wit/released` is the explicit released-version manifest. It is plain text, one directory
-  name per line (`v0.1`); leading and trailing ASCII whitespace (space, tab, CR, VT, FF) is
-  trimmed, and blank lines and `#` comments are ignored. Entries are plain directory names
-  resolved relative to the manifest's directory: an ASCII letter or digit followed by ASCII
-  letters, digits, `.`, `_`, or `-` (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), so `.`, `..`, hidden names,
-  whitespace, separators, non-ASCII names, and absolute paths are rejected. The manifest is
-  append-only: CI fails if an entry is removed, duplicated, or names a directory that does not
-  exist or has no `wire.lock`. The tool and `ci/check-release-freeze.sh` apply the same entry
-  rule; the tool rejects a malformed manifest, duplicate entries, and missing, symlinked, or
-  lockfile-less listed directories.
+- `wit/released` is the explicit released-version manifest. It is plain text, one entry per line:
+  either `<name>` (live) or `<name> retired` separated by ASCII spaces or tabs (`v0.1` or
+  `v0.1 retired`). Leading and trailing ASCII whitespace (space, tab, CR, VT, FF) is trimmed, and
+  blank lines and `#` comments are ignored. Directory names are plain directory names resolved
+  relative to the manifest's directory: an ASCII letter or digit followed by ASCII letters,
+  digits, `.`, `_`, or `-` (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), so `.`, `..`, hidden names,
+  whitespace inside names, separators, non-ASCII names, and absolute paths are rejected. Unknown
+  trailing tokens are rejected as malformed. The `retired` syntax is first read by **0.7.0** (not
+  yet cut); earlier releases reject `<name> retired` as malformed. The manifest is append-only: CI
+  fails if an entry is removed, duplicated, un-retired (`retired` back to live), or names a
+  directory that does not exist or has no `wire.lock`. The tool and `ci/check-release-freeze.sh`
+  apply the same entry rule; the tool rejects a malformed manifest, duplicate entries, and missing,
+  symlinked, or lockfile-less listed directories.
+- **Version retirement:** marking a released version `retired` records that its directory stays on
+  disk and stays frozen (still validated for lockfile continuity into any later minor of its major,
+  still refused by `lock`, and still frozen by `witforge freeze`), while every generator stops
+  emitting it (so stale-file removal deletes its plain Rust module, JSON Schema file, and adapters
+  from the consumer tree). Only a contiguous oldest prefix of versions in a WIT root may be
+  retired, and at least one live version must remain; retiring a non-oldest version (such as
+  `v0.2` while `v0.1` is still live) or retiring every version is refused (`WF1100`). Because a
+  major's `.proto` file and glue module are built from its highest minor and retain all
+  reservations, retiring an older minor of a live major does not change the wire schema; retiring
+  every version of a major stops emitting that major's `.proto` file and glue module (and any
+  dependency bindings used only by that major). `witforge freeze` accepts the one-way transition
+  of a committed entry from live to `retired`, and refuses every other manifest change on prior
+  entries (including `retired` back to live, removal, or edits inside a retired directory).
 - Commands accept `--released <path>`; the default is `<wit-dir>/../released` for a version
   directory (the parent of the canonicalised directory, so `.` and a symlinked WIT root find
   their real parent's manifest) and `<wit-root>/released` for generation. A missing default

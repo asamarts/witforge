@@ -1,12 +1,13 @@
 //! Version-directory discovery and validation shared by the generators.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::diagnostic::{Diagnostic, LocatedDiagnostic, Position, RelatedLocation, codes};
+use crate::emit::ident;
 use crate::lock::{Changes, PackageName, WireLock};
 use crate::model::{self, Dependency, Interface, Model, TypeDef, TypeDefKind};
 use crate::{ContractError, load, operational_error, operational_error_at, subset};
@@ -25,26 +26,397 @@ pub(crate) struct Version {
     pub(crate) locations: BTreeMap<String, (String, Position)>,
 }
 
-/// Return the one dependency graph shared by all generated versions.
+/// Resolved dependency layout across all live majors of a WIT root.
 ///
-/// Dependency bindings are emitted once and used by every generated version. Exact graph
-/// equality therefore includes package pins, source order, API shapes, stability, and docs.
-pub(crate) fn shared_dependencies(versions: &[Version]) -> Result<&[Dependency]> {
-    let first = versions
-        .first()
-        .context("no version directories found under WIT root")?;
-    for version in &versions[1..] {
-        ensure_same_dependency_graph(&first.model.dependencies, &version.model.dependencies)?;
+/// Within each major, every version must pin an identical dependency graph. Across majors, a
+/// dependency package whose definition is identical in every live major that uses it (and whose
+/// transitive dependencies are also shared) stays at the single shared location (`witforge_deps`,
+/// `<ns>.<pkg>.v<dep_major>.proto`, `<ns>.<pkg>.v<dep_major>.schema.json`). A dependency package
+/// that changed or was upgraded across live majors is scoped per root major
+/// (`witforge_deps::v<root_major>::<ns>_<pkg>`), and its protobuf / JSON Schema files are
+/// disambiguated only when two live majors also share the same dependency major number.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DepLayout {
+    /// Shared dependencies keyed by `(namespace, name)`.
+    pub(crate) shared: BTreeMap<(String, String), Dependency>,
+    /// Per-major scoped dependencies keyed by root `major`.
+    pub(crate) per_major: BTreeMap<u64, Vec<Dependency>>,
+    /// All validated dependencies per root `major` (both shared and scoped).
+    pub(crate) by_major: BTreeMap<u64, Vec<Dependency>>,
+    /// `(root_major, ns, name)` entries whose `(ns, name, dep_major)` collides with a different
+    /// definition in another live root major and therefore uses a root-major-disambiguated proto
+    /// package / schema filename.
+    pub(crate) disambiguated: BTreeSet<(u64, String, String)>,
+    /// For every scoped `(root_major, ns, name)`, the smallest root major that defines the exact
+    /// same effective dependency (including transitive dependencies). When `owner < root_major`,
+    /// Rust and glue re-export `super::v<owner>::<pkg>` so adjacent majors with identical pinned
+    /// dependencies share one Rust type even when a third major upgrades the package.
+    pub(crate) canonical_owner: BTreeMap<(u64, String, String), u64>,
+}
+
+impl DepLayout {
+    /// Validate intra-major dependency identity across `versions` and compute the shared vs
+    /// per-major dependency layout.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn from_versions(versions: &[Version]) -> Result<Self> {
+        let mut by_major_refs: BTreeMap<u64, Vec<&Version>> = BTreeMap::new();
+        for version in versions {
+            by_major_refs
+                .entry(version.major)
+                .or_default()
+                .push(version);
+        }
+        let mut by_major: BTreeMap<u64, Vec<Dependency>> = BTreeMap::new();
+        for (major, group) in &by_major_refs {
+            let first = group[0];
+            for other in &group[1..] {
+                ensure_same_dependency_graph(&first.model.dependencies, &other.model.dependencies)?;
+            }
+            by_major.insert(*major, first.model.dependencies.clone());
+        }
+
+        // Collect every `(ns, name)` seen in each major and detect conflicting definitions across
+        // live majors.
+        let mut defs_by_pkg: BTreeMap<(String, String), Vec<(u64, Dependency)>> = BTreeMap::new();
+        for (&major, deps) in &by_major {
+            for dep in deps {
+                let key = (dep.package.namespace.clone(), dep.package.name.clone());
+                defs_by_pkg
+                    .entry(key)
+                    .or_default()
+                    .push((major, dep.clone()));
+            }
+        }
+
+        let mut scoped_pkgs: BTreeSet<(String, String)> = BTreeSet::new();
+        for (key, entries) in &defs_by_pkg {
+            let first_major = entries[0].0;
+            let differs = entries[1..].iter().any(|(other_major, _)| {
+                !same_effective_dep_in_slices(
+                    &by_major[&first_major],
+                    &by_major[other_major],
+                    &key.0,
+                    &key.1,
+                    &mut BTreeSet::new(),
+                )
+            });
+            if differs {
+                scoped_pkgs.insert(key.clone());
+            }
+        }
+
+        // Compute canonical owners for scoped dependencies and disambiguation for colliding
+        // `(ns, name, dep_major)` definitions across live majors.
+        let mut canonical_owner: BTreeMap<(u64, String, String), u64> = BTreeMap::new();
+        let mut disambiguated: BTreeSet<(u64, String, String)> = BTreeSet::new();
+        for (key, entries) in &defs_by_pkg {
+            if !scoped_pkgs.contains(key) {
+                continue;
+            }
+            for (major, _) in entries {
+                let owner = entries
+                    .iter()
+                    .find(|(cand_major, _)| {
+                        same_effective_dep_in_slices(
+                            &by_major[cand_major],
+                            &by_major[major],
+                            &key.0,
+                            &key.1,
+                            &mut BTreeSet::new(),
+                        )
+                    })
+                    .map_or(*major, |(cand_major, _)| *cand_major);
+                canonical_owner.insert((*major, key.0.clone(), key.1.clone()), owner);
+            }
+            let mut by_dep_major: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+            for (root_major, dep) in entries {
+                by_dep_major
+                    .entry(dep.package.version.major)
+                    .or_default()
+                    .push(*root_major);
+            }
+            for group in by_dep_major.values() {
+                if group.len() > 1 {
+                    let first_major = group[0];
+                    if group[1..].iter().any(|other_major| {
+                        !same_effective_dep_in_slices(
+                            &by_major[&first_major],
+                            &by_major[other_major],
+                            &key.0,
+                            &key.1,
+                            &mut BTreeSet::new(),
+                        )
+                    }) {
+                        for root_major in group {
+                            disambiguated.insert((*root_major, key.0.clone(), key.1.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        // If a dependency references a disambiguated dependency in some major, disambiguate its
+        // proto/schema files too so `import` / `$ref` targets stay consistent across majors.
+        loop {
+            let mut grew = false;
+            for (&major, deps) in &by_major {
+                for dep in deps {
+                    let key = (dep.package.namespace.clone(), dep.package.name.clone());
+                    if disambiguated.contains(&(major, key.0.clone(), key.1.clone())) {
+                        continue;
+                    }
+                    let refs_disambig = dep_referenced_packages(dep)
+                        .into_iter()
+                        .any(|target| disambiguated.contains(&(major, target.0, target.1)));
+                    if refs_disambig {
+                        for (root_major, _) in defs_by_pkg.get(&key).into_iter().flatten() {
+                            if disambiguated.insert((*root_major, key.0.clone(), key.1.clone())) {
+                                grew = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+
+        let mut shared = BTreeMap::new();
+        let mut per_major: BTreeMap<u64, Vec<Dependency>> = BTreeMap::new();
+        for (&major, deps) in &by_major {
+            for dep in deps {
+                let key = (dep.package.namespace.clone(), dep.package.name.clone());
+                if scoped_pkgs.contains(&key) {
+                    per_major.entry(major).or_default().push(dep.clone());
+                } else {
+                    shared.entry(key).or_insert_with(|| dep.clone());
+                }
+            }
+        }
+
+        Ok(Self {
+            shared,
+            per_major,
+            by_major,
+            disambiguated,
+            canonical_owner,
+        })
     }
-    Ok(&first.model.dependencies)
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.shared.is_empty() && self.per_major.is_empty()
+    }
+
+    pub(crate) fn is_scoped(&self, namespace: &str, name: &str) -> bool {
+        !self
+            .shared
+            .contains_key(&(namespace.to_string(), name.to_string()))
+            && self.per_major.values().any(|deps| {
+                deps.iter()
+                    .any(|dep| dep.package.namespace == namespace && dep.package.name == name)
+            })
+    }
+
+    pub(crate) fn canonical_owner_major(
+        &self,
+        root_major: u64,
+        namespace: &str,
+        name: &str,
+    ) -> u64 {
+        self.canonical_owner
+            .get(&(root_major, namespace.to_string(), name.to_string()))
+            .copied()
+            .unwrap_or(root_major)
+    }
+
+    pub(crate) fn is_disambiguated(&self, root_major: u64, namespace: &str, name: &str) -> bool {
+        self.disambiguated
+            .contains(&(root_major, namespace.to_string(), name.to_string()))
+    }
+
+    pub(crate) fn proto_package(&self, root_major: u64, dep: &Dependency) -> String {
+        let ns = ident::proto_package_segment(&dep.package.namespace);
+        let name = ident::proto_package_segment(&dep.package.name);
+        if self.is_disambiguated(root_major, &dep.package.namespace, &dep.package.name) {
+            let owner =
+                self.canonical_owner_major(root_major, &dep.package.namespace, &dep.package.name);
+            format!("{ns}.{name}.v{}_m{owner}", dep.package.version.major)
+        } else {
+            format!("{ns}.{name}.v{}", dep.package.version.major)
+        }
+    }
+
+    pub(crate) fn proto_file_name(&self, root_major: u64, dep: &Dependency) -> String {
+        let ns = ident::proto_package_segment(&dep.package.namespace);
+        let name = ident::proto_package_segment(&dep.package.name);
+        if self.is_disambiguated(root_major, &dep.package.namespace, &dep.package.name) {
+            let owner =
+                self.canonical_owner_major(root_major, &dep.package.namespace, &dep.package.name);
+            format!("v{owner}.{ns}.{name}.v{}.proto", dep.package.version.major)
+        } else {
+            format!("{ns}.{name}.v{}.proto", dep.package.version.major)
+        }
+    }
+
+    pub(crate) fn prost_base(&self, proto_root: &str, root_major: u64, dep: &Dependency) -> String {
+        let ns = ident::prost_package_segment(&dep.package.namespace);
+        let name = ident::prost_package_segment(&dep.package.name);
+        if self.is_disambiguated(root_major, &dep.package.namespace, &dep.package.name) {
+            let owner =
+                self.canonical_owner_major(root_major, &dep.package.namespace, &dep.package.name);
+            format!(
+                "{proto_root}::{ns}::{name}::v{}_m{owner}",
+                dep.package.version.major
+            )
+        } else {
+            format!("{proto_root}::{ns}::{name}::v{}", dep.package.version.major)
+        }
+    }
+
+    pub(crate) fn schema_file_name(&self, root_major: u64, dep: &Dependency) -> String {
+        let ns = dep.package.namespace.replace('-', "_");
+        let name = dep.package.name.replace('-', "_");
+        if self.is_disambiguated(root_major, &dep.package.namespace, &dep.package.name) {
+            let owner =
+                self.canonical_owner_major(root_major, &dep.package.namespace, &dep.package.name);
+            format!(
+                "v{owner}.{ns}.{name}.v{}.schema.json",
+                dep.package.version.major
+            )
+        } else {
+            format!("{ns}.{name}.v{}.schema.json", dep.package.version.major)
+        }
+    }
+}
+
+/// Whether two single-package dependency definitions are completely identical (same version, docs,
+/// interfaces, types, functions, order, and metadata).
+pub(crate) fn same_dependency(left: &Dependency, right: &Dependency) -> bool {
+    dependency_graph_change(std::slice::from_ref(left), std::slice::from_ref(right)).is_none()
+}
+
+/// Whether `left` and `right` both pin `(namespace, name)` with an identical definition and an
+/// identical transitive dependency subgraph.
+pub(crate) fn same_effective_dependency(
+    left: &Model,
+    right: &Model,
+    namespace: &str,
+    name: &str,
+) -> bool {
+    same_effective_dep_in_slices(
+        &left.dependencies,
+        &right.dependencies,
+        namespace,
+        name,
+        &mut BTreeSet::new(),
+    )
+}
+
+fn same_effective_dep_in_slices(
+    left_deps: &[Dependency],
+    right_deps: &[Dependency],
+    namespace: &str,
+    name: &str,
+    visited: &mut BTreeSet<(String, String)>,
+) -> bool {
+    if !visited.insert((namespace.to_string(), name.to_string())) {
+        return true;
+    }
+    let Some(left) = left_deps
+        .iter()
+        .find(|dep| dep.package.namespace == namespace && dep.package.name == name)
+    else {
+        return false;
+    };
+    let Some(right) = right_deps
+        .iter()
+        .find(|dep| dep.package.namespace == namespace && dep.package.name == name)
+    else {
+        return false;
+    };
+    if !same_dependency(left, right) {
+        return false;
+    }
+    for (tns, tpkg) in dep_referenced_packages(left) {
+        if !same_effective_dep_in_slices(left_deps, right_deps, &tns, &tpkg, visited) {
+            return false;
+        }
+    }
+    true
+}
+
+fn dep_referenced_packages(dep: &Dependency) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for iface in &dep.interfaces {
+        for def in &iface.types {
+            match &def.kind {
+                TypeDefKind::Record(fields) => {
+                    for field in fields {
+                        collect_foreign_packages(&field.ty, &mut out);
+                    }
+                }
+                TypeDefKind::Variant(cases) | TypeDefKind::Enum(cases) => {
+                    for case in cases {
+                        if let Some(payload) = &case.payload {
+                            collect_foreign_packages(payload, &mut out);
+                        }
+                    }
+                }
+                TypeDefKind::Flags(_) => {}
+                TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
+                    collect_foreign_packages(ty, &mut out);
+                }
+                TypeDefKind::Result(res) => {
+                    if let Some(ok) = &res.ok {
+                        collect_foreign_packages(ok, &mut out);
+                    }
+                    if let Some(err) = &res.err {
+                        collect_foreign_packages(err, &mut out);
+                    }
+                }
+            }
+        }
+        for func in &iface.functions {
+            for param in &func.params {
+                collect_foreign_packages(&param.ty, &mut out);
+            }
+            if let Some(res) = &func.result {
+                collect_foreign_packages(res, &mut out);
+            }
+        }
+    }
+    out.remove(&(dep.package.namespace.clone(), dep.package.name.clone()));
+    out
+}
+
+fn collect_foreign_packages(ty: &crate::model::TypeExpr, out: &mut BTreeSet<(String, String)>) {
+    match ty {
+        crate::model::TypeExpr::Named(name) => {
+            if let Some((ns, pkg)) = name.package() {
+                out.insert((ns.to_string(), pkg.to_string()));
+            }
+        }
+        crate::model::TypeExpr::List(inner) | crate::model::TypeExpr::Option(inner) => {
+            collect_foreign_packages(inner, out);
+        }
+        crate::model::TypeExpr::Result(res) => {
+            if let Some(ok) = &res.ok {
+                collect_foreign_packages(ok, out);
+            }
+            if let Some(err) = &res.err {
+                collect_foreign_packages(err, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Refuse two dependency graphs that cannot share one generated binding surface.
 pub(crate) fn ensure_same_dependency_graph(old: &[Dependency], new: &[Dependency]) -> Result<()> {
     if let Some(change) = dependency_graph_change(old, new) {
         let message = format!(
-            "dependency graph differs: {change}; every version in a generated WIT root must use \
-             an identical pinned dependency graph"
+            "dependency graph differs: {change}; every version in one major must use an \
+             identical pinned dependency graph"
         );
         bail!(ContractError::with_diagnostic(Diagnostic::error(
             codes::DEPENDENCY_GRAPH_MISMATCH,
@@ -262,8 +634,17 @@ fn dependency_name(dependency: &Dependency) -> String {
 #[allow(clippy::too_many_lines)]
 pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
     let released = crate::load_root_released_manifest(wit_root, None)?;
+    let discovered = discover_versions(wit_root)?;
+    crate::validate_retirement_order(&discovered, &released, wit_root)?;
     let mut versions: Vec<Version> = Vec::new();
-    for (major, minor, directory) in discover_versions(wit_root)? {
+    let mut prev_lock_by_major: BTreeMap<u64, (PathBuf, WireLock)> = BTreeMap::new();
+    let mut first_package: Option<(String, String)> = None;
+    for (major, minor, directory) in discovered {
+        let dir_name = directory
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        let is_retired = released.is_retired(dir_name);
         let contract = load(&directory)?;
         let violations = subset::check_located_diagnostics(&contract);
         if !violations.is_empty() {
@@ -304,19 +685,15 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             }
             bail!(ContractError::with_located_diagnostic(located));
         }
-        if let Some(first) = versions.first() {
-            let expected = &first.model.package;
-            if expected.namespace != model.package.namespace || expected.name != model.package.name
-            {
+        if let Some((expected_ns, expected_name)) = &first_package {
+            if expected_ns != &model.package.namespace || expected_name != &model.package.name {
                 let mut diag = Diagnostic::error(
                     codes::PACKAGE_MISMATCH,
                     format!(
-                        "{} declares package {}:{}, expected {}:{}",
+                        "{} declares package {}:{}, expected {expected_ns}:{expected_name}",
                         directory.display(),
                         model.package.namespace,
                         model.package.name,
-                        expected.namespace,
-                        expected.name
                     ),
                 )
                 .with_path(directory.display().to_string());
@@ -331,10 +708,17 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                 }
                 bail!(ContractError::with_located_diagnostic(located));
             }
+        } else {
+            first_package = Some((model.package.namespace.clone(), model.package.name.clone()));
         }
-        let previous = versions.last().filter(|previous| previous.major == major);
+        let previous = prev_lock_by_major.get(&major);
         let lock_path = directory.join("wire.lock");
-        let lock_text = read_version_lock(&directory, major, &lock_path, previous)?;
+        let lock_text = read_version_lock(
+            &directory,
+            major,
+            &lock_path,
+            previous.map(|(dir, _)| dir.as_path()),
+        )?;
         let lock = WireLock::parse(&lock_text).map_err(|err| {
             let position = crate::error_diagnostics(&err)
                 .and_then(|diags| diags.first())
@@ -366,9 +750,9 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             let located = LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file);
             ContractError::with_located_diagnostics(human, vec![located])
         })?;
-        if let Some(previous) = previous {
-            let previous_path = previous.directory.join("wire.lock");
-            lock.check_append_only(&previous.lock).map_err(|err| {
+        if let Some((prev_dir, prev_lock)) = previous {
+            let previous_path = prev_dir.join("wire.lock");
+            lock.check_append_only(prev_lock).map_err(|err| {
                 let message = format!(
                     "{} does not continue {}: {err:#}; copy {} to {} and run `witforge lock {} \
                      --against {}`",
@@ -393,10 +777,7 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             })?;
         }
         let members = model.members()?;
-        let is_released = directory
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|name| released.contains(name));
+        let is_released = released.contains(dir_name);
         let drift = lock.drift(&members).map_err(|err| {
             let human = format!("in {}: {err:#}", lock_path.display());
             let lock_file = lock_path.display().to_string();
@@ -406,7 +787,11 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             ContractError::with_located_diagnostics(human, vec![located])
         })?;
         if !drift.is_empty() {
-            let remedy = version_lock_remedy(&directory, previous, is_released);
+            let remedy = version_lock_remedy(
+                &directory,
+                previous.map(|(dir, _)| dir.as_path()),
+                is_released,
+            );
             let diagnostics = drift_diagnostics(
                 &drift,
                 &remedy,
@@ -424,7 +809,11 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                 let message = format!(
                     "{}: {err:#}; {}",
                     lock_path.display(),
-                    version_lock_remedy(&directory, previous, is_released)
+                    version_lock_remedy(
+                        &directory,
+                        previous.map(|(dir, _)| dir.as_path()),
+                        is_released
+                    )
                 );
                 let lock_file = lock_path.display().to_string();
                 let diag =
@@ -432,13 +821,16 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                 let located = LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file);
                 ContractError::with_located_diagnostic(located)
             })?;
-        versions.push(Version {
-            major,
-            directory,
-            model,
-            lock,
-            locations,
-        });
+        prev_lock_by_major.insert(major, (directory.clone(), lock.clone()));
+        if !is_retired {
+            versions.push(Version {
+                major,
+                directory,
+                model,
+                lock,
+                locations,
+            });
+        }
     }
     Ok(versions)
 }
@@ -552,20 +944,20 @@ fn read_version_lock(
     directory: &Path,
     major: u64,
     lock_path: &Path,
-    previous: Option<&Version>,
+    previous_dir: Option<&Path>,
 ) -> Result<String> {
     match fs::read_to_string(lock_path) {
         Ok(text) => Ok(text),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let quoted_dir = crate::shell_quote(directory);
-            let message = if let Some(previous) = previous {
-                let prev_lock = previous.directory.join("wire.lock");
+            let message = if let Some(prev_dir) = previous_dir {
+                let prev_lock = prev_dir.join("wire.lock");
                 format!(
                     "lockfile {} does not exist; major {major} already has {}, so copy {} to \
                      {} and run `witforge lock {} --against {}` (or for a new major, create a \
                      fresh lockfile with `--first`)",
                     lock_path.display(),
-                    previous.directory.display(),
+                    prev_dir.display(),
                     prev_lock.display(),
                     lock_path.display(),
                     quoted_dir,
@@ -592,15 +984,15 @@ fn read_version_lock(
     }
 }
 
-fn version_lock_remedy(directory: &Path, previous: Option<&Version>, is_released: bool) -> String {
+fn version_lock_remedy(directory: &Path, previous_dir: Option<&Path>, is_released: bool) -> String {
     if is_released {
         format!(
             "`{}` is released, so `witforge lock` refuses it; restore its released WIT and \
              wire.lock",
             directory.display()
         )
-    } else if let Some(previous) = previous {
-        let previous_path = previous.directory.join("wire.lock");
+    } else if let Some(prev_dir) = previous_dir {
+        let previous_path = prev_dir.join("wire.lock");
         format!(
             "run `witforge lock {} --against {}`",
             crate::shell_quote(directory),

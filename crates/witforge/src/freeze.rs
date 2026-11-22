@@ -15,7 +15,7 @@
 //! errors (exit `2`), never silent passes. Every freeze violation is collected and returned so the
 //! caller sees all offending paths at once (exit `1`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -23,7 +23,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use crate::diagnostic::{Diagnostic, LocatedDiagnostic, Position, codes};
-use crate::{line_position, operational_error, plain_directory_name};
+use crate::{line_position, operational_error, parse_manifest_entry};
 
 /// Options controlling [`check_root`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -202,22 +202,24 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
 
     // 1. Validate every entry in the current working-tree manifest.
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut current_set: BTreeSet<String> = BTreeSet::new();
-    for (line_no, raw_line, entry) in &current_entries {
+    // Map current listed entry name -> is_retired.
+    let mut current_entries_map: BTreeMap<String, bool> = BTreeMap::new();
+    for (line_no, raw_line, trimmed_line) in &current_entries {
         let pos = Some(line_position(*line_no, raw_line));
-        if !plain_directory_name(entry) {
+        let Some((entry, is_retired)) = parse_manifest_entry(trimmed_line) else {
             push_violation(
                 &mut violations,
                 &repo,
                 &manifest,
                 pos,
                 format!(
-                    "invalid released entry `{entry}` in {manifest}: expected a plain directory \
-                     name (`^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
+                    "invalid released entry `{trimmed_line}` in {manifest}: expected `<name>` or \
+                     `<name> retired` where `<name>` matches `^[A-Za-z0-9][A-Za-z0-9._-]*$`"
                 ),
             );
             continue;
-        }
+        };
+        let entry = entry.to_string();
         if !seen.insert(entry.clone()) {
             push_violation(
                 &mut violations,
@@ -228,7 +230,7 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
             );
             continue;
         }
-        current_set.insert(entry.clone());
+        current_entries_map.insert(entry.clone(), is_retired);
 
         let dir_rel = format!("{prefix}{entry}");
         let dir_disk = repo.join(&dir_rel);
@@ -326,6 +328,7 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
     // 2. Walk the manifest's commit history at its current path.
     let mut checks = 0usize;
     let mut reported_removals: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut reported_unretire: BTreeSet<(String, String)> = BTreeSet::new();
     let mut reported_diffs: BTreeSet<(String, String)> = BTreeSet::new();
 
     for commit in &log_commits {
@@ -333,8 +336,8 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
             continue;
         };
         let short = short_sha(commit);
-        for entry in parse_manifest_entries(&blob) {
-            if !current_set.contains(&entry) {
+        for (entry, was_retired) in parse_manifest_history_entries(&blob) {
+            let Some(&currently_retired) = current_entries_map.get(&entry) else {
                 if reported_removals.insert((manifest.clone(), entry.clone())) {
                     push_violation(
                         &mut violations,
@@ -348,6 +351,21 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
                     );
                 }
                 continue;
+            };
+            if was_retired
+                && !currently_retired
+                && reported_unretire.insert((manifest.clone(), entry.clone()))
+            {
+                push_violation(
+                    &mut violations,
+                    &repo,
+                    &manifest,
+                    None,
+                    format!(
+                        "released entry `{entry}` (retired in {short}) was un-retired in \
+                         {manifest}; retirement is permanent"
+                    ),
+                );
             }
             let dir_rel = format!("{prefix}{entry}");
             let changed = git_diff_paths(&repo, commit, &dir_rel)?;
@@ -388,8 +406,8 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
                     continue;
                 };
                 let short = short_sha(commit);
-                for entry in parse_manifest_entries(&blob) {
-                    if !current_set.contains(&entry) {
+                for (entry, was_retired) in parse_manifest_history_entries(&blob) {
+                    let Some(&currently_retired) = current_entries_map.get(&entry) else {
                         if reported_removals.insert((old_manifest.clone(), entry.clone())) {
                             push_violation(
                                 &mut violations,
@@ -403,6 +421,22 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
                             );
                         }
                         continue;
+                    };
+                    if was_retired
+                        && !currently_retired
+                        && reported_unretire.insert((old_manifest.clone(), entry.clone()))
+                    {
+                        push_violation(
+                            &mut violations,
+                            &repo,
+                            &manifest,
+                            None,
+                            format!(
+                                "released entry `{entry}` (retired in {short} at \
+                                 {old_manifest}) was un-retired in {manifest}; retirement is \
+                                 permanent"
+                            ),
+                        );
                     }
                     let old_dir = format!("{old_prefix}{entry}");
                     let cur_dir = format!("{prefix}{entry}");
@@ -507,10 +541,13 @@ fn parse_manifest_entries_with_lines(text: &str) -> Vec<(usize, String, String)>
     out
 }
 
-fn parse_manifest_entries(text: &str) -> Vec<String> {
+fn parse_manifest_history_entries(text: &str) -> Vec<(String, bool)> {
     parse_manifest_entries_with_lines(text)
         .into_iter()
-        .map(|(_, _, entry)| entry)
+        .map(|(_, _, line)| match parse_manifest_entry(&line) {
+            Some((name, retired)) => (name.to_string(), retired),
+            None => (line, false),
+        })
         .collect()
 }
 

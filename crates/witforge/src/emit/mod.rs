@@ -21,7 +21,7 @@ macro_rules! contract_bail {
     }};
 }
 
-mod convert;
+pub(crate) mod convert;
 pub(crate) mod defaults;
 pub(crate) mod docs;
 pub mod glue;

@@ -1559,3 +1559,151 @@ fn diff_check_gates_selected_views_and_rejects_empty_or_unknown_views() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn diff_and_check_across_major_report_omissions_and_support_retirement() {
+    let root = workspace("major-cli");
+    let wit = root.join("wit");
+    for (dir, ver, dep_body, dep_ver, body) in [
+        (
+            "v0.1",
+            "0.1.0",
+            "package example:dep@0.1.0;\ninterface common { record tag { k: u32 } }\n",
+            "0.1.0",
+            "interface types {\n\
+               use example:dep/common@0.1.0.{tag};\n\
+               record keep { id: u32 }\n\
+               record order { id: u32, t: tag }\n\
+             }\n",
+        ),
+        (
+            "v0.2",
+            "0.2.0",
+            "package example:dep@0.1.0;\ninterface common { record tag { k: u32 } }\n",
+            "0.1.0",
+            "interface types {\n\
+               use example:dep/common@0.1.0.{tag};\n\
+               record keep { id: u32, note: option<string> }\n\
+               record order { id: u32, t: tag }\n\
+             }\n",
+        ),
+        (
+            "v1.0",
+            "1.0.0",
+            "package example:dep@1.0.0;\ninterface common { record tag { k: string } }\n",
+            "1.0.0",
+            "interface types {\n\
+               use example:dep/common@1.0.0.{tag};\n\
+               record keep { id: u32, note: option<string>, total: u64 }\n\
+               record order { id: u32, t: tag }\n\
+             }\n",
+        ),
+    ] {
+        let _ = dep_ver;
+        let dep_dir = wit.join(dir).join("deps/dep");
+        fs::create_dir_all(&dep_dir).unwrap();
+        fs::write(dep_dir.join("common.wit"), dep_body).unwrap();
+        contract(
+            &root,
+            &format!("wit/{dir}"),
+            &format!("package example:shop@{ver};\n{body}"),
+        );
+    }
+    lock(&root, "wit/v0.1");
+    fs::copy(wit.join("v0.1/wire.lock"), wit.join("v0.2/wire.lock")).unwrap();
+    let lock_v02 = witforge()
+        .args(["lock"])
+        .arg(wit.join("v0.2"))
+        .args(["--against"])
+        .arg(wit.join("v0.1/wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_v02.status.success(), "{lock_v02:?}");
+    lock(&root, "wit/v1.0");
+
+    // Mark v0.1 retired in `released`; whole-root `witforge check` accepts retired oldest prefix
+    // AND upgraded dependencies in v1.0!
+    fs::write(wit.join("released"), "v0.1 retired\nv0.2\n").unwrap();
+    let check_ok = witforge().args(["check"]).arg(&wit).output().unwrap();
+    assert!(check_ok.status.success(), "{check_ok:?}");
+
+    // `witforge rust` generates convert.rs with top omission comment block.
+    let out_rust = root.join("rust");
+    let rust_ok = witforge()
+        .args(["rust"])
+        .arg(&wit)
+        .args(["--out"])
+        .arg(&out_rust)
+        .output()
+        .unwrap();
+    assert!(rust_ok.status.success(), "{rust_ok:?}");
+    assert!(!out_rust.join("v0_1.rs").exists(), "retired v0.1 omitted");
+    let convert_rs = fs::read_to_string(out_rust.join("convert.rs")).unwrap();
+    let convert_lines: Vec<String> = convert_rs
+        .lines()
+        .filter_map(|line| line.strip_prefix("// - ").map(str::to_string))
+        .collect();
+
+    // `witforge diff v0.2 v1.0 --json` reports the exact same omissions and empty blockers.
+    let json_out = diff(&wit.join("v0.2"), &wit.join("v1.0"), &["--json"]);
+    assert!(json_out.status.success(), "{json_out:?}");
+    let json_val: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(json_val["conversion_blockers"], serde_json::json!([]));
+    let diff_lines: Vec<String> = json_val["conversion_omissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            format!(
+                "{} -> {} {}: {}",
+                o["from_version"].as_str().unwrap(),
+                o["to_version"].as_str().unwrap(),
+                o["type_path"].as_str().unwrap(),
+                o["reason"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(diff_lines, convert_lines, "{json_val}");
+    // keep omitted only 0.2.0 -> 1.0.0; order and the local `use` alias `tag` omitted both
+    // directions (upgraded dep).
+    assert_eq!(diff_lines.len(), 5, "{diff_lines:?}");
+
+    // Human output and SARIF emit omission notes (WF3004); `--check` still exits 1 on breaking.
+    let human = diff(&wit.join("v0.2"), &wit.join("v1.0"), &[]);
+    assert!(human.status.success(), "{human:?}");
+    let human_text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        human_text.contains("conversion 0.2.0 -> 1.0.0 for `types/keep` is omitted"),
+        "{human_text}"
+    );
+    assert!(
+        human_text.contains("conversion 0.2.0 -> 1.0.0 for `types/order` is omitted"),
+        "{human_text}"
+    );
+
+    let sarif = diff(&wit.join("v0.2"), &wit.join("v1.0"), &["--format", "sarif"]);
+    assert!(sarif.status.success(), "{sarif:?}");
+    let sarif_val: serde_json::Value = serde_json::from_slice(&sarif.stdout).unwrap();
+    let wf3004_count = sarif_val["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["ruleId"] == "WF3004" && r["level"] == "note")
+        .count();
+    assert_eq!(wf3004_count, 5, "{sarif_val}");
+
+    let checked = diff(&wit.join("v0.2"), &wit.join("v1.0"), &["--check"]);
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+
+    // Non-oldest retirement fails whole-root `witforge check`.
+    fs::write(wit.join("released"), "v0.1\nv0.2 retired\n").unwrap();
+    let check_bad = witforge().args(["check"]).arg(&wit).output().unwrap();
+    assert_eq!(check_bad.status.code(), Some(1), "{check_bad:?}");
+    assert!(
+        String::from_utf8_lossy(&check_bad.stderr).contains("cannot retire `v0.2`"),
+        "{check_bad:?}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

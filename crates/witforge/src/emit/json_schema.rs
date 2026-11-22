@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root, json_header};
 use crate::emit::rust::version_module_name;
-use crate::emit::versions::{Version, load_versions, shared_dependencies};
+use crate::emit::versions::{DepLayout, Version, load_versions, same_dependency};
 use crate::model::{Dependency, Interface, Model, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
 
 /// Legacy pre-0.6.0 shared ownership header for JSON Schema files.
@@ -36,7 +36,7 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 
 /// Plan JSON Schema output for validated `versions`.
 pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
-    let dependencies = shared_dependencies(versions)?;
+    let dep_layout = DepLayout::from_versions(versions)?;
     let root_package = &versions
         .first()
         .context("no version directories found under WIT root")?
@@ -46,32 +46,43 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
     let mut files = GeneratedFiles::new(&header);
     for version in versions {
         let module = version_module_name(&version.model);
-        let generated = emit_version_with_header(&version.model, &header)
-            .with_context(|| version.directory.display().to_string())?;
+        let generated =
+            emit_version_with_layout(&version.model, &header, version.major, Some(&dep_layout))
+                .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("{module}.schema.json"), generated)?;
     }
-    let mut dependency_files = std::collections::BTreeSet::new();
-    for dependency in dependencies {
-        let model = Model {
-            package: dependency.package.clone(),
-            interfaces: dependency.interfaces.clone(),
-            worlds: Vec::new(),
-            dependencies: dependencies
-                .iter()
-                .filter(|other| {
-                    other.package.namespace != dependency.package.namespace
-                        || other.package.name != dependency.package.name
-                })
-                .cloned()
-                .collect(),
-        };
-        let generated = emit_version_with_header(&model, &header)
-            .with_context(|| format!("dependency {}", dependency.package.name))?;
-        let filename = dependency_schema_filename(dependency);
-        if !dependency_files.insert(filename.clone()) {
-            contract_bail!("dependency packages both generate `{filename}`");
+    let mut emitted_dep_files: std::collections::BTreeMap<String, Dependency> =
+        std::collections::BTreeMap::new();
+    for (&major, deps) in &dep_layout.by_major {
+        for dependency in deps {
+            let filename = dep_layout.schema_file_name(major, dependency);
+            if let Some(previous) = emitted_dep_files.get(&filename) {
+                if previous.package.namespace == dependency.package.namespace
+                    && previous.package.name == dependency.package.name
+                    && same_dependency(previous, dependency)
+                {
+                    continue;
+                }
+                contract_bail!("dependency packages both generate `{filename}`");
+            }
+            let model = Model {
+                package: dependency.package.clone(),
+                interfaces: dependency.interfaces.clone(),
+                worlds: Vec::new(),
+                dependencies: deps
+                    .iter()
+                    .filter(|other| {
+                        other.package.namespace != dependency.package.namespace
+                            || other.package.name != dependency.package.name
+                    })
+                    .cloned()
+                    .collect(),
+            };
+            let generated = emit_version_with_layout(&model, &header, major, Some(&dep_layout))
+                .with_context(|| format!("dependency {}", dependency.package.name))?;
+            emitted_dep_files.insert(filename.clone(), dependency.clone());
+            files.insert(filename, generated)?;
         }
-        files.insert(filename, generated)?;
     }
     Ok(files)
 }
@@ -143,6 +154,15 @@ pub fn emit_version(model: &Model) -> Result<String> {
 }
 
 fn emit_version_with_header(model: &Model, header: &str) -> Result<String> {
+    emit_version_with_layout(model, header, model.package.version.major, None)
+}
+
+fn emit_version_with_layout(
+    model: &Model,
+    header: &str,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
+) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{header}")?;
     writeln!(
@@ -169,7 +189,7 @@ fn emit_version_with_header(model: &Model, header: &str) -> Result<String> {
     for interface in &model.interfaces {
         for def in &interface.types {
             let key = format!("{}/{}", interface.name, def.name);
-            let schema = definition_schema(model, interface, def)?;
+            let schema = definition_schema(model, interface, def, root_major, dep_layout)?;
             definitions.push(format!("    {}: {}", json_string(&key), schema));
         }
     }
@@ -180,7 +200,13 @@ fn emit_version_with_header(model: &Model, header: &str) -> Result<String> {
     Ok(out)
 }
 
-fn definition_schema(model: &Model, interface: &Interface, def: &TypeDef) -> Result<String> {
+fn definition_schema(
+    model: &Model,
+    interface: &Interface,
+    def: &TypeDef,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
+) -> Result<String> {
     let schema = match &def.kind {
         TypeDefKind::Record(fields) => {
             let mut properties = Vec::new();
@@ -189,7 +215,7 @@ fn definition_schema(model: &Model, interface: &Interface, def: &TypeDef) -> Res
                 properties.push(format!(
                     "{}:{}",
                     json_string(&field.name),
-                    type_schema(model, interface, &field.ty)?
+                    type_schema(model, interface, &field.ty, root_major, dep_layout)?
                 ));
                 required.push(json_string(&field.name));
             }
@@ -203,7 +229,9 @@ fn definition_schema(model: &Model, interface: &Interface, def: &TypeDef) -> Res
             let mut variants = Vec::new();
             for case in cases {
                 let value = match &case.payload {
-                    Some(payload) => type_schema(model, interface, payload)?,
+                    Some(payload) => {
+                        type_schema(model, interface, payload, root_major, dep_layout)?
+                    }
                     None => "{\"type\":\"null\"}".to_string(),
                 };
                 let property = format!("{}:{}", json_string(&case.name), value);
@@ -238,7 +266,9 @@ fn definition_schema(model: &Model, interface: &Interface, def: &TypeDef) -> Res
                 required.join(",")
             )
         }
-        TypeDefKind::Alias(target) => type_schema(model, interface, target)?,
+        TypeDefKind::Alias(target) => {
+            type_schema(model, interface, target, root_major, dep_layout)?
+        }
         TypeDefKind::List(element) => {
             let item = if model.resolves_to_u8(element) {
                 TypeExpr::U8
@@ -247,16 +277,26 @@ fn definition_schema(model: &Model, interface: &Interface, def: &TypeDef) -> Res
             };
             format!(
                 "{{\"type\":\"array\",\"items\":{}}}",
-                type_schema(model, interface, &item)?
+                type_schema(model, interface, &item, root_major, dep_layout)?
             )
         }
-        TypeDefKind::Option(payload) => option_schema(model, interface, payload)?,
-        TypeDefKind::Result(result) => result_schema(model, interface, result)?,
+        TypeDefKind::Option(payload) => {
+            option_schema(model, interface, payload, root_major, dep_layout)?
+        }
+        TypeDefKind::Result(result) => {
+            result_schema(model, interface, result, root_major, dep_layout)?
+        }
     };
     Ok(with_description(&def.docs, schema))
 }
 
-fn type_schema(model: &Model, interface: &Interface, ty: &TypeExpr) -> Result<String> {
+fn type_schema(
+    model: &Model,
+    interface: &Interface,
+    ty: &TypeExpr,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
+) -> Result<String> {
     match ty {
         TypeExpr::Bool => Ok("{\"type\":\"boolean\"}".to_string()),
         TypeExpr::U8 => Ok(integer_schema(0, u64::from(u8::MAX))),
@@ -290,13 +330,13 @@ fn type_schema(model: &Model, interface: &Interface, ty: &TypeExpr) -> Result<St
                             format!("dependency `{namespace}:{package}` is not in the model")
                         })?;
                 let key = format!("{}/{}", name.interface_name(), name.name);
+                let filename = dep_layout.map_or_else(
+                    || dependency_schema_filename(dependency),
+                    |layout| layout.schema_file_name(root_major, dependency),
+                );
                 return Ok(format!(
                     "{{\"$ref\":{}}}",
-                    json_string(&format!(
-                        "{}#/definitions/{}",
-                        dependency_schema_filename(dependency),
-                        pointer(&key)
-                    ))
+                    json_string(&format!("{filename}#/definitions/{}", pointer(&key)))
                 ));
             }
             model
@@ -318,24 +358,52 @@ fn type_schema(model: &Model, interface: &Interface, ty: &TypeExpr) -> Result<St
             };
             Ok(format!(
                 "{{\"type\":\"array\",\"items\":{}}}",
-                type_schema(model, interface, &item)?
+                type_schema(model, interface, &item, root_major, dep_layout)?
             ))
         }
-        TypeExpr::Option(payload) => option_schema(model, interface, payload),
-        TypeExpr::Result(result) => result_schema(model, interface, result),
+        TypeExpr::Option(payload) => {
+            option_schema(model, interface, payload, root_major, dep_layout)
+        }
+        TypeExpr::Result(result) => result_schema(model, interface, result, root_major, dep_layout),
     }
 }
 
-fn option_schema(model: &Model, interface: &Interface, payload: &TypeExpr) -> Result<String> {
+fn option_schema(
+    model: &Model,
+    interface: &Interface,
+    payload: &TypeExpr,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
+) -> Result<String> {
     Ok(format!(
         "{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}",
-        type_schema(model, interface, payload)?
+        type_schema(model, interface, payload, root_major, dep_layout)?
     ))
 }
 
-fn result_schema(model: &Model, interface: &Interface, result: &ResultExpr) -> Result<String> {
-    let ok = result_variant(model, interface, "ok", result.ok.as_deref())?;
-    let err = result_variant(model, interface, "err", result.err.as_deref())?;
+fn result_schema(
+    model: &Model,
+    interface: &Interface,
+    result: &ResultExpr,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
+) -> Result<String> {
+    let ok = result_variant(
+        model,
+        interface,
+        "ok",
+        result.ok.as_deref(),
+        root_major,
+        dep_layout,
+    )?;
+    let err = result_variant(
+        model,
+        interface,
+        "err",
+        result.err.as_deref(),
+        root_major,
+        dep_layout,
+    )?;
     Ok(format!("{{\"oneOf\":[{ok},{err}]}}"))
 }
 
@@ -344,9 +412,11 @@ fn result_variant(
     interface: &Interface,
     name: &str,
     payload: Option<&TypeExpr>,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
 ) -> Result<String> {
     let value = match payload {
-        Some(payload) => type_schema(model, interface, payload)?,
+        Some(payload) => type_schema(model, interface, payload, root_major, dep_layout)?,
         None => "{\"type\":\"null\"}".to_string(),
     };
     let property = format!("{}:{value}", json_string(name));

@@ -102,6 +102,24 @@ expect "a new entry not yet committed passes" 0 "passed"
 commit "release v0.2"
 expect "a new entry once committed passes" 0 "passed"
 
+# Version retirement: live -> retired is accepted; retired -> live, edits in a retired directory,
+# removing a retired entry, and unknown state tokens are rejected.
+fresh
+printf 'v0.1 retired\n' >wit/released
+expect "retiring a live entry not yet committed passes" 0 "passed"
+commit "retire v0.1"
+expect "retiring a live entry once committed passes" 0 "passed"
+printf 'v0.1\n' >wit/released
+expect "un-retiring a retired entry fails" 1 "un-retired"
+printf 'v0.1 retired\n' >wit/released
+echo "// edited retired" >>wit/v0.1/a.wit
+expect "editing a retired directory fails" 1 "changed since its release"
+git checkout -- wit/v0.1/a.wit
+printf '# dropped\n' >wit/released
+expect "removing a retired entry fails" 1 "was removed"
+printf 'v0.1 bogus\n' >wit/released
+expect "an unknown manifest state token fails" 1 "invalid released entry"
+
 for entry in "..." ".hidden" "v0 1" "../v0.1" "v0.1/"; do
     fresh
     printf 'v0.1\n%s\n' "${entry}" >wit/released

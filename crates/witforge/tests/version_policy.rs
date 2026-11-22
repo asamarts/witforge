@@ -195,3 +195,153 @@ fn released_manifest_accepts_bom_crlf_and_whitespace_and_wit_bom_is_handled() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn version_retirement_drops_generated_outputs_and_enforces_oldest_prefix() {
+    use witforge::emit::{glue, json_schema, proto};
+    use witforge::lock::WireLock;
+    use witforge::{ReleasedManifest, is_contract_error, load, model};
+
+    let root = temp("retirement");
+    let wit = root.join("wit");
+    let v10 = wit.join("v1.0");
+    fs::create_dir_all(&v10).unwrap();
+    fs::write(
+        v10.join("contract.wit"),
+        "package example:evolve@1.0.0;\n\
+         interface types {\n\
+           record item { id: string }\n\
+         }\n",
+    )
+    .unwrap();
+    let v10_model = model::build(&load(&v10).unwrap()).unwrap();
+    let mut v10_lock = WireLock::default();
+    v10_lock.reconcile(&v10_model.members().unwrap()).unwrap();
+    fs::write(v10.join("wire.lock"), v10_lock.render()).unwrap();
+
+    // Mark v0.1 and v0.2 live first; generate all four surfaces.
+    fs::write(wit.join("released"), "v0.1\nv0.2\n").unwrap();
+    let out_rust = root.join("rust");
+    let out_proto = root.join("proto");
+    let out_schema = root.join("schema");
+    let out_glue = root.join("glue");
+    rust::generate(&wit, &out_rust).unwrap();
+    proto::generate(&wit, &out_proto).unwrap();
+    json_schema::generate(&wit, &out_schema).unwrap();
+    glue::generate(&wit, &out_glue, "crate::plain", "crate::proto").unwrap();
+
+    assert!(out_rust.join("v0_1.rs").is_file());
+    assert!(out_rust.join("v0_2.rs").is_file());
+    assert!(out_rust.join("v1_0.rs").is_file());
+    assert!(out_rust.join("convert.rs").is_file());
+    let v0_proto_before = fs::read_to_string(out_proto.join("v0.proto")).unwrap();
+    assert!(out_proto.join("v1.proto").is_file());
+    let v0_glue_before = fs::read_to_string(out_glue.join("v0.rs")).unwrap();
+    assert!(out_glue.join("v1.rs").is_file());
+    assert!(out_schema.join("v0_1.schema.json").is_file());
+    assert!(out_schema.join("v0_2.schema.json").is_file());
+    assert!(out_schema.join("v1_0.schema.json").is_file());
+
+    // Retire the oldest version (`v0.1`): drops v0_1.rs, v0_1.schema.json, and v0_1 <-> v0_2
+    // adapters, while leaving v0.proto and glue/v0.rs byte-identical (still built from v0.2).
+    fs::write(wit.join("released"), "v0.1 retired\nv0.2\n").unwrap();
+    let manifest = ReleasedManifest::load(&wit.join("released")).unwrap();
+    assert_eq!(manifest.directories(), ["v0.1", "v0.2"]);
+    assert!(manifest.contains("v0.1"));
+    assert!(manifest.is_retired("v0.1"));
+    assert!(!manifest.is_retired("v0.2"));
+    assert_eq!(manifest.retired_directories(), ["v0.1"]);
+    assert_eq!(manifest.live_directories(), ["v0.2"]);
+
+    rust::generate(&wit, &out_rust).unwrap();
+    proto::generate(&wit, &out_proto).unwrap();
+    json_schema::generate(&wit, &out_schema).unwrap();
+    glue::generate(&wit, &out_glue, "crate::plain", "crate::proto").unwrap();
+
+    assert!(
+        !out_rust.join("v0_1.rs").exists(),
+        "v0_1.rs should be pruned"
+    );
+    assert!(out_rust.join("v0_2.rs").is_file());
+    assert!(out_rust.join("v1_0.rs").is_file());
+    let convert_src = fs::read_to_string(out_rust.join("convert.rs")).unwrap();
+    assert!(!convert_src.contains("v0_1_to_v0_2"), "{convert_src}");
+    assert!(convert_src.contains("v0_2_to_v1_0"), "{convert_src}");
+    assert_eq!(
+        fs::read_to_string(out_proto.join("v0.proto")).unwrap(),
+        v0_proto_before,
+        "retiring an older minor must not change the major's proto file"
+    );
+    assert_eq!(
+        fs::read_to_string(out_glue.join("v0.rs")).unwrap(),
+        v0_glue_before,
+        "retiring an older minor must not change the major's glue file"
+    );
+    assert!(!out_schema.join("v0_1.schema.json").exists());
+    assert!(out_schema.join("v0_2.schema.json").is_file());
+    assert!(out_schema.join("v1_0.schema.json").is_file());
+
+    // Retire every version of major 0 (`v0.1` and `v0.2`): drops v0_2, convert.rs, v0.proto, and
+    // glue/v0.rs, leaving only major 1.
+    fs::write(wit.join("released"), "v0.1 retired\nv0.2 retired\n").unwrap();
+    rust::generate(&wit, &out_rust).unwrap();
+    proto::generate(&wit, &out_proto).unwrap();
+    json_schema::generate(&wit, &out_schema).unwrap();
+    glue::generate(&wit, &out_glue, "crate::plain", "crate::proto").unwrap();
+
+    assert!(!out_rust.join("v0_1.rs").exists());
+    assert!(!out_rust.join("v0_2.rs").exists());
+    assert!(!out_rust.join("convert.rs").exists());
+    assert!(out_rust.join("v1_0.rs").is_file());
+    assert!(!out_proto.join("v0.proto").exists());
+    assert!(out_proto.join("v1.proto").is_file());
+    assert!(!out_glue.join("v0.rs").exists());
+    assert!(out_glue.join("v1.rs").is_file());
+    assert!(!out_schema.join("v0_1.schema.json").exists());
+    assert!(!out_schema.join("v0_2.schema.json").exists());
+    assert!(out_schema.join("v1_0.schema.json").is_file());
+
+    // Retiring a non-oldest version (`v0.2` while `v0.1` is live) is refused.
+    fs::write(wit.join("released"), "v0.1\nv0.2 retired\n").unwrap();
+    let err = rust::plan(&wit).unwrap_err();
+    assert!(is_contract_error(&err), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("cannot retire `v0.2`"),
+        "{err:#}"
+    );
+
+    // Retiring every version is refused.
+    fs::write(
+        wit.join("released"),
+        "v0.1 retired\nv0.2 retired\nv1.0 retired\n",
+    )
+    .unwrap();
+    let err = rust::plan(&wit).unwrap_err();
+    assert!(is_contract_error(&err), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("every version directory"),
+        "{err:#}"
+    );
+
+    // Unknown state tokens in `released` are rejected as malformed.
+    fs::write(wit.join("released"), "v0.1 archived\n").unwrap();
+    let err = ReleasedManifest::load(&wit.join("released")).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("plain directory name"),
+        "{err:#}"
+    );
+
+    // Retired directories are still validated (intra-major continuity into live `v0.2`).
+    fs::write(wit.join("released"), "v0.1 retired\nv0.2\n").unwrap();
+    let v02_lock_path = wit.join("v0.2/wire.lock");
+    let broken = fs::read_to_string(&v02_lock_path)
+        .unwrap()
+        .replace("= 1 ", "= 99 ");
+    fs::write(&v02_lock_path, broken).unwrap();
+    let err = rust::plan(&wit).unwrap_err();
+    assert!(is_contract_error(&err), "{err:#}");
+    assert!(format!("{err:#}").contains("does not continue"), "{err:#}");
+
+    fs::remove_dir_all(&root).unwrap();
+}

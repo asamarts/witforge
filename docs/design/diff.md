@@ -65,11 +65,12 @@ each endpoint uses its own root's manifest, so two checkouts can be compared ind
 `diff` does not require the canonical lockfile rendering; `check` is the canonical-form gate.
 `diff` requires current entries, not a particular byte layout or comment set.
 
-Both endpoints must resolve the identical pinned dependency graph: package identities and
-versions, interface/type/function inventories and order, shapes and signatures, stability, and
-docs. `diff` refuses the first mismatch as a contract violation instead of describing it as a
-compatible local change. This is the same comparison every generator uses because dependency
-bindings are one shared output across versions.
+Within one major (`old.major == new.major`), both endpoints must resolve the identical pinned
+dependency graph: package identities and versions, interface/type/function inventories and order,
+shapes and signatures, stability, and docs. `diff` refuses the first mismatch as a contract
+violation instead of describing it as a compatible local change. Across a major boundary
+(`old.major != new.major`), a new major may add, remove, change, or upgrade pinned dependencies;
+types whose foreign dependency changed are reported in `conversion_omissions` below.
 
 ## Change categories
 
@@ -168,7 +169,8 @@ result: BREAKING
     "api_breaking": 1
   },
   "conversion_impacts": [],
-  "conversion_blockers": []
+  "conversion_blockers": [],
+  "conversion_omissions": []
 }
 ```
 
@@ -264,6 +266,33 @@ entries.
 Defaultable additions (`option<T>`, `list<T>`, or a named alias or structural type of one) do not
 block generation and have no blocker note. The blocker notes are informational too: an addition
 or retype is still a source/API-breaking change, and `--check` exits `1` for it.
+
+Across a major-version boundary (`old.major != new.major`), `convert.rs` omits non-convertible
+types per direction instead of refusing generation (`emitters.md` section 9.4). `diff` therefore
+leaves `conversion_blockers` empty and populates `conversion_omissions` with the exact same
+per-direction omission set that `convert.rs` writes at the top of the file (types with no namesake,
+retypes, kind changes, required additions in old-to-new, variant case payload-presence changes,
+result shape changes, changed foreign dependencies, and transitive omissions of containing types).
+Human output prints one note per omission, `--json` emits `conversion_omissions`, and
+`--format json|sarif` emits each omission as a `WF3004` note:
+
+```text
+note: conversion 0.2.0 -> 1.0.0 for `types/order` is omitted: field `total` is required in 1.0.0 and has no default
+```
+
+```json
+"conversion_omissions": [
+  {
+    "from_version": "0.2.0",
+    "to_version": "1.0.0",
+    "type_path": "types/order",
+    "reason": "field `total` is required in 1.0.0 and has no default"
+  }
+]
+```
+
+`diff --check` across a major boundary still exits `1` for a breaking change; a consumer that
+expects a breaking major change omits `--check` on that comparison.
 
 ## Limits
 

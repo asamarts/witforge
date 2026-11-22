@@ -164,12 +164,29 @@ wit/
 - Versions are processed in ascending semver order.
 - The generator validates the subset and the lockfile for every version before writing
   anything. A stale or invalid version fails the whole generation.
-- Every version MUST resolve the identical pinned dependency graph, including every supported
-  package loaded from `deps/`, package versions, interface/type/function inventories and source
-  order, shapes, signatures, stability, and docs. Root reachability decides which unsupported
-  dependency items are required; it does not remove supported packages from generated output.
-  All generators use one shared comparison and report the first changed package, interface,
-  type, or function.
+- Within each major, every live version MUST resolve the identical pinned dependency graph,
+  including every supported package loaded from `deps/`, package versions, interface/type/function
+  inventories and source order, shapes, signatures, stability, and docs. Across different majors,
+  a new major MAY add, remove, change, or upgrade pinned dependencies:
+  - A dependency package whose definition and transitive dependency subgraph are identical across
+    every live major that uses it stays at the single shared output path
+    (`witforge_deps::<ns>_<pkg>`, `<ns>.<pkg>.v<dep_major>.proto`,
+    `<ns>.<pkg>.v<dep_major>.schema.json`).
+  - A dependency package that differs across live majors (or transitively references one) is
+    scoped per root major under `witforge_deps::v<root_major>::<ns>_<pkg>` in plain Rust and glue
+    (with `pub use super::v<owner>::<ns>_<pkg>;` re-exports when two live majors share an
+    identical definition while a third differs, so those two majors still share one Rust type).
+    Its `.proto` file and `.schema.json` file keep their standard `<ns>.<pkg>.v<dep_major>` names
+    when the dependency major versions differ, and use owner-major disambiguation
+    (`v<owner>.<ns>.<pkg>.v<dep_major>.proto`, `package <ns>.<pkg>.v<dep_major>_m<owner>;`,
+    `v<owner>.<ns>.<pkg>.v<dep_major>.schema.json`) only when two live majors with different
+    definitions share the same dependency major version.
+  - Inside one version directory, two versions of one `namespace:name` package remain refused.
+- Versions listed as `retired` in `wit/released` (`<name> retired`) are still discovered and
+  validated (including intra-major lockfile continuity into any live minor of their major), must
+  form a contiguous oldest prefix leaving at least one live version, and are excluded from
+  emitted output so stale-file removal drops their plain Rust modules, JSON Schema files,
+  conversions, and—once every version of a major is retired—that major's `.proto` and glue files.
 - Within each major, every minor's lockfile MUST continue the previous minor's: every previous
   entry is kept with the same number, kind, and canonical type, and a reserved entry stays
   reserved (the continuity `check --against` verifies; see
@@ -1489,21 +1506,61 @@ The source is the newer version and the target is the older one.
   a changed alias target is a type change. Kind, payload-shape, and type changes are contract
   errors of the conversion emitter, not silent lossy adapters.
 
-### 9.4 Testing requirements
+### 9.4 Major-version boundaries
+
+Inside one major (`old.major == new.major`), the rules in sections 9.2 and 9.3 refuse any
+incompatible evolution (`WF2002`). Across a major-version boundary (`old.major != new.major`),
+conversion generation **never refuses**:
+
+- Plain types for every live version are always generated whether or not adapters exist.
+- Adapters are generated for every type that still converts under sections 9.2 and 9.3, and
+  omitted for every type that does not.
+- Omission is **per direction**: for example, adding a required record field omits old-to-new
+  (`v0_2_to_v1_0`), which cannot default the field, while new-to-old (`v1_0_to_v0_2`) drops the
+  field and is still generated.
+- Omission is **transitive**: any record with a shared field of an omitted type, any `list`,
+  `option`, or `result` containing an omitted type, any alias targeting an omitted type, and any
+  variant with a shared case carrying an omitted type is also omitted in that direction.
+- Names remain identity across a major; a renamed type is a removal plus an addition, so the old
+  name has no namesake in the new version and the new name has no namesake in the old version.
+- A foreign type converts across a major only when both majors pin the identical dependency
+  package and transitive dependency subgraph; otherwise any type referencing it is omitted in both
+  directions.
+- Every omitted conversion (types with no namesake, retypes, kind changes, required additions in
+  old-to-new, variant case payload-presence changes, result shape changes, changed foreign
+  dependencies, and transitive omissions) is listed with its reason in a deterministic, sorted
+  comment block at the top of `convert.rs`:
+
+```rust
+// Omitted cross-major conversions (write manual adapters for these):
+// - 0.2.0 -> 1.0.0 types/item: no namesake in 1.0.0
+// - 0.2.0 -> 1.0.0 types/order: field `total` is required in 1.0.0 and has no default
+```
+
+`--check` covers the comment block like the rest of `convert.rs`, and `witforge diff` reports the
+exact same omission set per direction. Consumers write manual adapters for the omitted types in
+their own code beside the generated ones.
+
+### 9.5 Testing requirements
 
 - Generate and compile conversions for a root with two versions, including records, variants,
   enums, flags, aliases, named `list`/`option`/`result`, and direct `list`/`option`/`result`
   fields.
 - Exercise both directions and assert old-to-new defaults, new-to-old removed-field errors,
   added/removed cases, and flags defaults.
-- A required non-defaultable addition is refused with a `ContractError`.
+- A required non-defaultable addition inside a major is refused with a `ContractError`.
+- Across a major boundary, every breaking evolution (removed required field, retype, kind change,
+  required addition, renamed referenced type, payload-presence change, changed/added/upgraded
+  dependencies) succeeds, emits all plain types, compiles cleanly, generates all remaining
+  adapters, omits non-convertible and containing types per direction, and lists the exact same
+  omissions at the top of `convert.rs` and in `diff`.
 - Alias spellings of one resolved type convert in both directions; a changed alias target or
-  changed type is refused.
+  changed type is refused inside a major and omitted across a major.
 - A table of alias evolutions asserts that a passing `diff --check` implies `rust` generation
   succeeds.
 - `--check` treats `convert.rs` as shared generated output and reports missing, changed, and
   extra files.
-- A root with one version emits no `convert.rs`.
+- A root with one live version emits no `convert.rs`.
 
 ## 10. JSON Schema emitter
 

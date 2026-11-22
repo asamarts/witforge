@@ -203,11 +203,12 @@ The rules in this section describe the implemented format.
   with every entry treated as a draft. The generators verify the same continuity between
   consecutive minors of each major, and default-mode `lock` and `check` refuse a missing
   lockfile, so a lockfile started fresh instead of copied cannot renumber a major's schema;
-- `wit/released` lists released version directories; their version directories are frozen
-  (shared `mod.rs`, `convert.rs`, `worlds.rs`, proto, and glue output changes as described in section 5.3).
-  `lock` refuses them, and CI fails if anything in a released version directory changed after
-  the commit that released it. A new minor is developed with the previous version as its
-  `--against` baseline;
+- `wit/released` lists released version directories, optionally marked `retired` for the oldest
+  versions; every listed version directory is frozen (shared `mod.rs`, `convert.rs`, `worlds.rs`,
+  proto, and glue output changes as described in section 5.3). `lock` refuses them, and CI
+  (`witforge freeze`) fails if anything in a listed directory changed after the commit that
+  released it, or if a retired entry is un-retired or removed. A new minor is developed with the
+  previous version as its `--against` baseline;
 - CI fails if a member is unlocked, if a released directory changes, or if generated output is
   stale; `buf breaking` on the emitted schema is an optional extra check;
 - the lockfile is designed to be replaced by in-source numbers if the WIT annotations proposal
@@ -237,15 +238,25 @@ The rules in this section describe the implemented format.
    type members, functions, or parameters common to two versions while ignoring additions and
    removals
    ([`lockfile.md`](lockfile.md) section 16).
-4. `rust` generates `convert.rs` for every adjacent version pair, in both directions, and the host
-   keeps one adapter per supported contract version or converts each into the latest plain types;
-   the supported range is published. The conversions default additions, report removed required
-   members, and refuse retypes and kind changes ([`emitters.md`](emitters.md) section 9).
+4. `rust` generates `convert.rs` for every adjacent live version pair, in both directions, and
+   the host keeps one adapter per supported contract version or converts each into the latest plain
+   types; the supported range is published. Within one major, conversions default additions, report
+   removed required members, and refuse retypes, kind changes, and non-defaulted additions. Across
+   a major boundary, the generator never refuses: plain types for every live version are always
+   generated, adapters are generated for the types that still convert under
+   [`emitters.md`](emitters.md) section 9, and non-convertible types (and types containing them
+   transitively) are omitted per direction and listed with reasons at the top of `convert.rs` and
+   in `diff`.
 5. On the process wire, one protobuf package per major version; field numbers are stable across
    minors through the lockfile, so older process plugins keep working, and the handshake still
    states the exact contract version so the host enforces its semantics.
-6. A major version is a new package (for example `ns:name@2`, protobuf `ns.name.v2`), negotiated at
-   handshake, with an adapter for the previous major for a documented period.
+6. A major version is a new package (for example `ns:name@2`, protobuf `ns.name.v2`) with a fresh
+   lockfile (`--first`), negotiated at handshake, with an adapter for the previous major for a
+   documented period. A new major may live in the same WIT root (sharing adapters for unchanged
+   types and allowing per-major dependency pins) or in a separate WIT root with its own output
+   directories. When old versions leave the support window, marking the oldest entries `retired`
+   in `wit/released` keeps their directories frozen on disk while removing them from generated
+   output.
 7. For alint's contract, 1.0 freezes at alint v1.0 together with its DSL (alint decision DEC-9).
 
 ### 5.4 Change review

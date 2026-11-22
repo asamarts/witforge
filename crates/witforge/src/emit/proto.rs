@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
-use crate::emit::versions::{Version, load_versions, shared_dependencies};
+use crate::emit::versions::{DepLayout, Version, load_versions, same_dependency};
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
     Case, Dependency, Field, Function, MAX_WRAPPER_NAME_BYTES, MemberKind, Model, QualifiedName,
@@ -50,7 +50,7 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 /// An emitter error is passed on as the emitter classified it: a contract violation stays a
 /// [`crate::ContractError`] and an internal error stays a plain error.
 pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
-    let dependencies = shared_dependencies(versions)?;
+    let dep_layout = DepLayout::from_versions(versions)?;
     let root_package = &versions
         .first()
         .context("no version directories found under WIT root")?
@@ -64,35 +64,59 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
     }
     let mut files = GeneratedFiles::new(&header);
     for (major, version) in &highest {
-        let generated = emit_major_with_header(&version.model, &version.lock, &header)
-            .with_context(|| version.directory.display().to_string())?;
+        let generated = Emitter::new_with_layout(
+            &version.model,
+            &version.lock,
+            *major,
+            Some(&dep_layout),
+            None,
+        )?
+        .emit(&header)
+        .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("v{major}.proto"), generated)?;
     }
-    let mut dependency_files = BTreeSet::new();
-    for dependency in dependencies {
-        let model = Model {
-            package: dependency.package.clone(),
-            interfaces: dependency.interfaces.clone(),
-            worlds: Vec::new(),
-            dependencies: dependencies
-                .iter()
-                .filter(|other| {
-                    other.package.namespace != dependency.package.namespace
-                        || other.package.name != dependency.package.name
-                })
-                .cloned()
-                .collect(),
-        };
-        let members = model.members()?;
-        let mut lock = WireLock::default();
-        lock.reconcile(&members)?;
-        let generated = emit_major_with_header(&model, &lock, &header)
+    let mut emitted_dep_files: BTreeMap<String, Dependency> = BTreeMap::new();
+    for (&major, deps) in &dep_layout.by_major {
+        for dependency in deps {
+            let filename = dep_layout.proto_file_name(major, dependency);
+            if let Some(previous) = emitted_dep_files.get(&filename) {
+                if previous.package.namespace == dependency.package.namespace
+                    && previous.package.name == dependency.package.name
+                    && same_dependency(previous, dependency)
+                {
+                    continue;
+                }
+                contract_bail!("dependency packages both generate `{filename}`");
+            }
+            let model = Model {
+                package: dependency.package.clone(),
+                interfaces: dependency.interfaces.clone(),
+                worlds: Vec::new(),
+                dependencies: deps
+                    .iter()
+                    .filter(|other| {
+                        other.package.namespace != dependency.package.namespace
+                            || other.package.name != dependency.package.name
+                    })
+                    .cloned()
+                    .collect(),
+            };
+            let members = model.members()?;
+            let mut lock = WireLock::default();
+            lock.reconcile(&members)?;
+            let pkg_override = dep_layout.proto_package(major, dependency);
+            let generated = Emitter::new_with_layout(
+                &model,
+                &lock,
+                major,
+                Some(&dep_layout),
+                Some(pkg_override),
+            )?
+            .emit(&header)
             .with_context(|| format!("dependency {}", dependency.package.name))?;
-        let filename = dependency_file_name(dependency);
-        if !dependency_files.insert(filename.clone()) {
-            contract_bail!("dependency packages both generate `{filename}`");
+            emitted_dep_files.insert(filename.clone(), dependency.clone());
+            files.insert(filename, generated)?;
         }
-        files.insert(filename, generated)?;
     }
     Ok(files)
 }
@@ -181,6 +205,8 @@ fn emit_major_with_header(model: &Model, lock: &WireLock, header: &str) -> Resul
 struct Emitter<'a> {
     model: &'a Model,
     lock: &'a WireLock,
+    root_major: u64,
+    dep_layout: Option<&'a DepLayout>,
     package: String,
     top_names: BTreeMap<String, String>,
     prost_top_names: BTreeMap<String, String>,
@@ -209,6 +235,16 @@ struct ResolvedType<'a> {
 
 impl<'a> Emitter<'a> {
     fn new(model: &'a Model, lock: &'a WireLock) -> Result<Self> {
+        Self::new_with_layout(model, lock, model.package.version.major, None, None)
+    }
+
+    fn new_with_layout(
+        model: &'a Model,
+        lock: &'a WireLock,
+        root_major: u64,
+        dep_layout: Option<&'a DepLayout>,
+        package_override: Option<String>,
+    ) -> Result<Self> {
         let namespace = proto_package_ident(
             &ident::proto_package_segment(&model.package.namespace),
             "namespace",
@@ -217,7 +253,8 @@ impl<'a> Emitter<'a> {
             &ident::proto_package_segment(&model.package.name),
             "package",
         )?;
-        let package = format!("{namespace}.{name}.v{}", model.package.version.major);
+        let package = package_override
+            .unwrap_or_else(|| format!("{namespace}.{name}.v{}", model.package.version.major));
         let mut top_names = BTreeMap::new();
         top_names.insert(EMPTY.to_string(), "shared Empty message".to_string());
         let mut prost_top_names = BTreeMap::new();
@@ -233,6 +270,8 @@ impl<'a> Emitter<'a> {
         Ok(Self {
             model,
             lock,
+            root_major,
+            dep_layout,
             package,
             top_names,
             prost_top_names,
@@ -243,6 +282,20 @@ impl<'a> Emitter<'a> {
             live_keys,
             used_imports: BTreeSet::new(),
         })
+    }
+
+    fn dep_file_name(&self, dependency: &Dependency) -> String {
+        self.dep_layout.map_or_else(
+            || dependency_file_name(dependency),
+            |layout| layout.proto_file_name(self.root_major, dependency),
+        )
+    }
+
+    fn dep_proto_package(&self, dependency: &Dependency) -> String {
+        self.dep_layout.map_or_else(
+            || dependency_proto_package(dependency),
+            |layout| layout.proto_package(self.root_major, dependency),
+        )
     }
 
     fn emit(mut self, header: &str) -> Result<String> {
@@ -968,10 +1021,10 @@ impl<'a> Emitter<'a> {
             && (dependency.package.namespace != self.model.package.namespace
                 || dependency.package.name != self.model.package.name)
         {
-            self.used_imports.insert(dependency_file_name(dependency));
+            self.used_imports.insert(self.dep_file_name(dependency));
             return Ok(format!(
                 ".{}.{}",
-                dependency_proto_package(dependency),
+                self.dep_proto_package(dependency),
                 ident::proto_type_name(name.interface_name(), &name.name)
             ));
         }
@@ -988,8 +1041,8 @@ impl<'a> Emitter<'a> {
         if dependency.package.namespace != self.model.package.namespace
             || dependency.package.name != self.model.package.name
         {
-            self.used_imports.insert(dependency_file_name(dependency));
-            format!(".{}.{wrapper}", dependency_proto_package(dependency))
+            self.used_imports.insert(self.dep_file_name(dependency));
+            format!(".{}.{wrapper}", self.dep_proto_package(dependency))
         } else {
             wrapper.to_string()
         }

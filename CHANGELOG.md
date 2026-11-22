@@ -8,6 +8,27 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Major-version boundaries, partial cross-major adapters, per-major dependencies, and version retirement (`W10-093`):**
+  - Across a major-version boundary (`old.major != new.major`), `witforge rust` no longer refuses
+    breaking changes: plain types for every live version are always written, `convert.rs` generates
+    adapters for every type that still converts, and non-convertible types (and types containing
+    them transitively) are omitted per direction with a deterministic sorted comment block at the
+    top of `convert.rs`. Intra-major incompatible evolutions remain refused (`WF2002`).
+  - `witforge diff` across a major boundary now permits changed, added, removed, or upgraded
+    dependencies and reports the exact same per-direction omission set as `convert.rs` (human
+    notes, `--json` `conversion_omissions`, `WF3004` notes in `--format json|sarif`, plus additive
+    library APIs `diff::ConversionOmission`, `diff::compare_omissions`, and
+    `diff::compare_with_omissions`).
+  - Pinned dependency-graph identity is now enforced per major rather than across majors: identical
+    dependencies stay at the shared `witforge_deps::<ns>_<pkg>` / `<ns>.<pkg>.v<dep_major>` paths,
+    while dependencies that change or upgrade across live majors are scoped per root major across
+    Rust, protobuf, JSON Schema, and glue.
+  - Added `<name> retired` entries in `wit/released` (with `ReleasedManifest::is_retired`,
+    `retired_directories`, `live_directories`, and `validate_retirement_order`): retiring a
+    contiguous oldest prefix of versions keeps their directories frozen on disk while removing them
+    from generated output (and drops a major's `.proto` and glue once all its versions are
+    retired). `witforge freeze` accepts the one-way `live -> retired` transition and refuses
+    un-retiring, removals, or edits to retired directories.
 - **Built-in release-freeze verification (`witforge freeze`, `W10-083`):**
   - Added `witforge freeze [<WIT_ROOT>] [--config PATH] [--project NAME] [--base REV]` and the
     `witforge::freeze` library module enforcing the Git-history release-freeze rule across

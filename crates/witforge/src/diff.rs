@@ -179,6 +179,24 @@ pub struct ConversionImpact {
     pub missing_path: String,
 }
 
+/// One type conversion omitted across a major-version boundary.
+///
+/// Inside a major, an evolution that cannot be converted is refused by `witforge rust`. Across a
+/// major boundary, `convert.rs` generates the adapters that still convert and omits the rest, per
+/// direction, including any containing type transitively. Consumers write manual adapters for the
+/// listed conversions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionOmission {
+    /// The source contract version, such as `0.2.0`.
+    pub from_version: Version,
+    /// The target contract version, such as `1.0.0`.
+    pub to_version: Version,
+    /// The canonical WIT type path, such as `types/order`.
+    pub type_path: String,
+    /// Human explanation of why the conversion is omitted in this direction.
+    pub reason: String,
+}
+
 /// A complete comparison plus its guaranteed conversion-impact notes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffAnalysis {
@@ -196,18 +214,18 @@ pub struct DiffAnalysis {
 ///
 /// Returns an error for an unreadable path, an invalid WIT package or lockfile, a version
 /// directory that does not match its package version, a stale or unlocked live member, two
-/// different package names, or mismatched dependency graphs. Contract violations carry
-/// [`ContractError`].
+/// different package names, or (within one major) mismatched dependency graphs. Contract
+/// violations carry [`ContractError`].
 pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
-    compare_report(old, new, false).map(|(report, _, _)| report)
+    compare_report(old, new, false).map(|(report, _, _, _)| report)
 }
 
 /// Compare two version directories, or the highest version under two WIT roots, and report
 /// guaranteed new-to-old conversion failures.
 ///
 /// A path containing `wire.lock` is a version directory. Any other path is a WIT root, and
-/// the WIT-root loader selects its highest version. Both endpoints must declare the same
-/// `namespace:name` and resolve the identical pinned dependency graph.
+/// the WIT-root loader selects its highest live version. Both endpoints must declare the same
+/// `namespace:name` and, within one major, resolve the identical pinned dependency graph.
 ///
 /// The notes do not change any compatibility verdict or count. They name a shared record type
 /// whose older version requires a member the newer version removed, when that member's type has
@@ -217,11 +235,25 @@ pub fn compare(old: &Path, new: &Path) -> Result<DiffReport> {
 ///
 /// Returns the same errors as [`compare`].
 pub fn compare_with_impacts(old: &Path, new: &Path) -> Result<DiffAnalysis> {
-    let (report, conversion_impacts, _) = compare_report(old, new, true)?;
+    let (report, conversion_impacts, _, _) = compare_report(old, new, true)?;
     Ok(DiffAnalysis {
         report,
         conversion_impacts,
     })
+}
+
+/// Compare two version directories or WIT roots and return the per-direction cross-major
+/// conversion omissions that require consumer code.
+///
+/// Within one major, returns an empty vector. Across a major boundary, returns the exact same set
+/// listed in the top comment block of `convert.rs`.
+///
+/// # Errors
+///
+/// Returns the same errors as [`compare`].
+pub fn compare_omissions(old: &Path, new: &Path) -> Result<Vec<ConversionOmission>> {
+    let (_, _, omissions, _) = compare_report(old, new, true)?;
+    Ok(omissions)
 }
 
 /// Compare two version directories or WIT roots and also return the physical source locations
@@ -238,7 +270,7 @@ pub fn compare_with_locations(
     old: &Path,
     new: &Path,
 ) -> Result<(DiffAnalysis, BTreeMap<String, (String, Position)>)> {
-    let (report, conversion_impacts, locations) = compare_report(old, new, true)?;
+    let (report, conversion_impacts, _, locations) = compare_report(old, new, true)?;
     Ok((
         DiffAnalysis {
             report,
@@ -248,7 +280,34 @@ pub fn compare_with_locations(
     ))
 }
 
-/// Build the report, optionally collecting conversion-impact notes and source locations.
+/// Compare two version directories or WIT roots and return the compatibility analysis,
+/// cross-major conversion omissions, and physical source locations.
+///
+/// # Errors
+///
+/// Returns the same errors as [`compare`].
+#[allow(clippy::type_complexity)]
+pub fn compare_with_omissions(
+    old: &Path,
+    new: &Path,
+) -> Result<(
+    DiffAnalysis,
+    Vec<ConversionOmission>,
+    BTreeMap<String, (String, Position)>,
+)> {
+    let (report, conversion_impacts, omissions, locations) = compare_report(old, new, true)?;
+    Ok((
+        DiffAnalysis {
+            report,
+            conversion_impacts,
+        },
+        omissions,
+        locations,
+    ))
+}
+
+/// Build the report, optionally collecting conversion-impact notes, cross-major omissions, and
+/// source locations.
 #[allow(clippy::type_complexity)]
 fn compare_report(
     old_arg: &Path,
@@ -257,6 +316,7 @@ fn compare_report(
 ) -> Result<(
     DiffReport,
     Vec<ConversionImpact>,
+    Vec<ConversionOmission>,
     BTreeMap<String, (String, Position)>,
 )> {
     let old = load_endpoint(old_arg)
@@ -296,7 +356,9 @@ fn compare_report(
             None,
         ));
     }
-    ensure_same_dependency_graph(&old.model.dependencies, &new.model.dependencies)?;
+    if old.model.package.version.major == new.model.package.version.major {
+        ensure_same_dependency_graph(&old.model.dependencies, &new.model.dependencies)?;
+    }
     let mut builder = Builder {
         old: &old,
         new: &new,
@@ -312,8 +374,21 @@ fn compare_report(
             .then_with(|| left.element.cmp(&right.element))
     });
     let summary = summarize(&changes);
+    let conversion_omissions = if collect_impacts {
+        crate::emit::convert::analyze_cross_major_omissions(&old.model, &new.model)?
+    } else {
+        Vec::new()
+    };
+    let reverse_omitted: BTreeSet<&str> = conversion_omissions
+        .iter()
+        .filter(|omission| {
+            omission.from_version == new.model.package.version
+                && omission.to_version == old.model.package.version
+        })
+        .map(|omission| omission.type_path.as_str())
+        .collect();
     let conversion_impacts = if collect_impacts {
-        conversion_impacts(&old, &new)?
+        conversion_impacts(&old, &new, &reverse_omitted)?
     } else {
         Vec::new()
     };
@@ -327,17 +402,26 @@ fn compare_report(
             summary,
         },
         conversion_impacts,
+        conversion_omissions,
         locations,
     ))
 }
 
-fn conversion_impacts(old: &Loaded, new: &Loaded) -> Result<Vec<ConversionImpact>> {
+fn conversion_impacts(
+    old: &Loaded,
+    new: &Loaded,
+    reverse_omitted: &BTreeSet<&str>,
+) -> Result<Vec<ConversionImpact>> {
     let mut impacts = Vec::new();
     for old_interface in &old.model.interfaces {
         let Some(new_interface) = new.model.interface(&old_interface.name) else {
             continue;
         };
         for old_type in &old_interface.types {
+            let type_path = format!("{}/{}", old_interface.name, old_type.name);
+            if reverse_omitted.contains(type_path.as_str()) {
+                continue;
+            }
             let Some(new_type) = new_interface
                 .types
                 .iter()
@@ -364,7 +448,6 @@ fn conversion_impacts(old: &Loaded, new: &Loaded) -> Result<Vec<ConversionImpact
                 }
             }
             if let Some(field) = missing {
-                let type_path = format!("{}/{}", old_interface.name, old_type.name);
                 impacts.push(ConversionImpact {
                     type_path: type_path.clone(),
                     from_version: new.model.package.version,
