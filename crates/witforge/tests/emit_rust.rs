@@ -777,6 +777,11 @@ fn generation_leaves_previous_output_when_a_write_fails() {
     let _ = fs::remove_dir_all(&base);
     let out = base.join("out");
     rust::generate(&root, &out).unwrap();
+    // Perturb an owned generated file so regeneration must attempt a write instead of skipping
+    // unchanged output.
+    let mut perturbed = fs::read_to_string(out.join("mod.rs")).unwrap();
+    perturbed.push_str("// drifted\n");
+    fs::write(out.join("mod.rs"), &perturbed).unwrap();
     let before = fs::read(out.join("mod.rs")).unwrap();
 
     let mut permissions = fs::metadata(&out).unwrap().permissions();

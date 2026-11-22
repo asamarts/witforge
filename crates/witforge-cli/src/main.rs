@@ -71,6 +71,7 @@ enum Command {
     Diff(DiffOptions),
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 struct RustOptions {
     /// WIT root containing version directories.
@@ -82,6 +83,9 @@ struct RustOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
     /// Add serde Serialize/Deserialize derives to generated types.
     #[arg(long, conflicts_with = "no_serde")]
     serde: bool,
@@ -107,6 +111,9 @@ struct ProtoOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -126,6 +133,9 @@ struct SchemaOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -151,6 +161,9 @@ struct GlueOptions {
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -895,7 +908,95 @@ fn guard_output_root(paths: &ResolvedPaths) -> Result<()> {
     emit::output::ensure_outside_released(manifest_dir, &manifest, &paths.out)
 }
 
+fn run_generator(
+    files: &emit::output::GeneratedFiles,
+    out: &Path,
+    check: bool,
+    show_diff: bool,
+    regen_command: &str,
+    reporter: &mut Reporter,
+) -> Result<ExitCode> {
+    if check {
+        let messages = files.check_with_command(out, regen_command)?;
+        if show_diff && reporter.human() && !messages.is_empty() {
+            let diff_text = files.unified_diff(out)?;
+            if !diff_text.is_empty() {
+                reporter.write_stdout_line(diff_text.trim_end_matches('\n'));
+            }
+        }
+        return Ok(check_messages(&messages, reporter));
+    }
+    let diff_text = if show_diff && reporter.human() {
+        Some(files.unified_diff(out)?)
+    } else {
+        None
+    };
+    files.write(out)?;
+    if let Some(text) = diff_text
+        && !text.is_empty()
+    {
+        reporter.write_stdout_line(text.trim_end_matches('\n'));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn regenerate_command(
+    verb: &str,
+    config: &ConfigArgs,
+    root: Option<&Path>,
+    out: Option<&Path>,
+    released: Option<&Path>,
+    plain_root: Option<&str>,
+    proto_root: Option<&str>,
+    serde_flag: Option<bool>,
+) -> String {
+    let mut command = format!("witforge {verb}");
+    if let Some(root) = root {
+        let _ = write!(command, " {}", shell_quote(root));
+    }
+    if let Some(out) = out {
+        let _ = write!(command, " --out {}", shell_quote(out));
+    }
+    if let Some(plain_root) = plain_root {
+        let _ = write!(
+            command,
+            " --plain-root {}",
+            shell_quote(Path::new(plain_root))
+        );
+    }
+    if let Some(proto_root) = proto_root {
+        let _ = write!(
+            command,
+            " --proto-root {}",
+            shell_quote(Path::new(proto_root))
+        );
+    }
+    match serde_flag {
+        Some(true) => command.push_str(" --serde"),
+        Some(false) => command.push_str(" --no-serde"),
+        None => {}
+    }
+    if let Some(released) = released {
+        let _ = write!(command, " --released {}", shell_quote(released));
+    }
+    if let Some(cfg) = &config.config {
+        let _ = write!(command, " --config {}", shell_quote(cfg));
+    }
+    if let Some(project) = &config.project {
+        let _ = write!(command, " --project {}", shell_quote(Path::new(project)));
+    }
+    command
+}
+
 fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let serde_override = if options.serde {
+        Some(true)
+    } else if options.no_serde {
+        Some(false)
+    } else {
+        None
+    };
     let paths = resolve_paths(
         Emitter::Rust,
         &options.config,
@@ -905,24 +1006,29 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             released: options.released.clone(),
             plain_root: None,
             proto_root: None,
-            serde: if options.serde {
-                Some(true)
-            } else if options.no_serde {
-                Some(false)
-            } else {
-                None
-            },
+            serde: serde_override,
         },
     )?;
     guard_output_root(&paths)?;
-    if options.check {
-        return Ok(check_messages(
-            &emit::rust::check_with_serde(&paths.root, &paths.out, paths.serde)?,
-            reporter,
-        ));
-    }
-    emit::rust::generate_with_serde(&paths.root, &paths.out, paths.serde)?;
-    Ok(ExitCode::SUCCESS)
+    let files = emit::rust::plan_with_serde(&paths.root, paths.serde)?;
+    let regen = regenerate_command(
+        "rust",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        None,
+        None,
+        serde_override,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
 }
 
 fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
@@ -939,14 +1045,25 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         },
     )?;
     guard_output_root(&paths)?;
-    if options.check {
-        return Ok(check_messages(
-            &emit::proto::check(&paths.root, &paths.out)?,
-            reporter,
-        ));
-    }
-    emit::proto::generate(&paths.root, &paths.out)?;
-    Ok(ExitCode::SUCCESS)
+    let files = emit::proto::plan(&paths.root)?;
+    let regen = regenerate_command(
+        "proto",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        None,
+        None,
+        None,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
 }
 
 fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> {
@@ -963,14 +1080,25 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         },
     )?;
     guard_output_root(&paths)?;
-    if options.check {
-        return Ok(check_messages(
-            &emit::json_schema::check(&paths.root, &paths.out)?,
-            reporter,
-        ));
-    }
-    emit::json_schema::generate(&paths.root, &paths.out)?;
-    Ok(ExitCode::SUCCESS)
+    let files = emit::json_schema::plan(&paths.root)?;
+    let regen = regenerate_command(
+        "schema",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        None,
+        None,
+        None,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
 }
 
 fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
@@ -997,14 +1125,25 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     // Glue is current-schema output for the highest minor of each major; released plain modules
     // stay frozen. As for the other generators, the manifest only has to be valid.
     guard_output_root(&paths)?;
-    if options.check {
-        return Ok(check_messages(
-            &emit::glue::check(&paths.root, &paths.out, plain_root, proto_root)?,
-            reporter,
-        ));
-    }
-    emit::glue::generate(&paths.root, &paths.out, plain_root, proto_root)?;
-    Ok(ExitCode::SUCCESS)
+    let files = emit::glue::plan(&paths.root, plain_root, proto_root)?;
+    let regen = regenerate_command(
+        "glue",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        options.plain_root.as_deref(),
+        options.proto_root.as_deref(),
+        None,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
 }
 
 fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCode> {

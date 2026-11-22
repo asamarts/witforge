@@ -97,10 +97,15 @@ impl GeneratedFiles {
 
     /// Write all expected files and remove stale generated files in `out`.
     ///
-    /// Each expected file is replaced atomically through a temporary sibling. Stale generated
-    /// files are removed only after all expected writes succeed. Files without a witforge header
-    /// are never touched. Files carrying the legacy pre-0.6.0 shared header for the same syntax
-    /// are adopted and rewritten with this generator's header.
+    /// Each expected file whose content already matches on disk is left untouched (preserving its
+    /// modification time, inode, and permissions). Expected files whose content changed are
+    /// replaced atomically through a process-unique temporary sibling, preserving the replaced
+    /// file's permission bits (including read-only files when the directory is writable). New
+    /// files use the default mode under the process umask. Stale generated files are removed only
+    /// after all expected writes succeed. Files without a witforge header (including unreadable
+    /// unrelated files) and non-regular entries (directories, symlinks, FIFOs) at non-expected
+    /// paths are never touched or opened past the bounded header probe. Active temporary siblings
+    /// (`.witforge.<name>.<pid>.<seq>.tmp`) from concurrent runs are ignored.
     ///
     /// Before anything is created, written, or removed:
     /// - if `out` exists, no regular file in `out` may carry another generator's or another
@@ -111,19 +116,33 @@ impl GeneratedFiles {
     /// # Errors
     ///
     /// Returns an error when `out` holds a file belonging to another generator or contract, when
-    /// an expected path is a symlink, is not a regular file, or is unowned, and on I/O failure.
+    /// an expected path is a symlink, is not a regular file, is unreadable, or is unowned, and on
+    /// I/O failure.
     pub fn write(&self, out: &Path) -> Result<()> {
         let mut stale = Vec::new();
         if out.exists() {
             let expected: std::collections::BTreeSet<&str> =
                 self.files.keys().map(String::as_str).collect();
             for entry in sorted_output_entries(out)? {
-                if !entry.file_type()?.is_file() {
+                let file_type = match entry.file_type() {
+                    Ok(ty) => ty,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(err.into()),
+                };
+                if !file_type.is_file() {
                     continue;
                 }
                 let path = entry.path();
                 let name = entry.file_name().to_string_lossy().into_owned();
-                match self.classify(&path)? {
+                if is_temp_file(&name) {
+                    continue;
+                }
+                let kind = if expected.contains(name.as_str()) {
+                    self.classify(&path)?
+                } else {
+                    self.classify_unrelated(&path)?
+                };
+                match kind {
                     HeaderKind::Foreign(owner) => bail!(
                         "refusing to write into `{}`: `{}` belongs to {owner}; give each \
                          generator and contract its own output root",
@@ -176,11 +195,22 @@ impl GeneratedFiles {
         fs::create_dir_all(out)
             .with_context(|| format!("failed to create output root {}", out.display()))?;
         for (name, contents) in &self.files {
-            write_atomic(&out.join(name), contents.as_bytes())?;
+            let path = out.join(name);
+            let bytes = contents.as_bytes();
+            if fs::read(&path).is_ok_and(|existing| existing == bytes) {
+                continue;
+            }
+            write_atomic(&path, bytes)?;
         }
         for path in stale {
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove stale {}", path.display()))?;
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to remove stale {}", path.display()));
+                }
+            }
         }
         Ok(())
     }
@@ -190,26 +220,58 @@ impl GeneratedFiles {
     /// Returns one message per missing, changed, or extra generated file, and per expected path
     /// that [`GeneratedFiles::write`] would refuse: a symlink, something other than a regular
     /// file, or an unowned file. Only regular files are read, so a FIFO or a device at an
-    /// expected path cannot block the check. Files without a witforge header at other paths are
+    /// expected path cannot block the check. Files without a witforge header (including
+    /// unreadable unrelated files) and active `.witforge.*.tmp` temporaries at other paths are
     /// ignored.
     ///
     /// # Errors
     ///
     /// Returns an error when the output root is missing or cannot be read, when any file in `out`
-    /// carries another generator's or another contract's header, or when a file cannot be
-    /// inspected or read.
+    /// carries another generator's or another contract's header, or when an expected file cannot
+    /// be inspected or read.
     pub fn check(&self, out: &Path) -> Result<Vec<String>> {
+        self.check_inner(out, None)
+    }
+
+    /// Like [`GeneratedFiles::check`], appending `regenerate_command` as the fix hint on each
+    /// missing, changed, or extra generated-file message.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`GeneratedFiles::check`].
+    pub fn check_with_command(&self, out: &Path, regenerate_command: &str) -> Result<Vec<String>> {
+        self.check_inner(out, Some(regenerate_command))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn check_inner(&self, out: &Path, regenerate_command: Option<&str>) -> Result<Vec<String>> {
         if !out.is_dir() {
             bail!("output root {} does not exist", out.display());
         }
+        let hint = |suffix: &str| {
+            regenerate_command.map_or_else(String::new, |cmd| format!("{suffix}run `{cmd}`"))
+        };
         let mut extra = Vec::new();
         for entry in sorted_output_entries(out)? {
-            if !entry.file_type()?.is_file() {
+            let file_type = match entry.file_type() {
+                Ok(ty) => ty,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err.into()),
+            };
+            if !file_type.is_file() {
                 continue;
             }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            match self.classify(&path)? {
+            if is_temp_file(&name) {
+                continue;
+            }
+            let kind = if self.files.contains_key(&name) {
+                self.classify(&path)?
+            } else {
+                self.classify_unrelated(&path)?
+            };
+            match kind {
                 HeaderKind::Foreign(owner) => bail!(
                     "output root `{}` contains `{}` which belongs to {owner}; give each \
                      generator and contract its own output root",
@@ -217,7 +279,11 @@ impl GeneratedFiles {
                     path.display()
                 ),
                 HeaderKind::Owned | HeaderKind::LegacyShared if !self.files.contains_key(&name) => {
-                    extra.push(format!("extra generated file `{}`", path.display()));
+                    extra.push(format!(
+                        "extra generated file `{}`{}",
+                        path.display(),
+                        hint("; ")
+                    ));
                 }
                 HeaderKind::Owned | HeaderKind::LegacyShared | HeaderKind::Unowned => {}
             }
@@ -229,7 +295,11 @@ impl GeneratedFiles {
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    messages.push(format!("missing generated file `{}`", path.display()));
+                    messages.push(format!(
+                        "missing generated file `{}`{}",
+                        path.display(),
+                        hint("; ")
+                    ));
                     continue;
                 }
                 Err(err) => {
@@ -253,7 +323,12 @@ impl GeneratedFiles {
                         let actual = fs::read(&path)
                             .with_context(|| format!("failed to read {}", path.display()))?;
                         if actual != expected.as_bytes() {
-                            messages.push(format!("changed generated file `{}`", path.display()));
+                            let detail = describe_change(&actual, expected);
+                            messages.push(format!(
+                                "changed generated file `{}`: {detail}{}",
+                                path.display(),
+                                hint("; ")
+                            ));
                         }
                     }
                     HeaderKind::Foreign(owner) => bail!(
@@ -276,18 +351,125 @@ impl GeneratedFiles {
         Ok(messages)
     }
 
+    /// Render a unified diff between the current files in `out` and this expected file set.
+    ///
+    /// Returns an empty string when `out` already matches every expected file with no extra
+    /// generated files. If `out` does not exist yet, every expected file is shown as added from
+    /// `/dev/null`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `out` holds a foreign generator's or contract's file or when an
+    /// owned file cannot be read.
+    pub fn unified_diff(&self, out: &Path) -> Result<String> {
+        let mut rendered = String::new();
+        if out.is_dir() {
+            for entry in sorted_output_entries(out)? {
+                let file_type = match entry.file_type() {
+                    Ok(ty) => ty,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(err.into()),
+                };
+                if !file_type.is_file() {
+                    continue;
+                }
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if is_temp_file(&name) || self.files.contains_key(&name) {
+                    continue;
+                }
+                match self.classify_unrelated(&path)? {
+                    HeaderKind::Foreign(owner) => bail!(
+                        "output root `{}` contains `{}` which belongs to {owner}; give each \
+                         generator and contract its own output root",
+                        out.display(),
+                        path.display()
+                    ),
+                    HeaderKind::Owned | HeaderKind::LegacyShared => {
+                        let actual = fs::read_to_string(&path)
+                            .with_context(|| format!("failed to read {}", path.display()))?;
+                        rendered.push_str(&render_unified_diff(
+                            &path.display().to_string(),
+                            Some(&actual),
+                            None,
+                        ));
+                    }
+                    HeaderKind::Unowned => {}
+                }
+            }
+        }
+        for (name, expected) in &self.files {
+            let path = out.join(name);
+            let label = path.display().to_string();
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                    match self.classify(&path)? {
+                        HeaderKind::Owned | HeaderKind::LegacyShared => {
+                            let actual_bytes = fs::read(&path)
+                                .with_context(|| format!("failed to read {}", path.display()))?;
+                            if actual_bytes != expected.as_bytes() {
+                                let actual = String::from_utf8_lossy(&actual_bytes);
+                                rendered.push_str(&render_unified_diff(
+                                    &label,
+                                    Some(&actual),
+                                    Some(expected),
+                                ));
+                            }
+                        }
+                        HeaderKind::Foreign(owner) => bail!(
+                            "output root `{}` contains `{}` which belongs to {owner}; give each \
+                             generator and contract its own output root",
+                            out.display(),
+                            path.display()
+                        ),
+                        HeaderKind::Unowned => {}
+                    }
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    rendered.push_str(&render_unified_diff(&label, None, Some(expected)));
+                }
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to inspect {}", path.display()));
+                }
+            }
+        }
+        Ok(rendered)
+    }
+
+    /// Classify the first line of an unrelated file in `out`, skipping unreadable or vanished
+    /// files as unowned so unrelated files never abort a run.
+    fn classify_unrelated(&self, path: &Path) -> Result<HeaderKind> {
+        match self.classify_raw(path) {
+            Ok(kind) => Ok(kind),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+                ) =>
+            {
+                Ok(HeaderKind::Unowned)
+            }
+            Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
+        }
+    }
+
     /// Classify the first line of `path` against this output set's ownership header.
     ///
     /// Only the first line (up to a small byte bound) is read as raw bytes, so non-UTF-8 files
     /// (such as `.DS_Store` or images) are recognised as unowned without failing.
     fn classify(&self, path: &Path) -> Result<HeaderKind> {
+        self.classify_raw(path)
+            .with_context(|| format!("failed to read {}", path.display()))
+    }
+
+    fn classify_raw(&self, path: &Path) -> std::io::Result<HeaderKind> {
         let limit = u64::try_from(self.header.len() + 2)
             .unwrap_or(MAX_HEADER_LINE_BYTES)
             .max(MAX_HEADER_LINE_BYTES);
         let mut buf = Vec::new();
-        File::open(path)
-            .and_then(|file| file.take(limit).read_to_end(&mut buf))
-            .with_context(|| format!("failed to read {}", path.display()))?;
+        File::open(path)?.take(limit).read_to_end(&mut buf)?;
         let mut line = match buf.iter().position(|&byte| byte == b'\n') {
             Some(newline) => &buf[..newline],
             None => &buf[..],
@@ -297,6 +479,263 @@ impl GeneratedFiles {
         }
         Ok(classify_header_line(&self.header, line))
     }
+}
+
+/// Whether `name` is a witforge atomic-write temporary file (`.witforge.<name>.<pid>.<seq>.tmp`).
+fn is_temp_file(name: &str) -> bool {
+    let Some(inner) = name
+        .strip_prefix(".witforge.")
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((prefix, seq)) = inner.rsplit_once('.') else {
+        return false;
+    };
+    let Some((base, pid)) = prefix.rsplit_once('.') else {
+        return false;
+    };
+    !base.is_empty()
+        && !pid.is_empty()
+        && !seq.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && seq.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn describe_change(actual_bytes: &[u8], expected: &str) -> String {
+    let Ok(actual) = std::str::from_utf8(actual_bytes) else {
+        return "content differs (non-UTF-8 bytes)".to_string();
+    };
+    if actual.replace("\r\n", "\n") == expected {
+        return "line endings differ (CRLF vs LF; check git core.autocrlf)".to_string();
+    }
+    let actual_lines: Vec<&str> = split_lines_keep_cr(actual);
+    let expected_lines: Vec<&str> = split_lines_keep_cr(expected);
+    let shared = actual_lines.len().min(expected_lines.len());
+    for index in 0..shared {
+        if actual_lines[index] != expected_lines[index] {
+            let line_no = index + 1;
+            return format!(
+                "first difference at line {line_no}: expected {}, found {}",
+                format_line_snippet(expected_lines[index]),
+                format_line_snippet(actual_lines[index]),
+            );
+        }
+    }
+    let line_no = shared + 1;
+    match actual_lines.len().cmp(&expected_lines.len()) {
+        std::cmp::Ordering::Less => format!(
+            "first difference at line {line_no}: expected {}, found end of file",
+            format_line_snippet(expected_lines[shared]),
+        ),
+        std::cmp::Ordering::Greater => format!(
+            "first difference at line {line_no}: expected end of file, found {}",
+            format_line_snippet(actual_lines[shared]),
+        ),
+        std::cmp::Ordering::Equal => "trailing newline differs".to_string(),
+    }
+}
+
+fn split_lines_keep_cr(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let trimmed = text.strip_suffix('\n').unwrap_or(text);
+    trimmed.split('\n').collect()
+}
+
+fn format_line_snippet(line: &str) -> String {
+    let display = if let Some(stripped) = line.strip_suffix('\r') {
+        format!("{stripped}\\r")
+    } else {
+        line.to_string()
+    };
+    let mut chars = display.chars();
+    let truncated: String = chars.by_ref().take(100).collect();
+    if chars.next().is_some() {
+        format!("{truncated:?}...")
+    } else {
+        format!("{truncated:?}")
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiffOp {
+    Context(usize, usize),
+    Delete(usize),
+    Insert(usize),
+}
+
+fn render_unified_diff(path: &str, actual: Option<&str>, expected: Option<&str>) -> String {
+    use std::fmt::Write as _;
+
+    let old_lines: Vec<&str> = actual.map_or_else(Vec::new, split_lines_keep_cr);
+    let new_lines: Vec<&str> = expected.map_or_else(Vec::new, split_lines_keep_cr);
+    let mut out = String::new();
+    let old_header = if actual.is_some() {
+        format!("a/{path}")
+    } else {
+        "/dev/null".to_string()
+    };
+    let new_header = if expected.is_some() {
+        format!("b/{path}")
+    } else {
+        "/dev/null".to_string()
+    };
+    let _ = writeln!(out, "--- {old_header}");
+    let _ = writeln!(out, "+++ {new_header}");
+
+    let ops = compute_diff_ops(&old_lines, &new_lines);
+    let context = 3usize;
+    let changed_indices: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, op)| (!matches!(op, DiffOp::Context(_, _))).then_some(idx))
+        .collect();
+    if changed_indices.is_empty() {
+        return out;
+    }
+
+    let mut hunk_ranges: Vec<(usize, usize)> = Vec::new();
+    for idx in changed_indices {
+        let start = idx.saturating_sub(context);
+        let end = (idx + context + 1).min(ops.len());
+        if let Some(last) = hunk_ranges.last_mut()
+            && start <= last.1
+        {
+            last.1 = end;
+        } else {
+            hunk_ranges.push((start, end));
+        }
+    }
+
+    for (start, end) in hunk_ranges {
+        let slice = &ops[start..end];
+        let old_count = slice
+            .iter()
+            .filter(|op| matches!(op, DiffOp::Context(_, _) | DiffOp::Delete(_)))
+            .count();
+        let new_count = slice
+            .iter()
+            .filter(|op| matches!(op, DiffOp::Context(_, _) | DiffOp::Insert(_)))
+            .count();
+        let old_start = slice
+            .iter()
+            .find_map(|op| match *op {
+                DiffOp::Context(i, _) | DiffOp::Delete(i) => Some(i + 1),
+                DiffOp::Insert(_) => None,
+            })
+            .unwrap_or(0);
+        let new_start = slice
+            .iter()
+            .find_map(|op| match *op {
+                DiffOp::Context(_, j) | DiffOp::Insert(j) => Some(j + 1),
+                DiffOp::Delete(_) => None,
+            })
+            .unwrap_or(0);
+        let _ = writeln!(
+            out,
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@"
+        );
+        for &op in slice {
+            match op {
+                DiffOp::Context(i, _) => {
+                    let _ = writeln!(out, " {}", format_diff_line(old_lines[i]));
+                }
+                DiffOp::Delete(i) => {
+                    let _ = writeln!(out, "-{}", format_diff_line(old_lines[i]));
+                }
+                DiffOp::Insert(j) => {
+                    let _ = writeln!(out, "+{}", format_diff_line(new_lines[j]));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn format_diff_line(line: &str) -> String {
+    if let Some(stripped) = line.strip_suffix('\r') {
+        format!("{stripped}\\r")
+    } else {
+        line.to_string()
+    }
+}
+
+fn compute_diff_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
+    let mut prefix = 0usize;
+    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while prefix + suffix < old.len()
+        && prefix + suffix < new.len()
+        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let mut ops = Vec::with_capacity(old.len().max(new.len()));
+    for idx in 0..prefix {
+        ops.push(DiffOp::Context(idx, idx));
+    }
+
+    let old_mid = &old[prefix..old.len() - suffix];
+    let new_mid = &new[prefix..new.len() - suffix];
+    let m = old_mid.len();
+    let n = new_mid.len();
+
+    // Exact LCS for ordinary files; bounded fallback avoids quadratic memory on giant files.
+    if m.saturating_mul(n) <= 400_000 {
+        let mut dp = vec![0u32; (m + 1) * (n + 1)];
+        let stride = n + 1;
+        for i in (0..m).rev() {
+            for j in (0..n).rev() {
+                dp[i * stride + j] = if old_mid[i] == new_mid[j] {
+                    dp[(i + 1) * stride + (j + 1)] + 1
+                } else {
+                    dp[(i + 1) * stride + j].max(dp[i * stride + (j + 1)])
+                };
+            }
+        }
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < m && j < n {
+            if old_mid[i] == new_mid[j] {
+                ops.push(DiffOp::Context(prefix + i, prefix + j));
+                i += 1;
+                j += 1;
+            } else if dp[(i + 1) * stride + j] >= dp[i * stride + (j + 1)] {
+                ops.push(DiffOp::Delete(prefix + i));
+                i += 1;
+            } else {
+                ops.push(DiffOp::Insert(prefix + j));
+                j += 1;
+            }
+        }
+        while i < m {
+            ops.push(DiffOp::Delete(prefix + i));
+            i += 1;
+        }
+        while j < n {
+            ops.push(DiffOp::Insert(prefix + j));
+            j += 1;
+        }
+    } else {
+        for i in 0..m {
+            ops.push(DiffOp::Delete(prefix + i));
+        }
+        for j in 0..n {
+            ops.push(DiffOp::Insert(prefix + j));
+        }
+    }
+
+    for k in 0..suffix {
+        ops.push(DiffOp::Context(
+            old.len() - suffix + k,
+            new.len() - suffix + k,
+        ));
+    }
+    ops
 }
 
 fn sorted_output_entries(out: &Path) -> Result<Vec<fs::DirEntry>> {
@@ -366,7 +805,9 @@ fn parse_scoped_header(line: &str) -> Option<(&str, &str)> {
 /// Replace `path` with `contents` through a temporary file in the same directory.
 ///
 /// A failed write leaves the previous file untouched and removes the temporary file. The
-/// temporary name is hidden and unique per process/call.
+/// temporary name is hidden, prefixed with `.witforge.`, and unique per process/call. If `path`
+/// already exists, its permission bits are copied onto the temporary file before rename so a
+/// replaced file keeps its mode (including read-only files in a writable directory).
 fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()
@@ -375,9 +816,13 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let name = path
         .file_name()
         .with_context(|| format!("output path `{}` has no file name", path.display()))?;
+    let existing_perms = fs::symlink_metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .map(|metadata| metadata.permissions());
     let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temporary = parent.join(format!(
-        ".{}.{}.{}.tmp",
+        ".witforge.{}.{}.{}.tmp",
         name.to_string_lossy(),
         std::process::id(),
         sequence
@@ -392,11 +837,34 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
             .with_context(|| format!("failed to write {}", temporary.display()))?;
         file.sync_all()
             .with_context(|| format!("failed to sync {}", temporary.display()))?;
+        drop(file);
+        if let Some(perms) = existing_perms {
+            #[cfg(windows)]
+            let was_readonly = perms.readonly();
+            fs::set_permissions(&temporary, perms)
+                .with_context(|| format!("failed to set permissions on {}", temporary.display()))?;
+            #[cfg(windows)]
+            if was_readonly
+                && let Ok(mut target_perms) = fs::metadata(path).map(|m| m.permissions())
+            {
+                #[allow(clippy::permissions_set_readonly_false)]
+                target_perms.set_readonly(false);
+                let _ = fs::set_permissions(path, target_perms);
+            }
+        }
         fs::rename(&temporary, path)
             .with_context(|| format!("failed to replace {}", path.display()))?;
         Ok(())
     })();
     if result.is_err() {
+        #[cfg(windows)]
+        if let Ok(mut perms) = fs::metadata(&temporary).map(|m| m.permissions())
+            && perms.readonly()
+        {
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = fs::set_permissions(&temporary, perms);
+        }
         let _ = fs::remove_file(&temporary);
     }
     result
@@ -777,6 +1245,241 @@ mod tests {
         assert!(write_err.contains("a.rs"), "{write_err}");
         let check_err = format!("{:#}", files.check(&out).unwrap_err());
         assert!(check_err.contains("a.rs"), "{check_err}");
+
+        fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn write_skips_unchanged_preserves_modes_handles_unreadable_and_concurrent_runs() {
+        let out =
+            std::env::temp_dir().join(format!("witforge-output-w10-076-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(&out).unwrap();
+
+        let header = comment_header("rust", "ex", "modes");
+        let mut files = GeneratedFiles::new(header.clone());
+        files
+            .insert("mod.rs", format!("{header}\npub mod v0_1;\n"))
+            .unwrap();
+        files
+            .insert("v0_1.rs", format!("{header}\npub struct A;\n"))
+            .unwrap();
+        files.write(&out).unwrap();
+
+        let mod_path = out.join("mod.rs");
+        let v01_path = out.join("v0_1.rs");
+
+        // Unchanged rewrite preserves inode/mtime/mode; changed content preserves mode bits
+        // (including read-only files in a writable directory) on every platform.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            fs::set_permissions(&mod_path, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(&v01_path, fs::Permissions::from_mode(0o444)).unwrap();
+
+            let before_meta = fs::metadata(&mod_path).unwrap();
+            let before_ino = before_meta.ino();
+            let before_mtime = before_meta.modified().unwrap();
+
+            files.write(&out).unwrap();
+            let after_meta = fs::metadata(&mod_path).unwrap();
+            assert_eq!(after_meta.ino(), before_ino, "unchanged file was rewritten");
+            assert_eq!(after_meta.modified().unwrap(), before_mtime);
+            assert_eq!(after_meta.permissions().mode() & 0o777, 0o600);
+        }
+        #[cfg(not(unix))]
+        {
+            let mut ro = fs::metadata(&v01_path).unwrap().permissions();
+            ro.set_readonly(true);
+            fs::set_permissions(&v01_path, ro).unwrap();
+            files.write(&out).unwrap();
+        }
+
+        let mut updated = GeneratedFiles::new(header.clone());
+        updated
+            .insert(
+                "mod.rs",
+                format!("{header}\npub mod v0_1;\npub mod v0_2;\n"),
+            )
+            .unwrap();
+        updated
+            .insert("v0_1.rs", format!("{header}\npub struct B;\n"))
+            .unwrap();
+        updated.write(&out).unwrap();
+        assert!(fs::read_to_string(&v01_path).unwrap().contains("struct B"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&mod_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&v01_path).unwrap().permissions().mode() & 0o777,
+                0o444
+            );
+            fs::set_permissions(&v01_path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            let mut perms = fs::metadata(&v01_path).unwrap().permissions();
+            assert!(perms.readonly());
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            fs::set_permissions(&v01_path, perms).unwrap();
+        }
+        files = updated;
+        assert_eq!(files.check(&out).unwrap(), Vec::<String>::new());
+
+        // Unrelated non-regular entries (subdir, dangling symlink, FIFO) and unreadable unrelated
+        // file never abort or block write() or check().
+        fs::create_dir_all(out.join("subdir")).unwrap();
+        let active_tmp = out.join(".witforge.mod.rs.999999.0.tmp");
+        fs::write(&active_tmp, format!("{header}\n// in-flight\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::os::unix::fs::symlink(out.join("missing-target"), out.join("dangling")).unwrap();
+            let unreadable = out.join("secret.txt");
+            fs::write(&unreadable, "private\n").unwrap();
+            fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+            // Create a FIFO (named pipe) that would block forever if opened.
+            let fifo = out.join("pipe.fifo");
+            let mkfifo = std::process::Command::new("mkfifo").arg(&fifo).status();
+            let has_fifo = mkfifo.is_ok_and(|status| status.success());
+
+            assert_eq!(files.check(&out).unwrap(), Vec::<String>::new());
+            files.write(&out).unwrap();
+            assert!(
+                active_tmp.exists(),
+                "another process's temporary file must not be removed"
+            );
+
+            // An unreadable EXPECTED file IS an error naming the file.
+            fs::set_permissions(&mod_path, fs::Permissions::from_mode(0o000)).unwrap();
+            let check_err = format!("{:#}", files.check(&out).unwrap_err());
+            assert!(check_err.contains("mod.rs"), "{check_err}");
+            let write_err = format!("{:#}", files.write(&out).unwrap_err());
+            assert!(write_err.contains("mod.rs"), "{write_err}");
+            fs::set_permissions(&mod_path, fs::Permissions::from_mode(0o644)).unwrap();
+            fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+            if has_fifo {
+                let _ = fs::remove_file(&fifo);
+            }
+        }
+        let _ = fs::remove_file(&active_tmp);
+
+        // Concurrent writers into one root both finish cleanly and leave complete files.
+        let mut set_a = GeneratedFiles::new(header.clone());
+        set_a
+            .insert("mod.rs", format!("{header}\n// writer A\npub mod a;\n"))
+            .unwrap();
+        let mut set_b = GeneratedFiles::new(header.clone());
+        set_b
+            .insert("mod.rs", format!("{header}\n// writer B\npub mod b;\n"))
+            .unwrap();
+        let out_a = out.clone();
+        let out_b = out.clone();
+        let handle_a = std::thread::spawn(move || {
+            for _ in 0..20 {
+                set_a.write(&out_a).unwrap();
+            }
+        });
+        let handle_b = std::thread::spawn(move || {
+            for _ in 0..20 {
+                set_b.write(&out_b).unwrap();
+            }
+        });
+        handle_a.join().unwrap();
+        handle_b.join().unwrap();
+        let final_mod = fs::read_to_string(&mod_path).unwrap();
+        assert!(
+            final_mod == format!("{header}\n// writer A\npub mod a;\n")
+                || final_mod == format!("{header}\n// writer B\npub mod b;\n"),
+            "corrupted concurrent output: {final_mod:?}"
+        );
+        let leftovers = fs::read_dir(&out)
+            .unwrap()
+            .flatten()
+            .filter(|entry| is_temp_file(&entry.file_name().to_string_lossy()))
+            .count();
+        assert_eq!(leftovers, 0);
+
+        fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn check_explains_first_difference_crlf_and_renders_unified_diff() {
+        let out = std::env::temp_dir().join(format!(
+            "witforge-output-diff-explain-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        let header = comment_header("rust", "ex", "diff");
+        let mut files = GeneratedFiles::new(header.clone());
+        files
+            .insert("mod.rs", format!("{header}\npub mod v0_1;\n"))
+            .unwrap();
+        files
+            .insert("v0_1.rs", format!("{header}\npub struct Item;\n"))
+            .unwrap();
+        files.write(&out).unwrap();
+
+        // 1. Line content change + missing file + extra file.
+        fs::write(out.join("mod.rs"), format!("{header}\npub mod wrong;\n")).unwrap();
+        fs::remove_file(out.join("v0_1.rs")).unwrap();
+        fs::write(out.join("stale.rs"), format!("{header}\n// stale\n")).unwrap();
+
+        let messages = files
+            .check_with_command(&out, "witforge rust wit --out gen")
+            .unwrap();
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert!(
+            messages.iter().any(|m| m.contains("changed generated file")
+                && m.contains("first difference at line 2")
+                && m.contains("pub mod v0_1;")
+                && m.contains("pub mod wrong;")
+                && m.contains("run `witforge rust wit --out gen`")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("missing generated file")
+                && m.contains("v0_1.rs")
+                && m.contains("run `witforge rust wit --out gen`")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("extra generated file")
+                && m.contains("stale.rs")
+                && m.contains("run `witforge rust wit --out gen`")),
+            "{messages:?}"
+        );
+
+        let diff = files.unified_diff(&out).unwrap();
+        assert!(diff.contains("--- a/"), "{diff}");
+        assert!(diff.contains("+++ b/"), "{diff}");
+        assert!(diff.contains("@@ "), "{diff}");
+        assert!(diff.contains("-pub mod wrong;"), "{diff}");
+        assert!(diff.contains("+pub mod v0_1;"), "{diff}");
+        assert!(diff.contains("--- /dev/null"), "{diff}");
+        assert!(diff.contains("+++ /dev/null"), "{diff}");
+
+        // 2. CRLF-only change reports the line-ending hint.
+        files.write(&out).unwrap();
+        let crlf = format!("{header}\r\npub mod v0_1;\r\n");
+        fs::write(out.join("mod.rs"), crlf).unwrap();
+        let crlf_msgs = files
+            .check_with_command(&out, "witforge rust wit --out gen")
+            .unwrap();
+        assert_eq!(crlf_msgs.len(), 1, "{crlf_msgs:?}");
+        assert!(
+            crlf_msgs[0].contains("line endings differ") && crlf_msgs[0].contains("core.autocrlf"),
+            "{crlf_msgs:?}"
+        );
+        let crlf_diff = files.unified_diff(&out).unwrap();
+        assert!(crlf_diff.contains("\\r"), "{crlf_diff}");
 
         fs::remove_dir_all(&out).unwrap();
     }

@@ -3718,3 +3718,102 @@ fn cli_remedy_messages_are_accurate_and_run_as_printed() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn check_explains_drift_with_config_command_crlf_hint_and_unified_diff() {
+    let base = std::env::temp_dir().join(format!("witforge-check-diff-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let v01 = wit_root.join("v0.1");
+    fs::create_dir_all(&v01).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package example:demo@0.1.0;\ninterface types { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock", "--first"])
+            .arg(&v01)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let cfg = base.join("witforge.toml");
+    fs::write(
+        &cfg,
+        "version = 1\n[project.alpha]\nroot = \"wit\"\n[project.alpha.rust]\nout = \"gen/alpha\"\n[project.beta]\nroot = \"wit\"\n[project.beta.rust]\nout = \"gen/beta\"\n",
+    )
+    .unwrap();
+
+    // Generate with --diff on a fresh directory prints the added files and exits 0.
+    let first_gen = witforge()
+        .args(["rust", "--config"])
+        .arg(&cfg)
+        .args(["--project", "alpha", "--diff"])
+        .output()
+        .unwrap();
+    assert!(first_gen.status.success(), "{first_gen:?}");
+    let first_stdout = String::from_utf8_lossy(&first_gen.stdout);
+    assert!(first_stdout.contains("--- /dev/null"), "{first_stdout}");
+    assert!(first_stdout.contains("+++ b/"), "{first_stdout}");
+
+    // Clean --check --diff prints nothing and exits 0.
+    let clean = witforge()
+        .args(["rust", "--config"])
+        .arg(&cfg)
+        .args(["--project", "alpha", "--check", "--diff"])
+        .output()
+        .unwrap();
+    assert!(clean.status.success(), "{clean:?}");
+    assert!(clean.stdout.is_empty(), "{clean:?}");
+
+    // Mutate one generated line: --check --diff reports first differing line, prints a unified
+    // diff on stdout, names the exact --config/--project command, and keeps exit status 1.
+    let mod_rs = base.join("gen/alpha/mod.rs");
+    let original = fs::read_to_string(&mod_rs).unwrap();
+    fs::write(&mod_rs, original.replace("pub mod v0_1;", "pub mod stale;")).unwrap();
+    let stale_check = witforge()
+        .args(["rust", "--config"])
+        .arg(&cfg)
+        .args(["--project", "alpha", "--check", "--diff"])
+        .output()
+        .unwrap();
+    assert_eq!(stale_check.status.code(), Some(1), "{stale_check:?}");
+    let stderr = String::from_utf8_lossy(&stale_check.stderr);
+    let stdout = String::from_utf8_lossy(&stale_check.stdout);
+    assert!(stderr.contains("first difference at line"), "{stderr}");
+    assert!(stderr.contains("pub mod v0_1;"), "{stderr}");
+    assert!(stderr.contains("pub mod stale;"), "{stderr}");
+    assert!(stderr.contains("--config"), "{stderr}");
+    assert!(stderr.contains("--project alpha"), "{stderr}");
+    assert!(stdout.contains("--- a/"), "{stdout}");
+    assert!(stdout.contains("-pub mod stale;"), "{stdout}");
+    assert!(stdout.contains("+pub mod v0_1;"), "{stdout}");
+
+    // Executing the printed regenerating command fixes drift cleanly.
+    let cmds = extract_witforge_commands(&stderr);
+    assert_eq!(cmds.len(), 1, "expected 1 regen command in: {stderr}");
+    let ran = run_printed_command(&cmds[0]);
+    assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
+    assert_eq!(fs::read_to_string(&mod_rs).unwrap(), original);
+
+    // CRLF-only drift gives a line-ending hint.
+    fs::write(&mod_rs, original.replace('\n', "\r\n")).unwrap();
+    let crlf_check = witforge()
+        .args(["rust", "--config"])
+        .arg(&cfg)
+        .args(["--project", "alpha", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(crlf_check.status.code(), Some(1), "{crlf_check:?}");
+    let crlf_stderr = String::from_utf8_lossy(&crlf_check.stderr);
+    assert!(
+        crlf_stderr.contains("line endings differ") && crlf_stderr.contains("core.autocrlf"),
+        "{crlf_stderr}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

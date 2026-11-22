@@ -822,14 +822,14 @@ witforge check <version-dir> [--lock <path>] [--against <path> | --first]
 witforge lock  <version-dir> [--lock <path>] [--against <path> | --first]
                             [--released <path>]
 witforge rust  [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
-               [--serde | --no-serde] [--check] [--released <path>]
+               [--serde | --no-serde] [--check] [--diff] [--released <path>]
                # also writes convert.rs for adjacent versions
 witforge proto [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
-                            [--check] [--released <path>]
+                            [--check] [--diff] [--released <path>]
 witforge schema [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
-                            [--check] [--released <path>]
+                            [--check] [--diff] [--released <path>]
 witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <path>]
-                            [--config <file>] [--project <name>] [--check]
+                            [--config <file>] [--project <name>] [--check] [--diff]
                             [--released <path>]
 witforge diff  <old> <new> [--check] [--json]
 ```
@@ -878,14 +878,30 @@ Every command also accepts the global `--format human|json|sarif`
 - `--check` writes nothing. It fails if an expected file is missing or differs, if a
   generated-header file in the output root is not expected, or if an expected path is one that
   generation refuses to write (see below), so `--check` and generation agree on what needs
-  fixing. It ignores files without the header at other paths. It reads only regular files, so a
-  FIFO or a device at an expected path is reported without being opened. Recognising the header
-  reads only the start of each file, as bytes, so a file that is not UTF-8 text (a `.DS_Store`,
-  an image) is ignored like any other file without the header.
-- Generation removes stale generated files in the output root and never touches files without
-  the header. It validates every version before writing the first file, and writes each expected
-  file through a temporary sibling and rename. A failed run may leave a mix of old and new files,
-  but never a truncated file; rerunning after fixing the input completes it.
+  fixing. For every missing, changed, or extra generated file it names the regenerating command
+  (preserving `--config` and `--project` or explicit paths); for a changed file it also prints
+  the first differing line (both expected and actual) or a line-ending hint when only CRLF vs LF
+  differs. Passing `--diff` prints a unified diff to stdout without changing the exit status (in
+  either `--check` or generation mode). `--check` ignores files without the header at other paths,
+  including unreadable unrelated files. It reads only regular files, so a directory, dangling
+  symlink, FIFO, or device is never opened. Recognising the header reads only a bounded prefix at
+  the start of each file, as bytes, so a file that is not UTF-8 text (a `.DS_Store`, an image) is
+  ignored like any other file without the header.
+- Generation skips rewriting any expected file whose bytes on disk already match (preserving its
+  modification time, inode, and permissions). When an expected file's bytes change, generation
+  replaces it atomically through a process-unique temporary sibling
+  (`.witforge.<name>.<pid>.<seq>.tmp`) and copies the replaced file's permission bits onto the
+  temporary before renaming (a read-only file in a writable directory is replaced atomically and
+  keeps its read-only mode; a newly created file uses the default mode under the process umask).
+  Failed runs remove their temporary files; neither generation nor `--check` treats another
+  process's `.witforge.*.tmp` sibling as stale or extra, so concurrent runs into one output root
+  never delete each other's temporaries and each file ends complete from one writer (a temporary
+  left by a `SIGKILL`ed process is left untouched rather than raced against a live writer).
+  Generation validates every version before writing the first file, removes stale generated files
+  only after all expected writes succeed, and never touches files without the header (skipping
+  unreadable unrelated files while still failing with an error naming any unreadable expected
+  file). A failed run may leave a mix of old and new files, but never a truncated file; rerunning
+  after fixing the input completes it.
 - Generation never replaces a symlink, writes through one at an expected file's path, or
   overwrites a file it does not own. Before anything is written or removed, every expected path
   that already exists must be a regular file that starts with the header; a symlink, a directory
