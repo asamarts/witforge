@@ -74,6 +74,10 @@ impl Reporter {
         self.suppressed = true;
     }
 
+    pub(crate) fn is_suppressed(&self) -> bool {
+        self.suppressed
+    }
+
     pub(crate) fn write_stdout_line(&mut self, line: &str) {
         if self.stdout_closed || self.stdout_error.is_some() {
             return;
@@ -207,9 +211,10 @@ fn sarif_json(diagnostics: &[Diagnostic]) -> Result<String> {
     let rules: Vec<Value> = rules
         .into_iter()
         .map(|code| {
+            let description = witforge::diagnostic::lookup(code).map_or(code, |info| info.summary);
             json!({
                 "id": code,
-                "shortDescription": { "text": code },
+                "shortDescription": { "text": description },
             })
         })
         .collect();

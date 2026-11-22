@@ -20,14 +20,12 @@ use wit_parser::{
 };
 
 use crate::Contract;
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, codes};
 use crate::emit::ident;
 
-/// Diagnostic code for a WIT subset violation.
-const CODE_SUBSET: &str = "WF1001";
 /// Diagnostic code for two names in one scope that collide (ASCII case-insensitive or generated
 /// identifier collision).
-const CODE_IDENTIFIER_COLLISION: &str = "WF1003";
+const CODE_IDENTIFIER_COLLISION: &str = codes::IDENTIFIER_COLLISION;
 
 /// One construct outside the subset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +55,8 @@ pub fn check(contract: &Contract) -> Vec<Violation> {
 }
 
 /// Check the root package and its standard `deps/` dependencies and return structured
-/// diagnostics with their stable codes (`WF1001` for subset violations, `WF1003` for
-/// case-insensitive scope collisions).
+/// diagnostics with their stable per-rule subset codes (`WF1010`–`WF1030`, `WF1001` for
+/// unrecognised constructs, and `WF1003` for identifier collisions).
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
@@ -71,6 +69,7 @@ pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
     if package.name.version.is_none() {
         refuse(
             &mut out,
+            codes::SUBSET_PACKAGE_VERSION,
             &pkg,
             "the contract package needs a version (`package ns:name@x.y.0;`) so `@since` gates \
              and evolution checks are possible",
@@ -82,6 +81,7 @@ pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
     {
         refuse(
             &mut out,
+            codes::SUBSET_PACKAGE_VERSION,
             &pkg,
             "the contract version must be `<major>.<minor>.0`; patch, pre-release, and \
              build metadata are not supported",
@@ -95,6 +95,7 @@ pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
         if id != contract.package && !contract.is_dependency(id) {
             refuse(
                 &mut out,
+                codes::SUBSET_NESTED_PACKAGE,
                 &pkg,
                 format!(
                     "the version directory also loads package `{}` from a nested `package` \
@@ -179,6 +180,7 @@ pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
         match &dep.name.version {
             None => refuse(
                 &mut out,
+                codes::SUBSET_DEPENDENCY_VERSION,
                 &dep_pkg,
                 format!(
                     "dependency package `{dep_pkg}` in `{entry}` has no version; dependency \
@@ -192,6 +194,7 @@ pub fn check_diagnostics(contract: &Contract) -> Vec<Diagnostic> {
             {
                 refuse(
                     &mut out,
+                    codes::SUBSET_DEPENDENCY_VERSION,
                     &dep_pkg,
                     format!(
                         "dependency package `{dep_pkg}@{version}` in `{entry}` has unsupported \
@@ -273,14 +276,16 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, out: &mut Vec<Diagno
     let model = match crate::model::build_unchecked(contract) {
         Ok(model) => model,
         Err(err) => {
-            if crate::is_contract_error(&err) {
-                refuse(out, pkg, format!("{err:#}"));
+            if let Some(diags) = crate::error_diagnostics(&err) {
+                out.extend(diags.iter().cloned());
+            } else if crate::is_contract_error(&err) {
+                refuse(out, codes::SUBSET_UNSUPPORTED, pkg, format!("{err:#}"));
             }
             return;
         }
     };
     for (location, message) in model.collect_type_limit_errors() {
-        refuse(out, location, message);
+        refuse(out, codes::SUBSET_TYPE_LIMIT, location, message);
     }
     if !out.is_empty() {
         return;
@@ -299,7 +304,7 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, out: &mut Vec<Diagno
             let message = format!("{err:#}");
             if seen_messages.insert(message.clone()) {
                 if message.contains("-byte limit") {
-                    refuse(out, pkg, message);
+                    refuse(out, codes::SUBSET_TYPE_LIMIT, pkg, message);
                 } else {
                     refuse_collision(out, pkg, message);
                 }
@@ -416,6 +421,7 @@ fn check_external_id(
     if let Some(id) = external_id {
         refuse_with_reason(
             out,
+            codes::SUBSET_ANNOTATION,
             at,
             format!(
                 "annotation `@external-id(\"{id}\")` is not supported; only `@since`, \
@@ -459,6 +465,7 @@ fn check_world(
                         };
                         refuse(
                             out,
+                            codes::SUBSET_NAMED_WORLD_INTERFACE,
                             item_at,
                             format!(
                                 "named interface {singular}s are not supported \
@@ -469,6 +476,7 @@ fn check_world(
                     } else {
                         refuse(
                             out,
+                            codes::SUBSET_INLINE_INTERFACE,
                             item_at,
                             "inline interfaces are not supported; define a named interface in the \
                              package and import or export it",
@@ -517,6 +525,7 @@ fn check_world(
                                 let name = resolve.id_of(*id).unwrap_or_default();
                                 refuse(
                                     out,
+                                    codes::SUBSET_WORLD_FOREIGN_INTERFACE,
                                     at,
                                     format!(
                                         "{verb} `{name}` from a package outside the standard \
@@ -526,7 +535,12 @@ fn check_world(
                             }
                         }
                     } else {
-                        refuse(out, at, format!("{verb} an interface with no package"));
+                        refuse(
+                            out,
+                            codes::SUBSET_WORLD_FOREIGN_INTERFACE,
+                            at,
+                            format!("{verb} an interface with no package"),
+                        );
                     }
                 }
                 (_, WorldItem::Function(func)) => {
@@ -534,6 +548,7 @@ fn check_world(
                     check_external_id(func.external_id.as_deref(), &item_at, None, out);
                     refuse(
                         out,
+                        codes::SUBSET_WORLD_FUNCTION,
                         item_at,
                         "functions must be defined in an interface; export the interface from the \
                          world",
@@ -940,6 +955,7 @@ fn check_world_type(
         }
         _ => refuse(
             out,
+            codes::SUBSET_WORLD_TYPE,
             at,
             "types must be defined in an interface, not directly in a world",
         ),
@@ -977,12 +993,14 @@ fn check_function(
         }
         FunctionKind::AsyncFreestanding => refuse_with_reason(
             out,
+            codes::SUBSET_ASYNC_FUNCTION,
             at,
             "`async` functions are not supported; the contract is synchronous",
             reason,
         ),
         FunctionKind::Getter | FunctionKind::Setter => refuse_with_reason(
             out,
+            codes::SUBSET_ACCESSOR,
             at,
             "`get` and `set` accessors are not supported; use a function",
             reason,
@@ -1014,6 +1032,7 @@ fn check_def(
             if r.fields.is_empty() {
                 refuse_with_reason(
                     out,
+                    codes::SUBSET_EMPTY_RECORD,
                     at,
                     "empty records are not supported; add a field or use a variant case without payload",
                     reason,
@@ -1079,6 +1098,7 @@ fn check_def(
         TypeDefKind::Tuple(_) => {
             refuse_with_reason(
                 out,
+                codes::SUBSET_TUPLE,
                 at,
                 "tuples are not supported; use a named record",
                 reason,
@@ -1086,6 +1106,7 @@ fn check_def(
         }
         TypeDefKind::Resource | TypeDefKind::Handle(_) => refuse_with_reason(
             out,
+            codes::SUBSET_RESOURCE,
             at,
             "resources and handles are not supported; contract operations are pure functions over values",
             reason,
@@ -1093,6 +1114,7 @@ fn check_def(
         TypeDefKind::Map(..) => {
             refuse_with_reason(
                 out,
+                codes::SUBSET_MAP,
                 at,
                 "`map` is not supported yet; use `list<record>`",
                 reason,
@@ -1101,6 +1123,7 @@ fn check_def(
         TypeDefKind::FixedLengthList(..) => {
             refuse_with_reason(
                 out,
+                codes::SUBSET_FIXED_LENGTH_LIST,
                 at,
                 "fixed-length lists are not supported; use `list`",
                 reason,
@@ -1109,12 +1132,19 @@ fn check_def(
         TypeDefKind::Future(_) | TypeDefKind::Stream(_) => {
             refuse_with_reason(
                 out,
+                codes::SUBSET_FUTURE_OR_STREAM,
                 at,
                 "`future` and `stream` are not supported; the contract is synchronous",
                 reason,
             );
         }
-        TypeDefKind::Unknown => refuse_with_reason(out, at, "unresolved type", reason),
+        TypeDefKind::Unknown => refuse_with_reason(
+            out,
+            codes::SUBSET_UNSUPPORTED,
+            at,
+            "unresolved type",
+            reason,
+        ),
     }
 }
 
@@ -1141,10 +1171,22 @@ fn check_type(
         | Type::F64
         | Type::String => {}
         Type::Char => {
-            refuse_with_reason(out, at, "`char` is not supported; use `string`", reason);
+            refuse_with_reason(
+                out,
+                codes::SUBSET_CHAR,
+                at,
+                "`char` is not supported; use `string`",
+                reason,
+            );
         }
         Type::ErrorContext => {
-            refuse_with_reason(out, at, "`error-context` is not supported", reason);
+            refuse_with_reason(
+                out,
+                codes::SUBSET_ERROR_CONTEXT,
+                at,
+                "`error-context` is not supported",
+                reason,
+            );
         }
         Type::Id(id) => {
             let def = &contract.resolve.types[*id];
@@ -1159,12 +1201,18 @@ fn check_type(
     }
 }
 
-fn refuse(out: &mut Vec<Diagnostic>, location: impl Into<String>, message: impl Into<String>) {
-    out.push(Diagnostic::error(CODE_SUBSET, message).with_path(location));
+fn refuse(
+    out: &mut Vec<Diagnostic>,
+    code: &'static str,
+    location: impl Into<String>,
+    message: impl Into<String>,
+) {
+    out.push(Diagnostic::error(code, message).with_path(location));
 }
 
 fn refuse_with_reason(
     out: &mut Vec<Diagnostic>,
+    code: &'static str,
     location: impl Into<String>,
     message: impl Into<String>,
     reason: Option<&str>,
@@ -1173,7 +1221,7 @@ fn refuse_with_reason(
         Some(reason) => format!("{} ({reason})", message.into()),
         None => message.into(),
     };
-    refuse(out, location, message);
+    refuse(out, code, location, message);
 }
 
 fn refuse_collision(

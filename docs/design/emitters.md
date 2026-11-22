@@ -132,12 +132,12 @@ refusal added later is kept in sync with `check`:
 | Dependency packages colliding on Rust/glue module (`<ns>_<pkg>`) or `.proto` / `.schema.json` filename | **Moved into `check`** | `WF1003` (`subset.rs`, defensive checks kept in `rust.rs`, `proto.rs`, `json_schema.rs`, `glue.rs`) |
 | Proto top-level name, `Empty`, method enum, `Request`/`Response` message, `prost` type/oneof/field/variant, and `prost-derive` accessor collisions (root and pruned dependencies) | **Moved into `check`** | `WF1003` (`subset.rs` + `proto::validate_model`) |
 | Variant case `witforge_value`; enum case or function mapping to `UNSPECIFIED`; invalid proto/Rust identifier syntax | **Moved into `check`** | `WF1003` (`subset.rs` + `proto::validate_model`) |
-| Synthesized wrapper collisions (`WitforgeListOf...`, `WitforgeOptionOf...`, `WitforgeResultOf...`) and wrapper names over 1024 bytes | **Moved into `check`** | `WF1003` / `WF1001` (`subset.rs` + `proto::validate_model`) |
-| Model expansion limits (`MAX_TYPE_NESTING`, `MAX_ALIAS_CHAIN`, `MAX_CANONICAL_TYPE_BYTES`) | **Moved into `check`** | `WF1001` (`subset.rs` + `model.rs`) |
+| Synthesized wrapper collisions (`WitforgeListOf...`, `WitforgeOptionOf...`, `WitforgeResultOf...`) and wrapper names over 1024 bytes | **Moved into `check`** | `WF1003` / `WF1030` (`subset.rs` + `proto::validate_model`) |
+| Model expansion limits (`MAX_TYPE_NESTING`, `MAX_ALIAS_CHAIN`, `MAX_CANONICAL_TYPE_BYTES`) | **Moved into `check`** | `WF1030` (`subset.rs` + `model.rs`) |
 | Live member or type colliding with a reserved lockfile entry (including a removed interface's preserved `<Interface>Method` enum) | **Moved into `check`** | `WF1003` (`witforge-cli` `check` validates `proto::emit_major(&model, &lock)`) |
-| Duplicate version directories, package/version mismatch across versions, non-continuous minor lockfiles, stale lockfile / invalid order section | **Cross-version / lockfile** | `emit/versions.rs` (checked by `check`, `check --against`) |
-| Pinned dependency graph differences across versions | **Cross-version** | `emit/versions.rs` (checked by `check --against`) |
-| Version-to-version conversion refusals (kind change, missing non-defaultable field, payload shape change, removed referenced type, retyped member, result shape change) | **Cross-version** | `emit/convert.rs` (surfaced by `diff` `WF3004` / root generation) |
+| Duplicate version directories, package/version mismatch across versions, non-continuous minor lockfiles, stale lockfile / invalid order section | **Cross-version / lockfile** | `WF9004` / `WF1031` / `WF1032` / `WF1100`–`WF1105` (`emit/versions.rs`, checked by `check`, `check --against`) |
+| Pinned dependency graph differences across versions | **Cross-version** | `WF1033` (`emit/versions.rs`, checked by `check --against`) |
+| Version-to-version conversion refusals (kind change, missing non-defaultable field, payload shape change, removed referenced type, retyped member, result shape change) | **Cross-version** | `WF2002` (`emit/convert.rs`, surfaced by `diff` `WF3004` / root generation) |
 
 ## 2. Inputs and version layout
 

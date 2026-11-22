@@ -358,7 +358,7 @@ world plugin {
     ] {
         assert!(
             diagnostics.iter().any(|d| {
-                d.code == "WF1001"
+                d.code == "WF1014"
                     && d.path.as_deref() == Some(expected_path)
                     && d.message.contains("@external-id")
             }),

@@ -408,7 +408,7 @@ fn every_known_generator_refusal_is_reported_by_check_with_a_code() {
     );
 
     // Type-expansion limits (`W10-058`) are also reported directly by `subset::check_diagnostics`
-    // with `WF1001`.
+    // with `WF1030`.
     let nested = format!("{}u8{}", "list<".repeat(40), ">".repeat(40));
     let limit_dir = base.join("nesting-limit");
     fs::create_dir_all(&limit_dir).unwrap();
@@ -421,7 +421,7 @@ fn every_known_generator_refusal_is_reported_by_check_with_a_code() {
     assert!(
         diags
             .iter()
-            .any(|d| d.code == "WF1001" && d.message.contains("nesting")),
+            .any(|d| d.code == "WF1030" && d.message.contains("nesting")),
         "{diags:#?}"
     );
 

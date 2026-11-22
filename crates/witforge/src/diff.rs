@@ -28,12 +28,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::diagnostic::{Diagnostic, codes};
 use crate::emit::defaults::default_expr;
 use crate::emit::versions::ensure_same_dependency_graph;
 use crate::emit::{TypeRenderStyle, type_kind_name, type_shape};
 use crate::lock::{PackageName, WireLock};
 use crate::model::{Interface, Member, Model, TypeDef, TypeDefKind, Version, WorldInterface};
-use crate::{ContractError, ensure_directory_version, ensure_version_directory, load, subset};
+use crate::{
+    ContractError, ensure_directory_version, ensure_version_directory, load, operational_error,
+    subset,
+};
 
 /// One endpoint of a diff: the selected version directory and its identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,20 +235,30 @@ fn compare_report(
     let new = load_endpoint(new_arg)
         .with_context(|| format!("failed to read the new contract {}", new_arg.display()))?;
     if old.endpoint.package != new.endpoint.package {
-        bail!(ContractError::new(format!(
-            "cannot diff package {} against {}: the package names differ",
-            old.endpoint.package, new.endpoint.package
-        )));
+        bail!(ContractError::with_diagnostic(
+            Diagnostic::error(
+                codes::PACKAGE_MISMATCH,
+                format!(
+                    "cannot diff package {} against {}: the package names differ",
+                    old.endpoint.package, new.endpoint.package
+                ),
+            )
+            .with_path(new_arg.display().to_string())
+        ));
     }
     if new.endpoint.version < old.endpoint.version {
-        bail!(
-            "cannot diff version {} against older version {}; pass the older contract first \
-             (run `witforge diff {} {}`)",
-            old.endpoint.version,
-            new.endpoint.version,
-            crate::shell_quote(new_arg),
-            crate::shell_quote(old_arg),
-        );
+        return Err(operational_error(
+            codes::CLI_USAGE,
+            format!(
+                "cannot diff version {} against older version {}; pass the older contract first \
+                 (run `witforge diff {} {}`)",
+                old.endpoint.version,
+                new.endpoint.version,
+                crate::shell_quote(new_arg),
+                crate::shell_quote(old_arg),
+            ),
+            None,
+        ));
     }
     ensure_same_dependency_graph(&old.model.dependencies, &new.model.dependencies)?;
     let mut builder = Builder {
@@ -358,8 +372,13 @@ impl Loaded {
             namespace: model.package.namespace.clone(),
             name: model.package.name.clone(),
         };
-        lock.check_package(&package_name)
-            .map_err(|error| ContractError::from_error(&error))?;
+        let lock_path = path.join("wire.lock");
+        lock.check_package(&package_name).map_err(|error| {
+            ContractError::with_diagnostic(
+                Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{error:#}"))
+                    .with_path(lock_path.display().to_string()),
+            )
+        })?;
         let member_list = model.members()?;
         let members: BTreeMap<String, Member> = member_list
             .iter()
@@ -378,22 +397,37 @@ impl Loaded {
         for member in &member_list {
             let key = member.key();
             let Some(entry) = lock.get(&key) else {
-                bail!(ContractError::new(format!(
-                    "live member `{key}` has no wire number; {}",
-                    remedy()
-                )));
+                bail!(ContractError::with_diagnostic(
+                    Diagnostic::error(
+                        codes::LOCKFILE_MISSING_NUMBER,
+                        format!("live member `{key}` has no wire number; {}", remedy()),
+                    )
+                    .with_path(key)
+                ));
             };
             if entry.reserved {
-                bail!(ContractError::new(format!(
-                    "live member `{key}` is reserved in the lockfile; {}",
-                    remedy()
-                )));
+                bail!(ContractError::with_diagnostic(
+                    Diagnostic::error(
+                        codes::LOCKFILE_REINTRODUCED,
+                        format!(
+                            "live member `{key}` is reserved in the lockfile; {}",
+                            remedy()
+                        ),
+                    )
+                    .with_path(key)
+                ));
             }
             if entry.kind != member.kind || entry.ty != member.ty {
-                bail!(ContractError::new(format!(
-                    "live member `{key}` has a stale kind or canonical type; {}",
-                    remedy()
-                )));
+                bail!(ContractError::with_diagnostic(
+                    Diagnostic::error(
+                        codes::LOCKFILE_CHANGED_DRAFT,
+                        format!(
+                            "live member `{key}` has a stale kind or canonical type; {}",
+                            remedy()
+                        ),
+                    )
+                    .with_path(key)
+                ));
             }
         }
         // A draft entry that no longer belongs to the contract is stale too. Removed released
@@ -402,14 +436,22 @@ impl Loaded {
         // not validated here: a reorder is a source change `diff` reports, not a stale lockfile.
         for (key, entry) in lock.entries() {
             if !members.contains_key(&key.key()) && !entry.reserved {
-                bail!(ContractError::new(format!(
-                    "lockfile entry `{key}` is stale; {}",
-                    remedy()
-                )));
+                bail!(ContractError::with_diagnostic(
+                    Diagnostic::error(
+                        codes::LOCKFILE_STALE_DRAFT,
+                        format!("lockfile entry `{key}` is stale; {}", remedy()),
+                    )
+                    .with_path(key.key())
+                ));
             }
         }
         lock.validate_order_structure(&member_list)
-            .map_err(|error| ContractError::new(format!("{error:#}; {}", remedy())))?;
+            .map_err(|error| {
+                ContractError::with_diagnostic(
+                    Diagnostic::error(codes::LOCKFILE_ERROR, format!("{error:#}; {}", remedy()))
+                        .with_path(lock_path.display().to_string()),
+                )
+            })?;
         Ok(Self {
             endpoint: Endpoint {
                 path: path.to_path_buf(),
@@ -508,31 +550,37 @@ fn load_endpoint(path: &Path) -> Result<Loaded> {
     if looks_like_version_directory(path) {
         let lock_path = path.join("wire.lock");
         let quoted_dir = crate::shell_quote(path);
-        if let Some((major, _, predecessor)) = crate::sibling_predecessor(path) {
+        let message = if let Some((major, _, predecessor)) = crate::sibling_predecessor(path)
+            && predecessor.join("wire.lock").is_file()
+        {
             let prev_lock = predecessor.join("wire.lock");
-            if prev_lock.is_file() {
-                bail!(
-                    "version directory `{}` has no `wire.lock`; major {major} already has {}, so \
-                     copy {} to {} and run `witforge lock {} --against {}` (or for a new major, \
-                     create a fresh lockfile with `--first`)",
-                    path.display(),
-                    predecessor.display(),
-                    prev_lock.display(),
-                    lock_path.display(),
-                    quoted_dir,
-                    crate::shell_quote(&prev_lock),
-                );
-            }
-        }
-        bail!(
-            "version directory `{}` has no `wire.lock`; for a first version of a package or of a \
-             new major, run `witforge lock {} --first`; for a new minor, copy the previous \
-             minor's wire.lock to {} and run witforge lock on that directory with --against \
-             pointing at the previous minor's wire.lock",
-            path.display(),
-            quoted_dir,
-            lock_path.display(),
-        );
+            format!(
+                "version directory `{}` has no `wire.lock`; major {major} already has {}, so \
+                 copy {} to {} and run `witforge lock {} --against {}` (or for a new major, \
+                 create a fresh lockfile with `--first`)",
+                path.display(),
+                predecessor.display(),
+                prev_lock.display(),
+                lock_path.display(),
+                quoted_dir,
+                crate::shell_quote(&prev_lock),
+            )
+        } else {
+            format!(
+                "version directory `{}` has no `wire.lock`; for a first version of a package or of a \
+                 new major, run `witforge lock {} --first`; for a new minor, copy the previous \
+                 minor's wire.lock to {} and run witforge lock on that directory with --against \
+                 pointing at the previous minor's wire.lock",
+                path.display(),
+                quoted_dir,
+                lock_path.display(),
+            )
+        };
+        return Err(operational_error(
+            codes::IO_ERROR,
+            message,
+            Some(lock_path.display().to_string()),
+        ));
     }
     let mut versions = crate::emit::versions::load_versions(path)?;
     let version = versions.pop().with_context(|| {
@@ -580,21 +628,32 @@ fn load_version(path: &Path) -> Result<Loaded> {
     // dependency entry; it does not otherwise change the comparison.
     let released = crate::is_released(path, None)?;
     let contract = load(path)?;
-    let violations = subset::check(&contract);
+    let violations = subset::check_diagnostics(&contract);
     if !violations.is_empty() {
-        let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
-        bail!(ContractError::new(format!(
-            "{}: {}",
-            path.display(),
-            messages.join("; ")
-        )));
+        let messages: Vec<String> = violations
+            .iter()
+            .map(|diagnostic| match &diagnostic.path {
+                Some(path) => format!("{path}: {}", diagnostic.message),
+                None => diagnostic.message.clone(),
+            })
+            .collect();
+        bail!(ContractError::with_diagnostics(
+            format!("{}: {}", path.display(), messages.join("; ")),
+            violations,
+        ));
     }
     let model = crate::model::build(&contract)?;
     ensure_directory_version(path, &model)?;
     let lock_path = path.join("wire.lock");
     let text = fs::read_to_string(&lock_path)
         .with_context(|| format!("failed to read {}", lock_path.display()))?;
-    let lock = WireLock::parse(&text).with_context(|| format!("in {}", lock_path.display()))?;
+    let lock = WireLock::parse(&text).map_err(|err| {
+        operational_error(
+            codes::PARSE_ERROR,
+            format!("in {}: {err:#}", lock_path.display()),
+            Some(lock_path.display().to_string()),
+        )
+    })?;
     Loaded::new(path, model, &lock, released)
 }
 

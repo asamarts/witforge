@@ -40,7 +40,7 @@ fn check_emits_json_and_sarif_with_stable_fields() {
     assert_eq!(value["tool"]["name"], "witforge");
     let diagnostics = value["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0]["code"], "WF1001");
+    assert_eq!(diagnostics[0]["code"], "WF1015");
     assert_eq!(diagnostics[0]["severity"], "error");
     assert_eq!(diagnostics[0]["path"], "example:bad/types/blob");
     assert!(
@@ -57,9 +57,9 @@ fn check_emits_json_and_sarif_with_stable_fields() {
     assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "witforge");
     assert_eq!(
         sarif["runs"][0]["tool"]["driver"]["rules"][0]["id"],
-        "WF1001"
+        "WF1015"
     );
-    assert_eq!(sarif["runs"][0]["results"][0]["ruleId"], "WF1001");
+    assert_eq!(sarif["runs"][0]["results"][0]["ruleId"], "WF1015");
     assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
     assert_eq!(
         sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
@@ -268,7 +268,7 @@ fn lock_emits_structured_subset_errors() {
     let value = json(&output);
     let diagnostics = value["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0]["code"], "WF1001");
+    assert_eq!(diagnostics[0]["code"], "WF1015");
     assert_eq!(diagnostics[0]["severity"], "error");
     assert_eq!(diagnostics[0]["path"], "example:bad/types/blob");
 }
@@ -360,7 +360,7 @@ fn check_reports_dependency_version_and_case_collision_codes() {
         diags.into_iter().next().unwrap()
     };
 
-    // 1. Unreferenced dependency with patch version: exit 1, WF1001, names package, version, deps/.
+    // 1. Unreferenced dependency with patch version: exit 1, WF1012, names package, version, deps/.
     let dep_bad = root.join("dep-bad/v0.1");
     fs::create_dir_all(dep_bad.join("deps/shared")).unwrap();
     fs::write(
@@ -374,7 +374,7 @@ fn check_reports_dependency_version_and_case_collision_codes() {
     )
     .unwrap();
     let dep_diag = single_diag(&["check", dep_bad.to_str().unwrap(), "--format", "json"]);
-    assert_eq!(dep_diag["code"], "WF1001");
+    assert_eq!(dep_diag["code"], "WF1012");
     assert_eq!(dep_diag["path"], "ex:shared");
     let dep_msg = dep_diag["message"].as_str().unwrap();
     assert!(dep_msg.contains("0.1.3"), "{dep_msg}");
@@ -455,4 +455,607 @@ fn check_reports_dependency_version_and_case_collision_codes() {
     );
 
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn all_commands_report_identical_per_rule_codes_and_multiple_diagnostics() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-cross-cmd-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let wit_root = root.join("wit");
+    let v01 = wit_root.join("v0.1");
+    fs::create_dir_all(&v01).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:h@0.1.0;\ninterface types { record r { a: tuple<u32, u32>, b: char } }\n",
+    )
+    .unwrap();
+    fs::write(v01.join("wire.lock"), "# witforge wire lockfile v2\n").unwrap();
+
+    let good_v01 = root.join("good/v0.1");
+    fs::create_dir_all(&good_v01).unwrap();
+    fs::write(
+        good_v01.join("contract.wit"),
+        "package ex:h@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    assert!(
+        output(&["lock", good_v01.to_str().unwrap(), "--first"])
+            .status
+            .success()
+    );
+
+    let out_rust = root.join("out-rust");
+    let out_proto = root.join("out-proto");
+    let out_schema = root.join("out-schema");
+    let out_glue = root.join("out-glue");
+
+    let commands: Vec<(&str, Vec<String>)> = vec![
+        ("check", vec!["check".into(), v01.display().to_string()]),
+        (
+            "lock",
+            vec!["lock".into(), v01.display().to_string(), "--first".into()],
+        ),
+        (
+            "diff",
+            vec![
+                "diff".into(),
+                good_v01.display().to_string(),
+                v01.display().to_string(),
+            ],
+        ),
+        (
+            "rust",
+            vec![
+                "rust".into(),
+                wit_root.display().to_string(),
+                "--out".into(),
+                out_rust.display().to_string(),
+            ],
+        ),
+        (
+            "proto",
+            vec![
+                "proto".into(),
+                wit_root.display().to_string(),
+                "--out".into(),
+                out_proto.display().to_string(),
+            ],
+        ),
+        (
+            "schema",
+            vec![
+                "schema".into(),
+                wit_root.display().to_string(),
+                "--out".into(),
+                out_schema.display().to_string(),
+            ],
+        ),
+        (
+            "glue",
+            vec![
+                "glue".into(),
+                wit_root.display().to_string(),
+                "--out".into(),
+                out_glue.display().to_string(),
+                "--plain-root".into(),
+                "crate::plain".into(),
+                "--proto-root".into(),
+                "crate::proto".into(),
+            ],
+        ),
+    ];
+
+    let mut expected_json: Option<Vec<(String, String, String)>> = None;
+    for (label, base_args) in &commands {
+        let mut json_args: Vec<&str> = base_args.iter().map(String::as_str).collect();
+        json_args.extend(["--format", "json"]);
+        let out = output(&json_args);
+        assert_eq!(out.status.code(), Some(1), "{label} json: {out:?}");
+        let diags = json(&out)["diagnostics"].as_array().unwrap().clone();
+        assert_eq!(
+            diags.len(),
+            2,
+            "{label} json must not join diagnostics: {diags:?}"
+        );
+        assert_eq!(diags[0]["code"], "WF1019", "{label}: {diags:?}");
+        assert_eq!(diags[0]["path"], "ex:h/types/r.a", "{label}: {diags:?}");
+        assert_eq!(diags[1]["code"], "WF1017", "{label}: {diags:?}");
+        assert_eq!(diags[1]["path"], "ex:h/types/r.b", "{label}: {diags:?}");
+        let summary: Vec<(String, String, String)> = diags
+            .iter()
+            .map(|d| {
+                (
+                    d["code"].as_str().unwrap().to_string(),
+                    d["path"].as_str().unwrap().to_string(),
+                    d["message"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        if let Some(first) = &expected_json {
+            assert_eq!(&summary, first, "{label} diverged from check");
+        } else {
+            expected_json = Some(summary);
+        }
+
+        let mut sarif_args: Vec<&str> = base_args.iter().map(String::as_str).collect();
+        sarif_args.extend(["--format", "sarif"]);
+        let sarif_out = output(&sarif_args);
+        assert_eq!(
+            sarif_out.status.code(),
+            Some(1),
+            "{label} sarif: {sarif_out:?}"
+        );
+        let results = json(&sarif_out)["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(results.len(), 2, "{label} sarif: {results:?}");
+        assert_eq!(results[0]["ruleId"], "WF1019", "{label}: {results:?}");
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "ex:h/types/r.a"
+        );
+        assert_eq!(results[1]["ruleId"], "WF1017", "{label}: {results:?}");
+        assert_eq!(
+            results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "ex:h/types/r.b"
+        );
+    }
+
+    // Conversion refusal in `rust` gets WF2002 with logical path, never WF9000.
+    let conv_root = root.join("conv-wit");
+    let c1 = conv_root.join("v0.1");
+    let c2 = conv_root.join("v0.2");
+    fs::create_dir_all(&c1).unwrap();
+    fs::create_dir_all(&c2).unwrap();
+    fs::write(
+        c1.join("contract.wit"),
+        "package ex:c@0.1.0;\ninterface types { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        c2.join("contract.wit"),
+        "package ex:c@0.2.0;\ninterface types { record item { id: u32, req: string } }\n",
+    )
+    .unwrap();
+    assert!(
+        output(&["lock", c1.to_str().unwrap(), "--first"])
+            .status
+            .success()
+    );
+    fs::copy(c1.join("wire.lock"), c2.join("wire.lock")).unwrap();
+    assert!(
+        output(&[
+            "lock",
+            c2.to_str().unwrap(),
+            "--against",
+            c1.join("wire.lock").to_str().unwrap(),
+        ])
+        .status
+        .success()
+    );
+    let conv_out = output(&[
+        "rust",
+        conv_root.to_str().unwrap(),
+        "--out",
+        root.join("conv-out").to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(conv_out.status.code(), Some(1), "{conv_out:?}");
+    let conv_diags = json(&conv_out)["diagnostics"].as_array().unwrap().clone();
+    assert_eq!(conv_diags.len(), 1, "{conv_diags:?}");
+    assert_eq!(conv_diags[0]["code"], "WF2002");
+    assert_eq!(conv_diags[0]["path"], "types/item.req");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn usage_errors_emit_json_and_sarif_on_stdout() {
+    // Missing required argument before subcommand completes parsing.
+    let json_missing = output(&["--format", "json", "check"]);
+    assert_eq!(json_missing.status.code(), Some(2), "{json_missing:?}");
+    let value = json(&json_missing);
+    let diags = value["diagnostics"].as_array().unwrap();
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0]["code"], "WF9001");
+    assert_eq!(diags[0]["severity"], "error");
+
+    let sarif_missing = output(&["check", "--format=sarif"]);
+    assert_eq!(sarif_missing.status.code(), Some(2), "{sarif_missing:?}");
+    let sarif = json(&sarif_missing);
+    assert_eq!(sarif["version"], "2.1.0");
+    assert_eq!(sarif["runs"][0]["results"][0]["ruleId"], "WF9001");
+
+    // Missing --out on generator is also WF9001 (never WF9000).
+    let missing_out = output(&["rust", "wit", "--format", "json"]);
+    assert_eq!(missing_out.status.code(), Some(2), "{missing_out:?}");
+    assert_eq!(json(&missing_out)["diagnostics"][0]["code"], "WF9001");
+
+    // Reversed diff endpoints emit WF9001.
+    let old = repo().join("examples/evolved/wit/v0.1");
+    let new = repo().join("examples/evolved/wit/v0.2");
+    let reversed = output(&[
+        "diff",
+        &new.display().to_string(),
+        &old.display().to_string(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(reversed.status.code(), Some(2), "{reversed:?}");
+    assert_eq!(json(&reversed)["diagnostics"][0]["code"], "WF9001");
+
+    // Passing a WIT root to `check` emits WF9001.
+    let wit_root = repo().join("examples/evolved/wit");
+    let root_check = output(&["check", &wit_root.display().to_string(), "--format", "json"]);
+    assert_eq!(root_check.status.code(), Some(2), "{root_check:?}");
+    assert_eq!(json(&root_check)["diagnostics"][0]["code"], "WF9001");
+
+    // `--help` still prints help text and exits 0 even with `--format json`.
+    let help = output(&["--format", "json", "--help"]);
+    assert!(help.status.success(), "{help:?}");
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage:"));
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn operational_errors_have_specific_codes_and_never_emit_wf9000() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-operational-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+
+    // 1. Missing directory -> WF9002 (exit 2).
+    let missing = root.join("does-not-exist");
+    let out = output(&["check", missing.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9002");
+
+    // 2. Missing wire.lock -> WF9002 (exit 2).
+    let unlocked = root.join("unlocked/v0.1");
+    fs::create_dir_all(&unlocked).unwrap();
+    fs::write(
+        unlocked.join("contract.wit"),
+        "package ex:op@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    let out = output(&["check", unlocked.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9002");
+
+    // 3. Malformed wire.lock -> WF9003 (exit 2) with lockfile path.
+    let bad_lock_dir = root.join("bad-lock/v0.1");
+    fs::create_dir_all(&bad_lock_dir).unwrap();
+    fs::write(
+        bad_lock_dir.join("contract.wit"),
+        "package ex:op@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    let bad_lock = bad_lock_dir.join("wire.lock");
+    fs::write(&bad_lock, "not a lockfile\n").unwrap();
+    let out = output(&["check", bad_lock_dir.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let diag = &json(&out)["diagnostics"][0];
+    assert_eq!(diag["code"], "WF9003");
+    assert_eq!(diag["path"], bad_lock.display().to_string());
+
+    // 4. Malformed released manifest -> WF9003 (exit 2) with manifest path.
+    let bad_manifest_root = root.join("bad-manifest");
+    let bm_v01 = bad_manifest_root.join("v0.1");
+    fs::create_dir_all(&bm_v01).unwrap();
+    fs::write(
+        bm_v01.join("contract.wit"),
+        "package ex:op@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    let manifest_path = bad_manifest_root.join("released");
+    fs::write(&manifest_path, "../escape\n").unwrap();
+    let out = output(&["check", bm_v01.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let diag = &json(&out)["diagnostics"][0];
+    assert_eq!(diag["code"], "WF9003");
+    assert_eq!(diag["path"], manifest_path.display().to_string());
+
+    // 5. Malformed WIT file -> WF9003 (exit 2).
+    let bad_wit = root.join("bad-wit/v0.1");
+    fs::create_dir_all(&bad_wit).unwrap();
+    fs::write(bad_wit.join("contract.wit"), "package broken @@@;\n").unwrap();
+    let out = output(&["check", bad_wit.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9003");
+
+    // 6. Malformed witforge.toml -> WF9003 (exit 2); unexpanded ~ -> WF9004 (exit 2).
+    let bad_toml = root.join("bad.toml");
+    fs::write(&bad_toml, "version = [not valid\n").unwrap();
+    let out = output(&[
+        "rust",
+        "--config",
+        bad_toml.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9003");
+
+    let tilde_toml = root.join("tilde.toml");
+    fs::write(
+        &tilde_toml,
+        "version = 1\n[project.demo]\nroot = \"~/wit\"\n[project.demo.rust]\nout = \"out\"\n",
+    )
+    .unwrap();
+    let out = output(&[
+        "rust",
+        "--config",
+        tilde_toml.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9004");
+
+    // 7. Locking a released version directory -> WF9004 (exit 2).
+    let rel_root = root.join("released-root");
+    let rel_v01 = rel_root.join("v0.1");
+    fs::create_dir_all(&rel_v01).unwrap();
+    fs::write(
+        rel_v01.join("contract.wit"),
+        "package ex:op@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    assert!(
+        output(&["lock", rel_v01.to_str().unwrap(), "--first"])
+            .status
+            .success()
+    );
+    fs::write(rel_root.join("released"), "v0.1\n").unwrap();
+    let out = output(&["lock", rel_v01.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9004");
+
+    // 8. Permission error (Unix, non-root) -> WF9002 (exit 2).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perm_dir = root.join("perm/v0.1");
+        fs::create_dir_all(&perm_dir).unwrap();
+        let wit_file = perm_dir.join("contract.wit");
+        fs::write(
+            &wit_file,
+            "package ex:op@0.1.0;\ninterface t { record r { a: u32 } }\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&wit_file).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&wit_file, perms.clone()).unwrap();
+        // Skip assertion if running as root where mode 0000 is still readable.
+        if fs::read_to_string(&wit_file).is_err() {
+            let out = output(&["check", perm_dir.to_str().unwrap(), "--format", "json"]);
+            assert_eq!(out.status.code(), Some(2), "{out:?}");
+            assert_eq!(json(&out)["diagnostics"][0]["code"], "WF9002");
+        }
+        perms.set_mode(0o644);
+        fs::set_permissions(&wit_file, perms).unwrap();
+    }
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn foreign_package_lockfile_emits_wf1002_with_offending_file_path() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-wf1002-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let pkg_a = root.join("pkg-a/v0.1");
+    let pkg_b = root.join("pkg-b/v0.1");
+    fs::create_dir_all(&pkg_a).unwrap();
+    fs::create_dir_all(&pkg_b).unwrap();
+    fs::write(
+        pkg_a.join("contract.wit"),
+        "package ex:alpha@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg_b.join("contract.wit"),
+        "package ex:beta@0.1.0;\ninterface types { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    assert!(
+        output(&["lock", pkg_a.to_str().unwrap(), "--first"])
+            .status
+            .success()
+    );
+    assert!(
+        output(&["lock", pkg_b.to_str().unwrap(), "--first"])
+            .status
+            .success()
+    );
+
+    let beta_lock = pkg_b.join("wire.lock");
+    // `--against` points to beta's lockfile: both `check` and `lock` must report WF1002 with
+    // `path` naming `beta_lock` (NOT alpha's lockfile and NOT WF9000).
+    for subcmd in ["check", "lock"] {
+        let out = output(&[
+            subcmd,
+            pkg_a.to_str().unwrap(),
+            "--against",
+            beta_lock.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        assert_eq!(out.status.code(), Some(1), "{subcmd}: {out:?}");
+        let diags = json(&out)["diagnostics"].as_array().unwrap().clone();
+        assert_eq!(diags.len(), 1, "{subcmd}: {diags:?}");
+        assert_eq!(diags[0]["code"], "WF1002", "{subcmd}: {diags:?}");
+        assert_eq!(
+            diags[0]["path"],
+            beta_lock.display().to_string(),
+            "{subcmd} must name the foreign baseline file, not the current wire.lock"
+        );
+    }
+
+    // Current wire.lock replaced with beta's lockfile: `check`, `lock`, and `rust` all emit WF1002
+    // naming alpha's wire.lock.
+    let alpha_lock = pkg_a.join("wire.lock");
+    fs::copy(&beta_lock, &alpha_lock).unwrap();
+    for (label, args) in [
+        (
+            "check",
+            vec!["check", pkg_a.to_str().unwrap(), "--format", "json"],
+        ),
+        (
+            "lock",
+            vec!["lock", pkg_a.to_str().unwrap(), "--format", "json"],
+        ),
+        (
+            "rust",
+            vec![
+                "rust",
+                root.join("pkg-a").to_str().unwrap(),
+                "--out",
+                root.join("out-a").to_str().unwrap(),
+                "--format",
+                "json",
+            ],
+        ),
+    ] {
+        let out = output(&args);
+        assert_eq!(out.status.code(), Some(1), "{label}: {out:?}");
+        let diags = json(&out)["diagnostics"].as_array().unwrap().clone();
+        assert_eq!(diags.len(), 1, "{label}: {diags:?}");
+        assert_eq!(diags[0]["code"], "WF1002", "{label}: {diags:?}");
+        assert_eq!(
+            diags[0]["path"],
+            alpha_lock.display().to_string(),
+            "{label}: {diags:?}"
+        );
+    }
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn diff_json_wins_over_non_human_format() {
+    let old = repo().join("examples/evolved/wit/v0.1");
+    let new = repo().join("examples/evolved/wit/v0.2");
+
+    // Success (with breaking changes and without `--check`): JSON diff report wins over SARIF.
+    let out = output(&[
+        "diff",
+        &old.display().to_string(),
+        &new.display().to_string(),
+        "--json",
+        "--format",
+        "sarif",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let value = json(&out);
+    assert!(
+        value.get("old").is_some(),
+        "expected diff JSON, got {value}"
+    );
+    assert!(
+        value.get("changes").is_some(),
+        "expected diff JSON, got {value}"
+    );
+    assert!(
+        value.get("$schema").is_none(),
+        "must not emit SARIF: {value}"
+    );
+
+    // Breaking changes with `--check` and `--format sarif` before subcommand: exit 1, still JSON.
+    let checked = output(&[
+        "--format",
+        "sarif",
+        "diff",
+        &old.display().to_string(),
+        &new.display().to_string(),
+        "--json",
+        "--check",
+    ]);
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    let checked_json = json(&checked);
+    assert!(checked_json.get("summary").is_some(), "{checked_json}");
+    assert!(checked_json.get("$schema").is_none(), "{checked_json}");
+
+    // Command error (reversed versions) with `--json --format sarif`: exit 2, never prints SARIF.
+    let err_out = output(&[
+        "diff",
+        &new.display().to_string(),
+        &old.display().to_string(),
+        "--json",
+        "--format",
+        "sarif",
+    ]);
+    assert_eq!(err_out.status.code(), Some(2), "{err_out:?}");
+    assert!(
+        err_out.stdout.is_empty(),
+        "diff --json error must not emit SARIF on stdout: {}",
+        String::from_utf8_lossy(&err_out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&err_out.stderr);
+    assert!(stderr.contains("cannot diff version"), "{stderr}");
+}
+
+#[test]
+fn diagnostic_catalog_matches_docs_design_diagnostics_md() {
+    use std::collections::BTreeMap;
+
+    let doc_path = repo().join("docs/design/diagnostics.md");
+    let text = fs::read_to_string(&doc_path).unwrap();
+    let mut doc_entries: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    let mut in_table = false;
+    for line in text.lines() {
+        if line.starts_with("## Stable codes") {
+            in_table = true;
+            continue;
+        }
+        if in_table && line.starts_with("## ") {
+            break;
+        }
+        if !in_table || !line.starts_with("| `WF") {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('|').map(str::trim).collect();
+        assert!(cols.len() >= 5, "unexpected table row: {line}");
+        let code = cols[1].trim_matches('`').to_string();
+        let severity = cols[2].to_string();
+        let prior = if cols[3] == "—" {
+            None
+        } else {
+            Some(cols[3].trim_matches('`').to_string())
+        };
+        assert!(
+            doc_entries
+                .insert(code.clone(), (severity, prior))
+                .is_none(),
+            "duplicate code `{code}` in docs/design/diagnostics.md"
+        );
+    }
+
+    let catalog_entries: BTreeMap<String, (String, Option<String>)> = witforge::diagnostic::CATALOG
+        .iter()
+        .map(|info| {
+            (
+                info.code.to_string(),
+                (
+                    info.severity.as_str().to_string(),
+                    info.supersedes.map(str::to_string),
+                ),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        catalog_entries, doc_entries,
+        "witforge::diagnostic::CATALOG and docs/design/diagnostics.md must stay 1-to-1"
+    );
 }

@@ -1053,7 +1053,7 @@ world app {
                 "package ex:lim@0.1.0;\ninterface types {{ record r {{ v: {deep_list} }} }}\n"
             ),
             expected: Expected::CheckRefuses {
-                code: "WF1001",
+                code: "WF1030",
                 needle: "nesting",
             },
         },
@@ -1062,7 +1062,7 @@ world app {
             deps: &[],
             root_wit: "package ex:ch@0.1.0;\ninterface types { record r { c: char } }\n".to_string(),
             expected: Expected::CheckRefuses {
-                code: "WF1001",
+                code: "WF1017",
                 needle: "char",
             },
         },

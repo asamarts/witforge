@@ -6,9 +6,19 @@
 /// represent, such as two WIT names that map to one generated name. Internal errors use plain
 /// `bail!`, so the CLI exits with `2` for them rather than reporting a contract violation.
 macro_rules! contract_bail {
-    ($($arg:tt)*) => {
-        return Err(anyhow::Error::new($crate::ContractError::new(format!($($arg)*))))
-    };
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        let code = if message.contains("-byte limit") {
+            $crate::diagnostic::codes::SUBSET_TYPE_LIMIT
+        } else {
+            $crate::diagnostic::codes::IDENTIFIER_COLLISION
+        };
+        return Err(anyhow::Error::new(
+            $crate::ContractError::with_diagnostic(
+                $crate::diagnostic::Diagnostic::error(code, message),
+            ),
+        ));
+    }};
 }
 
 mod convert;

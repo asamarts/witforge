@@ -4,6 +4,51 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Per-rule diagnostic codes and cross-command machine-readable parity (`W10-079`):**
+  - Subset violations previously reported under the single umbrella code `WF1001` are now split
+    into one stable code per rule (`WF1010`–`WF1030`; `WF1001` remains for unrecognised constructs
+    and is recorded in the **Prior** column of `docs/design/diagnostics.md` beside every split
+    code). Consumers filtering JSON or SARIF reports on `WF1001` should update filters to the
+    specific `WF1010`–`WF1030` codes or match the `WF10` prefix.
+  - Generators (`rust`, `proto`, `schema`, `glue`), `diff`, `check`, and `lock` now emit the same
+    diagnostic code, path, and message for every contract violation, and preserve multiple
+    violations as separate diagnostics instead of joining them with `"; "` into a single `WF9000`.
+  - `WF9000` is now strictly reserved for internal compiler errors. Usage/argument errors emit
+    `WF9001` (including early argument-parsing errors when `--format json` or `--format sarif` is
+    present on the command line, printed to stdout with exit `2`), filesystem/I/O errors emit
+    `WF9002`, WIT/lockfile/manifest/config parse errors emit `WF9003`, and safety-guard/freeze
+    refusals emit `WF9004`.
+  - `lock --against` and `check --against` now both emit `WF1002` for a foreign-package lockfile,
+    with `path` naming the offending file (the current lockfile or the baseline file).
+  - `diff --json --format sarif` suppresses the diagnostic envelope on both success and error so
+    `--json` always takes precedence.
+- **Output mode preservation, unchanged-file skip, and `--check` / `--diff` explanations (`W10-076`):**
+  - Generators now skip rewriting expected files whose on-disk bytes already match (preserving
+    inode, modification time, and permissions), preserve replaced files' permission bits during
+    atomic replacement, use process-unique temporary siblings (`.witforge.<name>.<pid>.<seq>.tmp`)
+    so concurrent runs into one root do not delete each other's temporaries, and ignore unreadable
+    unrelated files.
+  - `--check` now names the regenerating command (preserving `--config` / `--project` or explicit
+    paths) and prints the first differing line or a `core.autocrlf` CRLF-only hint for changed
+    files. All four generator commands gain `--diff` to print a unified diff without changing exit
+    status.
+- **Stricter version-directory discovery, UTF-8 BOM handling, and config path guards (`W10-082`):**
+  - Version-like entries starting with `v`/`V` followed by a digit that are not canonical
+    `v<major>.<minor>` directories (`v0.2.0`, `V0.2`, `v0.2-rc1`, `v00.2`, `v1`, non-directories)
+    are refused instead of silently skipped.
+  - `wit/released` accepts a leading UTF-8 BOM; WIT parse errors note when a file begins with a
+    UTF-8 BOM; `witforge.toml` refuses a leading UTF-8 BOM and refuses unexpanded shell paths
+    (`~`, `$VAR`, `%VAR%`).
+- **Accurate error remedies and runnable commands (`W10-081`):**
+  - Reversed `diff` endpoints report the versions in the right order with a quoted runnable command;
+    every missing/stale lockfile hint quotes paths and prints a runnable `--first` or `--against`
+    command; `check` and `lock` on a WIT root list the discovered version directories with a
+    runnable example command.
+
 ## [0.6.0] - 2026-11-21
 
 0.6.0 publishes the post-0.5.0 assurance work, the complete second-audit remediation for wire

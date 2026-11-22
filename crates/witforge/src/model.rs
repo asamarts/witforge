@@ -632,11 +632,17 @@ pub(crate) fn ensure_dependency_identity(
     let mut groups: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
     for (package, entry) in dependencies {
         if package.namespace == root.namespace && package.name == root.name {
-            bail!(crate::ContractError::new(format!(
-                "dependency package `{}:{}` has the root package's namespace:name; the root and \
-                 a dependency cannot share a package identity",
-                package.namespace, package.name
-            )));
+            let pkg_id = format!("{}:{}", package.namespace, package.name);
+            bail!(crate::ContractError::with_diagnostic(
+                crate::diagnostic::Diagnostic::error(
+                    crate::diagnostic::codes::SUBSET_DEPENDENCY_IDENTITY,
+                    format!(
+                        "dependency package `{pkg_id}` has the root package's namespace:name; the \
+                         root and a dependency cannot share a package identity"
+                    ),
+                )
+                .with_path(pkg_id)
+            ));
         }
         let version = package
             .version
@@ -663,11 +669,18 @@ pub(crate) fn ensure_dependency_identity(
                 .map(|(_, entry)| format!("`{entry}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            bail!(crate::ContractError::new(format!(
-                "duplicate dependency package `{namespace}:{name}`: {versions} in {entries}; \
-                 one dependency graph must pin one version, and a new major is adopted by every \
-                 dependent at once"
-            )));
+            let pkg_id = format!("{namespace}:{name}");
+            bail!(crate::ContractError::with_diagnostic(
+                crate::diagnostic::Diagnostic::error(
+                    crate::diagnostic::codes::SUBSET_DEPENDENCY_IDENTITY,
+                    format!(
+                        "duplicate dependency package `{pkg_id}`: {versions} in {entries}; one \
+                         dependency graph must pin one version, and a new major is adopted by \
+                         every dependent at once"
+                    ),
+                )
+                .with_path(pkg_id)
+            ));
         }
     }
     Ok(())
@@ -687,13 +700,22 @@ pub(crate) fn ensure_dependency_identity(
 /// or world reaches them; the subset checker traverses every required dependency definition before
 /// this conversion starts.
 pub fn build(contract: &Contract) -> Result<Model> {
-    let violations = crate::subset::check(contract);
+    let violations = crate::subset::check_diagnostics(contract);
     if !violations.is_empty() {
-        let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
-        bail!(crate::ContractError::new(format!(
-            "contract does not satisfy the subset: {}",
-            messages.join("; ")
-        )));
+        let messages: Vec<String> = violations
+            .iter()
+            .map(|diagnostic| match &diagnostic.path {
+                Some(path) => format!("{path}: {}", diagnostic.message),
+                None => diagnostic.message.clone(),
+            })
+            .collect();
+        bail!(crate::ContractError::with_diagnostics(
+            format!(
+                "contract does not satisfy the subset: {}",
+                messages.join("; ")
+            ),
+            violations,
+        ));
     }
     let model = build_unchecked(contract)?;
     model.validate_type_limits()?;
@@ -1073,14 +1095,26 @@ impl Model {
     }
 
     fn validate_interface_limits(&self, interface: &Interface) -> Result<()> {
+        let pkg = format!("{}:{}", self.package.namespace, self.package.name);
+        let limit_err = |path: String, err: anyhow::Error| {
+            let message = format!("{err:#}");
+            crate::ContractError::with_diagnostic(
+                crate::diagnostic::Diagnostic::error(
+                    crate::diagnostic::codes::SUBSET_TYPE_LIMIT,
+                    message,
+                )
+                .with_path(path),
+            )
+        };
         for def in &interface.types {
             let context = || format!("type `{}/{}`", interface.name, def.name);
+            let base_path = format!("{pkg}/{}/{}", interface.name, def.name);
             match &def.kind {
                 TypeDefKind::Record(fields) => {
                     for field in fields {
                         self.canonical_type(&field.ty)
                             .with_context(|| format!("{} field `{}`", context(), field.name))
-                            .map_err(|err| crate::ContractError::from_error(&err))?;
+                            .map_err(|err| limit_err(format!("{base_path}.{}", field.name), err))?;
                     }
                 }
                 TypeDefKind::Variant(cases) => {
@@ -1088,7 +1122,9 @@ impl Model {
                         if let Some(payload) = &case.payload {
                             self.canonical_type(payload)
                                 .with_context(|| format!("{} case `{}`", context(), case.name))
-                                .map_err(|err| crate::ContractError::from_error(&err))?;
+                                .map_err(|err| {
+                                    limit_err(format!("{base_path}.{}", case.name), err)
+                                })?;
                         }
                     }
                 }
@@ -1102,12 +1138,13 @@ impl Model {
                     };
                     self.canonical_type(&TypeExpr::Named(name))
                         .with_context(context)
-                        .map_err(|err| crate::ContractError::from_error(&err))?;
+                        .map_err(|err| limit_err(base_path.clone(), err))?;
                 }
                 TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => {}
             }
         }
         for function in &interface.functions {
+            let fn_path = format!("{pkg}/{}#{}", interface.name, function.name);
             for param in &function.params {
                 self.canonical_type(&param.ty)
                     .with_context(|| {
@@ -1116,12 +1153,12 @@ impl Model {
                             interface.name, function.name, param.name
                         )
                     })
-                    .map_err(|err| crate::ContractError::from_error(&err))?;
+                    .map_err(|err| limit_err(format!("{fn_path}({})", param.name), err))?;
             }
             if let Some(result) = &function.result {
                 self.canonical_type(result)
                     .with_context(|| format!("type `{}/{}` result", interface.name, function.name))
-                    .map_err(|err| crate::ContractError::from_error(&err))?;
+                    .map_err(|err| limit_err(format!("{fn_path} -> result"), err))?;
             }
         }
         Ok(())

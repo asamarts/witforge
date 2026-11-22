@@ -27,7 +27,7 @@ use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 
 use serde_json::{Value, json};
-use witforge::diagnostic::{Diagnostic, Severity};
+use witforge::diagnostic::{Diagnostic, Severity, codes};
 use witforge::diff::{self, ChangeKind, DiffReport};
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
@@ -36,10 +36,18 @@ mod diagnostics;
 use diagnostics::{Format, Reporter, diagnostic_path};
 
 use witforge::{
-    ContractError, ensure_directory_version, ensure_lockfile_not_released, ensure_not_released,
-    ensure_version_directory, is_contract_error, is_released, load, load_released_manifest,
-    load_root_released_manifest, model, subset,
+    ContractError, DiagnosticError, ensure_directory_version, ensure_lockfile_not_released,
+    ensure_not_released, ensure_version_directory, error_diagnostics, is_contract_error,
+    is_released, load, load_released_manifest, load_root_released_manifest, model, subset,
 };
+
+fn op_error(code: &'static str, message: impl Into<String>, path: Option<String>) -> anyhow::Error {
+    let mut diagnostic = Diagnostic::error(code, message);
+    if let Some(path) = path {
+        diagnostic = diagnostic.with_path(path);
+    }
+    anyhow::Error::new(DiagnosticError::single(diagnostic))
+}
 
 /// The witforge contract compiler.
 #[derive(Debug, Parser)]
@@ -308,12 +316,32 @@ fn resolve_paths(
     } = overrides;
     let Some(config_path) = &config_args.config else {
         if config_args.project.is_some() {
-            bail!("`--project` requires `--config`");
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--project` requires `--config`",
+                None,
+            ));
         }
-        let root = root.context("missing WIT_ROOT (or use --config)")?;
-        let out = out.context("missing --out (or use --config)")?;
+        let Some(root) = root else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing WIT_ROOT (or use --config)",
+                None,
+            ));
+        };
+        let Some(out) = out else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing --out (or use --config)",
+                None,
+            ));
+        };
         if matches!(emitter, Emitter::Glue) && (plain_root.is_none() || proto_root.is_none()) {
-            bail!("glue requires --plain-root and --proto-root (or use --config)");
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "glue requires --plain-root and --proto-root (or use --config)",
+                None,
+            ));
         }
         return Ok(ResolvedPaths {
             root,
@@ -328,25 +356,42 @@ fn resolve_paths(
     let text = fs::read_to_string(config_path)
         .with_context(|| format!("failed to read configuration {}", config_path.display()))?;
     if text.starts_with('\u{feff}') {
-        bail!(
-            "invalid configuration {}: file starts with a UTF-8 byte-order mark (BOM); save the \
-             configuration as UTF-8 without a BOM",
-            config_path.display()
-        );
+        return Err(op_error(
+            codes::PARSE_ERROR,
+            format!(
+                "invalid configuration {}: file starts with a UTF-8 byte-order mark (BOM); save \
+                 the configuration as UTF-8 without a BOM",
+                config_path.display()
+            ),
+            Some(config_path.display().to_string()),
+        ));
     }
-    let config: ConfigFile = toml::from_str(&text)
-        .with_context(|| format!("invalid configuration {}", config_path.display()))?;
+    let config: ConfigFile = toml::from_str(&text).map_err(|err| {
+        op_error(
+            codes::PARSE_ERROR,
+            format!("invalid configuration {}: {err}", config_path.display()),
+            Some(config_path.display().to_string()),
+        )
+    })?;
     if config.version != 1 {
-        bail!(
-            "configuration {} has unsupported version {}; expected 1",
-            config_path.display(),
-            config.version
-        );
+        return Err(op_error(
+            codes::PARSE_ERROR,
+            format!(
+                "configuration {} has unsupported version {}; expected 1",
+                config_path.display(),
+                config.version
+            ),
+            Some(config_path.display().to_string()),
+        ));
     }
     if config.project.is_empty() {
-        bail!("configuration {} has no projects", config_path.display());
+        return Err(op_error(
+            codes::PARSE_ERROR,
+            format!("configuration {} has no projects", config_path.display()),
+            Some(config_path.display().to_string()),
+        ));
     }
-    validate_configured_paths(&config)?;
+    validate_configured_paths(&config, config_path)?;
     let name = match &config_args.project {
         Some(name) => name.clone(),
         None if config.project.len() == 1 => config
@@ -355,16 +400,24 @@ fn resolve_paths(
             .next()
             .expect("checked one project")
             .clone(),
-        None => bail!(
-            "configuration {} has multiple projects; pass --project",
-            config_path.display()
-        ),
+        None => {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "configuration {} has multiple projects; pass --project",
+                    config_path.display()
+                ),
+                Some(config_path.display().to_string()),
+            ));
+        }
     };
-    let project = config
-        .project
-        .get(&name)
-        .with_context(|| format!("configuration has no project `{name}`"))?
-        .clone();
+    let Some(project) = config.project.get(&name).cloned() else {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!("configuration has no project `{name}`"),
+            Some(config_path.display().to_string()),
+        ));
+    };
     let base = config_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -385,7 +438,13 @@ fn resolve_paths(
         Emitter::Schema => project.schema.map(|config| from_config(&config.out)),
         Emitter::Glue => project.glue.as_ref().map(|config| from_config(&config.out)),
     });
-    let out = out.context("missing --out (and no matching output section in the configuration)")?;
+    let Some(out) = out else {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "missing --out (and no matching output section in the configuration)",
+            Some(config_path.display().to_string()),
+        ));
+    };
     let released = released.or_else(|| project.released.as_deref().map(from_config));
     let plain_root = plain_root.or_else(|| {
         project
@@ -400,7 +459,11 @@ fn resolve_paths(
             .and_then(|config| config.proto_root.clone())
     });
     if matches!(emitter, Emitter::Glue) && (plain_root.is_none() || proto_root.is_none()) {
-        bail!("glue requires --plain-root and --proto-root (or a configuration section)");
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "glue requires --plain-root and --proto-root (or a configuration section)",
+            Some(config_path.display().to_string()),
+        ));
     }
     let serde = serde
         .or_else(|| project.rust.as_ref().and_then(|config| config.serde))
@@ -470,42 +533,74 @@ fn validate_configured_outputs(
     emit::output::ensure_distinct_output_roots(&refs)
 }
 
-fn validate_configured_paths(config: &ConfigFile) -> Result<()> {
+fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<()> {
     for (proj_name, proj) in &config.project {
-        check_config_path(&format!("project.{proj_name}.root"), &proj.root)?;
+        check_config_path(
+            &format!("project.{proj_name}.root"),
+            &proj.root,
+            config_path,
+        )?;
         if let Some(released) = &proj.released {
-            check_config_path(&format!("project.{proj_name}.released"), released)?;
+            check_config_path(
+                &format!("project.{proj_name}.released"),
+                released,
+                config_path,
+            )?;
         }
         if let Some(rust) = &proj.rust {
-            check_config_path(&format!("project.{proj_name}.rust.out"), &rust.out)?;
+            check_config_path(
+                &format!("project.{proj_name}.rust.out"),
+                &rust.out,
+                config_path,
+            )?;
         }
         if let Some(proto) = &proj.proto {
-            check_config_path(&format!("project.{proj_name}.proto.out"), &proto.out)?;
+            check_config_path(
+                &format!("project.{proj_name}.proto.out"),
+                &proto.out,
+                config_path,
+            )?;
         }
         if let Some(schema) = &proj.schema {
-            check_config_path(&format!("project.{proj_name}.schema.out"), &schema.out)?;
+            check_config_path(
+                &format!("project.{proj_name}.schema.out"),
+                &schema.out,
+                config_path,
+            )?;
         }
         if let Some(glue) = &proj.glue {
-            check_config_path(&format!("project.{proj_name}.glue.out"), &glue.out)?;
+            check_config_path(
+                &format!("project.{proj_name}.glue.out"),
+                &glue.out,
+                config_path,
+            )?;
         }
     }
     Ok(())
 }
 
-fn check_config_path(label: &str, path: &Path) -> Result<()> {
+fn check_config_path(label: &str, path: &Path, config_path: &Path) -> Result<()> {
     let raw = path.to_string_lossy();
     if raw.starts_with('~') {
-        bail!(
-            "invalid {label} `{raw}`: configuration paths are not shell-expanded (`~` is not \
-             expanded); use a path relative to the configuration file or an absolute path"
-        );
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "invalid {label} `{raw}`: configuration paths are not shell-expanded (`~` is not \
+                 expanded); use a path relative to the configuration file or an absolute path"
+            ),
+            Some(config_path.display().to_string()),
+        ));
     }
     if raw.contains('$') || contains_windows_env_var(&raw) {
-        bail!(
-            "invalid {label} `{raw}`: configuration paths are not shell-expanded (environment \
-             variables are not expanded); use a path relative to the configuration file or an \
-             absolute path"
-        );
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "invalid {label} `{raw}`: configuration paths are not shell-expanded (environment \
+                 variables are not expanded); use a path relative to the configuration file or an \
+                 absolute path"
+            ),
+            Some(config_path.display().to_string()),
+        ));
     }
     Ok(())
 }
@@ -549,6 +644,56 @@ fn validate_configured_module_roots(config: &ConfigFile) -> Result<()> {
     Ok(())
 }
 
+/// Extract `--format json|sarif` from raw argv when `clap` fails before parsing completes.
+fn parse_raw_format(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<Format> {
+    let mut format = None;
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.to_str() else {
+            continue;
+        };
+        if text == "--" {
+            break;
+        }
+        if let Some(value) = text.strip_prefix("--format=") {
+            format = match value {
+                "json" => Some(Format::Json),
+                "sarif" => Some(Format::Sarif),
+                "human" => None,
+                _ => format,
+            };
+        } else if text == "--format"
+            && let Some(next) = iter.next()
+            && let Some(value) = next.to_str()
+        {
+            format = match value {
+                "json" => Some(Format::Json),
+                "sarif" => Some(Format::Sarif),
+                "human" => None,
+                _ => format,
+            };
+        }
+    }
+    format
+}
+
+/// Classify an error that did not attach explicit structured diagnostics.
+fn classify_fallback_error(error: &anyhow::Error) -> Diagnostic {
+    if error
+        .chain()
+        .any(<dyn std::error::Error>::is::<std::io::Error>)
+    {
+        return Diagnostic::error(codes::IO_ERROR, format!("{error:#}"));
+    }
+    if error
+        .chain()
+        .any(<dyn std::error::Error>::is::<toml::de::Error>)
+    {
+        return Diagnostic::error(codes::PARSE_ERROR, format!("{error:#}"));
+    }
+    Diagnostic::error(codes::INTERNAL_ERROR, format!("{error:#}"))
+}
+
 /// Exit codes: `0` success; `1` a contract, lockfile, or generated-output violation; `2` a
 /// usage, I/O, parse, released-directory, or internal error.
 fn main() -> ExitCode {
@@ -557,6 +702,17 @@ fn main() -> ExitCode {
         Err(err) => {
             let code = u8::try_from(err.exit_code()).unwrap_or(2);
             if err.use_stderr() {
+                if let Some(format) = parse_raw_format(std::env::args_os().skip(1)) {
+                    let mut reporter = Reporter::new(format);
+                    reporter.push(Diagnostic::error(
+                        codes::CLI_USAGE,
+                        err.to_string().trim_end().to_string(),
+                    ));
+                    if let Err(write_err) = reporter.finish() {
+                        diagnostics::write_stderr_line(&format!("witforge: {write_err:#}"));
+                    }
+                    return ExitCode::from(code);
+                }
                 diagnostics::write_stderr_str(&err.to_string());
             } else if let Err(write_err) = diagnostics::write_stdout_str(&err.to_string()) {
                 diagnostics::write_stderr_line(&format!("witforge: {write_err:#}"));
@@ -591,10 +747,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(code)
         }
         Err(error) => {
-            if reporter.human() {
+            if reporter.human() || reporter.is_suppressed() {
                 return Err(error);
             }
-            reporter.push(Diagnostic::error("WF9000", format!("{error:#}")));
+            if let Some(diagnostics) = error_diagnostics(&error) {
+                for diagnostic in diagnostics {
+                    reporter.push(diagnostic.clone());
+                }
+            } else {
+                reporter.push(classify_fallback_error(&error));
+            }
             reporter.finish()?;
             Ok(ExitCode::from(if is_contract_error(&error) {
                 1
@@ -641,7 +803,7 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
             Some(baseline) => {
                 if let Err(err) = witforge::ensure_same_dependency_graph(&model, &baseline) {
                     reporter.error(
-                        "WF1100",
+                        codes::DEPENDENCY_GRAPH_MISMATCH,
                         format!("{err:#}"),
                         Some(against.display().to_string()),
                     );
@@ -649,7 +811,7 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
                 }
             }
             None => reporter.note(
-                "WF1107",
+                codes::LOCKFILE_BASELINE_NO_DEPS,
                 &format!(
                     "note: cannot compare the pinned dependency graph: baseline `{}` is not the \
                      wire.lock of a version directory; run a generator over the WIT root",
@@ -671,15 +833,15 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         Remedy::Lock(lock_command(options))
     };
     let package = package_name(&model);
-    for lockfile in std::iter::once(&lock).chain(previous.as_ref()) {
-        if let Err(err) = lockfile.check_package(&package) {
-            reporter.error(
-                "WF1002",
-                format!("{err:#}"),
-                Some(lock_path.display().to_string()),
-            );
-            return Ok(ExitCode::from(1));
-        }
+    if !check_lockfile_packages(
+        &package,
+        &lock,
+        &lock_path,
+        previous.as_ref(),
+        options.against.as_deref(),
+        reporter,
+    ) {
+        return Ok(ExitCode::from(1));
     }
     let mode = lock_mode(options, previous.as_ref());
     let case_collisions: BTreeSet<(String, String)> = lock
@@ -796,10 +958,15 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     let (mut lock, _) = read_lock(&lock_path, options)?;
     let previous = read_previous(options.against.as_deref())?;
     let package = package_name(&model);
-    for lockfile in std::iter::once(&lock).chain(previous.as_ref()) {
-        lockfile
-            .check_package(&package)
-            .map_err(|err| ContractError::from_error(&err))?;
+    if !check_lockfile_packages(
+        &package,
+        &lock,
+        &lock_path,
+        previous.as_ref(),
+        options.against.as_deref(),
+        reporter,
+    ) {
+        return Ok(ExitCode::from(1));
     }
     let mode = lock_mode(options, previous.as_ref());
     let case_collisions: BTreeSet<(String, String)> = lock
@@ -809,9 +976,17 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         .map(|diagnostic| (diagnostic.path.unwrap_or_default(), diagnostic.message))
         .collect();
     // Every refusal from reconciling is a lockfile violation, as `check` reports it.
-    let report = lock
-        .reconcile_report_with(&members, mode)
-        .map_err(|err| ContractError::from_error(&err))?;
+    let report = match lock.reconcile_report_with(&members, mode) {
+        Ok(report) => report,
+        Err(err) => {
+            reporter.error(
+                codes::LOCKFILE_ERROR,
+                format!("{err:#}"),
+                Some(lock_path.display().to_string()),
+            );
+            return Ok(ExitCode::from(1));
+        }
+    };
     let changes = &report.changes;
     let mut refused = false;
     for discrepancy in &report.discrepancies {
@@ -846,6 +1021,35 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     lock.write_atomic(&lock_path)?;
     report_lock_notes(&report, reporter);
     Ok(ExitCode::SUCCESS)
+}
+
+fn check_lockfile_packages(
+    package: &PackageName,
+    lock: &WireLock,
+    lock_path: &Path,
+    previous: Option<&WireLock>,
+    against_path: Option<&Path>,
+    reporter: &mut Reporter,
+) -> bool {
+    if let Err(err) = lock.check_package(package) {
+        reporter.error(
+            codes::LOCKFILE_WRONG_PACKAGE,
+            format!("{err:#}"),
+            Some(lock_path.display().to_string()),
+        );
+        return false;
+    }
+    if let (Some(previous), Some(against_path)) = (previous, against_path)
+        && let Err(err) = previous.check_package(package)
+    {
+        reporter.error(
+            codes::LOCKFILE_WRONG_PACKAGE,
+            format!("{err:#}"),
+            Some(against_path.display().to_string()),
+        );
+        return false;
+    }
+    true
 }
 
 fn report_lock_notes(report: &witforge::lock::Reconciliation, reporter: &mut Reporter) {
@@ -1147,11 +1351,14 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
 }
 
 fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    if options.json {
+        // `--json` is the diff report; it takes precedence over the diagnostic envelope even on
+        // error, so a non-human `--format` never prints a diagnostic envelope instead of `--json`.
+        reporter.suppress();
+    }
     let analysis = diff::compare_with_impacts(&options.old, &options.new)?;
     let report = &analysis.report;
     if options.json {
-        // `--json` is the diff report; it takes precedence over the diagnostic envelope.
-        reporter.suppress();
         let rendered = serde_json::to_string_pretty(&diff_json(&analysis))
             .context("failed to render the diff as JSON")?;
         reporter.write_stdout_line(&rendered);
@@ -1219,7 +1426,7 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         }
     }
     if options.check && report.summary.breaking > 0 {
-        if reporter.human() {
+        if reporter.human() || reporter.is_suppressed() {
             diagnostics::write_stderr_line(&format!(
                 "diff: {} breaking change(s); --check failed",
                 report.summary.breaking
@@ -1469,14 +1676,19 @@ fn baseline_model(path: &Path) -> Result<Option<model::Model>> {
     }
     let contract = load(parent)
         .with_context(|| format!("failed to load the baseline version {}", parent.display()))?;
-    let violations = subset::check(&contract);
+    let violations = subset::check_diagnostics(&contract);
     if !violations.is_empty() {
-        let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
-        bail!(ContractError::new(format!(
-            "{}: {}",
-            parent.display(),
-            messages.join("; ")
-        )));
+        let messages: Vec<String> = violations
+            .iter()
+            .map(|diagnostic| match &diagnostic.path {
+                Some(path) => format!("{path}: {}", diagnostic.message),
+                None => diagnostic.message.clone(),
+            })
+            .collect();
+        bail!(ContractError::with_diagnostics(
+            format!("{}: {}", parent.display(), messages.join("; ")),
+            violations,
+        ));
     }
     Ok(Some(model::build(&contract)?))
 }
@@ -1516,13 +1728,19 @@ fn ensure_first_is_allowed(options: &Options, verb: &str) -> Result<()> {
         return Ok(());
     };
     let baseline = predecessor.join("wire.lock");
-    bail!(ContractError::new(format!(
-        "`--first` is refused for `{}`: major {major} already has {} at minor \
-         {predecessor_minor}, so a new minor continues that lockfile. Run `{}` instead",
-        options.dir.display(),
-        predecessor.display(),
-        against_command(options, verb, &baseline)
-    )));
+    bail!(ContractError::with_diagnostic(
+        Diagnostic::error(
+            codes::LOCKFILE_ERROR,
+            format!(
+                "`--first` is refused for `{}`: major {major} already has {} at minor \
+                 {predecessor_minor}, so a new minor continues that lockfile. Run `{}` instead",
+                options.dir.display(),
+                predecessor.display(),
+                against_command(options, verb, &baseline)
+            ),
+        )
+        .with_path(options.dir.display().to_string())
+    ));
 }
 
 /// Refuse a baseline from a sibling version directory of another major or one that skips the
@@ -1550,25 +1768,37 @@ fn ensure_baseline_is_allowed(options: &Options, verb: &str) -> Result<()> {
         return Ok(());
     }
     if baseline_major != current_major {
-        bail!(ContractError::new(format!(
-            "`--against {}` is the lockfile of major {baseline_major}, but `{}` is major \
-             {current_major}; a new major starts a fresh lockfile with `--first`. Run \
-             `witforge {verb} {} --first` instead",
-            against.display(),
-            options.dir.display(),
-            shell_quote(&options.dir)
-        )));
+        bail!(ContractError::with_diagnostic(
+            Diagnostic::error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "`--against {}` is the lockfile of major {baseline_major}, but `{}` is major \
+                     {current_major}; a new major starts a fresh lockfile with `--first`. Run \
+                     `witforge {verb} {} --first` instead",
+                    against.display(),
+                    options.dir.display(),
+                    shell_quote(&options.dir)
+                ),
+            )
+            .with_path(against.display().to_string())
+        ));
     }
     if baseline_minor < current_minor
         && let Some((predecessor_minor, predecessor)) = sibling_predecessor(&current)
         && baseline_minor != predecessor_minor
     {
-        bail!(ContractError::new(format!(
-            "`--against {}` skips the immediate predecessor `{}`; run `{}` instead",
-            against.display(),
-            predecessor.display(),
-            against_command(options, verb, &predecessor.join("wire.lock"))
-        )));
+        bail!(ContractError::with_diagnostic(
+            Diagnostic::error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "`--against {}` skips the immediate predecessor `{}`; run `{}` instead",
+                    against.display(),
+                    predecessor.display(),
+                    against_command(options, verb, &predecessor.join("wire.lock"))
+                ),
+            )
+            .with_path(against.display().to_string())
+        ));
     }
     Ok(())
 }
@@ -1603,7 +1833,13 @@ fn package_name(model: &model::Model) -> PackageName {
 fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>)> {
     match fs::read_to_string(path) {
         Ok(text) => {
-            let lock = WireLock::parse(&text).with_context(|| format!("in {}", path.display()))?;
+            let lock = WireLock::parse(&text).map_err(|err| {
+                op_error(
+                    codes::PARSE_ERROR,
+                    format!("in {}: {err:#}", path.display()),
+                    Some(path.display().to_string()),
+                )
+            })?;
             Ok((lock, Some(text)))
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -1611,14 +1847,18 @@ fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>
                 return Ok((WireLock::default(), None));
             }
             if let Some(previous) = &options.against {
-                bail!(
-                    "lockfile {} does not exist; a new minor starts as a copy of the previous \
-                     minor's lockfile: copy {} to {} first, then rerun `{}`",
-                    path.display(),
-                    previous.display(),
-                    path.display(),
-                    lock_command(options),
-                );
+                return Err(op_error(
+                    codes::IO_ERROR,
+                    format!(
+                        "lockfile {} does not exist; a new minor starts as a copy of the previous \
+                         minor's lockfile: copy {} to {} first, then rerun `{}`",
+                        path.display(),
+                        previous.display(),
+                        path.display(),
+                        lock_command(options),
+                    ),
+                    Some(path.display().to_string()),
+                ));
             }
             let current = fs::canonicalize(&options.dir).unwrap_or_else(|_| options.dir.clone());
             if let Some((major, _)) = version_directory(&current)
@@ -1626,25 +1866,33 @@ fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>
             {
                 let prev_lock = predecessor.join("wire.lock");
                 if prev_lock.is_file() {
-                    bail!(
-                        "lockfile {path} does not exist; major {major} already has {prev_dir}, so \
-                         copy {prev_lock} to {path} and run `{against}` (or for a new major, \
-                         create a fresh lockfile with `--first`)",
-                        path = path.display(),
-                        prev_dir = predecessor.display(),
-                        prev_lock = prev_lock.display(),
-                        against = against_command(options, "lock", &prev_lock),
-                    );
+                    return Err(op_error(
+                        codes::IO_ERROR,
+                        format!(
+                            "lockfile {path} does not exist; major {major} already has \
+                             {prev_dir}, so copy {prev_lock} to {path} and run `{against}` (or \
+                             for a new major, create a fresh lockfile with `--first`)",
+                            path = path.display(),
+                            prev_dir = predecessor.display(),
+                            prev_lock = prev_lock.display(),
+                            against = against_command(options, "lock", &prev_lock),
+                        ),
+                        Some(path.display().to_string()),
+                    ));
                 }
             }
-            bail!(
-                "lockfile {path} does not exist; for the first version of a package or of a new \
-                 major, create it with `{first}`; for a new minor, copy the previous minor's \
-                 wire.lock to {path} and run witforge lock on that directory with --against \
-                 pointing at the previous minor's wire.lock",
-                path = path.display(),
-                first = lock_command_with(options, Some("--first")),
-            );
+            Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "lockfile {path} does not exist; for the first version of a package or of a \
+                     new major, create it with `{first}`; for a new minor, copy the previous \
+                     minor's wire.lock to {path} and run witforge lock on that directory with \
+                     --against pointing at the previous minor's wire.lock",
+                    path = path.display(),
+                    first = lock_command_with(options, Some("--first")),
+                ),
+                Some(path.display().to_string()),
+            ))
         }
         Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
     }
@@ -1682,19 +1930,29 @@ fn ensure_not_wit_root(dir: &Path, verb: &str) -> Result<()> {
     found.sort_by_key(|(major, minor, _, _)| (*major, *minor));
     let names: Vec<&str> = found.iter().map(|(_, _, name, _)| name.as_str()).collect();
     let example = &found.last().expect("non-empty").3;
-    bail!(
-        "`{}` is a WIT root containing version directories ({}), not a version directory; \
-         `{verb}` expects a single version directory (for example `witforge {verb} {}`)",
-        dir.display(),
-        names.join(", "),
-        shell_quote(example),
-    );
+    Err(op_error(
+        codes::CLI_USAGE,
+        format!(
+            "`{}` is a WIT root containing version directories ({}), not a version directory; \
+             `{verb}` expects a single version directory (for example `witforge {verb} {}`)",
+            dir.display(),
+            names.join(", "),
+            shell_quote(example),
+        ),
+        Some(dir.display().to_string()),
+    ))
 }
 
 fn read_required_lock(path: &Path) -> Result<WireLock> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    WireLock::parse(&text).with_context(|| format!("in {}", path.display()))
+    WireLock::parse(&text).map_err(|err| {
+        op_error(
+            codes::PARSE_ERROR,
+            format!("in {}: {err:#}", path.display()),
+            Some(path.display().to_string()),
+        )
+    })
 }
 
 /// How to fix what `check` reports: run `lock`, or, for a released version, which `lock`

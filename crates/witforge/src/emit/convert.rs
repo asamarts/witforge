@@ -22,6 +22,23 @@ use crate::model::{
     TypeExpr,
 };
 
+/// Return a [`crate::ContractError`] carrying [`crate::diagnostic::codes::CONVERSION_REFUSED`]
+/// (`WF2002`) with its logical contract path.
+macro_rules! convert_bail {
+    ($path:expr, $($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        return Err(anyhow::Error::new(
+            $crate::ContractError::with_diagnostic(
+                $crate::diagnostic::Diagnostic::error(
+                    $crate::diagnostic::codes::CONVERSION_REFUSED,
+                    message,
+                )
+                .with_path($path),
+            ),
+        ));
+    }};
+}
+
 /// The shared error type imported into each interface conversion module.
 const ERROR: &str = "ConversionError";
 
@@ -455,7 +472,8 @@ fn conversion_body(
                 &format!("{}/{}", source_interface.name, source_def.name),
             )
         }
-        _ => contract_bail!(
+        _ => convert_bail!(
+            format!("{}/{}", source_interface.name, source_def.name),
             "conversion {} -> {}: {}/{} changes kind from {} to {}; evolution requires a new type",
             source.model.package.version,
             target.model.package.version,
@@ -573,7 +591,8 @@ fn record_body(
     }
     if let Some(missing) = missing {
         match direction {
-            Direction::Forward => contract_bail!(
+            Direction::Forward => convert_bail!(
+                format!("{type_path}.{}", missing.name),
                 "conversion {from_ver} -> {to_ver}: {type_path}.{} is required in {to_ver} but \
                  absent from {from_ver}; make it `option<T>` or `list<T>` so an older value can \
                  be defaulted, or add a new member instead of changing this one",
@@ -698,7 +717,8 @@ fn variant_body(
             .find(|target_case| target_case.name == source_case.name);
         if let Some(target_case) = target_case {
             match (&source_case.payload, &target_case.payload) {
-                (Some(_), None) | (None, Some(_)) => contract_bail!(
+                (Some(_), None) | (None, Some(_)) => convert_bail!(
+                    format!("{type_path}.{}", source_case.name),
                     "conversion {from_ver} -> {to_ver}: {type_path} case `{}` changes payload \
                      shape; evolution requires a new case",
                     source_case.name
@@ -1096,7 +1116,8 @@ fn emit_convert_value(
                 bail!("type `{source_name}` is not in the source model");
             }
             if target.model.type_def(target_name).is_none() {
-                contract_bail!(
+                convert_bail!(
+                    path,
                     "conversion {from_ver} -> {to_ver}: {path} names `{target_name}`, which is \
                      missing from the target version; evolution requires a new type instead of \
                      removing a referenced type"
@@ -1248,7 +1269,8 @@ fn emit_convert_value(
             expression,
             path,
         ),
-        _ => contract_bail!(
+        _ => convert_bail!(
+            path,
             "conversion {from_ver} -> {to_ver}: {} changes type from `{}` to `{}`; evolution \
              requires a new member",
             path,
@@ -1301,7 +1323,8 @@ fn emit_result_value(
         }
         (None, None) => {}
         _ => {
-            contract_bail!(
+            convert_bail!(
+                path,
                 "conversion {from_ver} -> {to_ver}: {path} changes its result success shape; \
                  evolution requires a new type"
             )
@@ -1331,7 +1354,8 @@ fn emit_result_value(
             )?;
         }
         (None, None) => {}
-        _ => contract_bail!(
+        _ => convert_bail!(
+            path,
             "conversion {from_ver} -> {to_ver}: {path} changes its result error shape; evolution \
              requires a new type"
         ),

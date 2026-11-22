@@ -810,7 +810,7 @@ fn dependency_version_violations_are_subset_diagnostics_for_every_deps_package()
                 1,
                 "{label} referenced={referenced}: {diagnostics:#?}"
             );
-            assert_eq!(diagnostics[0].code, "WF1001");
+            assert_eq!(diagnostics[0].code, "WF1012");
             assert_eq!(diagnostics[0].path.as_deref(), Some("ex:shared"));
             assert!(
                 diagnostics[0].message.contains("ex:shared"),

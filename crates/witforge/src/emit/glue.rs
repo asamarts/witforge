@@ -266,6 +266,16 @@ fn emit_dependency_glue(
 /// module root, empty or trailing segments, whitespace, generics, an invalid identifier, or a
 /// bare Rust keyword.
 pub fn validate_module_root(root: &str) -> Result<()> {
+    validate_module_root_inner(root).map_err(|err| {
+        crate::operational_error(
+            crate::diagnostic::codes::CLI_USAGE,
+            format!("{err:#}"),
+            None,
+        )
+    })
+}
+
+fn validate_module_root_inner(root: &str) -> Result<()> {
     if root.is_empty() {
         bail!("module root is empty");
     }
@@ -342,10 +352,14 @@ fn validate_module_root_against_generated(
     }
     let first = root.split("::").next().unwrap_or_default();
     if first != "crate" && generated_modules.contains(first) {
-        bail!(
-            "module root `{root}` starts with generated module `{first}`; prefix an external \
-             crate with `::` (for example `::{root}`) or use `crate::...`"
-        );
+        return Err(crate::operational_error(
+            crate::diagnostic::codes::CLI_USAGE,
+            format!(
+                "module root `{root}` starts with generated module `{first}`; prefix an external \
+                 crate with `::` (for example `::{root}`) or use `crate::...`"
+            ),
+            None,
+        ));
     }
     Ok(())
 }

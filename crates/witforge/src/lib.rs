@@ -36,7 +36,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use wit_parser::{
     AstItem, InterfaceId, PackageId, PackageName, Resolve, SourceMap, UnresolvedPackage,
     UnresolvedPackageGroup, WorldId, WorldKey,
@@ -54,6 +54,7 @@ use wit_parser::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractError {
     message: String,
+    diagnostics: Vec<diagnostic::Diagnostic>,
 }
 
 impl ContractError {
@@ -61,13 +62,47 @@ impl ContractError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            diagnostics: Vec::new(),
         }
     }
 
-    /// Classify `error` as a violation, keeping its whole context chain in the message.
+    /// A violation carrying a single structured diagnostic whose message is also used for display.
+    #[must_use]
+    pub fn with_diagnostic(diagnostic: diagnostic::Diagnostic) -> Self {
+        let message = diagnostic.message.clone();
+        Self {
+            message,
+            diagnostics: vec![diagnostic],
+        }
+    }
+
+    /// A violation carrying a human `message` together with one or more structured diagnostics.
+    #[must_use]
+    pub fn with_diagnostics(
+        message: impl Into<String>,
+        diagnostics: Vec<diagnostic::Diagnostic>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            diagnostics,
+        }
+    }
+
+    /// Classify `error` as a violation, keeping its whole context chain in the message and any
+    /// attached structured diagnostics.
     #[must_use]
     pub fn from_error(error: &anyhow::Error) -> Self {
-        Self::new(format!("{error:#}"))
+        Self {
+            message: format!("{error:#}"),
+            diagnostics: error_diagnostics(error)
+                .map_or_else(Vec::new, <[diagnostic::Diagnostic]>::to_vec),
+        }
+    }
+
+    /// Structured diagnostics attached to this violation, if any.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[diagnostic::Diagnostic] {
+        &self.diagnostics
     }
 }
 
@@ -79,12 +114,91 @@ impl fmt::Display for ContractError {
 
 impl std::error::Error for ContractError {}
 
+/// A non-contract operational error (usage, I/O, parse, or safety guard) carrying structured
+/// diagnostics.
+///
+/// Unlike [`ContractError`] (which the CLI reports with exit `1`), a `DiagnosticError` is not a
+/// contract violation: the CLI reports it with exit `2` while preserving its specific diagnostic
+/// code and path instead of falling back to `WF9000`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticError {
+    message: String,
+    diagnostics: Vec<diagnostic::Diagnostic>,
+}
+
+impl DiagnosticError {
+    /// Create an operational error with a human `message` and one or more structured diagnostics.
+    #[must_use]
+    pub fn new(message: impl Into<String>, diagnostics: Vec<diagnostic::Diagnostic>) -> Self {
+        Self {
+            message: message.into(),
+            diagnostics,
+        }
+    }
+
+    /// Create an operational error carrying one structured diagnostic.
+    #[must_use]
+    pub fn single(diagnostic: diagnostic::Diagnostic) -> Self {
+        let message = diagnostic.message.clone();
+        Self {
+            message,
+            diagnostics: vec![diagnostic],
+        }
+    }
+
+    /// Structured diagnostics attached to this error.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[diagnostic::Diagnostic] {
+        &self.diagnostics
+    }
+}
+
+impl fmt::Display for DiagnosticError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DiagnosticError {}
+
 /// Whether `error`, or any error in its context chain, is a [`ContractError`].
 #[must_use]
 pub fn is_contract_error(error: &anyhow::Error) -> bool {
     error
         .chain()
         .any(<dyn std::error::Error>::is::<ContractError>)
+}
+
+/// Extract structured diagnostics attached to `error` (from a [`ContractError`] or
+/// [`DiagnosticError`] in its context chain), if any.
+#[must_use]
+pub fn error_diagnostics(error: &anyhow::Error) -> Option<&[diagnostic::Diagnostic]> {
+    for cause in error.chain() {
+        if let Some(contract) = cause.downcast_ref::<ContractError>()
+            && !contract.diagnostics.is_empty()
+        {
+            return Some(&contract.diagnostics);
+        }
+        if let Some(operational) = cause.downcast_ref::<DiagnosticError>()
+            && !operational.diagnostics.is_empty()
+        {
+            return Some(&operational.diagnostics);
+        }
+    }
+    None
+}
+
+/// Build an operational (exit 2) error carrying a single structured diagnostic.
+pub(crate) fn operational_error(
+    code: &'static str,
+    message: impl Into<String>,
+    path: Option<String>,
+) -> anyhow::Error {
+    let mut diag = diagnostic::Diagnostic::error(code, message);
+    if let Some(path) = path {
+        diag = diag.with_path(path);
+    }
+    anyhow::Error::new(DiagnosticError::single(diag))
 }
 
 /// An interface explicitly imported by a root world: `(Option<(namespace, package)>, interface)`.
@@ -197,7 +311,11 @@ pub fn load(dir: &Path) -> Result<Contract> {
         .push_groups(top_pkg, loaded_deps.groups)
         .map_err(|err| {
             let err: anyhow::Error = err.into();
-            anyhow!("{}", resolve.render_error(&err))
+            operational_error(
+                diagnostic::codes::PARSE_ERROR,
+                resolve.render_error(&err),
+                Some(dir.display().to_string()),
+            )
         })
         .with_context(load_context)?;
 
@@ -281,9 +399,25 @@ fn load_deps_dir(deps_dir: &Path, resolve: &mut Resolve) -> Result<LoadedDeps> {
                 Some("wat" | "wasm") => {
                     let before: BTreeSet<PackageId> =
                         resolve.packages.iter().map(|(id, _)| id).collect();
-                    resolve.push_file(&entry_path).with_context(|| {
-                        format!("failed to parse package: {}", entry_path.display())
-                    })?;
+                    resolve
+                        .push_file(&entry_path)
+                        .map_err(|err| {
+                            if err
+                                .chain()
+                                .any(<dyn std::error::Error>::is::<std::io::Error>)
+                            {
+                                err
+                            } else {
+                                operational_error(
+                                    diagnostic::codes::PARSE_ERROR,
+                                    format!("{err:#}"),
+                                    Some(entry_path.display().to_string()),
+                                )
+                            }
+                        })
+                        .with_context(|| {
+                            format!("failed to parse package: {}", entry_path.display())
+                        })?;
                     for (id, pkg) in &resolve.packages {
                         if !before.contains(&id) {
                             loaded.scanned.push((pkg.name.clone(), entry_path.clone()));
@@ -459,14 +593,19 @@ fn parse_sorted_dir(dir: &Path) -> Result<UnresolvedPackageGroup> {
     }
     map.parse().map_err(|(source_map, err)| {
         let rendered = err.render(&source_map);
-        if let Some(bom_file) = files.iter().find(|path| file_has_utf8_bom(path)) {
-            anyhow!(
+        let message = if let Some(bom_file) = files.iter().find(|path| file_has_utf8_bom(path)) {
+            format!(
                 "{rendered} (note: {} starts with a UTF-8 byte-order mark (BOM))",
                 bom_file.display()
             )
         } else {
-            anyhow!("{rendered}")
-        }
+            rendered
+        };
+        operational_error(
+            diagnostic::codes::PARSE_ERROR,
+            message,
+            Some(dir.display().to_string()),
+        )
     })
 }
 
@@ -476,14 +615,19 @@ fn parse_single_wit_file(path: &Path) -> Result<UnresolvedPackageGroup> {
     map.parse()
         .map_err(|(source_map, err)| {
             let rendered = err.render(&source_map);
-            if file_has_utf8_bom(path) {
-                anyhow!(
+            let message = if file_has_utf8_bom(path) {
+                format!(
                     "{rendered} (note: {} starts with a UTF-8 byte-order mark (BOM))",
                     path.display()
                 )
             } else {
-                anyhow!("{rendered}")
-            }
+                rendered
+            };
+            operational_error(
+                diagnostic::codes::PARSE_ERROR,
+                message,
+                Some(path.display().to_string()),
+            )
         })
         .with_context(|| format!("failed to parse package: {}", path.display()))
 }
@@ -549,28 +693,48 @@ impl ReleasedManifest {
                 continue;
             }
             if !plain_directory_name(line) {
-                bail!(
-                    "line {line_no}: released entry `{line}` is not a plain directory name \
-                     (`^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
-                );
+                return Err(operational_error(
+                    diagnostic::codes::PARSE_ERROR,
+                    format!(
+                        "line {line_no}: released entry `{line}` is not a plain directory name \
+                         (`^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
+                    ),
+                    Some(path.display().to_string()),
+                ));
             }
             if !seen.insert(line.to_string()) {
-                bail!("line {line_no}: duplicate released entry `{line}`");
+                return Err(operational_error(
+                    diagnostic::codes::PARSE_ERROR,
+                    format!("line {line_no}: duplicate released entry `{line}`"),
+                    Some(path.display().to_string()),
+                ));
             }
             let directory = parent.join(line);
             if fs::symlink_metadata(&directory)
                 .is_ok_and(|metadata| metadata.file_type().is_symlink())
             {
-                bail!(
-                    "line {line_no}: released directory `{line}` is a symlink; witforge refuses \
-                     symlinked version directories"
-                );
+                return Err(operational_error(
+                    diagnostic::codes::GUARD_REFUSED,
+                    format!(
+                        "line {line_no}: released directory `{line}` is a symlink; witforge refuses \
+                         symlinked version directories"
+                    ),
+                    Some(directory.display().to_string()),
+                ));
             }
             if !directory.is_dir() {
-                bail!("line {line_no}: released directory `{line}` does not exist");
+                return Err(operational_error(
+                    diagnostic::codes::IO_ERROR,
+                    format!("line {line_no}: released directory `{line}` does not exist"),
+                    Some(directory.display().to_string()),
+                ));
             }
             if !directory.join("wire.lock").is_file() {
-                bail!("line {line_no}: released directory `{line}` has no wire.lock");
+                return Err(operational_error(
+                    diagnostic::codes::IO_ERROR,
+                    format!("line {line_no}: released directory `{line}` has no wire.lock"),
+                    Some(directory.join("wire.lock").display().to_string()),
+                ));
             }
             ensure_no_symlinks(&directory, line)?;
             directories.push(line.to_string());
@@ -616,11 +780,15 @@ fn ensure_no_symlinks(directory: &Path, entry: &str) -> Result<()> {
             .file_type()
             .with_context(|| format!("failed to inspect `{}`", child.path().display()))?;
         if file_type.is_symlink() {
-            bail!(
-                "released directory `{entry}` contains symlink `{}`; a released version must \
-                 contain regular files and directories",
-                child.path().display()
-            );
+            return Err(operational_error(
+                diagnostic::codes::GUARD_REFUSED,
+                format!(
+                    "released directory `{entry}` contains symlink `{}`; a released version must \
+                     contain regular files and directories",
+                    child.path().display()
+                ),
+                Some(child.path().display().to_string()),
+            ));
         }
         if file_type.is_dir() {
             ensure_no_symlinks(&child.path(), entry)?;
@@ -658,17 +826,25 @@ pub fn ensure_version_directory(wit_dir: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(&path)
         .with_context(|| format!("failed to read version directory {}", wit_dir.display()))?;
     if metadata.file_type().is_symlink() {
-        bail!(
-            "version directory `{}` is a symlink; witforge refuses symlinked version \
-             directories, so a released version cannot change through its link's target",
-            wit_dir.display()
-        );
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "version directory `{}` is a symlink; witforge refuses symlinked version \
+                 directories, so a released version cannot change through its link's target",
+                wit_dir.display()
+            ),
+            Some(wit_dir.display().to_string()),
+        ));
     }
     if !metadata.is_dir() {
-        bail!(
-            "version directory `{}` is not a directory",
-            wit_dir.display()
-        );
+        return Err(operational_error(
+            diagnostic::codes::IO_ERROR,
+            format!(
+                "version directory `{}` is not a directory",
+                wit_dir.display()
+            ),
+            Some(wit_dir.display().to_string()),
+        ));
     }
     Ok(())
 }
@@ -696,11 +872,17 @@ pub fn ensure_directory_version(wit_dir: &Path, model: &model::Model) -> Result<
     };
     let version = model.package.version;
     if version.major != major || version.minor != minor || version.patch != 0 {
-        bail!(ContractError::new(format!(
-            "version directory {} declares package version {version}, expected \
-             {major}.{minor}.0; a new version is a new `v<major>.<minor>` directory",
-            wit_dir.display()
-        )));
+        bail!(ContractError::with_diagnostic(
+            diagnostic::Diagnostic::error(
+                diagnostic::codes::DIRECTORY_VERSION_MISMATCH,
+                format!(
+                    "version directory {} declares package version {version}, expected \
+                     {major}.{minor}.0; a new version is a new `v<major>.<minor>` directory",
+                    wit_dir.display()
+                ),
+            )
+            .with_path(wit_dir.display().to_string())
+        ));
     }
     Ok(())
 }
@@ -760,12 +942,16 @@ pub fn ensure_not_released(wit_dir: &Path, explicit: Option<&Path>) -> Result<()
         .into_iter()
         .find(|released| released.directory == directory)
     {
-        bail!(
-            "version directory `{}` is released (listed as `{}` in {}) and cannot be locked",
-            wit_dir.display(),
-            released.entry,
-            released.manifest.display()
-        );
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "version directory `{}` is released (listed as `{}` in {}) and cannot be locked",
+                wit_dir.display(),
+                released.entry,
+                released.manifest.display()
+            ),
+            Some(wit_dir.display().to_string()),
+        ));
     }
     Ok(())
 }
@@ -819,14 +1005,18 @@ pub fn ensure_lockfile_not_released(
         .into_iter()
         .find(|released| resolved.starts_with(&released.directory))
     {
-        bail!(
-            "lockfile `{}` is in the released directory `{}` (listed as `{}` in {}) and \
-             cannot be written",
-            lock.display(),
-            released.directory.display(),
-            released.entry,
-            released.manifest.display()
-        );
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "lockfile `{}` is in the released directory `{}` (listed as `{}` in {}) and \
+                 cannot be written",
+                lock.display(),
+                released.directory.display(),
+                released.entry,
+                released.manifest.display()
+            ),
+            Some(lock.display().to_string()),
+        ));
     }
     Ok(())
 }
@@ -944,17 +1134,25 @@ pub(crate) fn parse_version_directory(name: &str) -> Result<Option<(u64, u64)>> 
         .and_then(|rest| rest.split_once('.'))
         && let (Ok(major_number), Ok(minor_number)) = (major.parse::<u64>(), minor.parse::<u64>())
     {
-        bail!(
-            "version directory `{name}` must be spelled `v{major_number}.{minor_number}`: ASCII \
-             digits without a sign or leading zeros"
-        );
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "version directory `{name}` must be spelled `v{major_number}.{minor_number}`: ASCII \
+                 digits without a sign or leading zeros"
+            ),
+            Some(name.to_string()),
+        ));
     }
     let bytes = name.as_bytes();
     if bytes.len() >= 2 && matches!(bytes[0], b'v' | b'V') && bytes[1].is_ascii_digit() {
-        bail!(
-            "invalid version entry `{name}`: expected `v<major>.<minor>` with unsigned 64-bit \
-             ASCII digits and no leading zeros, patch version, or suffix"
-        );
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "invalid version entry `{name}`: expected `v<major>.<minor>` with unsigned 64-bit \
+                 ASCII digits and no leading zeros, patch version, or suffix"
+            ),
+            Some(name.to_string()),
+        ));
     }
     Ok(None)
 }

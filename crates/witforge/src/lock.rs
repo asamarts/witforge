@@ -373,6 +373,16 @@ impl WireLock {
     /// number. A v1 lockfile is refused rather than migrated. The additive order section is
     /// optional; malformed or mismatched order fingerprints are refused.
     pub fn parse(text: &str) -> Result<Self> {
+        Self::parse_inner(text).map_err(|err| {
+            crate::operational_error(
+                crate::diagnostic::codes::PARSE_ERROR,
+                format!("{err:#}"),
+                None,
+            )
+        })
+    }
+
+    fn parse_inner(text: &str) -> Result<Self> {
         let mut lines = text.lines();
         let Some(first) = lines.next() else {
             bail!("empty lockfile: expected `{HEADER}`");

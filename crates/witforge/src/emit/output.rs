@@ -118,6 +118,7 @@ impl GeneratedFiles {
     /// Returns an error when `out` holds a file belonging to another generator or contract, when
     /// an expected path is a symlink, is not a regular file, is unreadable, or is unowned, and on
     /// I/O failure.
+    #[allow(clippy::too_many_lines)]
     pub fn write(&self, out: &Path) -> Result<()> {
         let mut stale = Vec::new();
         if out.exists() {
@@ -143,12 +144,18 @@ impl GeneratedFiles {
                     self.classify_unrelated(&path)?
                 };
                 match kind {
-                    HeaderKind::Foreign(owner) => bail!(
-                        "refusing to write into `{}`: `{}` belongs to {owner}; give each \
-                         generator and contract its own output root",
-                        out.display(),
-                        path.display()
-                    ),
+                    HeaderKind::Foreign(owner) => {
+                        return Err(crate::operational_error(
+                            crate::diagnostic::codes::GUARD_REFUSED,
+                            format!(
+                                "refusing to write into `{}`: `{}` belongs to {owner}; give each \
+                                 generator and contract its own output root",
+                                out.display(),
+                                path.display()
+                            ),
+                            Some(path.display().to_string()),
+                        ));
+                    }
                     HeaderKind::Owned | HeaderKind::LegacyShared
                         if !expected.contains(name.as_str()) =>
                     {
@@ -160,29 +167,53 @@ impl GeneratedFiles {
             for name in self.files.keys() {
                 let path = out.join(name);
                 match fs::symlink_metadata(&path) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => bail!(
-                        "refusing to write `{}`: it is a symlink, and generation never writes \
-                         through one",
-                        path.display()
-                    ),
-                    Ok(metadata) if !metadata.is_file() => bail!(
-                        "refusing to write `{}`: it exists and is not a regular file",
-                        path.display()
-                    ),
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(crate::operational_error(
+                            crate::diagnostic::codes::GUARD_REFUSED,
+                            format!(
+                                "refusing to write `{}`: it is a symlink, and generation never \
+                                 writes through one",
+                                path.display()
+                            ),
+                            Some(path.display().to_string()),
+                        ));
+                    }
+                    Ok(metadata) if !metadata.is_file() => {
+                        return Err(crate::operational_error(
+                            crate::diagnostic::codes::GUARD_REFUSED,
+                            format!(
+                                "refusing to write `{}`: it exists and is not a regular file",
+                                path.display()
+                            ),
+                            Some(path.display().to_string()),
+                        ));
+                    }
                     Ok(_) => match self.classify(&path)? {
                         HeaderKind::Owned | HeaderKind::LegacyShared => {}
-                        HeaderKind::Foreign(owner) => bail!(
-                            "refusing to write into `{}`: `{}` belongs to {owner}; give each \
-                             generator and contract its own output root",
-                            out.display(),
-                            path.display()
-                        ),
-                        HeaderKind::Unowned => bail!(
-                            "refusing to overwrite `{}`: it does not start with witforge's \
-                             header, so it is not generated output; move it or choose another \
-                             output root",
-                            path.display()
-                        ),
+                        HeaderKind::Foreign(owner) => {
+                            return Err(crate::operational_error(
+                                crate::diagnostic::codes::GUARD_REFUSED,
+                                format!(
+                                    "refusing to write into `{}`: `{}` belongs to {owner}; give \
+                                     each generator and contract its own output root",
+                                    out.display(),
+                                    path.display()
+                                ),
+                                Some(path.display().to_string()),
+                            ));
+                        }
+                        HeaderKind::Unowned => {
+                            return Err(crate::operational_error(
+                                crate::diagnostic::codes::GUARD_REFUSED,
+                                format!(
+                                    "refusing to overwrite `{}`: it does not start with \
+                                     witforge's header, so it is not generated output; move it or \
+                                     choose another output root",
+                                    path.display()
+                                ),
+                                Some(path.display().to_string()),
+                            ));
+                        }
                     },
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                     Err(err) => {
@@ -246,7 +277,11 @@ impl GeneratedFiles {
     #[allow(clippy::too_many_lines)]
     fn check_inner(&self, out: &Path, regenerate_command: Option<&str>) -> Result<Vec<String>> {
         if !out.is_dir() {
-            bail!("output root {} does not exist", out.display());
+            return Err(crate::operational_error(
+                crate::diagnostic::codes::IO_ERROR,
+                format!("output root {} does not exist", out.display()),
+                Some(out.display().to_string()),
+            ));
         }
         let hint = |suffix: &str| {
             regenerate_command.map_or_else(String::new, |cmd| format!("{suffix}run `{cmd}`"))
@@ -272,12 +307,18 @@ impl GeneratedFiles {
                 self.classify_unrelated(&path)?
             };
             match kind {
-                HeaderKind::Foreign(owner) => bail!(
-                    "output root `{}` contains `{}` which belongs to {owner}; give each \
-                     generator and contract its own output root",
-                    out.display(),
-                    path.display()
-                ),
+                HeaderKind::Foreign(owner) => {
+                    return Err(crate::operational_error(
+                        crate::diagnostic::codes::GUARD_REFUSED,
+                        format!(
+                            "output root `{}` contains `{}` which belongs to {owner}; give each \
+                             generator and contract its own output root",
+                            out.display(),
+                            path.display()
+                        ),
+                        Some(path.display().to_string()),
+                    ));
+                }
                 HeaderKind::Owned | HeaderKind::LegacyShared if !self.files.contains_key(&name) => {
                     extra.push(format!(
                         "extra generated file `{}`{}",
@@ -893,11 +934,15 @@ pub fn ensure_outside_wit_root(wit_root: &Path, out: &Path) -> Result<()> {
         .with_context(|| format!("failed to resolve WIT root {}", wit_root.display()))?;
     let resolved = resolve_output_root(out)?;
     if paths_overlap(&resolved, &root) {
-        bail!(
-            "output root {} must not be the WIT root, inside it, or contain it ({})",
-            out.display(),
-            root.display()
-        );
+        return Err(crate::operational_error(
+            crate::diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "output root {} must not be the WIT root, inside it, or contain it ({})",
+                out.display(),
+                root.display()
+            ),
+            Some(out.display().to_string()),
+        ));
     }
     Ok(())
 }
@@ -930,12 +975,16 @@ pub fn ensure_outside_released(
             )
         })?;
         if paths_overlap(&resolved, &canonical) {
-            bail!(
-                "output root {} must not be, contain, or lie inside released directory `{entry}` \
-                 ({})",
-                out.display(),
-                canonical.display()
-            );
+            return Err(crate::operational_error(
+                crate::diagnostic::codes::GUARD_REFUSED,
+                format!(
+                    "output root {} must not be, contain, or lie inside released directory \
+                     `{entry}` ({})",
+                    out.display(),
+                    canonical.display()
+                ),
+                Some(out.display().to_string()),
+            ));
         }
     }
     Ok(())
@@ -973,13 +1022,17 @@ pub fn ensure_distinct_output_roots(roots: &[(&str, &Path)]) -> Result<()> {
     for (index, (left_label, left_raw, left_canon)) in resolved.iter().enumerate() {
         for (right_label, right_raw, right_canon) in &resolved[index + 1..] {
             if paths_overlap_for_platform(left_canon, right_canon) {
-                bail!(
-                    "configured output roots `{left_label}` ({}) and `{right_label}` ({}) \
-                     overlap; each generator and project must have its own non-overlapping \
-                     output root",
-                    left_raw.display(),
-                    right_raw.display()
-                );
+                return Err(crate::operational_error(
+                    crate::diagnostic::codes::GUARD_REFUSED,
+                    format!(
+                        "configured output roots `{left_label}` ({}) and `{right_label}` ({}) \
+                         overlap; each generator and project must have its own non-overlapping \
+                         output root",
+                        left_raw.display(),
+                        right_raw.display()
+                    ),
+                    Some(right_raw.display().to_string()),
+                ));
             }
         }
     }
@@ -1018,15 +1071,24 @@ fn paths_overlap_ascii_case_insensitive(left: &Path, right: &Path) -> bool {
     left_parts[..shared] == right_parts[..shared]
 }
 
+#[allow(clippy::too_many_lines)]
 fn resolve_components(original: &Path, path: &Path, depth: usize) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
-        bail!("output root must not be empty");
+        return Err(crate::operational_error(
+            crate::diagnostic::codes::GUARD_REFUSED,
+            "output root must not be empty",
+            None,
+        ));
     }
     if depth > MAX_SYMLINK_DEPTH {
-        bail!(
-            "failed to resolve {}: too many levels of symbolic links",
-            original.display()
-        );
+        return Err(crate::operational_error(
+            crate::diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "failed to resolve {}: too many levels of symbolic links",
+                original.display()
+            ),
+            Some(original.display().to_string()),
+        ));
     }
     let mut current = if path.is_relative() {
         let cwd = std::env::current_dir().context("failed to read the current directory")?;
@@ -1051,11 +1113,15 @@ fn resolve_components(original: &Path, path: &Path, depth: usize) -> Result<Path
             Component::CurDir => {}
             Component::ParentDir => {
                 if missing_tail {
-                    bail!(
-                        "output root {} must not contain `..` after a missing directory component \
-                         (it must not be the WIT root, inside it, or contain it)",
-                        original.display()
-                    );
+                    return Err(crate::operational_error(
+                        crate::diagnostic::codes::GUARD_REFUSED,
+                        format!(
+                            "output root {} must not contain `..` after a missing directory \
+                             component (it must not be the WIT root, inside it, or contain it)",
+                            original.display()
+                        ),
+                        Some(original.display().to_string()),
+                    ));
                 }
                 current.push(Component::ParentDir);
                 current = fs::canonicalize(&current)

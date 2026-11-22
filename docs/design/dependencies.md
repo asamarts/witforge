@@ -155,7 +155,7 @@ Every package loaded from the standard `deps/` directory contributes its support
 surface to this graph, including a package the root does not reference. Every package under
 `deps/` (referenced or not) MUST therefore declare a `<major>.<minor>.0` version; a missing
 version or a patch, pre-release, or build-metadata version is a subset diagnostic (exit `1`, code
-`WF1001`) naming the package, its version, and its `deps/` entry. Root reachability instead
+`WF1012`, formerly `WF1001`) naming the package, its version, and its `deps/` entry. Root reachability instead
 decides which unsupported items inside a dependency are required and therefore refused: a local
 `use` reaches its type transitively, and a world import or export (including an implicit import
 synthesized when a world exports or imports an interface or `use`s a type that depends on a

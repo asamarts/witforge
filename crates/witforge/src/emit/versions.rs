@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::lock::{PackageName, WireLock};
+use crate::diagnostic::{Diagnostic, codes};
+use crate::lock::{Changes, PackageName, WireLock};
 use crate::model::{self, Dependency, Interface, Model, TypeDef, TypeDefKind};
-use crate::{ContractError, load, subset};
+use crate::{ContractError, load, operational_error, subset};
 
 /// One validated `v<major>.<minor>` version directory.
 pub(crate) struct Version {
@@ -38,9 +39,13 @@ pub(crate) fn shared_dependencies(versions: &[Version]) -> Result<&[Dependency]>
 /// Refuse two dependency graphs that cannot share one generated binding surface.
 pub(crate) fn ensure_same_dependency_graph(old: &[Dependency], new: &[Dependency]) -> Result<()> {
     if let Some(change) = dependency_graph_change(old, new) {
-        bail!(ContractError::new(format!(
+        let message = format!(
             "dependency graph differs: {change}; every version in a generated WIT root must use \
              an identical pinned dependency graph"
+        );
+        bail!(ContractError::with_diagnostic(Diagnostic::error(
+            codes::DEPENDENCY_GRAPH_MISMATCH,
+            message,
         )));
     }
     Ok(())
@@ -251,59 +256,89 @@ fn dependency_name(dependency: &Dependency) -> String {
 /// package, or an unreadable or invalid lockfile, and a [`ContractError`] for a subset
 /// violation, a version or package mismatch, a lockfile entry of another package, a lockfile
 /// that does not continue the previous minor's, or a stale lockfile.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
     let released = crate::load_root_released_manifest(wit_root, None)?;
     let mut versions: Vec<Version> = Vec::new();
     for (major, minor, directory) in discover_versions(wit_root)? {
         let contract = load(&directory)?;
-        let violations = subset::check(&contract);
+        let violations = subset::check_diagnostics(&contract);
         if !violations.is_empty() {
-            let messages: Vec<String> = violations.iter().map(ToString::to_string).collect();
-            bail!(ContractError::new(format!(
-                "{}: {}",
-                directory.display(),
-                messages.join("; ")
-            )));
+            let messages: Vec<String> = violations
+                .iter()
+                .map(|diagnostic| match &diagnostic.path {
+                    Some(path) => format!("{path}: {}", diagnostic.message),
+                    None => diagnostic.message.clone(),
+                })
+                .collect();
+            bail!(ContractError::with_diagnostics(
+                format!("{}: {}", directory.display(), messages.join("; ")),
+                violations,
+            ));
         }
         let model = model::build(&contract)?;
         let version = model.package.version;
         if version.major != major || version.minor != minor || version.patch != 0 {
-            bail!(ContractError::new(format!(
-                "{} declares version {}, expected {major}.{minor}.0",
-                directory.display(),
-                version
-            )));
+            bail!(ContractError::with_diagnostic(
+                Diagnostic::error(
+                    codes::DIRECTORY_VERSION_MISMATCH,
+                    format!(
+                        "{} declares version {}, expected {major}.{minor}.0",
+                        directory.display(),
+                        version
+                    ),
+                )
+                .with_path(directory.display().to_string())
+            ));
         }
         if let Some(first) = versions.first() {
             let expected = &first.model.package;
             if expected.namespace != model.package.namespace || expected.name != model.package.name
             {
-                bail!(ContractError::new(format!(
-                    "{} declares package {}:{}, expected {}:{}",
-                    directory.display(),
-                    model.package.namespace,
-                    model.package.name,
-                    expected.namespace,
-                    expected.name
-                )));
+                bail!(ContractError::with_diagnostic(
+                    Diagnostic::error(
+                        codes::PACKAGE_MISMATCH,
+                        format!(
+                            "{} declares package {}:{}, expected {}:{}",
+                            directory.display(),
+                            model.package.namespace,
+                            model.package.name,
+                            expected.namespace,
+                            expected.name
+                        ),
+                    )
+                    .with_path(directory.display().to_string())
+                ));
             }
         }
         let previous = versions.last().filter(|previous| previous.major == major);
         let lock_path = directory.join("wire.lock");
         let lock_text = read_version_lock(&directory, major, &lock_path, previous)?;
-        let lock =
-            WireLock::parse(&lock_text).with_context(|| format!("in {}", lock_path.display()))?;
+        let lock = WireLock::parse(&lock_text).map_err(|err| {
+            operational_error(
+                codes::PARSE_ERROR,
+                format!("in {}: {err:#}", lock_path.display()),
+                Some(lock_path.display().to_string()),
+            )
+        })?;
         let package = PackageName {
             namespace: model.package.namespace.clone(),
             name: model.package.name.clone(),
         };
         lock.check_package(&package).map_err(|err| {
-            ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
+            let human = format!("in {}: {err:#}", lock_path.display());
+            ContractError::with_diagnostics(
+                human,
+                vec![
+                    Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
+                        .with_path(lock_path.display().to_string()),
+                ],
+            )
         })?;
         if let Some(previous) = previous {
             let previous_path = previous.directory.join("wire.lock");
             lock.check_append_only(&previous.lock).map_err(|err| {
-                ContractError::new(format!(
+                let message = format!(
                     "{} does not continue {}: {err:#}; copy {} to {} and run `witforge lock {} \
                      --against {}`",
                     lock_path.display(),
@@ -312,7 +347,11 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                     lock_path.display(),
                     crate::shell_quote(&directory),
                     crate::shell_quote(&previous_path),
-                ))
+                );
+                ContractError::with_diagnostic(
+                    Diagnostic::error(codes::LOCKFILE_ERROR, message)
+                        .with_path(lock_path.display().to_string()),
+                )
             })?;
         }
         let members = model.members()?;
@@ -321,22 +360,34 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| released.contains(name));
         let drift = lock.drift(&members).map_err(|err| {
-            ContractError::from_error(&err.context(format!("in {}", lock_path.display())))
+            let human = format!("in {}: {err:#}", lock_path.display());
+            ContractError::with_diagnostics(
+                human,
+                vec![
+                    Diagnostic::error(codes::LOCKFILE_ERROR, format!("{err:#}"))
+                        .with_path(lock_path.display().to_string()),
+                ],
+            )
         })?;
         if !drift.is_empty() {
-            bail!(ContractError::new(format!(
-                "{}: lockfile is stale; {}",
-                directory.display(),
-                version_lock_remedy(&directory, previous, is_released)
-            )));
+            let remedy = version_lock_remedy(&directory, previous, is_released);
+            let diagnostics = drift_diagnostics(&drift, &remedy);
+            bail!(ContractError::with_diagnostics(
+                format!("{}: lockfile is stale; {remedy}", directory.display()),
+                diagnostics,
+            ));
         }
         lock.validate_order_section(&members, is_released)
             .map_err(|err| {
-                ContractError::new(format!(
+                let message = format!(
                     "{}: {err:#}; {}",
                     lock_path.display(),
                     version_lock_remedy(&directory, previous, is_released)
-                ))
+                );
+                ContractError::with_diagnostic(
+                    Diagnostic::error(codes::LOCKFILE_ERROR, message)
+                        .with_path(lock_path.display().to_string()),
+                )
             })?;
         versions.push(Version {
             major,
@@ -346,6 +397,59 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
         });
     }
     Ok(versions)
+}
+
+fn drift_diagnostics(changes: &Changes, remedy: &str) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (key, _) in &changes.added {
+        diagnostics.push(
+            Diagnostic::error(
+                codes::LOCKFILE_MISSING_NUMBER,
+                format!("{key} has no wire number; {remedy}"),
+            )
+            .with_path(key.clone()),
+        );
+    }
+    for (key, number) in &changes.reserved {
+        diagnostics.push(
+            Diagnostic::error(
+                codes::LOCKFILE_UNRESERVED_REMOVAL,
+                format!("{key} = {number} is no longer in the contract; {remedy}"),
+            )
+            .with_path(key.clone()),
+        );
+    }
+    for (key, number) in &changes.reintroduced {
+        diagnostics.push(
+            Diagnostic::error(
+                codes::LOCKFILE_REINTRODUCED,
+                format!(
+                    "{key} was removed and its name and number {number} stay reserved; give the \
+                     member a new name"
+                ),
+            )
+            .with_path(key.clone()),
+        );
+    }
+    for (key, number) in &changes.dropped {
+        diagnostics.push(
+            Diagnostic::error(
+                codes::LOCKFILE_STALE_DRAFT,
+                format!("stale draft {key} = {number}; {remedy}"),
+            )
+            .with_path(key.clone()),
+        );
+    }
+    for (key, _, _) in &changes.updated {
+        diagnostics.push(
+            Diagnostic::error(
+                codes::LOCKFILE_CHANGED_DRAFT,
+                format!("draft {key} changed kind or type; {remedy}"),
+            )
+            .with_path(key.clone()),
+        );
+    }
+    diagnostics
 }
 
 fn read_version_lock(
@@ -358,9 +462,9 @@ fn read_version_lock(
         Ok(text) => Ok(text),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let quoted_dir = crate::shell_quote(directory);
-            if let Some(previous) = previous {
+            let message = if let Some(previous) = previous {
                 let prev_lock = previous.directory.join("wire.lock");
-                bail!(
+                format!(
                     "lockfile {} does not exist; major {major} already has {}, so copy {} to \
                      {} and run `witforge lock {} --against {}` (or for a new major, create a \
                      fresh lockfile with `--first`)",
@@ -370,17 +474,23 @@ fn read_version_lock(
                     lock_path.display(),
                     quoted_dir,
                     crate::shell_quote(&prev_lock),
-                );
-            }
-            bail!(
-                "lockfile {} does not exist; for the first version of a package or of a new \
-                 major, create it with `witforge lock {} --first`; for a new minor, copy the \
-                 previous minor's wire.lock to {} and run witforge lock on that directory with \
-                 --against pointing at the previous minor's wire.lock",
-                lock_path.display(),
-                quoted_dir,
-                lock_path.display(),
-            );
+                )
+            } else {
+                format!(
+                    "lockfile {} does not exist; for the first version of a package or of a new \
+                     major, create it with `witforge lock {} --first`; for a new minor, copy the \
+                     previous minor's wire.lock to {} and run witforge lock on that directory with \
+                     --against pointing at the previous minor's wire.lock",
+                    lock_path.display(),
+                    quoted_dir,
+                    lock_path.display(),
+                )
+            };
+            Err(operational_error(
+                codes::IO_ERROR,
+                message,
+                Some(lock_path.display().to_string()),
+            ))
         }
         Err(err) => Err(err).with_context(|| format!("failed to read {}", lock_path.display())),
     }
@@ -434,28 +544,40 @@ fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
             crate::ensure_version_directory(&path)?;
         }
         if !file_type.is_dir() {
-            bail!(
-                "version entry `{}` is not a directory; expected a `v<major>.<minor>` directory",
-                path.display()
-            );
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "version entry `{}` is not a directory; expected a `v<major>.<minor>` directory",
+                    path.display()
+                ),
+                Some(path.display().to_string()),
+            ));
         }
         versions.push((major, minor, path));
     }
     versions.sort_by_key(|(major, minor, _)| (*major, *minor));
     for pair in versions.windows(2) {
         if pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 {
-            bail!(
-                "duplicate version directories {} and {}",
-                pair[0].2.display(),
-                pair[1].2.display()
-            );
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "duplicate version directories {} and {}",
+                    pair[0].2.display(),
+                    pair[1].2.display()
+                ),
+                Some(pair[1].2.display().to_string()),
+            ));
         }
     }
     if versions.is_empty() {
-        bail!(
-            "no v<major>.<minor> version directories under {}",
-            wit_root.display()
-        );
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "no v<major>.<minor> version directories under {}",
+                wit_root.display()
+            ),
+            Some(wit_root.display().to_string()),
+        ));
     }
     Ok(versions)
 }
