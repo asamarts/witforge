@@ -1,6 +1,6 @@
 //! `W10-067` contract validation invariant tests:
 //!
-//! 1. Every single-version generator refusal is reported by `check` (`WF1001`/`WF1003`).
+//! 1. Every single-version generator refusal is reported by `check` (`WF1003`/`WF1030`).
 //! 2. Unreachable unsupported dependency items—and every item transitively referencing them,
 //!    including across two dependency packages—are pruned cleanly without exit 2 or dangling
 //!    references.

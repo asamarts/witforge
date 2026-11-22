@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
 use crate::emit::{docs, pascal_case, rust_ident, rustfmt, snake_case};
@@ -32,7 +31,7 @@ pub(crate) fn header_for(namespace: &str, name: &str) -> String {
 /// # Errors
 ///
 /// Returns an error for a missing, duplicate, or symlinked version directory, or an unreadable or
-/// invalid lockfile, and a [`ContractError`] for an inconsistent package, subset violations, a
+/// invalid lockfile, and a [`crate::ContractError`] for an inconsistent package, subset violations, a
 /// stale lockfile, or generated-name collisions.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     plan_with_serde(wit_root, false)
@@ -53,7 +52,7 @@ pub fn plan_with_serde(wit_root: &Path, serde: bool) -> Result<GeneratedFiles> {
 /// Plan the Rust output for validated `versions`, which [`load_versions`] returns.
 ///
 /// An emitter error is passed on as the emitter classified it: a contract violation stays a
-/// [`ContractError`] and an internal error stays a plain error.
+/// [`crate::ContractError`] and an internal error stays a plain error.
 pub(crate) fn plan_versions_with_serde(
     versions: &[Version],
     serde: bool,
@@ -71,11 +70,11 @@ pub(crate) fn plan_versions_with_serde(
     for version in versions {
         let module = version_module_name(&version.model);
         if let Some(previous) = modules.insert(module.clone(), &version.directory) {
-            bail!(ContractError::new(format!(
+            contract_bail!(
                 "version module `{module}` is produced by both {} and {}",
                 previous.display(),
                 version.directory.display()
-            )));
+            );
         }
         let generated = emit_version_with_serde(&version.model, serde)
             .with_context(|| version.directory.display().to_string())?;
@@ -192,7 +191,7 @@ pub(crate) fn validate_model(model: &Model) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns a [`ContractError`] when a WIT name cannot be represented in Rust or a generated name
+/// Returns a [`crate::ContractError`] when a WIT name cannot be represented in Rust or a generated name
 /// collides, and a plain error when a named type is missing from the model, which a model built
 /// by [`crate::model::build`] never produces.
 pub fn emit_version(model: &Model) -> Result<String> {

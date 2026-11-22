@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::ContractError;
 use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
@@ -40,7 +39,7 @@ const ONEOF_VALUE: &str = "witforge_value";
 /// # Errors
 ///
 /// Returns an error for a missing or symlinked version directory or an unreadable or invalid
-/// lockfile, and a [`ContractError`] for an inconsistent package, subset
+/// lockfile, and a [`crate::ContractError`] for an inconsistent package, subset
 /// violations, a stale lockfile, or a generated-name collision.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     plan_versions(&load_versions(wit_root)?)
@@ -49,7 +48,7 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 /// Plan the protobuf output for validated `versions`, which [`load_versions`] returns.
 ///
 /// An emitter error is passed on as the emitter classified it: a contract violation stays a
-/// [`ContractError`] and an internal error stays a plain error.
+/// [`crate::ContractError`] and an internal error stays a plain error.
 pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
     let dependencies = shared_dependencies(versions)?;
     let root_package = &versions
@@ -91,9 +90,7 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
             .with_context(|| format!("dependency {}", dependency.package.name))?;
         let filename = dependency_file_name(dependency);
         if !dependency_files.insert(filename.clone()) {
-            bail!(ContractError::new(format!(
-                "dependency packages both generate `{filename}`"
-            )));
+            contract_bail!("dependency packages both generate `{filename}`");
         }
         files.insert(filename, generated)?;
     }
@@ -156,9 +153,7 @@ pub(crate) fn validate_model(model: &Model) -> Result<()> {
         })?;
         let filename = dependency_file_name(dependency);
         if !dependency_files.insert(filename.clone()) {
-            bail!(ContractError::new(format!(
-                "dependency packages both generate `{filename}`"
-            )));
+            contract_bail!("dependency packages both generate `{filename}`");
         }
     }
     Ok(())
@@ -171,7 +166,7 @@ pub(crate) fn validate_model(model: &Model) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns a [`ContractError`] for an invalid or colliding proto name or a
+/// Returns a [`crate::ContractError`] for an invalid or colliding proto name or a
 /// generated wrapper collision, and a plain error for a missing lockfile entry or an unknown
 /// named type, which a validated model and lockfile never produce.
 pub fn emit_major(model: &Model, lock: &WireLock) -> Result<String> {

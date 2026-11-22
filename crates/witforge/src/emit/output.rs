@@ -372,12 +372,18 @@ impl GeneratedFiles {
                             ));
                         }
                     }
-                    HeaderKind::Foreign(owner) => bail!(
-                        "output root `{}` contains `{}` which belongs to {owner}; give each \
-                         generator and contract its own output root",
-                        out.display(),
-                        path.display()
-                    ),
+                    HeaderKind::Foreign(owner) => {
+                        return Err(crate::operational_error(
+                            crate::diagnostic::codes::GUARD_REFUSED,
+                            format!(
+                                "output root `{}` contains `{}` which belongs to {owner}; give \
+                                 each generator and contract its own output root",
+                                out.display(),
+                                path.display()
+                            ),
+                            Some(path.display().to_string()),
+                        ));
+                    }
                     HeaderKind::Unowned => {
                         messages.push(format!(
                             "`{}` does not start with witforge's header, so generation refuses to \
@@ -420,15 +426,22 @@ impl GeneratedFiles {
                     continue;
                 }
                 match self.classify_unrelated(&path)? {
-                    HeaderKind::Foreign(owner) => bail!(
-                        "output root `{}` contains `{}` which belongs to {owner}; give each \
-                         generator and contract its own output root",
-                        out.display(),
-                        path.display()
-                    ),
+                    HeaderKind::Foreign(owner) => {
+                        return Err(crate::operational_error(
+                            crate::diagnostic::codes::GUARD_REFUSED,
+                            format!(
+                                "output root `{}` contains `{}` which belongs to {owner}; give \
+                                 each generator and contract its own output root",
+                                out.display(),
+                                path.display()
+                            ),
+                            Some(path.display().to_string()),
+                        ));
+                    }
                     HeaderKind::Owned | HeaderKind::LegacyShared => {
-                        let actual = fs::read_to_string(&path)
+                        let actual_bytes = fs::read(&path)
                             .with_context(|| format!("failed to read {}", path.display()))?;
+                        let actual = String::from_utf8_lossy(&actual_bytes);
                         rendered.push_str(&render_unified_diff(
                             &path.display().to_string(),
                             Some(&actual),
@@ -457,12 +470,18 @@ impl GeneratedFiles {
                                 ));
                             }
                         }
-                        HeaderKind::Foreign(owner) => bail!(
-                            "output root `{}` contains `{}` which belongs to {owner}; give each \
-                             generator and contract its own output root",
-                            out.display(),
-                            path.display()
-                        ),
+                        HeaderKind::Foreign(owner) => {
+                            return Err(crate::operational_error(
+                                crate::diagnostic::codes::GUARD_REFUSED,
+                                format!(
+                                    "output root `{}` contains `{}` which belongs to {owner}; \
+                                     give each generator and contract its own output root",
+                                    out.display(),
+                                    path.display()
+                                ),
+                                Some(path.display().to_string()),
+                            ));
+                        }
                         HeaderKind::Unowned => {}
                     }
                 }

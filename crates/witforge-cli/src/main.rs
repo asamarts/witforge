@@ -899,11 +899,21 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         && let Err(err) = emit::proto::emit_major(&model, &lock)
     {
         if is_contract_error(&err) {
-            reporter.error(
-                "WF1003",
-                format!("{err:#}"),
-                Some(lock_path.display().to_string()),
-            );
+            if let Some(diags) = error_diagnostics(&err) {
+                for diagnostic in diags {
+                    let mut diagnostic = diagnostic.clone();
+                    if diagnostic.path.is_none() {
+                        diagnostic = diagnostic.with_path(lock_path.display().to_string());
+                    }
+                    reporter.push(diagnostic);
+                }
+            } else {
+                reporter.error(
+                    codes::IDENTIFIER_COLLISION,
+                    format!("{err:#}"),
+                    Some(lock_path.display().to_string()),
+                );
+            }
             return Ok(ExitCode::from(1));
         }
         return Err(err);
@@ -1626,11 +1636,12 @@ fn check_messages(messages: &[String], reporter: &mut Reporter) -> ExitCode {
 fn version_directory(path: &Path) -> Option<(u64, u64)> {
     let name = path.file_name()?.to_str()?;
     let (major, minor) = name.strip_prefix('v')?.split_once('.')?;
-    if major.is_empty()
-        || minor.is_empty()
-        || !major.bytes().all(|byte| byte.is_ascii_digit())
-        || !minor.bytes().all(|byte| byte.is_ascii_digit())
-    {
+    let canonical = |digits: &str| {
+        !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && (digits == "0" || !digits.starts_with('0'))
+    };
+    if !canonical(major) || !canonical(minor) {
         return None;
     }
     Some((major.parse().ok()?, minor.parse().ok()?))

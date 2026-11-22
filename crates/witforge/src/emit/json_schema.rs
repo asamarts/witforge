@@ -7,9 +7,8 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
-use crate::ContractError;
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root, json_header};
 use crate::emit::rust::version_module_name;
 use crate::emit::versions::{Version, load_versions, shared_dependencies};
@@ -70,9 +69,7 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
             .with_context(|| format!("dependency {}", dependency.package.name))?;
         let filename = dependency_schema_filename(dependency);
         if !dependency_files.insert(filename.clone()) {
-            bail!(ContractError::new(format!(
-                "dependency packages both generate `{filename}`"
-            )));
+            contract_bail!("dependency packages both generate `{filename}`");
         }
         files.insert(filename, generated)?;
     }
@@ -128,9 +125,7 @@ pub(crate) fn validate_model(model: &Model) -> Result<()> {
         })?;
         let filename = dependency_schema_filename(dependency);
         if !dependency_files.insert(filename.clone()) {
-            bail!(ContractError::new(format!(
-                "dependency packages both generate `{filename}`"
-            )));
+            contract_bail!("dependency packages both generate `{filename}`");
         }
     }
     Ok(())
