@@ -286,3 +286,6 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
       reported `witforge 0.6.0`; docs.rs built the library documentation, the installed binary
       reproduced all committed examples, and alint's proof crate (`alint-witforge-consumer`)
       regenerated and passed its tests, Clippy, and consumer-script controls against `witforge 0.6.0`.
+- [x] Main CI run 44958956278 (`https://github.com/asamarts/witforge/actions/runs/44958956278`)
+      invoked the pinned published `asamarts/witforge@v0.6.0` Action against all four release
+      targets; every target downloaded its matching 0.6.0 archive and passed a real contract check.

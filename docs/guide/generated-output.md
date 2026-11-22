@@ -25,7 +25,7 @@ unrelated definitions, and surrounding module context may be omitted.
 
 ## Plain Rust
 
-The Rust emitter writes owned values and one trait per WIT interface. WIT names become Rust
+The Rust emitter writes owned values and one trait per WIT interface that declares functions. WIT names become Rust
 identifiers; no Wasm runtime types appear in this output.
 
 ```rust
