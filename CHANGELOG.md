@@ -48,6 +48,12 @@ All notable changes to this project are documented here. The format follows
     every missing/stale lockfile hint quotes paths and prints a runnable `--first` or `--against`
     command; `check` and `lock` on a WIT root list the discovered version directories with a
     runnable example command.
+- **Specified `--serde` format-independence, `serde_json` limits, and JSON names (`W10-071`):**
+  - Documented `--serde`'s format-independent derives, exact Rust-spelled JSON keys (`self_`,
+    `type`, folded upper-case names, `"DoneNow"`, variant/flags/byte-list/result encodings),
+    differences from JSON Schema reading rules and `convert.rs` cross-version defaults, and exact
+    `serde_json` limitations (`Some(None)` on nested options, non-finite floats), pinned by an
+    expanded `serde` fixture and compile/round-trip test.
 
 ## [0.6.0] - 2026-11-21
 

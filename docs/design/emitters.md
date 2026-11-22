@@ -338,8 +338,63 @@ variants, and flags additionally derive:
 The consumer must depend on `serde` with the `derive` feature. Type aliases cannot derive; their
 target types do. The default output, `--no-serde`, and the existing generated API are unchanged;
 `--serde` overrides a configuration that left it off, and `--no-serde` overrides one that left it
-on. Floats, nested options/lists/results, and all generated structural shapes are covered by a
-compile and JSON round-trip test.
+on.
+
+#### Format independence and `serde_json` limits
+
+`--serde` emits plain, format-independent derives with no `#[serde(...)]` rename, tag, or custom
+serializer attributes. Formats that tag `Option` (for example postcard or RON) round-trip
+`Some(None)`, and binary formats round-trip non-finite IEEE-754 floats.
+
+When a consumer uses `serde_json`, two values do not round-trip because JSON has no distinct
+representation for them:
+
+- **Nested options (`option<option<T>>`, three levels, inside a `list`, or through an alias such
+  as `option<maybe>` with `type maybe = option<u32>`):** `Some(None)` (and `Some(Some(None))`)
+  serializes as `null` and deserializes back as `None`.
+- **Non-finite floats (`f32`/`f64` `NaN`, `+Infinity`, `-Infinity`):** `serde_json` serializes
+  them as `null`. A non-finite float in a required field or `list` therefore fails to deserialize;
+  a non-finite float inside `option<f32>` or `option<f64>` (`Some(NaN)`) serializes as `null` and
+  deserializes as `None`. Negative zero (`-0.0`) round-trips through `serde_json` with its sign
+  bit intact (`-0.0 == 0.0` under `PartialEq`).
+
+As in JSON Schema, `u64` and `s64` values beyond `±2^53` are written as exact JSON numbers by
+`serde_json`, while IEEE-754 double readers (such as JavaScript `JSON.parse`) lose precision.
+
+#### Serde JSON names and differences from JSON Schema
+
+Derived Serde uses the generated plain Rust identifiers and `serde`'s default tagging rules rather
+than WIT spellings. Consumers mixing `--serde` and `witforge schema` must account for every
+difference below (aligning Serde and schema names is tracked separately in `W11-035`):
+
+| Construct | WIT example | Generated Rust (`--serde`) JSON | Draft 7 JSON Schema |
+|---|---|---|---|
+| Record / flag field | `start-byte: u32` | `"start_byte": 4` | `"start-byte": 4` |
+| Non-raw escaped keyword (`self`, `super`, `crate`, `Self`) | `%self: string` | `"self_": "…"` (Rust field `self_`) | `"self": "…"` |
+| Raw-escaped Rust keyword (`type`, `match`, `in`, …) | `%type: string` | `"type": "…"` (`r#` stripped by Serde) | `"type": "…"` |
+| Upper-case WIT identifier (folded since 0.6.0 / `W10-059`) | `URL: string` | `"url": "…"` | `"URL": "…"` |
+| Enum case | `done-now` | `"DoneNow"` | `"done-now"` |
+| Variant case without payload | `started` | `"Started"` | `{"started": null}` |
+| Variant case with payload | `item(item)` | `{"Item": {…}}` | `{"item": {…}}` |
+| Flags | `flags marks { read-only }` | `{"read_only": true}` | `{"read-only": true}` |
+| Byte list (`list<u8>` or alias to `u8`) | `raw: list<u8>` | `[0, 127, 255]` (JSON integer array, not base64) | `[0, 127, 255]` |
+| `result<T, E>` | `Ok(7)` / `Err("e")` | `{"Ok": 7}` / `{"Err": "e"}` | `{"ok": 7}` / `{"err": "e"}` |
+| `result<T>` (`result<T, _>`) | `Ok(7)` / `Err(())` | `{"Ok": 7}` / `{"Err": null}` | `{"ok": 7}` / `{"err": null}` |
+| `result<_, E>` | `Ok(())` / `Err("e")` | `{"Ok": null}` / `{"Err": "e"}` | `{"ok": null}` / `{"err": "e"}` |
+| Bare `result` (`result<_, _>`) | `Ok(())` / `Err(())` | `{"Ok": null}` / `{"Err": null}` | `{"ok": null}` / `{"err": null}` |
+
+Reading and evolution rules also differ from both JSON Schema and generated `convert.rs`:
+
+- **Absent `option<T>` field:** derived Serde deserializes an omitted key as `None`; JSON Schema
+  requires every record property (accepting explicit `null` for `None`).
+- **Unknown fields:** derived Serde ignores unknown object keys; JSON Schema sets
+  `additionalProperties: false` and rejects them.
+- **Cross-version documents (`v0.1` JSON read directly as `v0.2`):** an added `option<T>` field
+  deserializes as `None`, whereas an added `list<T>` field fails with a missing-field error—unlike
+  generated `convert.rs`, which defaults both `option<T>` (`None`) and `list<T>` (`Vec::new()`).
+
+Floats, nested options, lists, all four result forms, escaped/upper-case names, reading rules, and
+these exact `serde_json` behaviours are pinned by `crates/witforge/tests/serde.rs`.
 
 ### 3.4 Type mapping
 

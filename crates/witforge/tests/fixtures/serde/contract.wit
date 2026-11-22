@@ -1,18 +1,35 @@
 package example:serde@0.1.0;
 
 interface types {
+    type maybe-u32 = option<u32>;
+
     record item {
         id: u64,
+        signed: s64,
         name: string,
+        %self: string,
+        %type: string,
+        URL: string,
         score: f64,
+        ratio: f32,
         note: option<string>,
+        nested: option<option<u32>>,
+        deep: option<option<option<string>>>,
+        aliased-nested: option<maybe-u32>,
+        nested-list: list<option<option<u32>>>,
         tags: list<string>,
+        raw: list<u8>,
         scores: list<option<f64>>,
+        plain-floats: list<f64>,
+        res-both: result<u32, string>,
+        res-ok: result<u32>,
+        res-err: result<_, string>,
+        res-bare: result,
     }
 
     enum state {
         ready,
-        done,
+        done-now,
     }
 
     variant event {
@@ -22,6 +39,7 @@ interface types {
 
     flags marks {
         trace,
+        read-only,
     }
 
     type alias-item = item;

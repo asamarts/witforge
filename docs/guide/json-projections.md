@@ -28,9 +28,30 @@ the default shapes are:
 
 ## Plain Rust Serde
 
-WIT names become Rust identifiers, so `start-byte` becomes `start_byte`. Derived Serde uses that
-Rust spelling. `Option<T>` accepts an omitted field as `None` and serializes `None` as `null`.
-Rust integer types serialize as JSON numbers, including `u64` and `s64`.
+`--serde` adds plain, format-independent `#[derive(::serde::Serialize, ::serde::Deserialize)]`
+attributes to generated records, enums, variants, and flags. Derived Serde uses the generated Rust
+spelling rather than the WIT spelling:
+
+- **Fields and flags:** `start-byte` becomes `"start_byte"`, upper-case words fold to Rust casing
+  (`URL` becomes `"url"`), non-raw escaped keywords keep their trailing underscore (`%self` is
+  keyed `"self_"`), and raw Rust identifiers drop `r#` (`%type` becomes `r#type` and is keyed
+  `"type"`).
+- **Enums and variants:** enum cases serialize as PascalCase strings (`done-now` -> `"DoneNow"`),
+  payload-less variant cases serialize as unit strings (`"Started"`), and payload variant cases use
+  externally tagged single-key objects (`{"Item": {...}}`).
+- **Bytes and integers:** `list<u8>` (including byte aliases) serializes as a JSON array of
+  integers (`[0, 127, 255]`), not base64. Rust integer types serialize as exact JSON numbers,
+  including `u64` and `s64` (JavaScript `JSON.parse` loses precision above `±2^53`).
+- **Reading and evolution:** derived Serde treats an omitted `option<T>` field as `None` (writing
+  `None` as `null`) and silently ignores unknown fields. Reading a `v0.1` JSON document directly as
+  `v0.2` therefore yields `None` for an added `option<T>` field, but fails with a missing-field
+  error for an added `list<T>` field—unlike generated `convert.rs`, which defaults both.
+- **`serde_json` losses:** because JSON has no distinct representation for nested nulls or
+  non-finite floats, `serde_json` serializes `Some(None)` on nested options (`option<option<T>>`,
+  through aliases, or in lists) as `null` and deserializes it as `None`, and serializes `NaN` /
+  `±Infinity` as `null` (which fails to deserialize for required fields/lists and deserializes as
+  `None` inside `option<f32>`/`option<f64>`). Formats that tag `Option` or encode binary IEEE-754
+  floats round-trip both. See `docs/design/emitters.md` section 3.3 for the full mapping table.
 
 ## Draft 7 JSON Schema
 
