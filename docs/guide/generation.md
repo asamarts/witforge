@@ -77,6 +77,6 @@ Each emitter and project needs its own non-overlapping output directory. Every g
 
 ## Inspect the result
 
-The [generated-output guide](generated-output.html) shows current Rust, protobuf, JSON Schema,
+The [generated-output guide](generated-output.md) shows current Rust, protobuf, JSON Schema,
 glue, and version-adapter output from the committed runnable examples. The full files are checked
 with `--check` in this repository's CI.

@@ -67,7 +67,7 @@ Full files: [`v0_1.rs`](https://github.com/asamarts/witforge/blob/main/examples/
 and [`mod.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/rust/mod.rs).
 Passing `--serde` (or setting `serde = true` under `[project.<name>.rust]`) adds plain,
 format-independent `::serde::Serialize` and `::serde::Deserialize` derives using these Rust
-identifiers; see [JSON projections](json-projections.html) for the exact JSON keys, reading rules,
+identifiers; see [JSON projections](json-projections.md) for the exact JSON keys, reading rules,
 and `serde_json` edge cases.
 
 ## Protobuf
@@ -122,7 +122,7 @@ accepts `null`, but the containing property is still required.
 ```
 
 Full file: [`v0_1.schema.json`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/schema/v0_1.schema.json).
-Read [JSON Schema and Rust Serde](json-projections.html) before treating both projections as one
+Read [JSON Schema and Rust Serde](json-projections.md) before treating both projections as one
 JSON wire format.
 
 ## Rust/protobuf glue

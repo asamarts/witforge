@@ -583,3 +583,357 @@ fn wiring_guide_crate_generates_compiles_and_roundtrips() {
     assert_eq!(cargo_ran, 1);
     fs::remove_dir_all(&directory).unwrap();
 }
+
+/// Compute GitHub Flavored Markdown heading anchors (matching GitHub and kramdown GFM slugs,
+/// including `-1`, `-2` suffixes for duplicate headings).
+fn markdown_anchors(markdown: &str) -> std::collections::BTreeSet<String> {
+    let mut anchors = std::collections::BTreeSet::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+        let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+        if !(1..=6).contains(&hashes) {
+            continue;
+        }
+        let rest = &trimmed[hashes..];
+        if !rest.starts_with(' ') {
+            continue;
+        }
+        let title = rest.trim().trim_end_matches('#').trim();
+        let slug = gfm_slug(title);
+        if slug.is_empty() {
+            continue;
+        }
+        let count = counts.entry(slug.clone()).or_insert(0);
+        if *count == 0 {
+            anchors.insert(slug);
+        } else {
+            anchors.insert(format!("{slug}-{count}"));
+        }
+        *count += 1;
+    }
+    anchors
+}
+
+fn gfm_slug(title: &str) -> String {
+    let mut out = String::new();
+    for ch in title.chars() {
+        if ch.is_alphanumeric() {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
+        } else if ch == ' ' || ch == '-' {
+            out.push('-');
+        } else if ch == '_' {
+            out.push('_');
+        }
+    }
+    out
+}
+
+/// Extract Markdown link targets `[label](target)` outside fenced code blocks and inline code.
+fn extract_markdown_links(markdown: &str) -> Vec<(usize, String)> {
+    let mut links = Vec::new();
+    let mut in_fence = false;
+    for (idx, line) in markdown.lines().enumerate() {
+        let line_no = idx + 1;
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        let mut in_code = false;
+        while i < bytes.len() {
+            if bytes[i] == b'`' {
+                in_code = !in_code;
+                i += 1;
+                continue;
+            }
+            if !in_code && bytes[i] == b']' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+                let start = i + 2;
+                let mut depth = 1usize;
+                let mut j = start;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth > 0 {
+                        j += 1;
+                    }
+                }
+                if depth == 0 {
+                    let raw = line[start..j].trim();
+                    let target = raw
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches(|c| c == '<' || c == '>');
+                    if !target.is_empty() {
+                        links.push((line_no, target.to_string()));
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+    links
+}
+
+fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_markdown_files(&path, out);
+        } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("md") {
+            out.push(path);
+        }
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn verify_anchor(
+    source_label: &str,
+    line_no: usize,
+    raw_target: &str,
+    target_file: &Path,
+    anchor: &str,
+    anchor_cache: &mut std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
+) {
+    let anchors = anchor_cache
+        .entry(target_file.to_path_buf())
+        .or_insert_with(|| {
+            let text = fs::read_to_string(target_file).unwrap_or_else(|err| {
+                panic!("{source_label}:{line_no}: failed to read `{raw_target}`: {err}")
+            });
+            markdown_anchors(&text)
+        });
+    // Also accept kramdown's collapsed-dash anchor form (e.g. `060-2026-11-21` vs `060---2026-11-21`).
+    let collapsed = anchor.replace("---", "-");
+    let found =
+        anchors.contains(anchor) || anchors.iter().any(|a| a.replace("---", "-") == collapsed);
+    assert!(
+        found,
+        "{source_label}:{line_no}: broken anchor `#{anchor}` in `{}` (from `{raw_target}`)",
+        target_file.display()
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn documentation_links_and_anchors_resolve_on_github_and_pages() {
+    let repo = normalize_path(&repository());
+    let docs_root = repo.join("docs");
+    let config = fs::read_to_string(docs_root.join("_config.yml")).unwrap();
+    assert!(
+        config.contains("jekyll-relative-links"),
+        "docs/_config.yml must enable jekyll-relative-links so .md links rewrite to .html on Pages"
+    );
+
+    let mut md_files = Vec::new();
+    for top in [
+        "README.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "ROADMAP.md",
+        "ci/README.md",
+        "fuzz/README.md",
+    ] {
+        let path = repo.join(top);
+        if path.is_file() {
+            md_files.push(path);
+        }
+    }
+    collect_markdown_files(&docs_root, &mut md_files);
+
+    // Exclusions declared in `docs/_config.yml`: these files are NOT published on GitHub Pages.
+    let is_pages_published = |path: &Path| -> bool {
+        let Ok(rel) = path.strip_prefix(&docs_root) else {
+            return false;
+        };
+        let first = rel
+            .components()
+            .next()
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("");
+        first != "design" && first != "aplan-pilot.md"
+    };
+
+    let mut anchor_cache = std::collections::BTreeMap::new();
+    let pages_prefix = "https://asamarts.github.io/witforge/";
+    let github_blob = "https://github.com/asamarts/witforge/blob/main/";
+    let github_tree = "https://github.com/asamarts/witforge/tree/main/";
+
+    for file in &md_files {
+        let rel_source = file.strip_prefix(&repo).unwrap().display().to_string();
+        let text = fs::read_to_string(file).unwrap();
+        let in_docs = file.starts_with(&docs_root);
+        let published_on_pages = is_pages_published(file);
+
+        for (line_no, raw_target) in extract_markdown_links(&text) {
+            if let Some(rest) = raw_target.strip_prefix(pages_prefix) {
+                // Built GitHub Pages absolute URL (e.g. from README.md): verify it maps to an
+                // existing published `.md` page under `docs/` and valid anchor!
+                let (page_path, anchor) = match rest.split_once('#') {
+                    Some((p, a)) => (p, Some(a)),
+                    None => (rest, None),
+                };
+                let mapped = if page_path.is_empty() {
+                    docs_root.join("index.md")
+                } else if page_path.ends_with('/') {
+                    docs_root.join(page_path).join("index.md")
+                } else if let Some(stem) = page_path.strip_suffix(".html") {
+                    docs_root.join(format!("{stem}.md"))
+                } else {
+                    docs_root.join(page_path)
+                };
+                let mapped = normalize_path(&mapped);
+                assert!(
+                    mapped.is_file() && is_pages_published(&mapped),
+                    "{rel_source}:{line_no}: Pages URL `{raw_target}` does not map to a published page ({})",
+                    mapped.display()
+                );
+                if let Some(anchor) = anchor {
+                    verify_anchor(
+                        &rel_source,
+                        line_no,
+                        &raw_target,
+                        &mapped,
+                        anchor,
+                        &mut anchor_cache,
+                    );
+                }
+                continue;
+            }
+            if let Some(rest) = raw_target
+                .strip_prefix(github_blob)
+                .or_else(|| raw_target.strip_prefix(github_tree))
+            {
+                let (repo_path, anchor) = match rest.split_once('#') {
+                    Some((p, a)) => (p, Some(a)),
+                    None => (rest, None),
+                };
+                let target = normalize_path(&repo.join(repo_path));
+                assert!(
+                    target.exists(),
+                    "{rel_source}:{line_no}: GitHub URL `{raw_target}` points to missing path {}",
+                    target.display()
+                );
+                if let Some(anchor) = anchor
+                    && target.extension().and_then(std::ffi::OsStr::to_str) == Some("md")
+                    && !anchor.starts_with('L')
+                {
+                    verify_anchor(
+                        &rel_source,
+                        line_no,
+                        &raw_target,
+                        &target,
+                        anchor,
+                        &mut anchor_cache,
+                    );
+                }
+                continue;
+            }
+            if raw_target.starts_with("http://")
+                || raw_target.starts_with("https://")
+                || raw_target.starts_with("mailto:")
+            {
+                continue;
+            }
+
+            // Relative link or same-page `#anchor`:
+            let (rel_path, anchor) = match raw_target.split_once('#') {
+                Some((p, a)) => (p, Some(a)),
+                None => (raw_target.as_str(), None),
+            };
+            if rel_path.is_empty() {
+                if let Some(anchor) = anchor {
+                    verify_anchor(
+                        &rel_source,
+                        line_no,
+                        &raw_target,
+                        file,
+                        anchor,
+                        &mut anchor_cache,
+                    );
+                }
+                continue;
+            }
+
+            // 1. GitHub repository check: no relative `.html` targets in `docs/`, and the file or
+            //    directory must exist on disk.
+            if in_docs {
+                assert!(
+                    !Path::new(rel_path)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("html")),
+                    "{rel_source}:{line_no}: relative `.html` link `{raw_target}` breaks on GitHub; use `.md`"
+                );
+            }
+            let target = normalize_path(&file.parent().unwrap().join(rel_path));
+            assert!(
+                target.exists(),
+                "{rel_source}:{line_no}: broken relative link `{raw_target}` (resolved to {})",
+                target.display()
+            );
+
+            // 2. Built GitHub Pages site check: any relative link from a published page MUST stay
+            //    inside the published `docs/` tree (not `docs/design/`, `docs/aplan-pilot.md`, or
+            //    outside `docs/`), where `jekyll-relative-links` rewrites `.md` -> `.html`.
+            if published_on_pages {
+                assert!(
+                    is_pages_published(&target),
+                    "{rel_source}:{line_no}: published page links relatively to excluded path `{raw_target}`; link to GitHub instead"
+                );
+            }
+
+            if let Some(anchor) = anchor
+                && target.extension().and_then(std::ffi::OsStr::to_str) == Some("md")
+            {
+                verify_anchor(
+                    &rel_source,
+                    line_no,
+                    &raw_target,
+                    &target,
+                    anchor,
+                    &mut anchor_cache,
+                );
+            }
+        }
+    }
+}

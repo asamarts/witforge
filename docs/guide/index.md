@@ -7,19 +7,19 @@ title: Guide
 
 | Guide | Purpose |
 |---|---|
-| [Choosing witforge](choosing-witforge.html) | High-fit projects, non-goals, and alternatives |
-| [Contract authoring](contract-authoring.html) | Version directories, WIT subset, lockfiles, dependencies |
-| [Generation](generation.html) | Rust, protobuf, schema, glue, config, and output ownership |
+| [Choosing witforge](choosing-witforge.md) | High-fit projects, non-goals, and alternatives |
+| [Contract authoring](contract-authoring.md) | Version directories, WIT subset, lockfiles, dependencies |
+| [Generation](generation.md) | Rust, protobuf, schema, glue, config, and output ownership |
 | [Wiring & installation](wiring.md) | Installing prebuilt archives, crate layout, `build.rs`, `--lock`, and `--released` |
-| [Generated output](generated-output.html) | Actual Rust, protobuf, JSON Schema, glue, and adapter output |
-| [Non-Rust implementations](non-rust.html) | Protobuf code generation, WIT decode rules, and conformance tests |
-| [Evolution](evolution.html) | New versions, diff, adapters, and released contracts |
-| [CI](ci.html) | Stale output, compatibility, release freeze, and the GitHub Action |
+| [Generated output](generated-output.md) | Actual Rust, protobuf, JSON Schema, glue, and adapter output |
+| [Non-Rust implementations](non-rust.md) | Protobuf code generation, WIT decode rules, and conformance tests |
+| [Evolution](evolution.md) | New versions, diff, adapters, and released contracts |
+| [CI](ci.md) | Stale output, compatibility, release freeze, and the GitHub Action |
 | [CLI & config reference](reference.md) | Complete CLI subcommands, flags, `witforge.toml` keys, and exit codes |
 | [Migration](migration.md) | Per-release generated-output changes and upgrade links |
-| [Diagnostic codes](diagnostics.html) | Stable `WFxxxx` diagnostic catalogue, source positions, and SARIF rules |
-| [JSON projections](json-projections.html) | Rust Serde versus WIT-shaped JSON Schema |
-| [Component Model boundary](component-model.html) | wit-bindgen and Wasmtime responsibilities |
-| [Examples](examples.html) | Runnable single-version and evolved contracts |
+| [Diagnostic codes](diagnostics.md) | Stable `WFxxxx` diagnostic catalogue, source positions, and SARIF rules |
+| [JSON projections](json-projections.md) | Rust Serde versus WIT-shaped JSON Schema |
+| [Component Model boundary](component-model.md) | wit-bindgen and Wasmtime responsibilities |
+| [Examples](examples.md) | Runnable single-version and evolved contracts |
 
-For a complete command sequence, use the [quickstart](../quickstart.html).
+For a complete command sequence, use the [quickstart](../quickstart.md).

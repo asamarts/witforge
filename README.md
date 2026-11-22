@@ -230,6 +230,7 @@ choosing a JSON boundary.
 - [Design overview](docs/design/overview.md)
 - [Public API policy](docs/design/public-api.md)
 - [Release criteria](docs/design/release-1.0.md)
+- [Contributing](CONTRIBUTING.md)
 
 The first consumer is the [alint](https://github.com/asamarts/alint) plugin contract. Task-level
 planning and closure evidence live under [`aplan/`](aplan/README.md); [`ROADMAP.md`](ROADMAP.md)

@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a new feature, emitter improvement, or CLI/Action capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and use case
+      description: What contract authoring, generation, or CI problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior or design
+      description: Describe the desired CLI flag, WIT subset support, generated output, or Action input.
+    validations:
+      required: true
+  - type: checkboxes
+    id: surfaces
+    attributes:
+      label: Affected surfaces (check all that apply)
+      options:
+        - label: WIT subset / checker
+        - label: Wire lockfile (`wire.lock`)
+        - label: Plain Rust / `convert.rs` / `worlds.rs`
+        - label: Protobuf / Rust glue (`prost`)
+        - label: JSON Schema
+        - label: `witforge diff` / diagnostics / SARIF
+        - label: CLI / `witforge.toml` / GitHub Action
+        - label: Documentation / examples
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
+      description: Workarounds or alternative designs you considered.
+    validations:
+      required: false

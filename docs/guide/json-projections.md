@@ -91,7 +91,7 @@ The emitted `.proto` determines this projection. Its standard JSON mapping uses:
 
 Parsing valid proto3-JSON does not enforce all WIT semantics. Required presence, narrow integer
 ranges, closed enums, and selected variant/result cases still need the checks described in
-[Non-Rust implementations](non-rust.html) or the generated Rust glue.
+[Non-Rust implementations](non-rust.md) or the generated Rust glue.
 
 ## Application defaults
 

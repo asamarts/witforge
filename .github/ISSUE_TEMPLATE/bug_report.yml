@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a bug in witforge, its emitters, lockfile checker, CLI, or GitHub Action
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thanks for reporting a bug! For suspected security vulnerabilities, do **not** open a
+        public issue — use [GitHub Private Vulnerability
+        Reporting](https://github.com/asamarts/witforge/security/advisories/new) instead.
+  - type: input
+    id: version
+    attributes:
+      label: witforge version
+      description: Output of `witforge --version` (or the GitHub Action ref / commit SHA).
+      placeholder: "witforge 0.6.0"
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command invoked
+      description: Exact CLI command (or GitHub Action YAML snippet) that failed.
+      placeholder: "witforge check wit/v0.2 --against wit/v0.1/wire.lock"
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Minimal reproducing WIT contract (and lockfile/config if relevant)
+      description: Paste a minimal `contract.wit` (and `wire.lock` / `witforge.toml` if needed) that reproduces the issue.
+      render: wit
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and full output
+      description: Include the exit code and full stdout/stderr (or diagnostic code such as `WF1003`).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected witforge to produce or report.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, Rust / prost versions (optional)
+      placeholder: "Linux x86_64, rustc 1.88, prost 0.14"
+    validations:
+      required: false

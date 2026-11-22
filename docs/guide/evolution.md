@@ -38,7 +38,7 @@ the record must be updated.
   meaning. Adding a new field or enum case gets a fresh wire number, so it is `wire:compatible`.
 - **Decode compatibility (`decode`)** checks whether two separate processes running different
   minors of the same major can actually decode each other's protobuf binary messages under the
-  decode profile ([`non-rust.md`](non-rust.html) / generated Rust glue):
+  decode profile ([`non-rust.md`](non-rust.md) / generated Rust glue):
   - `new<-old` (`new_reads_old`): whether a newer reader accepts messages sent by an older writer.
     Adding a required record field or parameter — including required `list<u8>` (`optional bytes`)
     — breaks `new<-old` (`MissingField`), as does removing an enum case, variant case, or function.

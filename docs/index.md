@@ -16,21 +16,21 @@ witforge compiles one hand-written WIT package into runtime-independent contract
 
 It is a contract compiler, not a Wasm runtime, RPC framework, or replacement for wit-bindgen.
 
-1. [Choose whether witforge fits](guide/choosing-witforge.html).
-2. Follow the [quickstart](quickstart.html).
-3. Learn the [contract layout and supported WIT](guide/contract-authoring.html).
-4. Configure [generation](guide/generation.html) and [wire a Rust crate](guide/wiring.md).
-5. Inspect [real generated output](guide/generated-output.html).
-6. Add [CI checks](guide/ci.html).
-7. Review [contract evolution](guide/evolution.html) and [release migrations](guide/migration.md).
+1. [Choose whether witforge fits](guide/choosing-witforge.md).
+2. Follow the [quickstart](quickstart.md).
+3. Learn the [contract layout and supported WIT](guide/contract-authoring.md).
+4. Configure [generation](guide/generation.md) and [wire a Rust crate](guide/wiring.md).
+5. Inspect [real generated output](guide/generated-output.md).
+6. Add [CI checks](guide/ci.md).
+7. Review [contract evolution](guide/evolution.md) and [release migrations](guide/migration.md).
 8. Look up flags and keys in the [CLI and configuration reference](guide/reference.md).
 
 ## Important boundaries
 
-- [JSON projections](guide/json-projections.html)
-- [Non-Rust implementation rules](guide/non-rust.html)
-- [wit-bindgen, Wasmtime, and witforge](guide/component-model.html)
-- [Runnable examples](guide/examples.html)
+- [JSON projections](guide/json-projections.md)
+- [Non-Rust implementation rules](guide/non-rust.md)
+- [wit-bindgen, Wasmtime, and witforge](guide/component-model.md)
+- [Runnable examples](guide/examples.md)
 
 ## Reference
 

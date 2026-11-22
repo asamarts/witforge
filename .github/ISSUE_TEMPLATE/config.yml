@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/asamarts/witforge/security/advisories/new
+    about: Do not report security issues publicly; use GitHub Private Vulnerability Reporting.
+  - name: Documentation site
+    url: https://asamarts.github.io/witforge/
+    about: Guides, quickstart, CLI reference, and migration notes.

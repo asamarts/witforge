@@ -28,7 +28,7 @@ witforge glue --config witforge.toml
 
 The exact generated files are under
 [`examples/single/generated`](https://github.com/asamarts/witforge/tree/main/examples/single/generated).
-The [generated-output guide](generated-output.html) walks through representative sections.
+The [generated-output guide](generated-output.md) walks through representative sections.
 
 ## Evolved contract
 

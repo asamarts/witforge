@@ -63,9 +63,12 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   on Linux and, with the stock bash 3.2, on macOS. `ci/check-release.sh` also runs here without
   a tag, so README/docs/Action current-version references and the changelog section are checked
   on every main/PR run, not only during a release.
-- **documented output**: the CLI distribution tests compare the README and generated-output guide
-  excerpts with committed examples (and with output freshly generated from the README's WIT
-  block), so a docs snippet cannot drift from the emitter.
+- **documented output and links**: the CLI distribution and docs tests compare the README and
+  generated-output guide excerpts with committed examples, execute the README, quickstart,
+  evolution, and wiring-crate walkthroughs (compiling and round-tripping the wiring crate), verify
+  `docs/guide/reference.md` against `Cli::command()`, and verify every documentation cross-link
+  and heading anchor for both GitHub (relative `.md` paths) and the built GitHub Pages site
+  (rewritten `.html` paths, `docs/_config.yml` exclusions, and absolute Pages/GitHub URLs).
 - **security**: installs pinned `cargo-audit` and `cargo-deny`, then runs
   `ci/check-security.sh`: RustSec advisories, the `ci/deny.toml` advisory/ban/license/source
   policy, and the public [`SECURITY.md`](../SECURITY.md) policy.

@@ -9,6 +9,11 @@ markdown: kramdown
 kramdown:
   input: GFM
   syntax_highlighter: rouge
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: false
 exclude:
   - aplan-pilot.md
   - design

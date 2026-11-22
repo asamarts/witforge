@@ -264,7 +264,7 @@ The generated language type is only the protobuf projection. Proto3 cannot expre
 decode rule: narrow integers need range checks, required `optional` and message fields need
 presence checks, enums are closed, and variant/result `oneof` values must select a known case.
 Implement those rules in the non-Rust adapter and test invalid as well as valid values. The
-[Non-Rust implementation guide](guide/non-rust.html) specifies the complete profile.
+[Non-Rust implementation guide](guide/non-rust.md) specifies the complete profile.
 
 witforge intentionally does not duplicate `wit-bindgen`'s runtime WIT bindings or own transport
 framing. The stable protobuf numbers and JSON Schema are cross-language contract artifacts, not a
@@ -336,7 +336,7 @@ Plain Rust Serde, Draft 7 JSON Schema, and proto3-JSON project the same WIT valu
 
 Choose one authoritative JSON profile. Keep an explicit application adapter when an existing
 protocol differs, and do not validate one projection with another projection's schema. See
-[JSON projections](guide/json-projections.html) for the full comparison.
+[JSON projections](guide/json-projections.md) for the full comparison.
 
 ## Examples
 
