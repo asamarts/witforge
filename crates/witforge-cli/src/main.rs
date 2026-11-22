@@ -1804,7 +1804,8 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         },
     )?;
     guard_output_root(&paths)?;
-    let files = emit::rust::plan_with_serde(&paths.root, paths.serde)?;
+    let files =
+        emit::rust::plan_with_released(&paths.root, paths.serde, paths.released.as_deref())?;
     let regen = regenerate_command(
         "rust",
         &options.config,
@@ -1839,7 +1840,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         },
     )?;
     guard_output_root(&paths)?;
-    let files = emit::proto::plan(&paths.root)?;
+    let files = emit::proto::plan_with_released(&paths.root, paths.released.as_deref())?;
     let regen = regenerate_command(
         "proto",
         &options.config,
@@ -1874,7 +1875,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         },
     )?;
     guard_output_root(&paths)?;
-    let files = emit::json_schema::plan(&paths.root)?;
+    let files = emit::json_schema::plan_with_released(&paths.root, paths.released.as_deref())?;
     let regen = regenerate_command(
         "schema",
         &options.config,
@@ -1917,9 +1918,15 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         .as_deref()
         .context("glue requires --proto-root or a config glue section")?;
     // Glue is current-schema output for the highest minor of each major; released plain modules
-    // stay frozen. As for the other generators, the manifest only has to be valid.
+    // stay frozen. As for the other generators, the manifest is validated and any `retired`
+    // entries are excluded from output.
     guard_output_root(&paths)?;
-    let files = emit::glue::plan(&paths.root, plain_root, proto_root)?;
+    let files = emit::glue::plan_with_released(
+        &paths.root,
+        plain_root,
+        proto_root,
+        paths.released.as_deref(),
+    )?;
     let regen = regenerate_command(
         "glue",
         &options.config,

@@ -1099,9 +1099,7 @@ impl Builder<'_> {
         for (name, old_iface) in old.iter().filter(|(name, _)| !new.contains_key(*name)) {
             let prefix = format!("{}/{name}", self.old.endpoint.package);
             let wire = !self.new.preserves_scope(self.old, &prefix);
-            let decode = if wire {
-                DecodeVerdict::INCOMPATIBLE
-            } else if old_iface.types.is_empty() && old_iface.functions.is_empty() {
+            let decode = if old_iface.types.is_empty() && old_iface.functions.is_empty() {
                 DecodeVerdict::COMPATIBLE
             } else {
                 DecodeVerdict {
@@ -1162,13 +1160,9 @@ impl Builder<'_> {
         {
             let prefix = format!("{}/{}/{name}", self.old.endpoint.package, old.name);
             let wire = !self.new.preserves_scope(self.old, &prefix);
-            let decode = if wire {
-                DecodeVerdict::INCOMPATIBLE
-            } else {
-                DecodeVerdict {
-                    new_reads_old: false,
-                    old_reads_new: true,
-                }
+            let decode = DecodeVerdict {
+                new_reads_old: false,
+                old_reads_new: true,
             };
             self.push(
                 ChangeKind::Removed,

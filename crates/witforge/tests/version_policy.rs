@@ -345,3 +345,69 @@ fn version_retirement_drops_generated_outputs_and_enforces_oldest_prefix() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn explicit_released_manifest_drives_retirement_and_retired_intra_major_deps_must_match() {
+    use witforge::emit::{glue, json_schema, proto};
+    use witforge::lock::WireLock;
+    use witforge::{is_contract_error, load, model};
+
+    let root = temp("explicit-released");
+    let wit = root.join("wit");
+    // Default `wit/released` marks `v0.1` live; an explicit manifest marks it `retired`.
+    fs::write(wit.join("released"), "v0.1\n").unwrap();
+    let custom_manifest = wit.join("custom-released");
+    fs::write(&custom_manifest, "v0.1 retired\nv0.2\n").unwrap();
+
+    // Without the explicit manifest, v0.1 is live.
+    assert!(rust::plan(&wit).unwrap().files().contains_key("v0_1.rs"));
+
+    // With `plan_with_released(..., Some(&custom_manifest))`, all four generators drop `v0.1`.
+    let rust_files = rust::plan_with_released(&wit, false, Some(&custom_manifest)).unwrap();
+    assert!(!rust_files.files().contains_key("v0_1.rs"));
+    assert!(rust_files.files().contains_key("v0_2.rs"));
+    let proto_files = proto::plan_with_released(&wit, Some(&custom_manifest)).unwrap();
+    assert!(proto_files.files().contains_key("v0.proto"));
+    let schema_files = json_schema::plan_with_released(&wit, Some(&custom_manifest)).unwrap();
+    assert!(!schema_files.files().contains_key("v0_1.schema.json"));
+    assert!(schema_files.files().contains_key("v0_2.schema.json"));
+    let glue_files =
+        glue::plan_with_released(&wit, "crate::plain", "crate::proto", Some(&custom_manifest))
+            .unwrap();
+    assert!(glue_files.files().contains_key("v0.rs"));
+
+    // Retiring an older minor of a major must still reject a dependency graph mismatch between
+    // retired `v0.1` and live `v0.2` (matching `witforge check <wit_root>`).
+    let dep_root = root.join("wit-dep-mismatch");
+    let dep_a = "package example:shared@0.1.0;\ninterface types { record t { x: u32 } }\n";
+    let dep_b = "package example:shared@0.1.0;\ninterface types { record t { x: u64 } }\n";
+    for (dir, ver, dep_src) in [("v0.1", "0.1.0", dep_a), ("v0.2", "0.2.0", dep_b)] {
+        let d = dep_root.join(dir);
+        fs::create_dir_all(d.join("deps/shared")).unwrap();
+        fs::write(d.join("deps/shared/c.wit"), dep_src).unwrap();
+        fs::write(
+            d.join("contract.wit"),
+            format!(
+                "package example:m@{ver};\n\
+                 interface api {{\n\
+                   use example:shared/types@0.1.0.{{t}};\n\
+                   record holder {{ v: t }}\n\
+                 }}\n"
+            ),
+        )
+        .unwrap();
+        let m = model::build(&load(&d).unwrap()).unwrap();
+        let mut lock = WireLock::default();
+        lock.reconcile(&m.members().unwrap()).unwrap();
+        fs::write(d.join("wire.lock"), lock.render()).unwrap();
+    }
+    fs::write(dep_root.join("released"), "v0.1 retired\nv0.2\n").unwrap();
+    let err = rust::plan(&dep_root).unwrap_err();
+    assert!(is_contract_error(&err), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("dependency") || format!("{err:#}").contains("example:shared"),
+        "{err:#}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

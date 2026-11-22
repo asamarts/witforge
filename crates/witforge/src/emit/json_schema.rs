@@ -11,7 +11,9 @@ use anyhow::{Context, Result};
 
 use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root, json_header};
 use crate::emit::rust::version_module_name;
-use crate::emit::versions::{DepLayout, Version, load_versions, same_dependency};
+use crate::emit::versions::{
+    DepLayout, Version, load_versions, load_versions_with_released, same_dependency,
+};
 use crate::model::{Dependency, Interface, Model, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
 
 /// Legacy pre-0.6.0 shared ownership header for JSON Schema files.
@@ -32,6 +34,16 @@ fn header_for(namespace: &str, name: &str) -> String {
 /// Returns an error for invalid input or an output-root or I/O failure.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     plan_versions(&load_versions(wit_root)?)
+}
+
+/// Plan JSON Schema output for `wit_root`, using an optional explicit released-version manifest
+/// path (`--released`) when determining retired versions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan`].
+pub fn plan_with_released(wit_root: &Path, released: Option<&Path>) -> Result<GeneratedFiles> {
+    plan_versions(&load_versions_with_released(wit_root, released)?)
 }
 
 /// Plan JSON Schema output for validated `versions`.

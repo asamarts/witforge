@@ -104,6 +104,30 @@ impl DepLayout {
                 scoped_pkgs.insert(key.clone());
             }
         }
+        // Any dependency (even one used by only a single live major) that references a scoped
+        // dependency must also be scoped per major so its Rust/glue paths resolve inside
+        // `witforge_deps::v<major>::*` rather than dangling from top-level `witforge_deps`.
+        loop {
+            let mut grew = false;
+            for deps in by_major.values() {
+                for dep in deps {
+                    let key = (dep.package.namespace.clone(), dep.package.name.clone());
+                    if scoped_pkgs.contains(&key) {
+                        continue;
+                    }
+                    if dep_referenced_packages(dep)
+                        .into_iter()
+                        .any(|target| scoped_pkgs.contains(&target))
+                    {
+                        scoped_pkgs.insert(key);
+                        grew = true;
+                    }
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
 
         // Compute canonical owners for scoped dependencies and disambiguation for colliding
         // `(ns, name, dep_major)` definitions across live majors.
@@ -631,13 +655,21 @@ fn dependency_name(dependency: &Dependency) -> String {
 /// package, or an unreadable or invalid lockfile, and a [`ContractError`] for a subset
 /// violation, a version or package mismatch, a lockfile entry of another package, a lockfile
 /// that does not continue the previous minor's, or a stale lockfile.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
-    let released = crate::load_root_released_manifest(wit_root, None)?;
+    load_versions_with_released(wit_root, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn load_versions_with_released(
+    wit_root: &Path,
+    explicit_released: Option<&Path>,
+) -> Result<Vec<Version>> {
+    let released = crate::load_root_released_manifest(wit_root, explicit_released)?;
     let discovered = discover_versions(wit_root)?;
     crate::validate_retirement_order(&discovered, &released, wit_root)?;
     let mut versions: Vec<Version> = Vec::new();
     let mut prev_lock_by_major: BTreeMap<u64, (PathBuf, WireLock)> = BTreeMap::new();
+    let mut first_deps_by_major: BTreeMap<u64, Vec<Dependency>> = BTreeMap::new();
     let mut first_package: Option<(String, String)> = None;
     for (major, minor, directory) in discovered {
         let dir_name = directory
@@ -822,6 +854,11 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                 ContractError::with_located_diagnostic(located)
             })?;
         prev_lock_by_major.insert(major, (directory.clone(), lock.clone()));
+        if let Some(baseline_deps) = first_deps_by_major.get(&major) {
+            ensure_same_dependency_graph(baseline_deps, &model.dependencies)?;
+        } else {
+            first_deps_by_major.insert(major, model.dependencies.clone());
+        }
         if !is_retired {
             versions.push(Version {
                 major,

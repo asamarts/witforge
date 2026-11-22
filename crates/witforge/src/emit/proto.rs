@@ -9,7 +9,9 @@ use anyhow::{Context, Result, bail};
 use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
-use crate::emit::versions::{DepLayout, Version, load_versions, same_dependency};
+use crate::emit::versions::{
+    DepLayout, Version, load_versions, load_versions_with_released, same_dependency,
+};
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
     Case, Dependency, Field, Function, MAX_WRAPPER_NAME_BYTES, MemberKind, Model, QualifiedName,
@@ -43,6 +45,16 @@ const ONEOF_VALUE: &str = "witforge_value";
 /// violations, a stale lockfile, or a generated-name collision.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
     plan_versions(&load_versions(wit_root)?)
+}
+
+/// Plan protobuf output for `wit_root`, using an optional explicit released-version manifest path
+/// (`--released`) when determining retired versions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan`].
+pub fn plan_with_released(wit_root: &Path, released: Option<&Path>) -> Result<GeneratedFiles> {
+    plan_versions(&load_versions_with_released(wit_root, released)?)
 }
 
 /// Plan the protobuf output for validated `versions`, which [`load_versions`] returns.

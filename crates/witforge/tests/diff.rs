@@ -379,8 +379,18 @@ fn decode_verdicts_cover_retypes_kind_changes_renumbering_and_interfaces() {
         }
     );
     assert_eq!(
+        find("types/gone", "type"),
+        DecodeVerdict {
+            new_reads_old: false,
+            old_reads_new: true,
+        }
+    );
+    assert_eq!(
         find("old-api", "interface"),
-        DecodeVerdict::INCOMPATIBLE // unreserved removal
+        DecodeVerdict {
+            new_reads_old: false,
+            old_reads_new: true,
+        }
     );
 
     fs::remove_dir_all(&root).unwrap();

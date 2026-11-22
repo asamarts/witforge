@@ -79,9 +79,11 @@ frozen as a whole, which covers the remaining source-level cases.
   manifest means no version is treated as released. An explicitly supplied missing manifest is an
   error. Every command that takes `--released` (`check`, `lock`, `rust`, `proto`, `schema`, and
   `glue`) validates the manifest it uses and fails with exit `2` if it is missing when given
-  explicitly or is malformed; only `lock` acts on its contents, and for `lock` an explicit
-  manifest is read in addition to the defaults, never instead of them. `diff` does not take
-  `--released` and does not read the manifest.
+  explicitly or is malformed. `lock` refuses to edit any version listed in the explicit manifest
+  in addition to the default manifests; whole-root `check` and every generator (`rust`, `proto`,
+  `schema`, `glue`, and `generate`) also enforce retirement order and exclude entries marked
+  `retired` in the manifest they use. `diff` does not take `--released` and does not read the
+  manifest.
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their

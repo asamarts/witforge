@@ -13,7 +13,7 @@ use crate::emit::docs;
 use crate::emit::ident;
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
 use crate::emit::rustfmt;
-use crate::emit::versions::{DepLayout, Version, load_versions};
+use crate::emit::versions::{DepLayout, Version, load_versions, load_versions_with_released};
 use crate::emit::{RUST_KEYWORDS, pascal_case, rust_ident, snake_case};
 use crate::lock::WireLock;
 use crate::model::{
@@ -105,6 +105,27 @@ pub fn plan(wit_root: &Path, plain_root: &str, proto_root: &str) -> Result<Gener
     validate_module_root(plain_root)?;
     validate_module_root(proto_root)?;
     plan_versions(&load_versions(wit_root)?, plain_root, proto_root)
+}
+
+/// Plan glue output for `wit_root`, using an optional explicit released-version manifest path
+/// (`--released`) when determining retired versions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan`].
+pub fn plan_with_released(
+    wit_root: &Path,
+    plain_root: &str,
+    proto_root: &str,
+    released: Option<&Path>,
+) -> Result<GeneratedFiles> {
+    validate_module_root(plain_root)?;
+    validate_module_root(proto_root)?;
+    plan_versions(
+        &load_versions_with_released(wit_root, released)?,
+        plain_root,
+        proto_root,
+    )
 }
 
 /// Plan the glue output for validated `versions`, which [`load_versions`] returns, and validated

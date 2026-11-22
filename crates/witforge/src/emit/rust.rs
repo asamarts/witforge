@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
-use crate::emit::versions::{DepLayout, Version, load_versions};
+use crate::emit::versions::{DepLayout, Version, load_versions, load_versions_with_released};
 use crate::emit::{docs, pascal_case, rust_ident, rustfmt, snake_case};
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
@@ -47,6 +47,20 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 /// Returns the same errors as [`plan`].
 pub fn plan_with_serde(wit_root: &Path, serde: bool) -> Result<GeneratedFiles> {
     plan_versions_with_serde(&load_versions(wit_root)?, serde)
+}
+
+/// Plan the Rust output for `wit_root`, using an optional explicit released-version manifest path
+/// (`--released`) when determining retired versions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan`].
+pub fn plan_with_released(
+    wit_root: &Path,
+    serde: bool,
+    released: Option<&Path>,
+) -> Result<GeneratedFiles> {
+    plan_versions_with_serde(&load_versions_with_released(wit_root, released)?, serde)
 }
 
 /// Plan the Rust output for validated `versions`, which [`load_versions`] returns.

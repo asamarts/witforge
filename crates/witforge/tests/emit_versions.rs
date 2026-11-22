@@ -1415,6 +1415,92 @@ interface api {
         ",
     );
 
+    // Row 7d: single-major-only dependency `example:wrapper` added in `v1.0` that references
+    // a scoped dependency (`example:tweaked` changed between `v0.1` and `v1.0`). Transitive
+    // scoping must place `example:wrapper` under `witforge_deps::v1` (and disambiguate its
+    // proto/schema files) so Rust, proto, JSON Schema, and glue all compile cleanly!
+    let transitive_scoped_root = base.join("row7d_transitive_scoped");
+    let v1_wrapper = "\
+package example:wrapper@0.1.0;
+interface api {
+    use example:tweaked/common@0.1.0.{rec};
+    record wrapped { inner: rec }
+}
+";
+    write_dep(
+        &transitive_scoped_root.join("v0.1"),
+        "tweaked",
+        "c.wit",
+        v0_tweaked,
+    );
+    write_version(
+        &transitive_scoped_root,
+        "v0.1",
+        "0.1.0",
+        "interface api {\n\
+           use example:tweaked/common@0.1.0.{rec};\n\
+           record holder { r: rec }\n\
+         }\n",
+    );
+    write_dep(
+        &transitive_scoped_root.join("v1.0"),
+        "tweaked",
+        "c.wit",
+        v1_tweaked,
+    );
+    write_dep(
+        &transitive_scoped_root.join("v1.0"),
+        "wrapper",
+        "c.wit",
+        v1_wrapper,
+    );
+    write_version(
+        &transitive_scoped_root,
+        "v1.0",
+        "1.0.0",
+        "interface api {\n\
+           use example:tweaked/common@0.1.0.{rec};\n\
+           use example:wrapper/api@0.1.0.{wrapped};\n\
+           record holder { r: rec, w: wrapped }\n\
+         }\n",
+    );
+    let trans_rust = rust::plan(&transitive_scoped_root).unwrap();
+    let trans_deps = trans_rust.files().get("witforge_deps.rs").unwrap();
+    assert!(
+        trans_deps.contains("pub mod v1 {") && trans_deps.contains("pub mod example_wrapper"),
+        "{trans_deps}"
+    );
+    let trans_proto = proto::plan(&transitive_scoped_root).unwrap();
+    assert!(
+        trans_proto
+            .files()
+            .contains_key("v1.example.wrapper.v0.proto")
+    );
+    batch.add_wit_root(
+        "row7d_transitive_scoped",
+        &transitive_scoped_root,
+        true,
+        true,
+        r#"
+        use crate::row7d_transitive_scoped::{glue, plain, proto};
+        use prost::Message as _;
+        let h1 = plain::v1_0::api::Holder {
+            r: plain::witforge_deps::v1::example_tweaked::common::Rec { n: "a".to_string() },
+            w: plain::witforge_deps::v1::example_wrapper::api::Wrapped {
+                inner: plain::witforge_deps::v1::example_tweaked::common::Rec {
+                    n: "b".to_string(),
+                },
+            },
+        };
+        let p1 = glue::v1::api::holder::to_proto(&h1);
+        let rt1 = glue::v1::api::holder::from_proto(
+            proto::ex::t::v1::ApiHolder::decode(p1.encode_to_vec().as_slice()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rt1, h1);
+        "#,
+    );
+
     batch.verify_and_run("major_boundary");
     fs::remove_dir_all(&base).unwrap();
 }
