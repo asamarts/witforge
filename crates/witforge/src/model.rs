@@ -670,17 +670,25 @@ pub(crate) fn ensure_dependency_identity(
                 .collect::<Vec<_>>()
                 .join(", ");
             let pkg_id = format!("{namespace}:{name}");
-            bail!(crate::ContractError::with_diagnostic(
-                crate::diagnostic::Diagnostic::error(
-                    crate::diagnostic::codes::SUBSET_DEPENDENCY_IDENTITY,
-                    format!(
-                        "duplicate dependency package `{pkg_id}`: {versions} in {entries}; one \
-                         dependency graph must pin one version, and a new major is adopted by \
-                         every dependent at once"
-                    ),
-                )
-                .with_path(pkg_id)
-            ));
+            let file = copies
+                .first()
+                .map(|(_, entry)| entry.clone())
+                .unwrap_or_default();
+            let diag = crate::diagnostic::Diagnostic::error(
+                crate::diagnostic::codes::SUBSET_DEPENDENCY_IDENTITY,
+                format!(
+                    "duplicate dependency package `{pkg_id}`: {versions} in {entries}; one \
+                     dependency graph must pin one version, and a new major is adopted by \
+                     every dependent at once"
+                ),
+            )
+            .with_path(pkg_id.clone());
+            let mut located =
+                crate::diagnostic::LocatedDiagnostic::from_diagnostic(diag).with_logical(pkg_id);
+            if !file.is_empty() {
+                located = located.with_file(file);
+            }
+            bail!(crate::ContractError::with_located_diagnostic(located));
         }
     }
     Ok(())
@@ -700,16 +708,16 @@ pub(crate) fn ensure_dependency_identity(
 /// or world reaches them; the subset checker traverses every required dependency definition before
 /// this conversion starts.
 pub fn build(contract: &Contract) -> Result<Model> {
-    let violations = crate::subset::check_diagnostics(contract);
+    let violations = crate::subset::check_located_diagnostics(contract);
     if !violations.is_empty() {
         let messages: Vec<String> = violations
             .iter()
-            .map(|diagnostic| match &diagnostic.path {
-                Some(path) => format!("{path}: {}", diagnostic.message),
-                None => diagnostic.message.clone(),
+            .map(|located| match &located.diagnostic.path {
+                Some(path) => format!("{path}: {}", located.diagnostic.message),
+                None => located.diagnostic.message.clone(),
             })
             .collect();
-        bail!(crate::ContractError::with_diagnostics(
+        bail!(crate::ContractError::with_located_diagnostics(
             format!(
                 "contract does not satisfy the subset: {}",
                 messages.join("; ")

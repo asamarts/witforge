@@ -55,6 +55,7 @@ use wit_parser::{
 pub struct ContractError {
     message: String,
     diagnostics: Vec<diagnostic::Diagnostic>,
+    located: Vec<diagnostic::LocatedDiagnostic>,
 }
 
 impl ContractError {
@@ -63,6 +64,7 @@ impl ContractError {
         Self {
             message: message.into(),
             diagnostics: Vec::new(),
+            located: Vec::new(),
         }
     }
 
@@ -70,9 +72,25 @@ impl ContractError {
     #[must_use]
     pub fn with_diagnostic(diagnostic: diagnostic::Diagnostic) -> Self {
         let message = diagnostic.message.clone();
+        let located = vec![diagnostic::LocatedDiagnostic::from_diagnostic(
+            diagnostic.clone(),
+        )];
         Self {
             message,
             diagnostics: vec![diagnostic],
+            located,
+        }
+    }
+
+    /// A violation carrying a single located diagnostic whose message is also used for display.
+    #[must_use]
+    pub fn with_located_diagnostic(located: diagnostic::LocatedDiagnostic) -> Self {
+        let message = located.diagnostic.message.clone();
+        let diagnostics = vec![located.diagnostic.clone()];
+        Self {
+            message,
+            diagnostics,
+            located: vec![located],
         }
     }
 
@@ -82,9 +100,29 @@ impl ContractError {
         message: impl Into<String>,
         diagnostics: Vec<diagnostic::Diagnostic>,
     ) -> Self {
+        let located = diagnostics
+            .iter()
+            .cloned()
+            .map(diagnostic::LocatedDiagnostic::from_diagnostic)
+            .collect();
         Self {
             message: message.into(),
             diagnostics,
+            located,
+        }
+    }
+
+    /// A violation carrying a human `message` together with one or more located diagnostics.
+    #[must_use]
+    pub fn with_located_diagnostics(
+        message: impl Into<String>,
+        located: Vec<diagnostic::LocatedDiagnostic>,
+    ) -> Self {
+        let diagnostics = located.iter().map(|item| item.diagnostic.clone()).collect();
+        Self {
+            message: message.into(),
+            diagnostics,
+            located,
         }
     }
 
@@ -92,10 +130,17 @@ impl ContractError {
     /// attached structured diagnostics.
     #[must_use]
     pub fn from_error(error: &anyhow::Error) -> Self {
+        let located = error_located_diagnostics(error)
+            .map_or_else(Vec::new, <[diagnostic::LocatedDiagnostic]>::to_vec);
+        let diagnostics = if located.is_empty() {
+            error_diagnostics(error).map_or_else(Vec::new, <[diagnostic::Diagnostic]>::to_vec)
+        } else {
+            located.iter().map(|item| item.diagnostic.clone()).collect()
+        };
         Self {
             message: format!("{error:#}"),
-            diagnostics: error_diagnostics(error)
-                .map_or_else(Vec::new, <[diagnostic::Diagnostic]>::to_vec),
+            diagnostics,
+            located,
         }
     }
 
@@ -103,6 +148,12 @@ impl ContractError {
     #[must_use]
     pub fn diagnostics(&self) -> &[diagnostic::Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Structured diagnostics with physical/logical source locations attached to this violation.
+    #[must_use]
+    pub fn located_diagnostics(&self) -> &[diagnostic::LocatedDiagnostic] {
+        &self.located
     }
 }
 
@@ -124,15 +175,22 @@ impl std::error::Error for ContractError {}
 pub struct DiagnosticError {
     message: String,
     diagnostics: Vec<diagnostic::Diagnostic>,
+    located: Vec<diagnostic::LocatedDiagnostic>,
 }
 
 impl DiagnosticError {
     /// Create an operational error with a human `message` and one or more structured diagnostics.
     #[must_use]
     pub fn new(message: impl Into<String>, diagnostics: Vec<diagnostic::Diagnostic>) -> Self {
+        let located = diagnostics
+            .iter()
+            .cloned()
+            .map(diagnostic::LocatedDiagnostic::from_diagnostic)
+            .collect();
         Self {
             message: message.into(),
             diagnostics,
+            located,
         }
     }
 
@@ -140,9 +198,39 @@ impl DiagnosticError {
     #[must_use]
     pub fn single(diagnostic: diagnostic::Diagnostic) -> Self {
         let message = diagnostic.message.clone();
+        let located = vec![diagnostic::LocatedDiagnostic::from_diagnostic(
+            diagnostic.clone(),
+        )];
         Self {
             message,
             diagnostics: vec![diagnostic],
+            located,
+        }
+    }
+
+    /// Create an operational error with a human `message` and located diagnostics.
+    #[must_use]
+    pub fn with_located(
+        message: impl Into<String>,
+        located: Vec<diagnostic::LocatedDiagnostic>,
+    ) -> Self {
+        let diagnostics = located.iter().map(|item| item.diagnostic.clone()).collect();
+        Self {
+            message: message.into(),
+            diagnostics,
+            located,
+        }
+    }
+
+    /// Create an operational error carrying one located diagnostic.
+    #[must_use]
+    pub fn single_located(located: diagnostic::LocatedDiagnostic) -> Self {
+        let message = located.diagnostic.message.clone();
+        let diagnostics = vec![located.diagnostic.clone()];
+        Self {
+            message,
+            diagnostics,
+            located: vec![located],
         }
     }
 
@@ -150,6 +238,12 @@ impl DiagnosticError {
     #[must_use]
     pub fn diagnostics(&self) -> &[diagnostic::Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Structured diagnostics with physical/logical locations attached to this error.
+    #[must_use]
+    pub fn located_diagnostics(&self) -> &[diagnostic::LocatedDiagnostic] {
+        &self.located
     }
 }
 
@@ -188,6 +282,27 @@ pub fn error_diagnostics(error: &anyhow::Error) -> Option<&[diagnostic::Diagnost
     None
 }
 
+/// Extract located structured diagnostics attached to `error` (from a [`ContractError`] or
+/// [`DiagnosticError`] in its context chain), if any.
+#[must_use]
+pub fn error_located_diagnostics(
+    error: &anyhow::Error,
+) -> Option<&[diagnostic::LocatedDiagnostic]> {
+    for cause in error.chain() {
+        if let Some(contract) = cause.downcast_ref::<ContractError>()
+            && !contract.located.is_empty()
+        {
+            return Some(&contract.located);
+        }
+        if let Some(operational) = cause.downcast_ref::<DiagnosticError>()
+            && !operational.located.is_empty()
+        {
+            return Some(&operational.located);
+        }
+    }
+    None
+}
+
 /// Build an operational (exit 2) error carrying a single structured diagnostic.
 pub(crate) fn operational_error(
     code: &'static str,
@@ -195,10 +310,258 @@ pub(crate) fn operational_error(
     path: Option<String>,
 ) -> anyhow::Error {
     let mut diag = diagnostic::Diagnostic::error(code, message);
+    let mut located_file = None;
     if let Some(path) = path {
-        diag = diag.with_path(path);
+        diag = diag.with_path(path.clone());
+        located_file = Some(path);
     }
-    anyhow::Error::new(DiagnosticError::single(diag))
+    let mut located = diagnostic::LocatedDiagnostic::from_diagnostic(diag);
+    if let Some(file) = located_file {
+        located = located.with_file(file);
+    }
+    anyhow::Error::new(DiagnosticError::single_located(located))
+}
+
+/// Build an operational (exit 2) error carrying a single located structured diagnostic with a
+/// physical file path and optional 1-based UTF-16 source position.
+pub(crate) fn operational_error_at(
+    code: &'static str,
+    message: impl Into<String>,
+    file: String,
+    position: Option<diagnostic::Position>,
+) -> anyhow::Error {
+    let mut diag = diagnostic::Diagnostic::error(code, message).with_path(file.clone());
+    if let Some(position) = position {
+        diag = diag.with_position(position);
+    }
+    let located = diagnostic::LocatedDiagnostic::from_diagnostic(diag).with_file(file);
+    anyhow::Error::new(DiagnosticError::single_located(located))
+}
+
+/// Compute a 1-based UTF-16 [`diagnostic::Position`] covering a single line (1-based `line_no`).
+pub(crate) fn line_position(line_no: usize, raw_line: &str) -> diagnostic::Position {
+    let trimmed = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+    let trimmed = if line_no == 1 {
+        trimmed.strip_prefix('\u{feff}').unwrap_or(trimmed)
+    } else {
+        trimmed
+    };
+    let width: usize = trimmed.chars().map(char::len_utf16).sum();
+    diagnostic::Position {
+        line: line_no,
+        column: 1,
+        end_line: line_no,
+        end_column: 1 + width,
+    }
+}
+
+/// Precomputed line-start table for one source file so repeated span-to-(line, UTF-16 col)
+/// lookups stay O(log lines + line length) instead of rescanning from byte 0.
+pub(crate) struct LineIndex {
+    bom_bytes: usize,
+    body: String,
+    /// Byte offsets inside `body` where each 1-based line begins (`line_starts[0] == 0`).
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub(crate) fn new(source: String) -> Self {
+        let (bom_bytes, body) = if let Some(rest) = source.strip_prefix('\u{feff}') {
+            ('\u{feff}'.len_utf8(), rest.to_string())
+        } else {
+            (0, source)
+        };
+        let bytes = body.as_bytes();
+        let mut line_starts = vec![0usize];
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'\n' || (bytes[i] == b'\r' && bytes.get(i + 1) != Some(&b'\n')) {
+                line_starts.push(i + 1);
+            }
+            i += 1;
+        }
+        Self {
+            bom_bytes,
+            body,
+            line_starts,
+        }
+    }
+
+    pub(crate) fn position(&self, start: usize, end: usize) -> diagnostic::Position {
+        let start_adj = start.saturating_sub(self.bom_bytes);
+        let end_adj = end.saturating_sub(self.bom_bytes);
+        let clamped_start = snap_char_boundary_down(&self.body, start_adj.min(self.body.len()));
+        let clamped_end = if end_adj <= start_adj {
+            clamped_start
+        } else {
+            snap_char_boundary_up(&self.body, end_adj.min(self.body.len())).max(clamped_start)
+        };
+        let (line, column) = self.offset_to_line_col_utf16(clamped_start);
+        let (end_line, end_column) = if clamped_end == clamped_start {
+            (line, column)
+        } else {
+            self.offset_to_line_col_utf16(clamped_end)
+        };
+        diagnostic::Position {
+            line,
+            column,
+            end_line,
+            end_column,
+        }
+    }
+
+    fn offset_to_line_col_utf16(&self, target: usize) -> (usize, usize) {
+        let line_idx = self
+            .line_starts
+            .partition_point(|&start| start <= target)
+            .saturating_sub(1);
+        let line_start = self.line_starts[line_idx];
+        let slice = &self.body[line_start..target];
+        let col = if slice.is_ascii() {
+            1 + slice.bytes().filter(|&b| b != b'\r').count()
+        } else {
+            1 + slice
+                .chars()
+                .filter(|&ch| ch != '\r')
+                .map(char::len_utf16)
+                .sum::<usize>()
+        };
+        (line_idx + 1, col)
+    }
+}
+
+/// Convert a UTF-8 byte range inside `source` into a 1-based UTF-16 [`diagnostic::Position`].
+///
+/// Handles CRLF line endings, leading UTF-8 BOMs, tabs (1 UTF-16 code unit), BMP non-ASCII
+/// characters (1 UTF-16 code unit), and supplementary Unicode scalars (2 UTF-16 code units).
+/// Offsets that land inside a multi-byte UTF-8 sequence (for example, `wit-parser` lex errors
+/// producing `pos..pos+1` on a BOM or non-ASCII byte) are snapped to valid character boundaries.
+#[cfg_attr(not(test), allow(dead_code))]
+#[must_use]
+pub(crate) fn byte_range_to_utf16_position(
+    source: &str,
+    start: usize,
+    end: usize,
+) -> diagnostic::Position {
+    LineIndex::new(source.to_string()).position(start, end)
+}
+
+fn snap_char_boundary_down(source: &str, mut offset: usize) -> usize {
+    offset = offset.min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn snap_char_boundary_up(source: &str, mut offset: usize) -> usize {
+    offset = offset.min(source.len());
+    while offset < source.len() && !source.is_char_boundary(offset) {
+        offset += 1;
+    }
+    offset
+}
+
+fn load_line_index<'a>(
+    path: &str,
+    cache: &'a mut BTreeMap<String, LineIndex>,
+) -> Option<&'a LineIndex> {
+    if !cache.contains_key(path) {
+        let text = fs::read_to_string(path).ok()?;
+        cache.insert(path.to_string(), LineIndex::new(text));
+    }
+    cache.get(path)
+}
+
+/// Resolve a `wit-parser` [`wit_parser::Span`] against `source_map` using a file-index cache.
+pub(crate) fn resolve_span_cached(
+    source_map: &SourceMap,
+    span: wit_parser::Span,
+    cache: &mut BTreeMap<String, LineIndex>,
+) -> Option<(String, diagnostic::Position)> {
+    let loc = source_map.resolve_span(span)?;
+    let path = loc.path.to_string();
+    let index = load_line_index(&path, cache)?;
+    let pos = index.position(loc.range.start, loc.range.end);
+    Some((path, pos))
+}
+
+/// Resolve a `wit-parser` [`wit_parser::Span`] against `source_map`.
+pub(crate) fn resolve_span_location(
+    source_map: &SourceMap,
+    span: wit_parser::Span,
+) -> Option<(String, diagnostic::Position)> {
+    let mut cache = BTreeMap::new();
+    resolve_span_cached(source_map, span, &mut cache)
+}
+
+/// Locate the `package ...;` declaration line inside `file`, falling back to line 1.
+pub(crate) fn find_package_header_position(
+    file: &str,
+    cache: &mut BTreeMap<String, LineIndex>,
+) -> Option<(String, diagnostic::Position)> {
+    let index = load_line_index(file, cache)?;
+    for (line_idx, raw) in index.body.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let trimmed = raw.trim_start_matches([' ', '\t']);
+        if trimmed.starts_with("package ") || trimmed.starts_with("package\t") {
+            return Some((file.to_string(), line_position(line_no, raw)));
+        }
+    }
+    let first_line = index.body.lines().next().unwrap_or("");
+    Some((file.to_string(), line_position(1, first_line)))
+}
+
+/// Find the declaring file and `package` header position for `package_id` in `contract`.
+pub(crate) fn package_location(
+    contract: &Contract,
+    package_id: PackageId,
+    cache: &mut BTreeMap<String, LineIndex>,
+) -> Option<(String, diagnostic::Position)> {
+    let resolve = &contract.resolve;
+    let package = &resolve.packages[package_id];
+    let mut file: Option<String> = None;
+    for &iface_id in package.interfaces.values() {
+        if let Some(loc) = resolve
+            .source_map
+            .resolve_span(resolve.interfaces[iface_id].span)
+        {
+            file = Some(loc.path.to_string());
+            break;
+        }
+    }
+    if file.is_none() {
+        for &world_id in package.worlds.values() {
+            if let Some(loc) = resolve
+                .source_map
+                .resolve_span(resolve.worlds[world_id].span)
+            {
+                file = Some(loc.path.to_string());
+                break;
+            }
+        }
+    }
+    if file.is_none()
+        && let Some(entry) = contract.dependency_entry(package_id)
+    {
+        if entry.is_file() {
+            file = Some(entry.display().to_string());
+        } else if entry.is_dir()
+            && let Ok(wit_files) = sorted_wit_files(entry)
+            && let Some(first) = wit_files.first()
+        {
+            file = Some(first.display().to_string());
+        }
+    }
+    if file.is_none() && package_id == contract.package {
+        file = resolve
+            .source_map
+            .source_files()
+            .next()
+            .map(|p| p.display().to_string());
+    }
+    let file = file?;
+    find_package_header_position(&file, cache)
 }
 
 /// An interface explicitly imported by a root world: `(Option<(namespace, package)>, interface)`.
@@ -273,6 +636,228 @@ impl Contract {
             .get(world_name)
             .map_or(&[], Vec::as_slice)
     }
+
+    /// Map canonical logical contract paths (both package-qualified, such as
+    /// `ns:pkg/iface/rec.field`, and package-local, such as `iface/rec.field`) to their
+    /// declaring physical source file and 1-based UTF-16 [`diagnostic::Position`].
+    ///
+    /// For a `use` alias, the target type's declaring span is recorded rather than the `use` site.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn member_locations(&self) -> BTreeMap<String, (String, diagnostic::Position)> {
+        let mut out = BTreeMap::new();
+        let mut cache = BTreeMap::new();
+        let resolve = &self.resolve;
+        let package = &resolve.packages[self.package];
+        let pkg = format!("{}:{}", package.name.namespace, package.name.name);
+        if let Some(pkg_loc) = package_location(self, self.package, &mut cache) {
+            out.insert(pkg.clone(), pkg_loc);
+        }
+        for &dep_id in &self.dependencies {
+            let dep = &resolve.packages[dep_id];
+            let dep_pkg = format!("{}:{}", dep.name.namespace, dep.name.name);
+            if let Some(loc) = package_location(self, dep_id, &mut cache) {
+                out.entry(dep_pkg).or_insert(loc);
+            }
+        }
+        let mut record = |full_key: String, short_key: Option<String>, span: wit_parser::Span| {
+            if let Some(loc) = resolve_span_cached(&resolve.source_map, span, &mut cache) {
+                if let Some(short) = short_key {
+                    out.entry(short).or_insert_with(|| loc.clone());
+                }
+                out.entry(full_key).or_insert(loc);
+            }
+        };
+        for (iface_name, &iface_id) in &package.interfaces {
+            let iface = &resolve.interfaces[iface_id];
+            record(
+                format!("{pkg}/{iface_name}"),
+                Some(iface_name.clone()),
+                iface.span,
+            );
+            for (type_name, &type_id) in &iface.types {
+                let mut decl_id = type_id;
+                let mut hops = 0usize;
+                while hops < 32 {
+                    let def = &resolve.types[decl_id];
+                    if let wit_parser::TypeDefKind::Type(wit_parser::Type::Id(target_id)) = def.kind
+                        && resolve.types[target_id].name.is_some()
+                        && resolve.types[target_id].owner != def.owner
+                    {
+                        decl_id = target_id;
+                        hops += 1;
+                        continue;
+                    }
+                    break;
+                }
+                let def = &resolve.types[decl_id];
+                let full_type = format!("{pkg}/{iface_name}/{type_name}");
+                let short_type = format!("{iface_name}/{type_name}");
+                record(full_type.clone(), Some(short_type.clone()), def.span);
+                match &def.kind {
+                    wit_parser::TypeDefKind::Record(rec) => {
+                        for field in &rec.fields {
+                            record(
+                                format!("{full_type}.{}", field.name),
+                                Some(format!("{short_type}.{}", field.name)),
+                                field.span,
+                            );
+                        }
+                    }
+                    wit_parser::TypeDefKind::Variant(var) => {
+                        for case in &var.cases {
+                            record(
+                                format!("{full_type}.{}", case.name),
+                                Some(format!("{short_type}.{}", case.name)),
+                                case.span,
+                            );
+                        }
+                    }
+                    wit_parser::TypeDefKind::Enum(en) => {
+                        for case in &en.cases {
+                            record(
+                                format!("{full_type}.{}", case.name),
+                                Some(format!("{short_type}.{}", case.name)),
+                                case.span,
+                            );
+                        }
+                    }
+                    wit_parser::TypeDefKind::Flags(flags) => {
+                        for flag in &flags.flags {
+                            record(
+                                format!("{full_type}.{}", flag.name),
+                                Some(format!("{short_type}.{}", flag.name)),
+                                flag.span,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for (func_name, func) in &iface.functions {
+                record(
+                    format!("{pkg}/{iface_name}.{func_name}"),
+                    Some(format!("{iface_name}#{func_name}")),
+                    func.span,
+                );
+                record(
+                    format!("{pkg}/{iface_name}#{func_name}"),
+                    Some(format!("{iface_name}.{func_name}")),
+                    func.span,
+                );
+                for param in &func.params {
+                    record(
+                        format!("{pkg}/{iface_name}#{func_name}.{}", param.name),
+                        Some(format!("{iface_name}.{func_name}.{}", param.name)),
+                        param.span,
+                    );
+                    record(
+                        format!("{pkg}/{iface_name}#{func_name}({})", param.name),
+                        Some(format!("{iface_name}#{func_name}.{}", param.name)),
+                        param.span,
+                    );
+                }
+            }
+        }
+        for (world_name, &world_id) in &package.worlds {
+            let world = &resolve.worlds[world_id];
+            record(
+                format!("{pkg}/{world_name}"),
+                Some(world_name.clone()),
+                world.span,
+            );
+            record(
+                format!("{pkg}/{world_name}/import"),
+                Some(format!("{world_name}/import")),
+                world.span,
+            );
+            record(
+                format!("{pkg}/{world_name}/export"),
+                Some(format!("{world_name}/export")),
+                world.span,
+            );
+            for (verb, items) in [("import", &world.imports), ("export", &world.exports)] {
+                for (key, item) in items {
+                    let (item_name, qualified) = match key {
+                        WorldKey::Name(name) => (name.clone(), name.clone()),
+                        WorldKey::Interface(id) => {
+                            let iface = &resolve.interfaces[*id];
+                            let name = iface.name.clone().unwrap_or_default();
+                            let qualified = match iface.package {
+                                Some(pkg_id) if pkg_id != self.package => {
+                                    let dep = &resolve.packages[pkg_id].name;
+                                    format!("{}:{}/{name}", dep.namespace, dep.name)
+                                }
+                                _ => name.clone(),
+                            };
+                            (name, qualified)
+                        }
+                    };
+                    let item_span = if item.span().is_known() {
+                        item.span()
+                    } else {
+                        world.span
+                    };
+                    record(
+                        format!("{pkg}/{world_name}/{item_name}"),
+                        Some(format!("{world_name}/{verb}/{qualified}")),
+                        item_span,
+                    );
+                }
+            }
+        }
+        for &dep_id in &self.dependencies {
+            let dep = &resolve.packages[dep_id];
+            let dep_pkg = format!("{}:{}", dep.name.namespace, dep.name.name);
+            for (iface_name, &iface_id) in &dep.interfaces {
+                let iface = &resolve.interfaces[iface_id];
+                record(format!("{dep_pkg}/{iface_name}"), None, iface.span);
+                for (type_name, &type_id) in &iface.types {
+                    let def = &resolve.types[type_id];
+                    let full_type = format!("{dep_pkg}/{iface_name}/{type_name}");
+                    record(full_type.clone(), None, def.span);
+                    match &def.kind {
+                        wit_parser::TypeDefKind::Record(rec) => {
+                            for field in &rec.fields {
+                                record(format!("{full_type}.{}", field.name), None, field.span);
+                            }
+                        }
+                        wit_parser::TypeDefKind::Variant(var) => {
+                            for case in &var.cases {
+                                record(format!("{full_type}.{}", case.name), None, case.span);
+                            }
+                        }
+                        wit_parser::TypeDefKind::Enum(en) => {
+                            for case in &en.cases {
+                                record(format!("{full_type}.{}", case.name), None, case.span);
+                            }
+                        }
+                        wit_parser::TypeDefKind::Flags(flags) => {
+                            for flag in &flags.flags {
+                                record(format!("{full_type}.{}", flag.name), None, flag.span);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                for (func_name, func) in &iface.functions {
+                    record(
+                        format!("{dep_pkg}/{iface_name}#{func_name}"),
+                        None,
+                        func.span,
+                    );
+                    for param in &func.params {
+                        record(
+                            format!("{dep_pkg}/{iface_name}#{func_name}({})", param.name),
+                            None,
+                            param.span,
+                        );
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Load the WIT package in `dir`.
@@ -310,12 +895,20 @@ pub fn load(dir: &Path) -> Result<Contract> {
     let package = resolve
         .push_groups(top_pkg, loaded_deps.groups)
         .map_err(|err| {
-            let err: anyhow::Error = err.into();
-            operational_error(
-                diagnostic::codes::PARSE_ERROR,
-                resolve.render_error(&err),
-                Some(dir.display().to_string()),
-            )
+            let span = err.kind().span();
+            let resolved = resolve_span_location(&resolve.source_map, span);
+            let err_anyhow: anyhow::Error = err.into();
+            let rendered = resolve.render_error(&err_anyhow);
+            match resolved {
+                Some((file, pos)) => {
+                    operational_error_at(diagnostic::codes::PARSE_ERROR, rendered, file, Some(pos))
+                }
+                None => operational_error(
+                    diagnostic::codes::PARSE_ERROR,
+                    rendered,
+                    Some(dir.display().to_string()),
+                ),
+            }
         })
         .with_context(load_context)?;
 
@@ -592,6 +1185,8 @@ fn parse_sorted_dir(dir: &Path) -> Result<UnresolvedPackageGroup> {
         map.push_file(file)?;
     }
     map.parse().map_err(|(source_map, err)| {
+        let span = err.kind().span();
+        let resolved = resolve_span_location(&source_map, span);
         let rendered = err.render(&source_map);
         let message = if let Some(bom_file) = files.iter().find(|path| file_has_utf8_bom(path)) {
             format!(
@@ -601,11 +1196,16 @@ fn parse_sorted_dir(dir: &Path) -> Result<UnresolvedPackageGroup> {
         } else {
             rendered
         };
-        operational_error(
-            diagnostic::codes::PARSE_ERROR,
-            message,
-            Some(dir.display().to_string()),
-        )
+        match resolved {
+            Some((file, pos)) => {
+                operational_error_at(diagnostic::codes::PARSE_ERROR, message, file, Some(pos))
+            }
+            None => operational_error(
+                diagnostic::codes::PARSE_ERROR,
+                message,
+                Some(dir.display().to_string()),
+            ),
+        }
     })
 }
 
@@ -614,6 +1214,8 @@ fn parse_single_wit_file(path: &Path) -> Result<UnresolvedPackageGroup> {
     map.push_file(path)?;
     map.parse()
         .map_err(|(source_map, err)| {
+            let span = err.kind().span();
+            let resolved = resolve_span_location(&source_map, span);
             let rendered = err.render(&source_map);
             let message = if file_has_utf8_bom(path) {
                 format!(
@@ -623,11 +1225,16 @@ fn parse_single_wit_file(path: &Path) -> Result<UnresolvedPackageGroup> {
             } else {
                 rendered
             };
-            operational_error(
-                diagnostic::codes::PARSE_ERROR,
-                message,
-                Some(path.display().to_string()),
-            )
+            match resolved {
+                Some((file, pos)) => {
+                    operational_error_at(diagnostic::codes::PARSE_ERROR, message, file, Some(pos))
+                }
+                None => operational_error(
+                    diagnostic::codes::PARSE_ERROR,
+                    message,
+                    Some(path.display().to_string()),
+                ),
+            }
         })
         .with_context(|| format!("failed to parse package: {}", path.display()))
 }
@@ -693,20 +1300,22 @@ impl ReleasedManifest {
                 continue;
             }
             if !plain_directory_name(line) {
-                return Err(operational_error(
+                return Err(operational_error_at(
                     diagnostic::codes::PARSE_ERROR,
                     format!(
                         "line {line_no}: released entry `{line}` is not a plain directory name \
                          (`^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
                     ),
-                    Some(path.display().to_string()),
+                    path.display().to_string(),
+                    Some(line_position(line_no, raw)),
                 ));
             }
             if !seen.insert(line.to_string()) {
-                return Err(operational_error(
+                return Err(operational_error_at(
                     diagnostic::codes::PARSE_ERROR,
                     format!("line {line_no}: duplicate released entry `{line}`"),
-                    Some(path.display().to_string()),
+                    path.display().to_string(),
+                    Some(line_position(line_no, raw)),
                 ));
             }
             let directory = parent.join(line);
@@ -1282,5 +1891,86 @@ mod tests {
         assert!(alpha_rendered.contains("a.wit:1:"), "{alpha_rendered}");
         assert!(zeta_rendered.contains("z.wit:3:"), "{zeta_rendered}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn utf16_positions_handle_tabs_non_ascii_crlf_and_bom() {
+        // Tab counts as 1 UTF-16 code unit.
+        let tab = "\tfoo";
+        assert_eq!(
+            byte_range_to_utf16_position(tab, 1, 4),
+            diagnostic::Position {
+                line: 1,
+                column: 2,
+                end_line: 1,
+                end_column: 5,
+            }
+        );
+        // BMP character `é` is 2 UTF-8 bytes, 1 UTF-16 code unit.
+        let bmp = "// café\nfoo";
+        let foo_start = bmp.find("foo").unwrap();
+        assert_eq!(
+            byte_range_to_utf16_position(bmp, foo_start, foo_start + 3),
+            diagnostic::Position {
+                line: 2,
+                column: 1,
+                end_line: 2,
+                end_column: 4,
+            }
+        );
+        let bmp_inline = "éfoo";
+        assert_eq!(
+            byte_range_to_utf16_position(bmp_inline, 'é'.len_utf8(), bmp_inline.len()),
+            diagnostic::Position {
+                line: 1,
+                column: 2,
+                end_line: 1,
+                end_column: 5,
+            }
+        );
+        // Supplementary character `😀` is 4 UTF-8 bytes, 2 UTF-16 code units.
+        let astral = "😀foo";
+        assert_eq!(
+            byte_range_to_utf16_position(astral, '😀'.len_utf8(), astral.len()),
+            diagnostic::Position {
+                line: 1,
+                column: 3,
+                end_line: 1,
+                end_column: 6,
+            }
+        );
+        // CRLF does not double-count line breaks or columns.
+        let crlf = "abc\r\n\t😀xyz\r\n";
+        let xyz_start = crlf.find("xyz").unwrap();
+        assert_eq!(
+            byte_range_to_utf16_position(crlf, xyz_start, xyz_start + 3),
+            diagnostic::Position {
+                line: 2,
+                column: 4,
+                end_line: 2,
+                end_column: 7,
+            }
+        );
+        // Leading UTF-8 BOM: error on BOM bytes (0..1) clamps safely to 1:1, and token after BOM starts at 1:1.
+        let bom = "\u{feff}package foo;";
+        assert_eq!(
+            byte_range_to_utf16_position(bom, 0, 1),
+            diagnostic::Position {
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+            }
+        );
+        let pkg_start = bom.find("package").unwrap();
+        assert_eq!(
+            byte_range_to_utf16_position(bom, pkg_start, pkg_start + 7),
+            diagnostic::Position {
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 8,
+            }
+        );
     }
 }

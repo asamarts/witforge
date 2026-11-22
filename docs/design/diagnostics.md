@@ -2,7 +2,9 @@
 
 Status: implemented 2026-11-05 (`W8-002`); `WF3003` conversion-impact notes 2026-11-17
 (`W11-036`); `WF3004` required-addition blockers 2026-11-18 (`W10-036`); per-rule subset codes,
-cross-command parity, usage-error reporting, and internal-only `WF9000` 2026-11-21 (`W10-079`).
+cross-command parity, usage-error reporting, and internal-only `WF9000` 2026-11-21 (`W10-079`);
+physical file/line/column positions, UTF-16 columns, `logicalLocations`, `relatedLocations`,
+normalized SARIF URIs, rule `helpUri`, and exit-aligned `diff` levels 2026-11-21 (`W10-080`).
 
 Every command keeps its human output as the default. `--format json` and `--format sarif` replace
 the diagnostic stream with a stable machine-readable form. Command-specific reports are
@@ -22,7 +24,13 @@ JSON diagnostics use this versioned envelope:
       "code": "WF1015",
       "severity": "error",
       "message": "resources and handles are not supported; contract operations are pure functions over values",
-      "path": "example:plugin/types/blob"
+      "path": "example:plugin/types/blob",
+      "file": "wit/v0.1/contract.wit",
+      "logical": "example:plugin/types/blob",
+      "line": 4,
+      "column": 5,
+      "end_line": 4,
+      "end_column": 18
     }
   ]
 }
@@ -35,11 +43,16 @@ Fields:
 | `code` | Stable diagnostic code from the catalogue below. |
 | `severity` | `error`, `warning`, or `note`. |
 | `message` | Human-readable explanation. |
-| `path` | Contract, source, member, generated-file, or lockfile path when the source identifies one. |
-| `line`, `column`, `end_line`, `end_column` | One-based source range when a source position is available. |
+| `path` | Backwards-compatible contract, source, member, generated-file, or lockfile path when identified. |
+| `file` | Physical filesystem path (cwd-relative with `/` when inside the working directory; cleaned forward-slash absolute path outside cwd) when known. |
+| `logical` | Logical WIT contract path (such as `example:plugin/types/blob`) when applicable. |
+| `line`, `column`, `end_line`, `end_column` | One-based source range in **UTF-16 code units** (the SARIF 2.1.0 default) when a source position is available. |
+| `related` | Optional array of secondary physical locations (`file`, `message`, and optional `line`/`column`/`end_line`/`end_column`), for example the conflicting `wire.lock` line on a contract-vs-lockfile discrepancy. |
 
 JSON output is printed to stdout. Human diagnostics continue to go to stderr and successful
-human command output remains unchanged.
+human command output remains unchanged. WIT syntax and name-resolution errors render `wit-parser`'s
+highlighted source snippet (naming file, line, and column) to stderr in human mode while deriving
+structured JSON/SARIF positions directly from `wit-parser` spans.
 
 A contract violation emits the same diagnostic code, path, and message whichever command reports it
 (`check`, `lock`, `diff`, `rust`, `proto`, `schema`, or `glue`). Multiple violations remain
@@ -49,10 +62,21 @@ message.
 ## SARIF
 
 `--format sarif` emits SARIF 2.1.0. Each diagnostic becomes one result with `ruleId` equal to its
-code, `level` equal to its severity, a `message.text`, and, when a path is known, a
-`physicalLocation.artifactLocation.uri` (and a `region` when a position is known). The driver
-lists the distinct rules used by the run. An empty diagnostic set is a valid SARIF run with an
-empty `results` array.
+code, `level` equal to its severity (`error`, `warning`, or `note`), and a `message.text`.
+
+- `locations[0].physicalLocation.artifactLocation.uri` is emitted only when a physical file is
+  known, and is always either a working-directory-relative path with `/` separators or an absolute
+  percent-encoded `file:///` URI (never `..`, never Windows `\\?\`, and never a logical WIT name).
+- `locations[0].physicalLocation.region` (`startLine`, `startColumn`, `endLine`, `endColumn` in
+  1-based UTF-16 code units) is emitted whenever a source position is available.
+- `locations[0].logicalLocations` carries `[{ "fullyQualifiedName": "<logical>" }]` whenever a
+  logical WIT contract path is known.
+- `relatedLocations` carries secondary locations (such as the `wire.lock` line for a contract-vs-
+  lockfile discrepancy) with 1-based `id`, `physicalLocation`, and `message.text`.
+- `runs[0].tool.driver.rules[]` lists every distinct rule emitted by the run with `id`,
+  `shortDescription.text`, and `helpUri` pointing to the public guide
+  `https://asamarts.github.io/witforge/guide/diagnostics.html#<code-lower>`.
+- An empty diagnostic set is a valid SARIF run with an empty `results` array.
 
 ## Stable codes
 
@@ -120,20 +144,26 @@ beside each split code for consumers updating JSON or SARIF filters.
 
 ## Source positions
 
-WIT subset diagnostics carry the logical contract path, for example
-`example:plugin/types/finding.span`. The owned model deliberately keeps no `wit-parser` spans
-(see [`model.md`](model.md) section 5), so those diagnostics do not currently have physical
-line/column positions. Generated-output diagnostics carry the filesystem path, and lockfile
-diagnostics carry a lockfile path or member key. The envelope has optional position fields so a
-source-aware diagnostic can add them without changing its code. The SARIF region is emitted only
-when a position is present.
+Lines and columns are 1-based, measured in **UTF-16 code units** (SARIF 2.1.0 default): a tab
+counts as 1 code unit, BMP characters (such as `é`) count as 1 code unit, and supplementary
+characters (such as `😀`) count as 2 code units. CRLF line endings count as a single line break,
+and a leading UTF-8 BOM does not shift line 1 columns.
+
+The owned [`model`](model.md) deliberately keeps no `wit-parser` spans; physical file and line
+positions are resolved from `Contract`'s `SourceMap` before model lowering (in
+`subset::check_located_diagnostics`, `Contract::member_locations`, and `diff::compare_with_locations`)
+and from `wire.lock` / `released` line scans (`WireLock::entry_positions`). For a type reached
+through `use`, the reported position is the declaration, not the `use` site. For a discrepancy
+between a live WIT member and `wire.lock`, the primary location is the WIT declaration and the
+`wire.lock` entry line is attached in `related` / `relatedLocations`.
 
 ## Scope and exit codes
 
 `check`, `lock`, `diff`, `rust`, `proto`, `schema`, and `glue` accept `--format`. The default is
-`human`, so existing human output is preserved byte-for-byte for the existing messages. Exit
-codes do not depend on the format: `0` success, `1` contract/lockfile/output or breaking-change
-failure, and `2` usage, I/O, parse, guard, or internal failure.
+`human`, so existing human output is preserved byte-for-byte for the existing messages (with
+`wit-parser` syntax and resolution errors displaying their source snippets). Exit codes do not
+depend on the format: `0` success, `1` contract/lockfile/output or breaking-change failure, and
+`2` usage, I/O, parse, guard, or internal failure.
 
 When argument parsing itself fails with `--format json` or `--format sarif` present in the raw
 arguments, witforge emits a JSON or SARIF report containing a `WF9001` error on stdout and still
@@ -142,6 +172,9 @@ exits with `2`. `--help` and `--version` continue to print text to stdout and ex
 `diff --format json|sarif` emits each diff change as a diagnostic (`WF3001` for breaking,
 `WF3002` for compatible), each guaranteed conversion-impact note as `WF3003`, and each
 required-addition or retype generation blocker as `WF3004`; it suppresses the human diff report.
+Without `--check`, `diff` exits `0` and emits `WF3001` at severity/level `warning` so SARIF
+results never carry `level: "error"` on a zero-exit run; with `--check`, `diff` exits `1` on
+breaking changes and emits `WF3001` at severity/level `error`.
 `diff --json` remains the full diff report described in [`diff.md`](diff.md); when both `--json`
 and a non-human `--format` are given, `--json` wins and the diagnostic envelope is suppressed
 (including on command errors, which are written to stderr just as `diff --json` does).

@@ -374,12 +374,42 @@ impl WireLock {
     /// optional; malformed or mismatched order fingerprints are refused.
     pub fn parse(text: &str) -> Result<Self> {
         Self::parse_inner(text).map_err(|err| {
-            crate::operational_error(
+            let message = format!("{err:#}");
+            let mut diag = crate::diagnostic::Diagnostic::error(
                 crate::diagnostic::codes::PARSE_ERROR,
-                format!("{err:#}"),
-                None,
-            )
+                message,
+            );
+            if let Some(position) = parse_error_position(text, &diag.message) {
+                diag = diag.with_position(position);
+            }
+            anyhow::Error::new(crate::DiagnosticError::single(diag))
         })
+    }
+
+    /// Map each member key in a v2 lockfile to its 1-based UTF-16 line [`crate::diagnostic::Position`].
+    ///
+    /// Invalid or malformed lines are skipped so callers can still locate surrounding entries.
+    #[must_use]
+    pub fn entry_positions(text: &str) -> BTreeMap<String, crate::diagnostic::Position> {
+        let mut out = BTreeMap::new();
+        for (index, raw) in text.lines().enumerate() {
+            let line_no = index + 1;
+            let line = raw
+                .strip_prefix('\u{feff}')
+                .unwrap_or(raw)
+                .trim_matches(is_field_separator);
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key_text, _)) = line.split_once('=') {
+                let key = key_text.trim_matches(is_field_separator);
+                if !key.is_empty() {
+                    out.entry(key.to_string())
+                        .or_insert_with(|| crate::line_position(line_no, raw));
+                }
+            }
+        }
+        out
     }
 
     fn parse_inner(text: &str) -> Result<Self> {
@@ -1750,4 +1780,27 @@ impl<'a> CanonicalTypeParser<'a> {
             bail!("expected `{expected}`")
         }
     }
+}
+
+/// Extract a 1-based line position from a [`WireLock::parse`] error message.
+fn parse_error_position(text: &str, message: &str) -> Option<crate::diagnostic::Position> {
+    if message.starts_with("empty lockfile") {
+        return Some(crate::diagnostic::Position {
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+        });
+    }
+    let rest = message.strip_prefix("line ")?;
+    let digits_end = rest
+        .bytes()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let line_no: usize = rest[..digits_end].parse().ok()?;
+    if line_no == 0 {
+        return None;
+    }
+    let raw_line = text.lines().nth(line_no - 1).unwrap_or("");
+    Some(crate::line_position(line_no, raw_line))
 }

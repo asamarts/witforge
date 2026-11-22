@@ -1,14 +1,15 @@
 //! Version-directory discovery and validation shared by the generators.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::diagnostic::{Diagnostic, codes};
+use crate::diagnostic::{Diagnostic, LocatedDiagnostic, Position, RelatedLocation, codes};
 use crate::lock::{Changes, PackageName, WireLock};
 use crate::model::{self, Dependency, Interface, Model, TypeDef, TypeDefKind};
-use crate::{ContractError, load, operational_error, subset};
+use crate::{ContractError, load, operational_error, operational_error_at, subset};
 
 /// One validated `v<major>.<minor>` version directory.
 pub(crate) struct Version {
@@ -20,6 +21,8 @@ pub(crate) struct Version {
     pub(crate) model: Model,
     /// The version's committed lockfile.
     pub(crate) lock: WireLock,
+    /// Physical source locations indexed by logical contract path.
+    pub(crate) locations: BTreeMap<String, (String, Position)>,
 }
 
 /// Return the one dependency graph shared by all generated versions.
@@ -262,78 +265,106 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
     let mut versions: Vec<Version> = Vec::new();
     for (major, minor, directory) in discover_versions(wit_root)? {
         let contract = load(&directory)?;
-        let violations = subset::check_diagnostics(&contract);
+        let violations = subset::check_located_diagnostics(&contract);
         if !violations.is_empty() {
             let messages: Vec<String> = violations
                 .iter()
-                .map(|diagnostic| match &diagnostic.path {
-                    Some(path) => format!("{path}: {}", diagnostic.message),
-                    None => diagnostic.message.clone(),
+                .map(|located| match &located.diagnostic.path {
+                    Some(path) => format!("{path}: {}", located.diagnostic.message),
+                    None => located.diagnostic.message.clone(),
                 })
                 .collect();
-            bail!(ContractError::with_diagnostics(
+            bail!(ContractError::with_located_diagnostics(
                 format!("{}: {}", directory.display(), messages.join("; ")),
                 violations,
             ));
         }
+        let locations = contract.member_locations();
         let model = model::build(&contract)?;
+        let pkg_key = format!("{}:{}", model.package.namespace, model.package.name);
         let version = model.package.version;
         if version.major != major || version.minor != minor || version.patch != 0 {
-            bail!(ContractError::with_diagnostic(
-                Diagnostic::error(
-                    codes::DIRECTORY_VERSION_MISMATCH,
-                    format!(
-                        "{} declares version {}, expected {major}.{minor}.0",
-                        directory.display(),
-                        version
-                    ),
-                )
-                .with_path(directory.display().to_string())
-            ));
+            let mut diag = Diagnostic::error(
+                codes::DIRECTORY_VERSION_MISMATCH,
+                format!(
+                    "{} declares version {}, expected {major}.{minor}.0",
+                    directory.display(),
+                    version
+                ),
+            )
+            .with_path(directory.display().to_string());
+            let mut located = LocatedDiagnostic::from_diagnostic(diag.clone());
+            if let Some((file, pos)) = locations.get(&pkg_key) {
+                diag = diag.with_position(*pos);
+                located = LocatedDiagnostic::from_diagnostic(diag)
+                    .with_file(file.clone())
+                    .with_logical(pkg_key);
+            } else {
+                located = located.with_file(directory.display().to_string());
+            }
+            bail!(ContractError::with_located_diagnostic(located));
         }
         if let Some(first) = versions.first() {
             let expected = &first.model.package;
             if expected.namespace != model.package.namespace || expected.name != model.package.name
             {
-                bail!(ContractError::with_diagnostic(
-                    Diagnostic::error(
-                        codes::PACKAGE_MISMATCH,
-                        format!(
-                            "{} declares package {}:{}, expected {}:{}",
-                            directory.display(),
-                            model.package.namespace,
-                            model.package.name,
-                            expected.namespace,
-                            expected.name
-                        ),
-                    )
-                    .with_path(directory.display().to_string())
-                ));
+                let mut diag = Diagnostic::error(
+                    codes::PACKAGE_MISMATCH,
+                    format!(
+                        "{} declares package {}:{}, expected {}:{}",
+                        directory.display(),
+                        model.package.namespace,
+                        model.package.name,
+                        expected.namespace,
+                        expected.name
+                    ),
+                )
+                .with_path(directory.display().to_string());
+                let mut located = LocatedDiagnostic::from_diagnostic(diag.clone());
+                if let Some((file, pos)) = locations.get(&pkg_key) {
+                    diag = diag.with_position(*pos);
+                    located = LocatedDiagnostic::from_diagnostic(diag)
+                        .with_file(file.clone())
+                        .with_logical(pkg_key);
+                } else {
+                    located = located.with_file(directory.display().to_string());
+                }
+                bail!(ContractError::with_located_diagnostic(located));
             }
         }
         let previous = versions.last().filter(|previous| previous.major == major);
         let lock_path = directory.join("wire.lock");
         let lock_text = read_version_lock(&directory, major, &lock_path, previous)?;
         let lock = WireLock::parse(&lock_text).map_err(|err| {
-            operational_error(
+            let position = crate::error_diagnostics(&err)
+                .and_then(|diags| diags.first())
+                .and_then(|diag| diag.position);
+            operational_error_at(
                 codes::PARSE_ERROR,
                 format!("in {}: {err:#}", lock_path.display()),
-                Some(lock_path.display().to_string()),
+                lock_path.display().to_string(),
+                position,
             )
         })?;
+        let lock_positions = WireLock::entry_positions(&lock_text);
         let package = PackageName {
             namespace: model.package.namespace.clone(),
             name: model.package.name.clone(),
         };
         lock.check_package(&package).map_err(|err| {
             let human = format!("in {}: {err:#}", lock_path.display());
-            ContractError::with_diagnostics(
-                human,
-                vec![
-                    Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
-                        .with_path(lock_path.display().to_string()),
-                ],
-            )
+            let lock_file = lock_path.display().to_string();
+            let foreign_pos = lock
+                .entries()
+                .find(|(key, _)| key.package() != &package)
+                .and_then(|(key, _)| lock_positions.get(&key.key()).copied());
+            let mut diag = Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
+                .with_path(lock_file.clone());
+            if let Some(pos) = foreign_pos {
+                diag = diag.with_position(pos);
+            }
+            let located = LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file);
+            ContractError::with_located_diagnostics(human, vec![located])
         })?;
         if let Some(previous) = previous {
             let previous_path = previous.directory.join("wire.lock");
@@ -348,10 +379,17 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                     crate::shell_quote(&directory),
                     crate::shell_quote(&previous_path),
                 );
-                ContractError::with_diagnostic(
-                    Diagnostic::error(codes::LOCKFILE_ERROR, message)
-                        .with_path(lock_path.display().to_string()),
-                )
+                let lock_file = lock_path.display().to_string();
+                let diag =
+                    Diagnostic::error(codes::LOCKFILE_ERROR, message).with_path(lock_file.clone());
+                let located = LocatedDiagnostic::from_diagnostic(diag)
+                    .with_file(lock_file)
+                    .with_related(RelatedLocation {
+                        file: previous_path.display().to_string(),
+                        position: None,
+                        message: "previous minor lockfile".to_string(),
+                    });
+                ContractError::with_located_diagnostic(located)
             })?;
         }
         let members = model.members()?;
@@ -361,18 +399,22 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
             .is_some_and(|name| released.contains(name));
         let drift = lock.drift(&members).map_err(|err| {
             let human = format!("in {}: {err:#}", lock_path.display());
-            ContractError::with_diagnostics(
-                human,
-                vec![
-                    Diagnostic::error(codes::LOCKFILE_ERROR, format!("{err:#}"))
-                        .with_path(lock_path.display().to_string()),
-                ],
-            )
+            let lock_file = lock_path.display().to_string();
+            let diag = Diagnostic::error(codes::LOCKFILE_ERROR, format!("{err:#}"))
+                .with_path(lock_file.clone());
+            let located = LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file);
+            ContractError::with_located_diagnostics(human, vec![located])
         })?;
         if !drift.is_empty() {
             let remedy = version_lock_remedy(&directory, previous, is_released);
-            let diagnostics = drift_diagnostics(&drift, &remedy);
-            bail!(ContractError::with_diagnostics(
+            let diagnostics = drift_diagnostics(
+                &drift,
+                &remedy,
+                &locations,
+                &lock_path.display().to_string(),
+                &lock_positions,
+            );
+            bail!(ContractError::with_located_diagnostics(
                 format!("{}: lockfile is stale; {remedy}", directory.display()),
                 diagnostics,
             ));
@@ -384,70 +426,124 @@ pub(crate) fn load_versions(wit_root: &Path) -> Result<Vec<Version>> {
                     lock_path.display(),
                     version_lock_remedy(&directory, previous, is_released)
                 );
-                ContractError::with_diagnostic(
-                    Diagnostic::error(codes::LOCKFILE_ERROR, message)
-                        .with_path(lock_path.display().to_string()),
-                )
+                let lock_file = lock_path.display().to_string();
+                let diag =
+                    Diagnostic::error(codes::LOCKFILE_ERROR, message).with_path(lock_file.clone());
+                let located = LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file);
+                ContractError::with_located_diagnostic(located)
             })?;
         versions.push(Version {
             major,
             directory,
             model,
             lock,
+            locations,
         });
     }
     Ok(versions)
 }
 
-fn drift_diagnostics(changes: &Changes, remedy: &str) -> Vec<Diagnostic> {
+fn drift_diagnostics(
+    changes: &Changes,
+    remedy: &str,
+    locations: &BTreeMap<String, (String, Position)>,
+    lock_file: &str,
+    lock_positions: &BTreeMap<String, Position>,
+) -> Vec<LocatedDiagnostic> {
     let mut diagnostics = Vec::new();
+    let locate_member = |code: &'static str,
+                         key: &str,
+                         message: String,
+                         prefer_lock: bool,
+                         related_msg: Option<&str>| {
+        let mut diag = Diagnostic::error(code, message).with_path(key.to_string());
+        let wit_loc = locations.get(key);
+        let lock_pos = lock_positions.get(key).copied();
+        let mut located = if prefer_lock {
+            if let Some(pos) = lock_pos {
+                diag = diag.with_position(pos);
+            }
+            LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(lock_file.to_string())
+                .with_logical(key.to_string())
+        } else if let Some((file, pos)) = wit_loc {
+            diag = diag.with_position(*pos);
+            let mut item = LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(file.clone())
+                .with_logical(key.to_string());
+            if let Some(msg) = related_msg {
+                item = item.with_related(RelatedLocation {
+                    file: lock_file.to_string(),
+                    position: lock_pos,
+                    message: msg.to_string(),
+                });
+            }
+            item
+        } else {
+            if let Some(pos) = lock_pos {
+                diag = diag.with_position(pos);
+            }
+            LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(lock_file.to_string())
+                .with_logical(key.to_string())
+        };
+        if prefer_lock && let (Some((file, pos)), Some(msg)) = (wit_loc, related_msg) {
+            located = located.with_related(RelatedLocation {
+                file: file.clone(),
+                position: Some(*pos),
+                message: msg.to_string(),
+            });
+        }
+        located
+    };
+
     for (key, _) in &changes.added {
-        diagnostics.push(
-            Diagnostic::error(
-                codes::LOCKFILE_MISSING_NUMBER,
-                format!("{key} has no wire number; {remedy}"),
-            )
-            .with_path(key.clone()),
-        );
+        diagnostics.push(locate_member(
+            codes::LOCKFILE_MISSING_NUMBER,
+            key,
+            format!("{key} has no wire number; {remedy}"),
+            false,
+            Some("wire.lock has no entry for this member"),
+        ));
     }
     for (key, number) in &changes.reserved {
-        diagnostics.push(
-            Diagnostic::error(
-                codes::LOCKFILE_UNRESERVED_REMOVAL,
-                format!("{key} = {number} is no longer in the contract; {remedy}"),
-            )
-            .with_path(key.clone()),
-        );
+        diagnostics.push(locate_member(
+            codes::LOCKFILE_UNRESERVED_REMOVAL,
+            key,
+            format!("{key} = {number} is no longer in the contract; {remedy}"),
+            true,
+            None,
+        ));
     }
     for (key, number) in &changes.reintroduced {
-        diagnostics.push(
-            Diagnostic::error(
-                codes::LOCKFILE_REINTRODUCED,
-                format!(
-                    "{key} was removed and its name and number {number} stay reserved; give the \
-                     member a new name"
-                ),
-            )
-            .with_path(key.clone()),
-        );
+        diagnostics.push(locate_member(
+            codes::LOCKFILE_REINTRODUCED,
+            key,
+            format!(
+                "{key} was removed and its name and number {number} stay reserved; give the \
+                 member a new name"
+            ),
+            false,
+            Some("reserved entry in wire.lock"),
+        ));
     }
     for (key, number) in &changes.dropped {
-        diagnostics.push(
-            Diagnostic::error(
-                codes::LOCKFILE_STALE_DRAFT,
-                format!("stale draft {key} = {number}; {remedy}"),
-            )
-            .with_path(key.clone()),
-        );
+        diagnostics.push(locate_member(
+            codes::LOCKFILE_STALE_DRAFT,
+            key,
+            format!("stale draft {key} = {number}; {remedy}"),
+            true,
+            None,
+        ));
     }
     for (key, _, _) in &changes.updated {
-        diagnostics.push(
-            Diagnostic::error(
-                codes::LOCKFILE_CHANGED_DRAFT,
-                format!("draft {key} changed kind or type; {remedy}"),
-            )
-            .with_path(key.clone()),
-        );
+        diagnostics.push(locate_member(
+            codes::LOCKFILE_CHANGED_DRAFT,
+            key,
+            format!("draft {key} changed kind or type; {remedy}"),
+            false,
+            Some("existing entry in wire.lock"),
+        ));
     }
     diagnostics
 }

@@ -55,15 +55,58 @@ fn check_emits_json_and_sarif_with_stable_fields() {
     let sarif = json(&sarif_output);
     assert_eq!(sarif["version"], "2.1.0");
     assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "witforge");
-    assert_eq!(
-        sarif["runs"][0]["tool"]["driver"]["rules"][0]["id"],
-        "WF1015"
+    let rule = &sarif["runs"][0]["tool"]["driver"]["rules"][0];
+    assert_eq!(rule["id"], "WF1015");
+    assert!(
+        !rule["shortDescription"]["text"]
+            .as_str()
+            .unwrap()
+            .is_empty(),
+        "{rule}"
     );
-    assert_eq!(sarif["runs"][0]["results"][0]["ruleId"], "WF1015");
-    assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
     assert_eq!(
-        sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        rule["helpUri"],
+        "https://asamarts.github.io/witforge/guide/diagnostics.html#wf1015"
+    );
+    let result = &sarif["runs"][0]["results"][0];
+    assert_eq!(result["ruleId"], "WF1015");
+    assert_eq!(result["level"], "error");
+    let uri = result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        .as_str()
+        .unwrap();
+    assert!(
+        uri.ends_with("contract.wit"),
+        "expected physical URI, got {uri}"
+    );
+    assert!(!uri.contains(".."), "URI must not contain `..`: {uri}");
+    assert!(
+        result["locations"][0]["physicalLocation"]["region"]["startLine"]
+            .as_u64()
+            .is_some(),
+        "expected SARIF region: {result}"
+    );
+    assert_eq!(
+        result["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
         "example:bad/types/blob"
+    );
+    assert!(
+        diagnostics[0]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("contract.wit"),
+        "{}",
+        diagnostics[0]
+    );
+    assert_eq!(diagnostics[0]["logical"], "example:bad/types/blob");
+    assert!(
+        diagnostics[0]["line"].as_u64().is_some(),
+        "{}",
+        diagnostics[0]
+    );
+    assert!(
+        diagnostics[0]["column"].as_u64().is_some(),
+        "{}",
+        diagnostics[0]
     );
 
     let human = output(&["check", &path]);
@@ -130,7 +173,49 @@ fn diff_emits_breaking_changes_as_diagnostics() {
     assert!(sarif_output.status.success(), "{sarif_output:?}");
     let sarif = json(&sarif_output);
     assert_eq!(sarif["version"], "2.1.0");
-    assert_eq!(sarif["runs"][0]["results"][0]["ruleId"], "WF3001");
+    let results = sarif["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(results[0]["ruleId"], "WF3001");
+    assert!(
+        results.iter().all(|item| item["level"] != "error"),
+        "diff without --check exits 0 and must not emit error-level SARIF results: {results:?}"
+    );
+    assert_eq!(results[0]["level"], "warning");
+    let uri = results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        .as_str()
+        .unwrap();
+    assert!(
+        Path::new(uri)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("wit")),
+        "expected physical .wit URI: {uri}"
+    );
+    assert!(
+        results[0]["locations"][0]["physicalLocation"]["region"]["startLine"]
+            .as_u64()
+            .is_some(),
+        "{}",
+        results[0]
+    );
+
+    let sarif_checked = output(&[
+        "diff",
+        &old.display().to_string(),
+        &new.display().to_string(),
+        "--format",
+        "sarif",
+        "--check",
+    ]);
+    assert_eq!(sarif_checked.status.code(), Some(1), "{sarif_checked:?}");
+    let checked_results = json(&sarif_checked)["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        checked_results
+            .iter()
+            .any(|item| item["ruleId"] == "WF3001" && item["level"] == "error"),
+        "diff --check must emit error-level WF3001 results: {checked_results:?}"
+    );
 }
 
 #[test]
@@ -596,13 +681,35 @@ fn all_commands_report_identical_per_rule_codes_and_multiple_diagnostics() {
         assert_eq!(results.len(), 2, "{label} sarif: {results:?}");
         assert_eq!(results[0]["ruleId"], "WF1019", "{label}: {results:?}");
         assert_eq!(
-            results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            results[0]["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
             "ex:h/types/r.a"
+        );
+        let uri0 = results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            .as_str()
+            .unwrap();
+        assert!(
+            uri0.starts_with("file:///") && uri0.ends_with("contract.wit"),
+            "{label}: expected file:/// URI for outside-cwd contract, got {uri0}"
+        );
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["region"]["startLine"],
+            2
         );
         assert_eq!(results[1]["ruleId"], "WF1017", "{label}: {results:?}");
         assert_eq!(
-            results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            results[1]["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
             "ex:h/types/r.b"
+        );
+        let uri1 = results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            .as_str()
+            .unwrap();
+        assert!(
+            uri1.starts_with("file:///") && uri1.ends_with("contract.wit"),
+            "{label}: expected file:/// URI, got {uri1}"
+        );
+        assert_eq!(
+            results[1]["locations"][0]["physicalLocation"]["region"]["startLine"],
+            2
         );
     }
 
@@ -1084,4 +1191,288 @@ fn diagnostic_catalog_matches_docs_design_diagnostics_md() {
         catalog_entries, doc_entries,
         "witforge::diagnostic::CATALOG and docs/design/diagnostics.md must stay 1-to-1"
     );
+
+    // Every code must also have a public anchor heading `### WFxxxx` in docs/guide/diagnostics.md
+    // so SARIF `helpUri` links resolve on the published documentation site.
+    let guide_path = repo().join("docs/guide/diagnostics.md");
+    let guide_text = fs::read_to_string(&guide_path).unwrap();
+    let guide_codes: std::collections::BTreeSet<String> = guide_text
+        .lines()
+        .filter_map(|line| line.strip_prefix("### "))
+        .map(|code| code.trim().to_string())
+        .collect();
+    let catalog_codes: std::collections::BTreeSet<String> =
+        catalog_entries.keys().cloned().collect();
+    assert_eq!(
+        catalog_codes, guide_codes,
+        "witforge::diagnostic::CATALOG and docs/guide/diagnostics.md anchors must stay 1-to-1"
+    );
+}
+
+#[test]
+fn wit_syntax_and_resolution_errors_carry_file_line_column_and_snippet() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-parse-pos-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let dir = root.join("wit/v0.1");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("a.wit"),
+        "package ex:multi@0.1.0;\ninterface ok {\n    record item { id: u32 }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.wit"),
+        "interface broken {\n    record wrapper {\n        missing: nosuch,\n    }\n}\n",
+    )
+    .unwrap();
+
+    // Resolution error on line 3 of b.wit: human output renders snippet with b.wit:3:...
+    let human = output(&["check", dir.to_str().unwrap()]);
+    assert_eq!(human.status.code(), Some(2), "{human:?}");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.contains("b.wit:3:"),
+        "expected b.wit:3 in stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("nosuch"), "{stderr}");
+
+    // JSON and SARIF carry exact file, line 3, and column (in UTF-16 code units).
+    let json_out = output(&["check", dir.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(json_out.status.code(), Some(2), "{json_out:?}");
+    let diag = &json(&json_out)["diagnostics"][0];
+    assert_eq!(diag["code"], "WF9003", "{diag}");
+    assert!(
+        diag["file"].as_str().unwrap().ends_with("b.wit"),
+        "expected b.wit: {diag}"
+    );
+    assert_eq!(diag["line"], 3, "{diag}");
+    assert_eq!(diag["column"], 18, "{diag}");
+
+    let sarif_out = output(&["check", dir.to_str().unwrap(), "--format", "sarif"]);
+    assert_eq!(sarif_out.status.code(), Some(2), "{sarif_out:?}");
+    let result = &json(&sarif_out)["runs"][0]["results"][0];
+    assert_eq!(result["ruleId"], "WF9003", "{result}");
+    let phys = &result["locations"][0]["physicalLocation"];
+    assert!(
+        phys["artifactLocation"]["uri"]
+            .as_str()
+            .unwrap()
+            .ends_with("b.wit"),
+        "{phys}"
+    );
+    assert_eq!(phys["region"]["startLine"], 3, "{phys}");
+    assert_eq!(phys["region"]["startColumn"], 18, "{phys}");
+
+    // Syntax error with tab + non-ASCII + CRLF on line 3.
+    let syn_dir = root.join("syntax/v0.1");
+    fs::create_dir_all(&syn_dir).unwrap();
+    fs::write(
+        syn_dir.join("contract.wit"),
+        "package ex:syn@0.1.0;\r\n// café 😀\r\n\tinterface broken { @@@ }\r\n",
+    )
+    .unwrap();
+    let syn_json = output(&["check", syn_dir.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(syn_json.status.code(), Some(2), "{syn_json:?}");
+    let syn_diag = &json(&syn_json)["diagnostics"][0];
+    assert_eq!(syn_diag["code"], "WF9003", "{syn_diag}");
+    assert!(syn_diag["file"].as_str().unwrap().ends_with("contract.wit"));
+    assert_eq!(syn_diag["line"], 3, "{syn_diag}");
+    assert!(syn_diag["column"].as_u64().unwrap() >= 2, "{syn_diag}");
+
+    // UTF-8 BOM on a WIT file does not shift line 1 columns.
+    let bom_dir = root.join("bom/v0.1");
+    fs::create_dir_all(&bom_dir).unwrap();
+    fs::write(
+        bom_dir.join("contract.wit"),
+        "\u{feff}package ex:bom@0.1.0; interface a { record r { bad: char } }\n",
+    )
+    .unwrap();
+    let bom_json = output(&["check", bom_dir.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(bom_json.status.code(), Some(1), "{bom_json:?}");
+    let bom_diag = &json(&bom_json)["diagnostics"][0];
+    assert_eq!(bom_diag["code"], "WF1017", "{bom_diag}");
+    assert_eq!(bom_diag["line"], 1, "{bom_diag}");
+    // `package ex:bom@0.1.0; interface a { record r { ` is 47 chars -> 1-based col 48 (BOM not counted).
+    assert_eq!(bom_diag["column"], 48, "{bom_diag}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn subset_use_deps_utf16_columns_and_cwd_relative_sarif_uris() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-positions-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let dir = root.join("wit/v0.1");
+    fs::create_dir_all(dir.join("deps/shared")).unwrap();
+    // Tab (1 UTF-16 unit) + comment with supplementary emoji on line above + CRLF + `use` into deps.
+    fs::write(
+        dir.join("deps/shared/types.wit"),
+        "package ex:shared@0.1.0;\r\ninterface base {\r\n    // 😀 café\r\n\trecord bad {\r\n\t\tflag-char: char,\r\n\t}\r\n}\r\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package ex:app@0.1.0;\ninterface api {\n    use ex:shared/base@0.1.0.{bad};\n    record holder { item: bad }\n}\n",
+    )
+    .unwrap();
+
+    // Run with cwd = `root` so SARIF URI MUST be cwd-relative with forward slashes, no `..`.
+    let sarif_out = witforge()
+        .current_dir(&root)
+        .args(["check", "wit/v0.1", "--format", "sarif"])
+        .output()
+        .unwrap();
+    assert_eq!(sarif_out.status.code(), Some(1), "{sarif_out:?}");
+    let sarif = json(&sarif_out);
+    let result = &sarif["runs"][0]["results"][0];
+    assert_eq!(result["ruleId"], "WF1017", "{result}");
+    // Position MUST be the declaration in deps/shared/types.wit (line 5), NOT the `use` in contract.wit!
+    assert_eq!(
+        result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "wit/v0.1/deps/shared/types.wit"
+    );
+    assert_eq!(
+        result["locations"][0]["physicalLocation"]["region"]["startLine"],
+        5
+    );
+    // Two leading tabs on line 5 -> `flag-char` starts at 1-based UTF-16 column 3!
+    assert_eq!(
+        result["locations"][0]["physicalLocation"]["region"]["startColumn"],
+        3
+    );
+    assert_eq!(
+        result["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
+        "ex:shared/base/bad.flag-char"
+    );
+
+    // Inline UTF-16 column check with tab + BMP + supplementary char on the same line.
+    let col_dir = root.join("cols/v0.1");
+    fs::create_dir_all(&col_dir).unwrap();
+    fs::write(
+        col_dir.join("contract.wit"),
+        "package ex:col@0.1.0;\ninterface a {\n\trecord r { /* café 😀 */ bad: char }\n}\n",
+    )
+    .unwrap();
+    let col_json = witforge()
+        .current_dir(&root)
+        .args(["check", "cols/v0.1", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(col_json.status.code(), Some(1), "{col_json:?}");
+    let col_diag = &json(&col_json)["diagnostics"][0];
+    assert_eq!(col_diag["file"], "cols/v0.1/contract.wit");
+    assert_eq!(col_diag["line"], 3);
+    // `\t` (1) + `record r { /* café ` (19) + `😀` (2 UTF-16 units) + ` */ ` (4) = 26 -> 1-based col 27!
+    assert_eq!(col_diag["column"], 27, "{col_diag}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn lockfile_parse_and_discrepancy_carry_wire_lock_lines_and_related_locations() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diagnostics-lock-pos-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let v1 = root.join("wit/v0.1");
+    let v2 = root.join("wit/v0.2");
+    fs::create_dir_all(&v1).unwrap();
+    fs::create_dir_all(&v2).unwrap();
+    fs::write(
+        v1.join("contract.wit"),
+        "package ex:lp@0.1.0;\ninterface api {\n    record item {\n        id: u32,\n        label: string,\n    }\n}\n",
+    )
+    .unwrap();
+    assert!(
+        output(&["lock", v1.to_str().unwrap(), "--first"])
+            .status
+            .success()
+    );
+
+    // 1. Lockfile parse error on line 3 carries wire.lock file and line 3.
+    let bad_parse = root.join("bad-parse/v0.1");
+    fs::create_dir_all(&bad_parse).unwrap();
+    fs::write(
+        bad_parse.join("contract.wit"),
+        "package ex:lp@0.1.0;\ninterface api { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        bad_parse.join("wire.lock"),
+        "# witforge wire lockfile v2\n\nnot a valid entry\n",
+    )
+    .unwrap();
+    let parse_out = witforge()
+        .current_dir(&root)
+        .args(["check", "bad-parse/v0.1", "--format", "sarif"])
+        .output()
+        .unwrap();
+    assert_eq!(parse_out.status.code(), Some(2), "{parse_out:?}");
+    let parse_res = &json(&parse_out)["runs"][0]["results"][0];
+    assert_eq!(parse_res["ruleId"], "WF9003");
+    assert_eq!(
+        parse_res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "bad-parse/v0.1/wire.lock"
+    );
+    assert_eq!(
+        parse_res["locations"][0]["physicalLocation"]["region"]["startLine"],
+        3
+    );
+
+    // 2. Discrepancy between WIT and wire.lock carries primary WIT location + related wire.lock line!
+    fs::write(
+        v2.join("contract.wit"),
+        "package ex:lp@0.2.0;\ninterface api {\n    record item {\n        id: u32,\n        label: u64,\n    }\n}\n",
+    )
+    .unwrap();
+    fs::copy(v1.join("wire.lock"), v2.join("wire.lock")).unwrap();
+    let disc_out = witforge()
+        .current_dir(&root)
+        .args([
+            "check",
+            "wit/v0.2",
+            "--against",
+            "wit/v0.1/wire.lock",
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(disc_out.status.code(), Some(1), "{disc_out:?}");
+    let disc_res = &json(&disc_out)["runs"][0]["results"][0];
+    assert_eq!(disc_res["ruleId"], "WF1100", "{disc_res}");
+    assert_eq!(
+        disc_res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "wit/v0.2/contract.wit"
+    );
+    assert_eq!(
+        disc_res["locations"][0]["physicalLocation"]["region"]["startLine"],
+        5
+    );
+    assert_eq!(
+        disc_res["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
+        "ex:lp/api/item.label"
+    );
+    let related = disc_res["relatedLocations"].as_array().unwrap();
+    assert_eq!(related.len(), 1, "{disc_res}");
+    assert_eq!(
+        related[0]["physicalLocation"]["artifactLocation"]["uri"],
+        "wit/v0.2/wire.lock"
+    );
+    assert!(
+        related[0]["physicalLocation"]["region"]["startLine"]
+            .as_u64()
+            .unwrap()
+            >= 2,
+        "{disc_res}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
 }

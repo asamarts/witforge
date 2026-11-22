@@ -14,6 +14,7 @@ title: Guide
 | [Non-Rust implementations](non-rust.html) | Protobuf code generation, WIT decode rules, and conformance tests |
 | [Evolution](evolution.html) | New versions, diff, adapters, and released contracts |
 | [CI](ci.html) | Stale output, compatibility, release freeze, and the GitHub Action |
+| [Diagnostic codes](diagnostics.html) | Stable `WFxxxx` diagnostic catalogue, source positions, and SARIF rules |
 | [JSON projections](json-projections.html) | Rust Serde versus WIT-shaped JSON Schema |
 | [Component Model boundary](component-model.html) | wit-bindgen and Wasmtime responsibilities |
 | [Examples](examples.html) | Runnable single-version and evolved contracts |

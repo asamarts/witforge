@@ -27,26 +27,48 @@ use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 
 use serde_json::{Value, json};
-use witforge::diagnostic::{Diagnostic, Severity, codes};
+use witforge::diagnostic::{
+    Diagnostic, LocatedDiagnostic, Position, RelatedLocation, Severity, codes,
+};
 use witforge::diff::{self, ChangeKind, DiffReport};
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
 mod diagnostics;
 
-use diagnostics::{Format, Reporter, diagnostic_path};
+use diagnostics::{Format, Reporter, diagnostic_path, located_note};
 
 use witforge::{
     ContractError, DiagnosticError, ensure_directory_version, ensure_lockfile_not_released,
-    ensure_not_released, ensure_version_directory, error_diagnostics, is_contract_error,
-    is_released, load, load_released_manifest, load_root_released_manifest, model, subset,
+    ensure_not_released, ensure_version_directory, error_diagnostics, error_located_diagnostics,
+    is_contract_error, is_released, load, load_released_manifest, load_root_released_manifest,
+    model, subset,
 };
 
 fn op_error(code: &'static str, message: impl Into<String>, path: Option<String>) -> anyhow::Error {
     let mut diagnostic = Diagnostic::error(code, message);
+    let file = path.clone();
     if let Some(path) = path {
         diagnostic = diagnostic.with_path(path);
     }
-    anyhow::Error::new(DiagnosticError::single(diagnostic))
+    let mut located = LocatedDiagnostic::from_diagnostic(diagnostic);
+    if let Some(file) = file {
+        located = located.with_file(file);
+    }
+    anyhow::Error::new(DiagnosticError::single_located(located))
+}
+
+fn op_error_at(
+    code: &'static str,
+    message: impl Into<String>,
+    file: String,
+    position: Option<Position>,
+) -> anyhow::Error {
+    let mut diagnostic = Diagnostic::error(code, message).with_path(file.clone());
+    if let Some(position) = position {
+        diagnostic = diagnostic.with_position(position);
+    }
+    let located = LocatedDiagnostic::from_diagnostic(diagnostic).with_file(file);
+    anyhow::Error::new(DiagnosticError::single_located(located))
 }
 
 /// The witforge contract compiler.
@@ -750,7 +772,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             if reporter.human() || reporter.is_suppressed() {
                 return Err(error);
             }
-            if let Some(diagnostics) = error_diagnostics(&error) {
+            if let Some(diagnostics) = error_located_diagnostics(&error) {
+                for diagnostic in diagnostics {
+                    reporter.push_located(diagnostic.clone());
+                }
+            } else if let Some(diagnostics) = error_diagnostics(&error) {
                 for diagnostic in diagnostics {
                     reporter.push(diagnostic.clone());
                 }
@@ -774,19 +800,16 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     // `check` may verify a released directory; the manifest only has to be valid.
     load_released_manifest(&options.dir, options.released.as_deref())?;
     let contract = load(&options.dir)?;
-    let violations = subset::check_diagnostics(&contract);
+    let violations = subset::check_located_diagnostics(&contract);
     if !violations.is_empty() {
         // The model of a contract outside the subset is not built, so every locked member
         // would look removed; report only the violations, as `lock` does.
-        for violation in &violations {
-            reporter.error_with_location(
-                violation.code,
-                violation.path.as_deref().unwrap_or_default(),
-                &violation.message,
-            );
+        for violation in violations {
+            reporter.push_subset_located(violation);
         }
         return Ok(ExitCode::from(1));
     }
+    let member_locs = contract.member_locations();
     let model = model::build(&contract)?;
     ensure_directory_version(&options.dir, &model)?;
     ensure_first_is_allowed(options, "check")?;
@@ -797,33 +820,40 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         .clone()
         .unwrap_or_else(|| options.dir.join("wire.lock"));
     let (lock, text) = read_lock(&lock_path, options)?;
-    let previous = read_previous(options.against.as_deref())?;
+    let lock_positions = text
+        .as_deref()
+        .map(WireLock::entry_positions)
+        .unwrap_or_default();
+    let (previous, against_positions) = read_previous(options.against.as_deref())?;
     if let Some(against) = &options.against {
-        match baseline_model(against)? {
-            Some(baseline) => {
-                if let Err(err) = witforge::ensure_same_dependency_graph(&model, &baseline) {
-                    reporter.error(
-                        codes::DEPENDENCY_GRAPH_MISMATCH,
-                        format!("{err:#}"),
-                        Some(against.display().to_string()),
-                    );
-                    return Ok(ExitCode::from(1));
-                }
+        if let Some(baseline) = baseline_model(against)? {
+            if let Err(err) = witforge::ensure_same_dependency_graph(&model, &baseline) {
+                reporter.error(
+                    codes::DEPENDENCY_GRAPH_MISMATCH,
+                    format!("{err:#}"),
+                    Some(against.display().to_string()),
+                );
+                return Ok(ExitCode::from(1));
             }
-            None => reporter.note(
+        } else {
+            let against_str = against.display().to_string();
+            let diag = Diagnostic::new(
                 codes::LOCKFILE_BASELINE_NO_DEPS,
-                &format!(
-                    "note: cannot compare the pinned dependency graph: baseline `{}` is not the \
-                     wire.lock of a version directory; run a generator over the WIT root",
-                    against.display()
-                ),
+                Severity::Note,
                 format!(
-                    "cannot compare the pinned dependency graph: baseline `{}` is not a \
-                     version-directory wire.lock",
-                    against.display()
+                    "cannot compare the pinned dependency graph: baseline `{against_str}` is \
+                     not a version-directory wire.lock"
                 ),
-                against.display().to_string(),
-            ),
+            )
+            .with_path(against_str.clone());
+            reporter.note_located(
+                &format!(
+                    "note: cannot compare the pinned dependency graph: baseline \
+                     `{against_str}` is not the wire.lock of a version directory; run a \
+                     generator over the WIT root"
+                ),
+                LocatedDiagnostic::from_diagnostic(diag).with_file(against_str),
+            );
         }
     }
     let released = is_released(&options.dir, options.released.as_deref())?;
@@ -837,8 +867,10 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         &package,
         &lock,
         &lock_path,
+        &lock_positions,
         previous.as_ref(),
         options.against.as_deref(),
+        &against_positions,
         reporter,
     ) {
         return Ok(ExitCode::from(1));
@@ -899,13 +931,18 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         && let Err(err) = emit::proto::emit_major(&model, &lock)
     {
         if is_contract_error(&err) {
-            if let Some(diags) = error_diagnostics(&err) {
-                for diagnostic in diags {
-                    let mut diagnostic = diagnostic.clone();
-                    if diagnostic.path.is_none() {
-                        diagnostic = diagnostic.with_path(lock_path.display().to_string());
+            if let Some(diags) = error_located_diagnostics(&err) {
+                for located in diags {
+                    let mut located = located.clone();
+                    if located.file.is_none() {
+                        located.file = Some(lock_path.display().to_string());
                     }
-                    reporter.push(diagnostic);
+                    if located.diagnostic.path.is_none() {
+                        located.diagnostic = located
+                            .diagnostic
+                            .with_path(lock_path.display().to_string());
+                    }
+                    reporter.push_located(located);
                 }
             } else {
                 reporter.error(
@@ -918,6 +955,13 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         }
         return Err(err);
     }
+    let lock_ctx = LockDiagnosticContext {
+        member_locs: &member_locs,
+        lock_file: &lock_path.display().to_string(),
+        lock_positions: &lock_positions,
+        against_file: options.against.as_deref().map(|p| p.display().to_string()),
+        against_positions: &against_positions,
+    };
     report_check_changes(
         &report.changes,
         &report.discrepancies,
@@ -925,6 +969,7 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         &report.restored,
         options.against.is_some(),
         &remedy,
+        &lock_ctx,
         reporter,
     );
     if report.is_empty() && canonical {
@@ -934,27 +979,25 @@ fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_not_released(&options.dir, options.released.as_deref())?;
     ensure_not_wit_root(&options.dir, "lock")?;
     let contract = load(&options.dir)?;
-    let violations = subset::check_diagnostics(&contract);
-    for violation in &violations {
-        reporter.error_with_location(
-            violation.code,
-            violation.path.as_deref().unwrap_or_default(),
-            &violation.message,
-        );
+    let violations = subset::check_located_diagnostics(&contract);
+    let violation_count = violations.len();
+    for violation in violations {
+        reporter.push_subset_located(violation);
     }
-    if !violations.is_empty() {
+    if violation_count > 0 {
         if reporter.human() {
             bail!(ContractError::new(format!(
-                "{} subset violation(s); the lockfile was not updated",
-                violations.len()
+                "{violation_count} subset violation(s); the lockfile was not updated"
             )));
         }
         return Ok(ExitCode::from(1));
     }
+    let member_locs = contract.member_locations();
     let model = model::build(&contract)?;
     ensure_directory_version(&options.dir, &model)?;
     let members = model.members()?;
@@ -965,15 +1008,21 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_lockfile_not_released(&lock_path, &options.dir, options.released.as_deref())?;
     ensure_first_is_allowed(options, "lock")?;
     ensure_baseline_is_allowed(options, "lock")?;
-    let (mut lock, _) = read_lock(&lock_path, options)?;
-    let previous = read_previous(options.against.as_deref())?;
+    let (mut lock, existing_text) = read_lock(&lock_path, options)?;
+    let lock_positions = existing_text
+        .as_deref()
+        .map(WireLock::entry_positions)
+        .unwrap_or_default();
+    let (previous, against_positions) = read_previous(options.against.as_deref())?;
     let package = package_name(&model);
     if !check_lockfile_packages(
         &package,
         &lock,
         &lock_path,
+        &lock_positions,
         previous.as_ref(),
         options.against.as_deref(),
+        &against_positions,
         reporter,
     ) {
         return Ok(ExitCode::from(1));
@@ -997,6 +1046,14 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
             return Ok(ExitCode::from(1));
         }
     };
+    let lock_file = lock_path.display().to_string();
+    let lock_ctx = LockDiagnosticContext {
+        member_locs: &member_locs,
+        lock_file: &lock_file,
+        lock_positions: &lock_positions,
+        against_file: options.against.as_deref().map(|p| p.display().to_string()),
+        against_positions: &against_positions,
+    };
     let changes = &report.changes;
     let mut refused = false;
     for discrepancy in &report.discrepancies {
@@ -1006,16 +1063,22 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
             } else {
                 "WF1100"
             };
-        reporter.error(code, &discrepancy.message, Some(discrepancy.key.clone()));
+        reporter.push_located(lock_ctx.locate_discrepancy(
+            code,
+            &discrepancy.key,
+            discrepancy.message.clone(),
+        ));
         refused = true;
     }
     if !changes.reintroduced.is_empty() {
         for (key, number) in &changes.reintroduced {
-            reporter.error(
+            reporter.push_located(lock_ctx.locate_member(
                 "WF1103",
+                key,
                 reintroduced(key, *number, options.against.is_some()),
-                Some(key.clone()),
-            );
+                false,
+                Some("reserved entry in wire.lock"),
+            ));
             refused = true;
         }
     }
@@ -1029,79 +1092,138 @@ fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
         return Ok(ExitCode::from(1));
     }
     lock.write_atomic(&lock_path)?;
-    report_lock_notes(&report, reporter);
+    let written_positions = fs::read_to_string(&lock_path)
+        .ok()
+        .map(|text| WireLock::entry_positions(&text))
+        .unwrap_or_default();
+    report_lock_notes(
+        &report,
+        &member_locs,
+        &lock_file,
+        &written_positions,
+        reporter,
+    );
     Ok(ExitCode::SUCCESS)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_lockfile_packages(
     package: &PackageName,
     lock: &WireLock,
     lock_path: &Path,
+    lock_positions: &BTreeMap<String, Position>,
     previous: Option<&WireLock>,
     against_path: Option<&Path>,
+    against_positions: &BTreeMap<String, Position>,
     reporter: &mut Reporter,
 ) -> bool {
     if let Err(err) = lock.check_package(package) {
-        reporter.error(
-            codes::LOCKFILE_WRONG_PACKAGE,
-            format!("{err:#}"),
-            Some(lock_path.display().to_string()),
-        );
+        let file = lock_path.display().to_string();
+        let pos = lock
+            .entries()
+            .find(|(key, _)| key.package() != package)
+            .and_then(|(key, _)| lock_positions.get(&key.key()).copied());
+        let mut diag = Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
+            .with_path(file.clone());
+        if let Some(pos) = pos {
+            diag = diag.with_position(pos);
+        }
+        reporter.push_located(LocatedDiagnostic::from_diagnostic(diag).with_file(file));
         return false;
     }
     if let (Some(previous), Some(against_path)) = (previous, against_path)
         && let Err(err) = previous.check_package(package)
     {
-        reporter.error(
-            codes::LOCKFILE_WRONG_PACKAGE,
-            format!("{err:#}"),
-            Some(against_path.display().to_string()),
-        );
+        let file = against_path.display().to_string();
+        let pos = previous
+            .entries()
+            .find(|(key, _)| key.package() != package)
+            .and_then(|(key, _)| against_positions.get(&key.key()).copied());
+        let mut diag = Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
+            .with_path(file.clone());
+        if let Some(pos) = pos {
+            diag = diag.with_position(pos);
+        }
+        reporter.push_located(LocatedDiagnostic::from_diagnostic(diag).with_file(file));
         return false;
     }
     true
 }
 
-fn report_lock_notes(report: &witforge::lock::Reconciliation, reporter: &mut Reporter) {
+fn report_lock_notes(
+    report: &witforge::lock::Reconciliation,
+    member_locs: &BTreeMap<String, (String, Position)>,
+    lock_file: &str,
+    lock_positions: &BTreeMap<String, Position>,
+    reporter: &mut Reporter,
+) {
     let changes = &report.changes;
+    let emit =
+        |reporter: &mut Reporter, code: &'static str, human: String, message: String, key: &str| {
+            let lock_pos = lock_positions.get(key).copied();
+            let wit_loc = member_locs.get(key);
+            let located = if wit_loc.is_some() {
+                located_note(
+                    code,
+                    message,
+                    key.to_string(),
+                    wit_loc,
+                    Some((lock_file.to_string(), lock_pos, "lockfile entry")),
+                )
+            } else {
+                let fallback = lock_pos.map(|pos| (lock_file.to_string(), pos));
+                let mut item =
+                    located_note(code, message, key.to_string(), fallback.as_ref(), None);
+                if item.file.is_none() {
+                    item = item.with_file(lock_file.to_string());
+                }
+                item
+            };
+            reporter.note_located(&human, located);
+        };
     for (key, number) in &report.restored {
-        reporter.note(
+        emit(
+            reporter,
             "WF1205",
-            &format!("restored {key} = {number}"),
             format!("restored {key} = {number}"),
-            key.clone(),
+            format!("restored {key} = {number}"),
+            key,
         );
     }
     for (key, number) in &changes.dropped {
-        reporter.note(
+        emit(
+            reporter,
             "WF1203",
-            &format!("dropped  {key} = {number}"),
+            format!("dropped  {key} = {number}"),
             format!("dropped {key} = {number}"),
-            key.clone(),
+            key,
         );
     }
     for (key, _kind, _ty) in &changes.updated {
-        reporter.note(
+        emit(
+            reporter,
             "WF1204",
-            &format!("updated  {key}"),
+            format!("updated  {key}"),
             format!("updated {key}"),
-            key.clone(),
+            key,
         );
     }
     for (key, number) in &changes.reserved {
-        reporter.note(
+        emit(
+            reporter,
             "WF1202",
-            &format!("reserved {key} = {number}"),
             format!("reserved {key} = {number}"),
-            key.clone(),
+            format!("reserved {key} = {number}"),
+            key,
         );
     }
     for (key, number) in &changes.added {
-        reporter.note(
+        emit(
+            reporter,
             "WF1201",
-            &format!("added    {key} = {number}"),
+            format!("added    {key} = {number}"),
             format!("added {key} = {number}"),
-            key.clone(),
+            key,
         );
     }
 }
@@ -1360,13 +1482,14 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     if options.json {
         // `--json` is the diff report; it takes precedence over the diagnostic envelope even on
         // error, so a non-human `--format` never prints a diagnostic envelope instead of `--json`.
         reporter.suppress();
     }
-    let analysis = diff::compare_with_impacts(&options.old, &options.new)?;
+    let (analysis, locations) = diff::compare_with_locations(&options.old, &options.new)?;
     let report = &analysis.report;
     if options.json {
         let rendered = serde_json::to_string_pretty(&diff_json(&analysis))
@@ -1377,7 +1500,14 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
     } else {
         for change in &report.changes {
             let (code, severity) = if change.is_breaking() {
-                ("WF3001", Severity::Error)
+                (
+                    "WF3001",
+                    if options.check {
+                        Severity::Error
+                    } else {
+                        Severity::Warning
+                    },
+                )
             } else {
                 ("WF3002", Severity::Note)
             };
@@ -1389,7 +1519,16 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             if !detail.is_empty() {
                 let _ = write!(message, ": {detail}");
             }
-            reporter.push(Diagnostic::new(code, severity, message).with_path(change.path.clone()));
+            let mut diag = Diagnostic::new(code, severity, message).with_path(change.path.clone());
+            let mut located =
+                LocatedDiagnostic::from_diagnostic(diag.clone()).with_logical(change.path.clone());
+            if let Some((file, pos)) = locations.get(&change.path) {
+                diag = diag.with_position(*pos);
+                located = LocatedDiagnostic::from_diagnostic(diag)
+                    .with_file(file.clone())
+                    .with_logical(change.path.clone());
+            }
+            reporter.push_located(located);
         }
     }
     if !options.json {
@@ -1404,7 +1543,13 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
                  member `{}`",
                 impact.type_path, impact.from_version, impact.to_version, impact.missing_path
             );
-            reporter.note("WF3003", &human, message, impact.missing_path.clone());
+            let loc = locations
+                .get(&impact.missing_path)
+                .or_else(|| locations.get(&impact.type_path));
+            reporter.note_located(
+                &human,
+                located_note("WF3003", message, impact.missing_path.clone(), loc, None),
+            );
         }
         for (kind, blocker) in conversion_blockers(report) {
             let (human, message) = match kind {
@@ -1432,7 +1577,16 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
                     ),
                 ),
             };
-            reporter.note("WF3004", &human, message, blocker.path.clone());
+            reporter.note_located(
+                &human,
+                located_note(
+                    "WF3004",
+                    message,
+                    blocker.path.clone(),
+                    locations.get(&blocker.path),
+                    None,
+                ),
+            );
         }
     }
     if options.check && report.summary.breaking > 0 {
@@ -1687,16 +1841,16 @@ fn baseline_model(path: &Path) -> Result<Option<model::Model>> {
     }
     let contract = load(parent)
         .with_context(|| format!("failed to load the baseline version {}", parent.display()))?;
-    let violations = subset::check_diagnostics(&contract);
+    let violations = subset::check_located_diagnostics(&contract);
     if !violations.is_empty() {
         let messages: Vec<String> = violations
             .iter()
-            .map(|diagnostic| match &diagnostic.path {
-                Some(path) => format!("{path}: {}", diagnostic.message),
-                None => diagnostic.message.clone(),
+            .map(|located| match &located.diagnostic.path {
+                Some(path) => format!("{path}: {}", located.diagnostic.message),
+                None => located.diagnostic.message.clone(),
             })
             .collect();
-        bail!(ContractError::with_diagnostics(
+        bail!(ContractError::with_located_diagnostics(
             format!("{}: {}", parent.display(), messages.join("; ")),
             violations,
         ));
@@ -1824,10 +1978,13 @@ fn lock_mode<'a>(options: &Options, previous: Option<&'a WireLock>) -> LockMode<
     }
 }
 
-fn read_previous(path: Option<&Path>) -> Result<Option<WireLock>> {
+fn read_previous(path: Option<&Path>) -> Result<(Option<WireLock>, BTreeMap<String, Position>)> {
     match path {
-        Some(path) => read_required_lock(path).map(Some),
-        None => Ok(None),
+        Some(path) => {
+            let (lock, positions) = read_required_lock(path)?;
+            Ok((Some(lock), positions))
+        }
+        None => Ok((None, BTreeMap::new())),
     }
 }
 
@@ -1845,10 +2002,14 @@ fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>
     match fs::read_to_string(path) {
         Ok(text) => {
             let lock = WireLock::parse(&text).map_err(|err| {
-                op_error(
+                let position = error_diagnostics(&err)
+                    .and_then(|diags| diags.first())
+                    .and_then(|diag| diag.position);
+                op_error_at(
                     codes::PARSE_ERROR,
                     format!("in {}: {err:#}", path.display()),
-                    Some(path.display().to_string()),
+                    path.display().to_string(),
+                    position,
                 )
             })?;
             Ok((lock, Some(text)))
@@ -1954,16 +2115,148 @@ fn ensure_not_wit_root(dir: &Path, verb: &str) -> Result<()> {
     ))
 }
 
-fn read_required_lock(path: &Path) -> Result<WireLock> {
+fn read_required_lock(path: &Path) -> Result<(WireLock, BTreeMap<String, Position>)> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    WireLock::parse(&text).map_err(|err| {
-        op_error(
+    let lock = WireLock::parse(&text).map_err(|err| {
+        let position = error_diagnostics(&err)
+            .and_then(|diags| diags.first())
+            .and_then(|diag| diag.position);
+        op_error_at(
             codes::PARSE_ERROR,
             format!("in {}: {err:#}", path.display()),
-            Some(path.display().to_string()),
+            path.display().to_string(),
+            position,
         )
-    })
+    })?;
+    let positions = WireLock::entry_positions(&text);
+    Ok((lock, positions))
+}
+
+struct LockDiagnosticContext<'a> {
+    member_locs: &'a BTreeMap<String, (String, Position)>,
+    lock_file: &'a str,
+    lock_positions: &'a BTreeMap<String, Position>,
+    against_file: Option<String>,
+    against_positions: &'a BTreeMap<String, Position>,
+}
+
+impl LockDiagnosticContext<'_> {
+    fn lock_entry(&self, key: &str) -> (String, Option<Position>) {
+        if let Some(pos) = self.lock_positions.get(key).copied() {
+            return (self.lock_file.to_string(), Some(pos));
+        }
+        if let Some(ref against) = self.against_file
+            && let Some(pos) = self.against_positions.get(key).copied()
+        {
+            return (against.clone(), Some(pos));
+        }
+        (self.lock_file.to_string(), None)
+    }
+
+    fn locate_member(
+        &self,
+        code: &'static str,
+        key: &str,
+        message: String,
+        prefer_lock: bool,
+        related_msg: Option<&str>,
+    ) -> LocatedDiagnostic {
+        let mut diag = Diagnostic::error(code, message).with_path(key.to_string());
+        let wit_loc = self.member_locs.get(key);
+        let (lock_file, lock_pos) = self.lock_entry(key);
+        let mut located = if prefer_lock {
+            if let Some(pos) = lock_pos {
+                diag = diag.with_position(pos);
+            }
+            LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(lock_file)
+                .with_logical(key.to_string())
+        } else if let Some((file, pos)) = wit_loc {
+            diag = diag.with_position(*pos);
+            let mut item = LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(file.clone())
+                .with_logical(key.to_string());
+            if let Some(msg) = related_msg {
+                item = item.with_related(RelatedLocation {
+                    file: lock_file,
+                    position: lock_pos,
+                    message: msg.to_string(),
+                });
+            }
+            item
+        } else {
+            if let Some(pos) = lock_pos {
+                diag = diag.with_position(pos);
+            }
+            LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(lock_file)
+                .with_logical(key.to_string())
+        };
+        if prefer_lock && let (Some((file, pos)), Some(msg)) = (wit_loc, related_msg) {
+            located = located.with_related(RelatedLocation {
+                file: file.clone(),
+                position: Some(*pos),
+                message: msg.to_string(),
+            });
+        }
+        located
+    }
+
+    fn locate_discrepancy(
+        &self,
+        code: &'static str,
+        key: &str,
+        message: String,
+    ) -> LocatedDiagnostic {
+        // For a case collision against a reserved entry, find the conflicting entry case-insensitively.
+        let mut diag = Diagnostic::error(code, message).with_path(key.to_string());
+        let wit_loc = self.member_locs.get(key);
+        let (lock_file, lock_pos) = self
+            .lock_positions
+            .get(key)
+            .copied()
+            .map(|pos| (self.lock_file.to_string(), Some(pos)))
+            .or_else(|| {
+                self.lock_positions
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    .map(|(_, &pos)| (self.lock_file.to_string(), Some(pos)))
+            })
+            .or_else(|| {
+                self.against_file.as_ref().and_then(|file| {
+                    self.against_positions
+                        .get(key)
+                        .copied()
+                        .or_else(|| {
+                            self.against_positions
+                                .iter()
+                                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                                .map(|(_, &pos)| pos)
+                        })
+                        .map(|pos| (file.clone(), Some(pos)))
+                })
+            })
+            .unwrap_or_else(|| (self.lock_file.to_string(), None));
+        if let Some((file, pos)) = wit_loc {
+            diag = diag.with_position(*pos);
+            LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(file.clone())
+                .with_logical(key.to_string())
+                .with_related(RelatedLocation {
+                    file: lock_file,
+                    position: lock_pos,
+                    message: "conflicting entry in wire.lock".to_string(),
+                })
+        } else {
+            if let Some(pos) = lock_pos {
+                diag = diag.with_position(pos);
+            }
+            LocatedDiagnostic::from_diagnostic(diag)
+                .with_file(lock_file)
+                .with_logical(key.to_string())
+        }
+    }
 }
 
 /// How to fix what `check` reports: run `lock`, or, for a released version, which `lock`
@@ -1987,6 +2280,7 @@ impl Remedy {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn report_check_changes(
     changes: &witforge::lock::Changes,
     discrepancies: &[witforge::lock::Discrepancy],
@@ -1994,76 +2288,89 @@ fn report_check_changes(
     restored: &[(String, u32)],
     against: bool,
     remedy: &Remedy,
+    ctx: &LockDiagnosticContext<'_>,
     reporter: &mut Reporter,
 ) {
     for discrepancy in discrepancies {
         if case_collisions.contains(&(discrepancy.key.clone(), discrepancy.message.clone())) {
-            reporter.error(
+            reporter.push_located(ctx.locate_discrepancy(
                 "WF1003",
-                &discrepancy.message,
-                Some(discrepancy.key.clone()),
-            );
+                &discrepancy.key,
+                discrepancy.message.clone(),
+            ));
         } else {
-            reporter.error(
+            reporter.push_located(ctx.locate_discrepancy(
                 "WF1100",
+                &discrepancy.key,
                 format!("{}; {}", discrepancy.message, remedy.advice("")),
-                Some(discrepancy.key.clone()),
-            );
+            ));
         }
     }
     for (key, _) in restored {
-        reporter.error(
+        reporter.push_located(ctx.locate_member(
             "WF1108",
+            key,
             format!(
                 "draft removal of {key} can be restored; {}",
                 remedy.advice("")
             ),
-            Some(key.clone()),
-        );
+            false,
+            Some("reserved entry in wire.lock"),
+        ));
     }
     for (key, _) in &changes.added {
-        reporter.error(
+        reporter.push_located(ctx.locate_member(
             "WF1101",
+            key,
             format!("{key} has no wire number; {}", remedy.advice("")),
-            Some(key.clone()),
-        );
+            false,
+            Some("wire.lock has no entry for this member"),
+        ));
     }
     for (key, number) in &changes.reserved {
-        reporter.error(
+        reporter.push_located(ctx.locate_member(
             "WF1102",
+            key,
             format!(
                 "{key} = {number} is no longer in the contract; {}",
                 remedy.advice(" to reserve it")
             ),
-            Some(key.clone()),
-        );
+            true,
+            None,
+        ));
     }
     for (key, number) in &changes.reintroduced {
-        reporter.error(
+        reporter.push_located(ctx.locate_member(
             "WF1103",
+            key,
             reintroduced(key, *number, against),
-            Some(key.clone()),
-        );
+            false,
+            Some("reserved entry in wire.lock"),
+        ));
     }
     for (key, number) in &changes.dropped {
-        reporter.error(
+        reporter.push_located(ctx.locate_member(
             "WF1104",
+            key,
             format!(
                 "stale draft {key} = {number}; {}",
                 remedy.advice(" to drop it")
             ),
-            Some(key.clone()),
-        );
+            true,
+            None,
+        ));
     }
     for (key, _kind, _ty) in &changes.updated {
-        reporter.error(
+        reporter.push_located(ctx.locate_member(
             "WF1105",
+            key,
             format!(
                 "draft {key} changed kind or type; {}",
                 remedy.advice(" to update it")
             ),
-            Some(key.clone()),
-        );
+            false,
+            Some("existing entry in wire.lock"),
+        ));
     }
 }
 

@@ -64,11 +64,47 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
     write_error(&mut out)?;
     for &(old, new) in &pairs {
         writeln!(out)?;
-        emit_pair(&mut out, old, new, Direction::Forward)?;
+        emit_pair(&mut out, old, new, Direction::Forward)
+            .map_err(|err| attach_pair_locations(err, new, old))?;
         writeln!(out)?;
-        emit_pair(&mut out, new, old, Direction::Reverse)?;
+        emit_pair(&mut out, new, old, Direction::Reverse)
+            .map_err(|err| attach_pair_locations(err, old, new))?;
     }
     Ok(Some(out))
+}
+
+fn attach_pair_locations(
+    err: anyhow::Error,
+    primary: &Version,
+    fallback: &Version,
+) -> anyhow::Error {
+    let Some(existing) = crate::error_located_diagnostics(&err) else {
+        return err;
+    };
+    let located: Vec<crate::diagnostic::LocatedDiagnostic> = existing
+        .iter()
+        .map(|item| {
+            let mut item = item.clone();
+            if item.file.is_none()
+                && let Some(path) = item.diagnostic.path.clone()
+            {
+                item.logical.get_or_insert_with(|| path.clone());
+                if let Some((file, pos)) = primary
+                    .locations
+                    .get(&path)
+                    .or_else(|| fallback.locations.get(&path))
+                {
+                    item.diagnostic.position = Some(*pos);
+                    item.file = Some(file.clone());
+                }
+            }
+            item
+        })
+        .collect();
+    anyhow::Error::new(crate::ContractError::with_located_diagnostics(
+        format!("{err:#}"),
+        located,
+    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1545,6 +1581,7 @@ mod tests {
                 dependencies: Vec::new(),
             },
             lock: WireLock::default(),
+            locations: BTreeMap::new(),
         }
     }
 

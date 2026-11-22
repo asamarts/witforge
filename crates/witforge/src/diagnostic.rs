@@ -4,11 +4,10 @@
 //! replace only the diagnostic stream with a machine-readable envelope; command-specific report
 //! output such as `diff` remains governed by [`diff`](crate::diff).
 //!
-//! A diagnostic carries a stable code, a severity, a human message, and, when the source of the
-//! message identifies one, a path and a one-based source position. WIT subset violations carry
-//! their logical contract path (for example `ns:pkg/interface/type`) because the owned model
-//! deliberately does not retain `wit-parser` spans; generated-output and lockfile diagnostics
-//! carry filesystem or member paths.
+//! A diagnostic carries a stable code, a severity, a human message, and, when available, a path
+//! and a one-based UTF-16 source position. [`LocatedDiagnostic`] separates the physical
+//! filesystem location (`file`) from the logical WIT contract path (`logical`) and carries
+//! secondary [`RelatedLocation`] entries (such as a `wire.lock` line alongside a WIT declaration).
 
 use std::fmt;
 
@@ -454,6 +453,15 @@ pub const CATALOG: &[CodeInfo] = &[
     },
 ];
 
+/// Base URL of the public diagnostic code reference page (published by GitHub Pages).
+pub const HELP_BASE_URL: &str = "https://asamarts.github.io/witforge/guide/diagnostics.html";
+
+/// Public documentation URL for a stable diagnostic `code`.
+#[must_use]
+pub fn help_uri(code: &str) -> String {
+    format!("{HELP_BASE_URL}#{}", code.to_ascii_lowercase())
+}
+
 /// Look up catalogue metadata for a stable diagnostic `code`.
 #[must_use]
 pub fn lookup(code: &str) -> Option<&'static CodeInfo> {
@@ -492,17 +500,79 @@ impl fmt::Display for Severity {
     }
 }
 
-/// A one-based source position. Columns are counted in Unicode scalar values.
+/// A one-based source position. Columns are counted in UTF-16 code units (matching SARIF 2.1.0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
-    /// The first line of the range.
+    /// The first line of the range (1-based).
     pub line: usize,
-    /// The first column of the range.
+    /// The first column of the range (1-based, in UTF-16 code units).
     pub column: usize,
-    /// The last line of the range.
+    /// The last line of the range (1-based).
     pub end_line: usize,
-    /// The last column of the range.
+    /// The end column of the range (1-based exclusive, in UTF-16 code units).
     pub end_column: usize,
+}
+
+/// A secondary physical source location related to a diagnostic (for example, the `wire.lock`
+/// entry corresponding to a WIT contract discrepancy).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelatedLocation {
+    /// Physical file path.
+    pub file: String,
+    /// One-based source range, when known.
+    pub position: Option<Position>,
+    /// Human explanation of how this location relates to the diagnostic.
+    pub message: String,
+}
+
+/// A [`Diagnostic`] paired with optional declaring physical file, logical contract/member name,
+/// and secondary related locations.
+///
+/// Kept separate from [`Diagnostic`] so 0.x additions remain minor-SemVer compatible with 0.6.0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedDiagnostic {
+    /// The core diagnostic (`code`, `severity`, `message`, `path`, `position`).
+    pub diagnostic: Diagnostic,
+    /// Declaring physical file path, when known.
+    pub file: Option<String>,
+    /// Logical contract or member name (for SARIF `logicalLocations`), when known.
+    pub logical: Option<String>,
+    /// Secondary physical locations (for SARIF `relatedLocations`).
+    pub related: Vec<RelatedLocation>,
+}
+
+impl LocatedDiagnostic {
+    /// Wrap a plain [`Diagnostic`] with no extra physical/logical/related metadata.
+    #[must_use]
+    pub fn from_diagnostic(diagnostic: Diagnostic) -> Self {
+        Self {
+            diagnostic,
+            file: None,
+            logical: None,
+            related: Vec::new(),
+        }
+    }
+
+    /// Attach the declaring physical file path.
+    #[must_use]
+    pub fn with_file(mut self, file: impl Into<String>) -> Self {
+        self.file = Some(file.into());
+        self
+    }
+
+    /// Attach a logical contract or member name.
+    #[must_use]
+    pub fn with_logical(mut self, logical: impl Into<String>) -> Self {
+        self.logical = Some(logical.into());
+        self
+    }
+
+    /// Append a secondary related physical location.
+    #[must_use]
+    pub fn with_related(mut self, related: RelatedLocation) -> Self {
+        self.related.push(related);
+        self
+    }
 }
 
 /// One machine-readable diagnostic.
