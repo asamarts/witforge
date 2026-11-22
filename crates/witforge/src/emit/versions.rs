@@ -612,70 +612,7 @@ fn version_lock_remedy(directory: &Path, previous: Option<&Version>, is_released
 }
 
 fn discover_versions(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(wit_root)
-        .with_context(|| format!("failed to read WIT root {}", wit_root.display()))?
-    {
-        entries.push(entry?);
-    }
-    entries.sort_by(|left, right| {
-        left.file_name()
-            .as_encoded_bytes()
-            .cmp(right.file_name().as_encoded_bytes())
-    });
-    let mut versions = Vec::new();
-    for entry in entries {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some((major, minor)) = crate::parse_version_directory(&name)? else {
-            continue;
-        };
-        let path = entry.path();
-        // A symlinked version directory is refused rather than followed or skipped: following
-        // it would let a released version change through the link's target, and skipping it
-        // would silently leave that version out of the generated output.
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to read version directory {}", path.display()))?;
-        if file_type.is_symlink() {
-            crate::ensure_version_directory(&path)?;
-        }
-        if !file_type.is_dir() {
-            return Err(operational_error(
-                codes::GUARD_REFUSED,
-                format!(
-                    "version entry `{}` is not a directory; expected a `v<major>.<minor>` directory",
-                    path.display()
-                ),
-                Some(path.display().to_string()),
-            ));
-        }
-        versions.push((major, minor, path));
-    }
-    versions.sort_by_key(|(major, minor, _)| (*major, *minor));
-    for pair in versions.windows(2) {
-        if pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 {
-            return Err(operational_error(
-                codes::GUARD_REFUSED,
-                format!(
-                    "duplicate version directories {} and {}",
-                    pair[0].2.display(),
-                    pair[1].2.display()
-                ),
-                Some(pair[1].2.display().to_string()),
-            ));
-        }
-    }
-    if versions.is_empty() {
-        return Err(operational_error(
-            codes::IO_ERROR,
-            format!(
-                "no v<major>.<minor> version directories under {}",
-                wit_root.display()
-            ),
-            Some(wit_root.display().to_string()),
-        ));
-    }
-    Ok(versions)
+    crate::discover_version_directories(wit_root)
 }
 
 #[cfg(test)]

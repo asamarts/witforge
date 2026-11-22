@@ -1,18 +1,23 @@
 //! The `witforge` command-line interface.
 //!
 //! ```text
-//! witforge check <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
+//! witforge check [<path>] [--lock PATH] [--first | --against PATH] [--released PATH]
+//!                [--config PATH | --no-config] [--project NAME]
 //! witforge lock  <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
-//! witforge rust  [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
-//!                [--serde | --no-serde] [--check] [--released PATH]
-//! witforge proto [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
-//!                [--check] [--released PATH]
-//! witforge schema [<wit-root>] [--out DIR] [--config PATH] [--project NAME]
-//!                [--check] [--released PATH]
+//! witforge rust  [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
+//!                [--serde | --no-serde] [--check] [--diff] [--released PATH]
+//! witforge proto [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
+//!                [--check] [--diff] [--released PATH]
+//! witforge schema [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
+//!                [--check] [--diff] [--released PATH]
 //! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
-//!                [--config PATH] [--project NAME] [--check] [--released PATH]
+//!                [--config PATH | --no-config] [--project NAME] [--check] [--diff] [--released PATH]
+//! witforge generate [--config PATH | --no-config] [--project NAME] [--check] [--diff]
+//!                   [--serde | --no-serde] [--released PATH]
+//! witforge new-version [<wit-root>] [--major] [--config PATH | --no-config] [--project NAME]
+//! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge diff  <old> <new> [--json] [--check]
-//! witforge freeze [<wit-root>] [--config PATH] [--project NAME] [--base REV]
+//! witforge freeze [<wit-root>] [--config PATH | --no-config] [--project NAME] [--base REV]
 //!
 //! All commands accept `--format human|json|sarif`; `human` is the default.
 //! ```
@@ -35,14 +40,16 @@ use witforge::diff::{self, ChangeKind, DiffReport};
 use witforge::emit;
 use witforge::lock::{LockMode, PackageName, WireLock};
 mod diagnostics;
+mod workflow;
 
 use diagnostics::{Format, Reporter, diagnostic_path, located_note};
 
 use witforge::{
-    ContractError, DiagnosticError, ensure_directory_version, ensure_lockfile_not_released,
-    ensure_not_released, ensure_version_directory, error_diagnostics, error_located_diagnostics,
-    is_contract_error, is_released, load, load_released_manifest, load_root_released_manifest,
-    model, subset,
+    ContractError, DiagnosticError, ReleasedManifest, default_released_manifest,
+    discover_version_directories, ensure_directory_version, ensure_lockfile_not_released,
+    ensure_no_symlinks_in_dir, ensure_not_released, ensure_version_directory, error_diagnostics,
+    error_located_diagnostics, is_contract_error, is_released, load, load_released_manifest,
+    load_root_released_manifest, model, subset,
 };
 
 fn op_error(code: &'static str, message: impl Into<String>, path: Option<String>) -> anyhow::Error {
@@ -86,8 +93,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Check the subset and the wire lockfile without writing.
-    Check(Options),
+    /// Check a version directory or an entire WIT root without writing.
+    Check(CheckOptions),
     /// Assign wire numbers to new members and reserve removed ones.
     Lock(Options),
     /// Generate plain Rust types and interface traits.
@@ -98,6 +105,13 @@ enum Command {
     Schema(SchemaOptions),
     /// Generate protobuf glue conversions and function helpers.
     Glue(GlueOptions),
+    /// Run every generator configured in `witforge.toml`.
+    Generate(GenerateOptions),
+    /// Create the next minor or major version directory from the latest version.
+    #[command(name = "new-version")]
+    NewVersion(NewVersionOptions),
+    /// Validate a version directory and append it to the `released` manifest.
+    Release(ReleaseOptions),
     /// Compare two contract versions and classify breaking changes.
     Diff(DiffOptions),
     /// Verify that released version directories have not changed in Git history.
@@ -234,6 +248,78 @@ struct FreezeOptions {
     config: ConfigArgs,
 }
 
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Args)]
+struct GenerateOptions {
+    /// Check all configured generated outputs without writing.
+    #[arg(long)]
+    check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
+    /// Add serde Serialize/Deserialize derives to generated Rust types.
+    #[arg(long, conflicts_with = "no_serde")]
+    serde: bool,
+    /// Do not add serde derives, overriding a configuration-file setting.
+    #[arg(long = "no-serde", conflicts_with = "serde")]
+    no_serde: bool,
+    /// Released-version manifest to validate; overrides a project's `released` setting.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file; discovered upwards from the working directory when omitted.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct NewVersionOptions {
+    /// WIT root containing version directories; omit to use the configured project root.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Start the next major version (`v<major+1>.0`) with no copied wire.lock instead of the next minor.
+    #[arg(long)]
+    major: bool,
+    /// Configuration file; discovered upwards from the working directory when omitted.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseOptions {
+    /// WIT version directory to validate and record in `released`.
+    #[arg(value_name = "WIT_DIR")]
+    dir: PathBuf,
+    /// Released-version manifest path; defaults to `<WIT_DIR>/../released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file; read only when `--config` or `--project` is passed.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct CheckOptions {
+    /// WIT version directory or WIT root; omit to check the configured project root(s).
+    #[arg(value_name = "PATH")]
+    dir: Option<PathBuf>,
+    /// Lockfile path (single version directory only); defaults to `<WIT_DIR>/wire.lock`.
+    #[arg(long, value_name = "PATH")]
+    lock: Option<PathBuf>,
+    /// Treat entries from this previous lockfile as released (single version directory only).
+    #[arg(long, value_name = "PATH", conflicts_with = "first")]
+    against: Option<PathBuf>,
+    /// Treat every existing entry as a draft (single version directory only).
+    #[arg(long, conflicts_with = "against")]
+    first: bool,
+    /// Released-version manifest to validate; defaults to `<WIT_DIR>/../released` or
+    /// `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file; used when PATH is omitted or `--config`/`--project` is passed.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
 #[derive(Debug, Args)]
 struct Options {
     /// WIT version directory.
@@ -254,13 +340,16 @@ struct Options {
     released: Option<PathBuf>,
 }
 
-/// Configuration-file selection shared by the generator commands.
+/// Configuration-file selection shared by config-aware commands.
 #[derive(Debug, Args)]
 struct ConfigArgs {
     /// TOML configuration file; paths inside it are relative to the file.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
     config: Option<PathBuf>,
-    /// Project name in the configuration file; required when it has more than one.
+    /// Disable upward discovery of `witforge.toml`.
+    #[arg(long = "no-config", conflicts_with = "config")]
+    no_config: bool,
+    /// Project name in the configuration file; required when a single project must be selected.
     #[arg(long, value_name = "NAME")]
     project: Option<String>,
 }
@@ -394,6 +483,39 @@ fn resolve_config_path(base: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn resolve_config_path_opt(
+    config_args: &ConfigArgs,
+    needs_config: bool,
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = &config_args.config {
+        return Ok(Some(path.clone()));
+    }
+    if config_args.no_config {
+        if config_args.project.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--project` requires `--config` (discovery disabled by `--no-config`)",
+                None,
+            ));
+        }
+        return Ok(None);
+    }
+    if !needs_config && config_args.project.is_none() {
+        return Ok(None);
+    }
+    if let Some(found) = workflow::discover_config() {
+        return Ok(Some(found));
+    }
+    if config_args.project.is_some() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "`--project` requires `--config` (no `witforge.toml` found in this directory or above)",
+            None,
+        ));
+    }
+    Ok(None)
+}
+
 #[allow(clippy::too_many_lines)]
 fn resolve_paths(
     emitter: Emitter,
@@ -408,7 +530,11 @@ fn resolve_paths(
         proto_root,
         serde,
     } = overrides;
-    let Some(config_path) = &config_args.config else {
+    let cli_complete = root.is_some()
+        && out.is_some()
+        && (!matches!(emitter, Emitter::Glue) || (plain_root.is_some() && proto_root.is_some()));
+    let effective_config = resolve_config_path_opt(config_args, !cli_complete)?;
+    let Some(config_path) = effective_config.as_deref() else {
         if config_args.project.is_some() {
             return Err(op_error(
                 codes::CLI_USAGE,
@@ -779,12 +905,15 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     let mut reporter = Reporter::new(cli.format);
     let result = match cli.command {
-        Command::Check(options) => check(&options, &mut reporter),
+        Command::Check(options) => check_command(&options, &mut reporter),
         Command::Lock(options) => lock(&options, &mut reporter),
         Command::Rust(options) => rust(&options, &mut reporter),
         Command::Proto(options) => proto(&options, &mut reporter),
         Command::Schema(options) => schema(&options, &mut reporter),
         Command::Glue(options) => glue(&options, &mut reporter),
+        Command::Generate(options) => generate_command(&options, &mut reporter),
+        Command::NewVersion(options) => new_version_command(&options, &mut reporter),
+        Command::Release(options) => release_command(&options, &mut reporter),
         Command::Diff(options) => diff_command(&options, &mut reporter),
         Command::Freeze(options) => freeze_command(&options, &mut reporter),
     };
@@ -819,7 +948,271 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn check(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
+fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    if let Some(dir) = &options.dir {
+        if options.config.config.is_some() || options.config.project.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--config` and `--project` cannot be combined with a positional PATH on `check`",
+                None,
+            ));
+        }
+        let link_meta = fs::symlink_metadata(dir)
+            .with_context(|| format!("failed to read version directory {}", dir.display()))?;
+        if link_meta.file_type().is_symlink() {
+            // A WIT root may be a symlink, but a symlinked version directory or dangling symlink
+            // is refused with WF9004.
+            let is_wit_root = fs::metadata(dir)
+                .ok()
+                .filter(fs::Metadata::is_dir)
+                .and_then(|_| workflow::classify_check_dir(dir).ok())
+                == Some(workflow::CheckTargetKind::WitRoot);
+            if !is_wit_root {
+                ensure_version_directory(dir)?;
+            }
+        } else if !link_meta.is_dir() {
+            ensure_version_directory(dir)?;
+        }
+        return match workflow::classify_check_dir(dir)? {
+            workflow::CheckTargetKind::VersionDir => {
+                let single = Options {
+                    dir: dir.clone(),
+                    lock: options.lock.clone(),
+                    against: options.against.clone(),
+                    first: options.first,
+                    released: options.released.clone(),
+                };
+                check_single(&single, reporter)
+            }
+            workflow::CheckTargetKind::WitRoot => {
+                if options.lock.is_some() || options.against.is_some() || options.first {
+                    return Err(op_error(
+                        codes::CLI_USAGE,
+                        "`--lock`, `--first`, and `--against` apply only to a single version \
+                         directory, not a WIT root",
+                        Some(dir.display().to_string()),
+                    ));
+                }
+                check_wit_root(dir, options.released.as_deref(), reporter)
+            }
+            workflow::CheckTargetKind::Both => Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "`{}` contains both WIT source/lockfile and `v<major>.<minor>` version \
+                     directories; expected either a single version directory or a WIT root",
+                    dir.display()
+                ),
+                Some(dir.display().to_string()),
+            )),
+            workflow::CheckTargetKind::Neither => {
+                // Still check for malformed version-like entries (`v00.1`, `v0.1.1`) or symlinks.
+                ensure_version_directory(dir)?;
+                let _ = discover_version_directories(dir)?;
+                Err(op_error(
+                    codes::IO_ERROR,
+                    format!(
+                        "`{}` contains neither `.wit` files nor `v<major>.<minor>` version \
+                         directories; expected a version directory or a WIT root",
+                        dir.display()
+                    ),
+                    Some(dir.display().to_string()),
+                ))
+            }
+        };
+    }
+
+    if options.lock.is_some() || options.against.is_some() || options.first {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "`--lock`, `--first`, and `--against` require a positional version directory",
+            None,
+        ));
+    }
+    let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "missing PATH (pass a version directory, a WIT root, or use `witforge.toml`)",
+            None,
+        ));
+    };
+    let (config, base) = load_config_file(&config_path)?;
+    let selected: Vec<(&String, &ProjectConfig)> = if let Some(name) = &options.config.project {
+        let Some(project) = config.project.get(name) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("configuration has no project `{name}`"),
+                Some(config_path.display().to_string()),
+            ));
+        };
+        vec![(name, project)]
+    } else {
+        config.project.iter().collect()
+    };
+    let mut failed = false;
+    for (_, project) in selected {
+        let root = resolve_config_path(&base, &project.root);
+        let released = options.released.clone().or_else(|| {
+            project
+                .released
+                .as_deref()
+                .map(|p| resolve_config_path(&base, p))
+        });
+        let code = check_wit_root(&root, released.as_deref(), reporter)?;
+        if code != ExitCode::SUCCESS {
+            failed = true;
+        }
+    }
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Validate every version directory under `wit_root` in ascending semver order:
+/// released directories in default mode, the lowest minor of each major as `--first`, and every
+/// later minor `--against` its immediate same-major predecessor, plus cross-version package,
+/// dependency-graph, and lockfile-continuity checks.
+#[allow(clippy::too_many_lines)]
+fn check_wit_root(
+    wit_root: &Path,
+    explicit_released: Option<&Path>,
+    reporter: &mut Reporter,
+) -> Result<ExitCode> {
+    let manifest = load_root_released_manifest(wit_root, explicit_released)?;
+    let versions = discover_version_directories(wit_root)?;
+    let mut prev_by_major: BTreeMap<u64, PathBuf> = BTreeMap::new();
+    let mut first_model: Option<model::Model> = None;
+    let mut failed = false;
+    for (major, _minor, dir) in versions {
+        let dir_name = dir
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        let released = manifest.contains(dir_name) || is_released(&dir, explicit_released)?;
+        let prev_dir = prev_by_major.get(&major).cloned();
+        let (first, against) = if released {
+            (false, None)
+        } else if let Some(ref pred) = prev_dir {
+            let pred_lock = pred.join("wire.lock");
+            if !pred_lock.is_file() {
+                failed = true;
+                reporter.error(
+                    codes::LOCKFILE_ERROR,
+                    format!(
+                        "cannot check {} against predecessor {}: missing lockfile {}",
+                        dir.display(),
+                        pred.display(),
+                        pred_lock.display()
+                    ),
+                    Some(pred_lock.display().to_string()),
+                );
+                prev_by_major.insert(major, dir);
+                continue;
+            }
+            (false, Some(pred_lock))
+        } else {
+            (true, None)
+        };
+        let opts = Options {
+            dir: dir.clone(),
+            lock: None,
+            against: against.clone(),
+            first,
+            released: explicit_released.map(Path::to_path_buf),
+        };
+        match check_single(&opts, reporter) {
+            Ok(code) => {
+                if code != ExitCode::SUCCESS {
+                    failed = true;
+                }
+            }
+            Err(err) if is_contract_error(&err) => {
+                failed = true;
+                report_error_to_reporter(&err, reporter);
+            }
+            Err(err) => return Err(err),
+        }
+        // Cross-version checks: package identity, dependency graph, and released continuity.
+        if let Ok(contract) = load(&dir)
+            && subset::check_diagnostics(&contract).is_empty()
+            && let Ok(current_model) = model::build(&contract)
+        {
+            if let Some(ref baseline) = first_model {
+                if baseline.package.namespace != current_model.package.namespace
+                    || baseline.package.name != current_model.package.name
+                {
+                    failed = true;
+                    reporter.error(
+                        codes::PACKAGE_MISMATCH,
+                        format!(
+                            "{} declares package {}:{}, expected {}:{}",
+                            dir.display(),
+                            current_model.package.namespace,
+                            current_model.package.name,
+                            baseline.package.namespace,
+                            baseline.package.name
+                        ),
+                        Some(dir.display().to_string()),
+                    );
+                } else if let Err(err) =
+                    witforge::ensure_same_dependency_graph(baseline, &current_model)
+                {
+                    failed = true;
+                    reporter.error(
+                        codes::DEPENDENCY_GRAPH_MISMATCH,
+                        format!("{err:#}"),
+                        Some(dir.display().to_string()),
+                    );
+                }
+            } else {
+                first_model = Some(current_model);
+            }
+            if released
+                && let Some(ref pred) = prev_dir
+                && let Ok((cur_lock, _)) = read_required_lock(&dir.join("wire.lock"))
+                && let Ok((pred_lock, _)) = read_required_lock(&pred.join("wire.lock"))
+                && let Err(err) = cur_lock.check_append_only(&pred_lock)
+            {
+                failed = true;
+                reporter.error(
+                    codes::LOCKFILE_ERROR,
+                    format!(
+                        "{} does not continue {}: {err:#}",
+                        dir.join("wire.lock").display(),
+                        pred.join("wire.lock").display()
+                    ),
+                    Some(dir.join("wire.lock").display().to_string()),
+                );
+            }
+        }
+        prev_by_major.insert(major, dir);
+    }
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn report_error_to_reporter(error: &anyhow::Error, reporter: &mut Reporter) {
+    if reporter.human() {
+        diagnostics::write_stderr_line(&format!("error: {error:#}"));
+    } else if let Some(diagnostics) = error_located_diagnostics(error) {
+        for diagnostic in diagnostics {
+            reporter.push_located(diagnostic.clone());
+        }
+    } else if let Some(diagnostics) = error_diagnostics(error) {
+        for diagnostic in diagnostics {
+            reporter.push(diagnostic.clone());
+        }
+    } else {
+        reporter.push(classify_fallback_error(error));
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_single(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_version_directory(&options.dir)?;
     ensure_not_wit_root(&options.dir, "check")?;
     // `check` may verify a released directory; the manifest only has to be valid.
@@ -1673,21 +2066,14 @@ fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<PathBuf>> {
     if let Some(root) = &options.root {
         return Ok(vec![root.clone()]);
     }
-    let Some(config_path) = &options.config.config else {
-        if options.config.project.is_some() {
-            return Err(op_error(
-                codes::CLI_USAGE,
-                "`--project` requires `--config`",
-                None,
-            ));
-        }
+    let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
         return Err(op_error(
             codes::CLI_USAGE,
             "missing WIT_ROOT (or use --config)",
             None,
         ));
     };
-    let (config, base) = load_config_file(config_path)?;
+    let (config, base) = load_config_file(&config_path)?;
     if let Some(name) = &options.config.project {
         let Some(project) = config.project.get(name) else {
             return Err(op_error(
@@ -1703,6 +2089,430 @@ fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<PathBuf>> {
         .values()
         .map(|project| resolve_config_path(&base, &project.root))
         .collect())
+}
+
+#[allow(clippy::too_many_lines)]
+fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "missing configuration (`witforge.toml` not found; pass --config)",
+            None,
+        ));
+    };
+    let (config, base) = load_config_file(&config_path)?;
+    let from_config = |path: &Path| resolve_config_path(&base, path);
+    // Validate distinct output roots and glue module roots across the whole configuration up front.
+    let mut all_outs: Vec<(String, PathBuf)> = Vec::new();
+    for (proj_name, proj) in &config.project {
+        if let Some(rust) = &proj.rust {
+            all_outs.push((
+                format!("project.{proj_name}.rust.out"),
+                from_config(&rust.out),
+            ));
+        }
+        if let Some(proto) = &proj.proto {
+            all_outs.push((
+                format!("project.{proj_name}.proto.out"),
+                from_config(&proto.out),
+            ));
+        }
+        if let Some(schema) = &proj.schema {
+            all_outs.push((
+                format!("project.{proj_name}.schema.out"),
+                from_config(&schema.out),
+            ));
+        }
+        if let Some(glue) = &proj.glue {
+            all_outs.push((
+                format!("project.{proj_name}.glue.out"),
+                from_config(&glue.out),
+            ));
+        }
+    }
+    let refs: Vec<(&str, &Path)> = all_outs
+        .iter()
+        .map(|(label, path)| (label.as_str(), path.as_path()))
+        .collect();
+    emit::output::ensure_distinct_output_roots(&refs)?;
+    validate_configured_module_roots(&config)?;
+
+    let selected: Vec<(String, ProjectConfig)> = if let Some(name) = &options.config.project {
+        let Some(project) = config.project.get(name) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("configuration has no project `{name}`"),
+                Some(config_path.display().to_string()),
+            ));
+        };
+        vec![(name.clone(), project.clone())]
+    } else {
+        config
+            .project
+            .iter()
+            .map(|(name, proj)| (name.clone(), proj.clone()))
+            .collect()
+    };
+
+    let serde_override = if options.serde {
+        Some(true)
+    } else if options.no_serde {
+        Some(false)
+    } else {
+        None
+    };
+
+    let mut had_violation = false;
+    let mut had_operational = false;
+    let mut ran_any = false;
+    let multi_project = config.project.len() > 1;
+
+    for (proj_name, proj) in selected {
+        let mut emitters = Vec::new();
+        if proj.rust.is_some() {
+            emitters.push(Emitter::Rust);
+        }
+        if proj.proto.is_some() {
+            emitters.push(Emitter::Proto);
+        }
+        if proj.schema.is_some() {
+            emitters.push(Emitter::Schema);
+        }
+        if proj.glue.is_some() {
+            emitters.push(Emitter::Glue);
+        }
+        if emitters.is_empty() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "project `{proj_name}` in {} configures no generators (rust, proto, schema, \
+                     or glue)",
+                    config_path.display()
+                ),
+                Some(config_path.display().to_string()),
+            ));
+        }
+
+        let cfg_args = ConfigArgs {
+            config: Some(config_path.clone()),
+            no_config: false,
+            project: if multi_project {
+                Some(proj_name.clone())
+            } else {
+                None
+            },
+        };
+        for emitter in emitters {
+            ran_any = true;
+            let step = match emitter {
+                Emitter::Rust => rust(
+                    &RustOptions {
+                        root: None,
+                        out: None,
+                        check: options.check,
+                        diff: options.diff,
+                        serde: serde_override == Some(true),
+                        no_serde: serde_override == Some(false),
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::Proto => proto(
+                    &ProtoOptions {
+                        root: None,
+                        out: None,
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::Schema => schema(
+                    &SchemaOptions {
+                        root: None,
+                        out: None,
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::Glue => glue(
+                    &GlueOptions {
+                        root: None,
+                        out: None,
+                        plain_root: None,
+                        proto_root: None,
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+            };
+            match step {
+                Ok(code) if code == ExitCode::SUCCESS => {}
+                Ok(_) => had_violation = true,
+                Err(err) if is_contract_error(&err) => {
+                    had_violation = true;
+                    report_error_to_reporter(&err, reporter);
+                }
+                Err(err) => {
+                    had_operational = true;
+                    report_error_to_reporter(&err, reporter);
+                }
+            }
+        }
+    }
+
+    if !ran_any {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "configuration defines no generators to run",
+            Some(config_path.display().to_string()),
+        ));
+    }
+    if had_operational {
+        Ok(ExitCode::from(2))
+    } else if had_violation {
+        Ok(ExitCode::from(1))
+    } else {
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let wit_root = if let Some(root) = &options.root {
+        root.clone()
+    } else {
+        let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing WIT_ROOT (or use --config)",
+                None,
+            ));
+        };
+        let (config, base) = load_config_file(&config_path)?;
+        let name = match &options.config.project {
+            Some(name) => name.clone(),
+            None if config.project.len() == 1 => config
+                .project
+                .keys()
+                .next()
+                .expect("checked one project")
+                .clone(),
+            None => {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "configuration {} has multiple projects; pass --project",
+                        config_path.display()
+                    ),
+                    Some(config_path.display().to_string()),
+                ));
+            }
+        };
+        let Some(project) = config.project.get(&name) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("configuration has no project `{name}`"),
+                Some(config_path.display().to_string()),
+            ));
+        };
+        resolve_config_path(&base, &project.root)
+    };
+
+    let (latest_dir, target_dir, copied_lock) =
+        workflow::create_new_version(&wit_root, options.major)?;
+    if reporter.human() {
+        let next_cmd = if copied_lock {
+            format!(
+                "witforge lock {} --against {}",
+                shell_quote(&target_dir),
+                shell_quote(&latest_dir.join("wire.lock"))
+            )
+        } else {
+            format!("witforge lock {} --first", shell_quote(&target_dir))
+        };
+        reporter.write_stdout_line(&format!(
+            "created {} from {} (next: `{next_cmd}`)",
+            target_dir.display(),
+            latest_dir.display()
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[allow(clippy::too_many_lines)]
+fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    ensure_version_directory(&options.dir)?;
+    let canonical_dir = fs::canonicalize(&options.dir).with_context(|| {
+        format!(
+            "failed to resolve version directory {}",
+            options.dir.display()
+        )
+    })?;
+    let entry_name = canonical_dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_string)
+        .filter(|name| version_directory(Path::new(name)).is_some())
+        .ok_or_else(|| {
+            op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "`{}` is not a `v<major>.<minor>` version directory",
+                    options.dir.display()
+                ),
+                Some(options.dir.display().to_string()),
+            )
+        })?;
+
+    let manifest_path = if let Some(explicit) = &options.released {
+        explicit.clone()
+    } else if options.config.config.is_some() || options.config.project.is_some() {
+        let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--project` requires `--config`",
+                None,
+            ));
+        };
+        let (config, base) = load_config_file(&config_path)?;
+        let name = match &options.config.project {
+            Some(name) => name.clone(),
+            None if config.project.len() == 1 => config
+                .project
+                .keys()
+                .next()
+                .expect("checked one project")
+                .clone(),
+            None => {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "configuration {} has multiple projects; pass --project",
+                        config_path.display()
+                    ),
+                    Some(config_path.display().to_string()),
+                ));
+            }
+        };
+        let Some(project) = config.project.get(&name) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("configuration has no project `{name}`"),
+                Some(config_path.display().to_string()),
+            ));
+        };
+        project.released.as_deref().map_or_else(
+            || default_released_manifest(&options.dir),
+            |p| resolve_config_path(&base, p),
+        )
+    } else {
+        default_released_manifest(&options.dir)
+    };
+
+    let manifest = if manifest_path.exists() {
+        ReleasedManifest::load(&manifest_path)?
+    } else {
+        ReleasedManifest::default()
+    };
+
+    let already_listed = manifest.contains(&entry_name);
+
+    // Predecessor in the same major must already be released before releasing this version.
+    let predecessor = sibling_predecessor(&canonical_dir);
+    if !already_listed && let Some((_, ref pred_dir)) = predecessor {
+        let pred_name = pred_dir
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        if !manifest.contains(pred_name) {
+            bail!(ContractError::with_diagnostic(
+                Diagnostic::error(
+                    codes::LOCKFILE_ERROR,
+                    format!(
+                        "cannot release `{entry_name}`: predecessor `{pred_name}` is not listed \
+                         in {}; release `{pred_name}` first",
+                        manifest_path.display()
+                    ),
+                )
+                .with_path(options.dir.display().to_string())
+            ));
+        }
+    }
+
+    // Released directories must hold a real wire.lock and contain no symlinks.
+    let lock_path = options.dir.join("wire.lock");
+    if !lock_path.is_file() {
+        return Err(op_error(
+            codes::IO_ERROR,
+            format!(
+                "cannot release `{}`: lockfile {} does not exist",
+                options.dir.display(),
+                lock_path.display()
+            ),
+            Some(lock_path.display().to_string()),
+        ));
+    }
+    ensure_no_symlinks_in_dir(&options.dir, &entry_name)?;
+
+    // Validate the version directory before recording the release.
+    let check_opts = Options {
+        dir: options.dir.clone(),
+        lock: None,
+        against: if already_listed {
+            None
+        } else {
+            predecessor.as_ref().map(|(_, p)| p.join("wire.lock"))
+        },
+        first: !already_listed && predecessor.is_none(),
+        released: manifest_path.exists().then(|| manifest_path.clone()),
+    };
+    let status = check_single(&check_opts, reporter)?;
+    if status != ExitCode::SUCCESS {
+        return Ok(status);
+    }
+
+    if already_listed {
+        if reporter.human() {
+            reporter.write_stdout_line(&format!(
+                "`{entry_name}` is already listed in {}",
+                manifest_path.display()
+            ));
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    workflow::append_released_entry(&manifest_path, &entry_name)?;
+    if reporter.human() {
+        reporter.write_stdout_line(&format!(
+            "released `{entry_name}` in {}",
+            manifest_path.display()
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn conversion_blockers(report: &DiffReport) -> impl Iterator<Item = (&'static str, &diff::Change)> {

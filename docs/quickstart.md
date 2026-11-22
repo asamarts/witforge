@@ -133,19 +133,14 @@ plain-root = "crate::generated::rust"
 proto-root = "crate::generated::proto"
 ```
 
-Then each generator only needs the project file:
+Then run every configured generator in one command (or invoke `rust`, `proto`, `schema`, and `glue` individually):
 
 ```sh
-witforge rust   --config my-contract/witforge.toml
-witforge proto  --config my-contract/witforge.toml
-witforge schema --config my-contract/witforge.toml
-witforge glue   --config my-contract/witforge.toml
+witforge generate --config my-contract/witforge.toml
+witforge generate --config my-contract/witforge.toml --check
 ```
 
-If the file has more than one project, add `--project NAME`. Paths inside the file are relative to
-the file itself. Explicit CLI paths override configured paths, and the command-line-only form
-continues to work. `--serde` or `--no-serde` overrides the Rust section's serde setting; the
-generated code then requires the consumer's `serde` crate with `derive`.
+Inside `my-contract/` (or any subdirectory below it within the repository), `witforge.toml` is discovered automatically without passing `--config` (pass `--no-config` to disable discovery). If the file has more than one project, `generate` runs all of them unless `--project NAME` selects one. Paths inside the file are relative to the file itself. Explicit CLI paths override configured paths, and the command-line-only form continues to work. `--serde` or `--no-serde` overrides the Rust section's serde setting; the generated code then requires the consumer's `serde` crate with `derive`.
 
 ## Evolve a contract
 
@@ -163,25 +158,23 @@ my-contract/wit/
     wire.lock
 ```
 
-When `v0.1` ships, record it as released. `released` lists frozen version directories, one per
-line:
+When `v0.1` ships, validate and record it as released in `my-contract/wit/released`:
 
 ```sh
-echo v0.1 > my-contract/wit/released
+witforge release my-contract/wit/v0.1
 ```
 
-Start the next minor as a copy of the previous version, lockfile included. The copied lockfile is
-what carries the field numbers, method ids, and reservations forward; never start a later minor
-with `lock --first`:
+Start the next minor from the latest version. `new-version` copies every `.wit` file, `deps/`, and
+`wire.lock`, and updates the `package` version header to `0.2.0` (add `--major` for a new major
+with no copied lockfile; the manual equivalent is `mkdir`, `cp` of the `.wit` files and `wire.lock`,
+and bumping the `package` header yourself):
 
 ```sh
-mkdir my-contract/wit/v0.2
-cp my-contract/wit/v0.1/contract.wit my-contract/wit/v0.1/wire.lock my-contract/wit/v0.2/
+witforge new-version my-contract/wit
 ```
 
-Edit `my-contract/wit/v0.2/contract.wit`. Change the package version to `0.2.0` first: until it
-matches the directory name, every command refuses the directory. Then make the change. Add new
-members with defaultable types when possible:
+Edit `my-contract/wit/v0.2/contract.wit` to add the new members (using defaultable types when
+possible so generated adapters can convert old values):
 
 ```wit
 package example:hello@0.2.0;
@@ -201,20 +194,19 @@ world hello {
 }
 ```
 
-Assign numbers to the new members and validate the draft against the released lockfile:
+Assign numbers to the new members, then validate the whole WIT root (which checks released
+directories in default mode and every draft against its predecessor):
 
 ```sh
 witforge lock  my-contract/wit/v0.2 --against my-contract/wit/v0.1/wire.lock
-witforge check my-contract/wit/v0.2 --against my-contract/wit/v0.1/wire.lock
+witforge check my-contract/wit
 ```
 
-Regenerate. With two versions in the root, `witforge rust` also writes `convert.rs`:
+Regenerate everything. With two versions in the root, `rust` also writes `convert.rs`:
 
 ```sh
-witforge rust   --config my-contract/witforge.toml
-witforge proto  --config my-contract/witforge.toml
-witforge schema --config my-contract/witforge.toml
-witforge glue   --config my-contract/witforge.toml
+witforge generate --config my-contract/witforge.toml
+witforge generate --config my-contract/witforge.toml --check
 ```
 
 `convert.rs` holds old-to-new and new-to-old adapters. Old-to-new conversion fills an added
@@ -225,10 +217,9 @@ the older version does not have. Missing required older members are reported as
 generation.
 
 Do not edit a released version's WIT, lockfile, or generated Rust module. `witforge lock` refuses
-a released directory, and `check` and the generators fail when a released WIT file no longer
-matches its lockfile. No `witforge` command notices a released WIT file and its lockfile edited
-together: that needs a history check in CI, such as this repository's
-[`ci/check-release-freeze.sh`](https://github.com/asamarts/witforge/blob/main/ci/check-release-freeze.sh).
+a released directory, `check` and the generators fail when a released WIT file no longer matches
+its lockfile, and `witforge freeze` verifies in Git history (with `fetch-depth: 0`) that no
+released directory was modified or dropped from `wit/released`.
 
 ## Review a change
 

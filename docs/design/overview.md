@@ -423,9 +423,11 @@ roughly 15–40 seconds on the same host. That is test-toolchain cost, not gener
 
 Ergonomics observations:
 
-- Generation is four explicit commands (`rust`, `proto`, `schema`, `glue`), because outputs have
-  separate roots and lifecycle; `witforge.toml` removes repeated roots and output paths. `glue` requires both module roots; consumers cannot accidentally get a
-  guessed dependency.
+- Generation offers both the four explicit commands (`rust`, `proto`, `schema`, `glue`) and the
+  config-driven `witforge generate` shorthand; `witforge.toml` is discovered upwards (stopping at
+  `.git`), with `--no-config` to disable discovery. `witforge check <root>`, `new-version`,
+  `release`, and `freeze` cover the full lifecycle without removing any explicit form. `glue`
+  requires both module roots; consumers cannot accidentally get a guessed dependency.
 - Generated plain Rust and glue have no runtime dependency of their own. Protobuf and JSON
   encoding stay on the consumer's `prost`/`pbjson` side.
 - Function helpers have zero/one/many arity and a `METHOD` constant; the alint adapter and

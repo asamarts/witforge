@@ -3630,11 +3630,11 @@ fn cli_remedy_messages_are_accurate_and_run_as_printed() {
     let ran = run_printed_command(&cmds[0]);
     assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
 
-    // 3. `witforge check` on a WIT root says a version directory is expected, lists all found
+    // 3. `witforge lock` on a WIT root says a version directory is expected, lists all found
     // version directories, carries the text in JSON/SARIF, and its printed command runs verbatim.
-    let root_check = witforge().arg("check").arg(&wit_root).output().unwrap();
-    assert_eq!(root_check.status.code(), Some(2), "{root_check:?}");
-    let stderr = String::from_utf8_lossy(&root_check.stderr);
+    let root_lock = witforge().arg("lock").arg(&wit_root).output().unwrap();
+    assert_eq!(root_lock.status.code(), Some(2), "{root_lock:?}");
+    let stderr = String::from_utf8_lossy(&root_lock.stderr);
     assert!(stderr.contains("WIT root"), "{stderr}");
     assert!(stderr.contains("v0.1, v0.2"), "{stderr}");
     assert!(stderr.contains("version directory"), "{stderr}");
@@ -3643,9 +3643,9 @@ fn cli_remedy_messages_are_accurate_and_run_as_printed() {
     let ran = run_printed_command(&cmds[0]);
     assert!(ran.status.success(), "{}: {ran:?}", cmds[0]);
 
-    // JSON & SARIF also carry the corrected WIT-root message.
+    // JSON & SARIF also carry the corrected WIT-root message on `lock`.
     let json_out = witforge()
-        .args(["--format", "json", "check"])
+        .args(["--format", "json", "lock"])
         .arg(&wit_root)
         .output()
         .unwrap();
@@ -3653,7 +3653,7 @@ fn cli_remedy_messages_are_accurate_and_run_as_printed() {
     let json_stdout = String::from_utf8_lossy(&json_out.stdout);
     assert!(json_stdout.contains("v0.1, v0.2"), "{json_stdout}");
     let sarif_out = witforge()
-        .args(["--format", "sarif", "check"])
+        .args(["--format", "sarif", "lock"])
         .arg(&wit_root)
         .output()
         .unwrap();
@@ -4006,6 +4006,169 @@ fn witforge_freeze_checks_history_shallow_clones_multiple_violations_and_config_
         .output()
         .unwrap();
     assert_eq!(no_repo.status.code(), Some(2), "{no_repo:?}");
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn whole_root_check_new_version_and_release_workflow_cover_gaps_drafts_and_majors() {
+    let base = std::env::temp_dir().join(format!("witforge-workflow-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let v01 = wit_root.join("v0.1");
+    fs::create_dir_all(v01.join("deps/shared")).unwrap();
+    fs::write(
+        v01.join("deps/shared/types.wit"),
+        "package ex:shared@0.1.0;\ninterface common { record tag { key: string } }\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("a.wit"),
+        "package ex:flow@0.1.0;\ninterface types {\n    use ex:shared/common@0.1.0.{tag};\n    record item { id: u32, tag: tag }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("b.wit"),
+        "// secondary file without package header\ninterface extra { record note { text: string } }\n",
+    )
+    .unwrap();
+
+    // 1. Before locking v0.1, `release` must refuse without creating `released`.
+    let bad_rel = witforge().arg("release").arg(&v01).output().unwrap();
+    assert_eq!(bad_rel.status.code(), Some(2), "{bad_rel:?}");
+    assert!(!wit_root.join("released").exists());
+
+    // Lock v0.1, check whole root (lowest minor as draft -> passes), then release v0.1.
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v01)
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let root_ok_v1 = witforge().args(["check"]).arg(&wit_root).output().unwrap();
+    assert!(root_ok_v1.status.success(), "{root_ok_v1:?}");
+
+    let rel1 = witforge().args(["release"]).arg(&v01).output().unwrap();
+    assert!(rel1.status.success(), "{rel1:?}");
+    assert_eq!(
+        fs::read_to_string(wit_root.join("released")).unwrap(),
+        "v0.1\n"
+    );
+    // Releasing v0.1 a second time is an idempotent no-op.
+    let rel1_again = witforge().args(["release"]).arg(&v01).output().unwrap();
+    assert!(rel1_again.status.success(), "{rel1_again:?}");
+    assert_eq!(
+        fs::read_to_string(wit_root.join("released")).unwrap(),
+        "v0.1\n"
+    );
+
+    // 2. `new-version` creates v0.2 with copied deps, wire.lock, and rewritten package header
+    // (without touching `use ex:shared/common@0.1.0`).
+    let nv2 = witforge()
+        .args(["new-version"])
+        .arg(&wit_root)
+        .output()
+        .unwrap();
+    assert!(nv2.status.success(), "{nv2:?}");
+    let v02 = wit_root.join("v0.2");
+    assert!(v02.join("wire.lock").is_file());
+    assert!(v02.join("deps/shared/types.wit").is_file());
+    assert!(v02.join("b.wit").is_file());
+    let v02_a = fs::read_to_string(v02.join("a.wit")).unwrap();
+    assert!(v02_a.contains("package ex:flow@0.2.0;"), "{v02_a}");
+    assert!(
+        v02_a.contains("use ex:shared/common@0.1.0.{tag};"),
+        "dependency version must not be rewritten: {v02_a}"
+    );
+    // Target already exists -> refused.
+    let nv3 = witforge()
+        .args(["new-version"])
+        .arg(&wit_root)
+        .output()
+        .unwrap();
+    assert!(nv3.status.success(), "{nv3:?}");
+    // Now we have TWO unreleased drafts at once (`v0.2` and `v0.3`)!
+    // Releasing v0.3 while v0.2 is unreleased MUST be refused (exit 1).
+    let v03 = wit_root.join("v0.3");
+    let rel3_unreleased_pred = witforge().args(["release"]).arg(&v03).output().unwrap();
+    assert_eq!(
+        rel3_unreleased_pred.status.code(),
+        Some(1),
+        "{rel3_unreleased_pred:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(wit_root.join("released")).unwrap(),
+        "v0.1\n"
+    );
+
+    // 3. `new-version --major` creates v1.0 WITHOUT a copied wire.lock.
+    let nv_major = witforge()
+        .args(["new-version", "--major"])
+        .arg(&wit_root)
+        .output()
+        .unwrap();
+    assert!(nv_major.status.success(), "{nv_major:?}");
+    let v10 = wit_root.join("v1.0");
+    assert!(v10.join("a.wit").is_file());
+    assert!(
+        fs::read_to_string(v10.join("a.wit"))
+            .unwrap()
+            .contains("package ex:flow@1.0.0;")
+    );
+    assert!(
+        !v10.join("wire.lock").exists(),
+        "new major must not copy wire.lock"
+    );
+
+    // Whole-root check catches unlocked v1.0 (exit 1), then passes once v1.0 is locked --first.
+    let check_unlocked_v10 = witforge().args(["check"]).arg(&wit_root).output().unwrap();
+    assert_eq!(
+        check_unlocked_v10.status.code(),
+        Some(1),
+        "{check_unlocked_v10:?}"
+    );
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v10)
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let check_all_drafts_and_major = witforge().args(["check"]).arg(&wit_root).output().unwrap();
+    assert!(
+        check_all_drafts_and_major.status.success(),
+        "{check_all_drafts_and_major:?}"
+    );
+
+    // 4. Gap in minor numbers (`v0.1` released, remove `v0.2`, keep `v0.3` draft): whole-root check
+    // checks `v0.3` against `v0.1`.
+    fs::remove_dir_all(&v02).unwrap();
+    let check_gap = witforge().args(["check"]).arg(&wit_root).output().unwrap();
+    assert!(check_gap.status.success(), "{check_gap:?}");
+
+    // 5. Ambiguous dir (both `.wit` and `v0.1/`) and empty dir are refused with clear messages.
+    let both_dir = base.join("both");
+    fs::create_dir_all(both_dir.join("v0.1")).unwrap();
+    fs::write(both_dir.join("contract.wit"), "package ex:b@0.1.0;\n").unwrap();
+    let both_out = witforge().args(["check"]).arg(&both_dir).output().unwrap();
+    assert_eq!(both_out.status.code(), Some(2), "{both_out:?}");
+    assert!(
+        String::from_utf8_lossy(&both_out.stderr).contains("expected either"),
+        "{both_out:?}"
+    );
+
+    let empty_dir = base.join("empty");
+    fs::create_dir_all(&empty_dir).unwrap();
+    let empty_out = witforge().args(["check"]).arg(&empty_dir).output().unwrap();
+    assert_eq!(empty_out.status.code(), Some(2), "{empty_out:?}");
 
     fs::remove_dir_all(&base).unwrap();
 }

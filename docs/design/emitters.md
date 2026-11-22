@@ -1613,17 +1613,22 @@ mapping row.
 
 ## 11. Configuration file
 
-The generator commands accept an explicit TOML configuration file:
+The generator and workflow commands accept a TOML configuration file (`witforge.toml`):
 
 ```text
-witforge rust   --config witforge.toml [--project NAME]
-witforge proto  --config witforge.toml [--project NAME]
-witforge schema --config witforge.toml [--project NAME]
-witforge glue   --config witforge.toml [--project NAME]
+witforge generate [--config witforge.toml | --no-config] [--project NAME] [--check] [--diff]
+witforge check    [<path>] [--config witforge.toml | --no-config] [--project NAME]
+witforge freeze   [<wit-root>] [--config witforge.toml | --no-config] [--project NAME] [--base REV]
+witforge new-version [<wit-root>] [--major] [--config witforge.toml | --no-config] [--project NAME]
+witforge release  <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
+witforge rust     [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
+witforge proto    [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
+witforge schema   [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
+witforge glue     [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
 ```
 
-`check` and `lock` do not read configuration files: they operate on one version directory, and
-the existing command line remains the fallback for every command.
+`lock` operates on one explicit version directory and does not read configuration files; the
+explicit command-line-only form remains supported for every command.
 
 ### 11.1 Format
 
@@ -1661,29 +1666,45 @@ proto-root = "crate::proto"
   table, a missing project selected with `--project`, and a missing output section or CLI path
   needed by the selected command.
 - Paths in the configuration file are resolved relative to the file that contains them; absolute
-  paths are used as written. They are not expanded through `~`.
-- The configuration is not discovered implicitly. It is read only when `--config <file>` is
-  passed.
+  paths are used as written. They are not shell-expanded (`~`, `$VAR`, `%VAR%` are refused).
+- When `--config` is omitted and `--no-config` is not passed, witforge discovers the nearest
+  `witforge.toml` walking upwards from the current working directory, stopping after checking the
+  enclosing Git repository root (a directory containing `.git`) or at the filesystem root.
+- A discovered file is read only when the command needs values from configuration (or `--project`
+  was given). When explicit CLI arguments already supply every required value, a stray, malformed,
+  or multi-project `witforge.toml` higher up the tree is ignored so self-contained invocations
+  never break. Passing `--config` explicitly always validates the file.
 
 ### 11.2 Precedence and selection
 
-- `--project <name>` selects a project. If the file has exactly one project, it is selected by
-  default; if it has more than one, `--project` is required.
-- `--project` without `--config` is an error.
+- `--project <name>` selects a project. Single-target commands (`rust`, `proto`, `schema`, `glue`,
+  `new-version`, `release`) default to the sole project when the file has one and require
+  `--project` when it has several. Whole-repo commands (`generate`, `check` with no path, `freeze`
+  with no path) run across every project when `--project` is omitted, or only the named project
+  when `--project` is given.
+- `--project` without a `--config` file or discovered `witforge.toml` (or with `--no-config`) is
+  an error.
 - For every path, an explicit CLI value wins over the selected project: positional `WIT_ROOT`
   overrides `root`; `--out` overrides the matching output section's `out`; `--released`
   overrides project `released`; `--plain-root` and `--proto-root` override the `glue` section.
-- Config-only invocation (`witforge rust --config ...`) and CLI-only invocation
-  (`witforge rust <root> --out ...`) are both valid. The configuration is validated even when
-  CLI flags override all of its values.
+- Config-only invocation (`witforge rust --config ...` or `witforge generate`) and CLI-only
+  invocation (`witforge rust <root> --out ...`) are both valid. An explicitly passed `--config`
+  file is validated even when CLI flags override all of its values.
 - `--serde` and `--no-serde` override the `rust` section's `serde` value. `--check` has no
   configuration key: it is an action, not a project setting.
+- `witforge generate` runs every configured emitter (`rust`, `proto`, `schema`, `glue`) for each
+  selected project; one failing emitter does not prevent the remaining emitters from reporting,
+  and the command exits `1` if any emitter reported a violation (or `2` on an operational error).
 
 ### 11.3 Testing requirements
 
-- A single-project configuration resolves root and all four emitters.
+- A single-project configuration resolves root and all four emitters, including via upward
+  discovery from nested directories and `witforge generate`.
+- `--no-config` disables discovery, discovery stops at `.git`, and a stray/malformed/multi-project
+  discovered `witforge.toml` does not break a self-contained explicit CLI invocation.
 - CLI flags override configuration paths.
-- Multiple projects require `--project`, and selecting a project uses its root and outputs.
-- Unknown keys, missing projects, missing `--config` for `--project`, and missing output values
-  are errors.
+- Multiple projects require `--project` for single-emitter commands, while `generate`, `check`,
+  and `freeze` run all projects by default and filter with `--project`.
+- Unknown keys, missing projects, missing config for `--project`, and missing output values are
+  errors.
 - The existing CLI-only form continues to work.

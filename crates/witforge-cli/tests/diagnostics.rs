@@ -797,11 +797,11 @@ fn usage_errors_emit_json_and_sarif_on_stdout() {
     assert_eq!(reversed.status.code(), Some(2), "{reversed:?}");
     assert_eq!(json(&reversed)["diagnostics"][0]["code"], "WF9001");
 
-    // Passing a WIT root to `check` emits WF9001.
+    // Passing a WIT root to `lock` emits WF9001.
     let wit_root = repo().join("examples/evolved/wit");
-    let root_check = output(&["check", &wit_root.display().to_string(), "--format", "json"]);
-    assert_eq!(root_check.status.code(), Some(2), "{root_check:?}");
-    assert_eq!(json(&root_check)["diagnostics"][0]["code"], "WF9001");
+    let root_lock = output(&["lock", &wit_root.display().to_string(), "--format", "json"]);
+    assert_eq!(root_lock.status.code(), Some(2), "{root_lock:?}");
+    assert_eq!(json(&root_lock)["diagnostics"][0]["code"], "WF9001");
 
     // `--help` still prints help text and exits 0 even with `--format json`.
     let help = output(&["--format", "json", "--help"]);

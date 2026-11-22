@@ -204,8 +204,7 @@ out = "out"
 
     let no_config = witforge()
         .current_dir(&root)
-        .args(["rust"])
-        .args(["--project", "demo"])
+        .args(["rust", "--no-config", "--project", "demo"])
         .output()
         .unwrap();
     assert_eq!(no_config.status.code(), Some(2), "{no_config:?}");
@@ -446,4 +445,126 @@ fn config_refuses_unexpanded_paths_and_bom_but_accepts_absolute_and_parent_paths
     assert!(dollar_cli_out.join("mod.rs").is_file());
 
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn config_discovery_stops_at_git_respects_no_config_and_ignores_stray_config_when_cli_complete() {
+    let base =
+        std::env::temp_dir().join(format!("witforge-config-discover-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let outer = base.join("outer");
+    let repo = outer.join("repo");
+    let nested = repo.join("crates/sub/deep");
+    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    copy_tree(&source_tree(), &repo.join("wit"));
+
+    // 1. Upward discovery from a nested subdir finds repo/witforge.toml.
+    write_config(
+        &repo,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.rust]
+out = "gen/rust"
+[project.demo.proto]
+out = "gen/proto"
+[project.demo.schema]
+out = "gen/schema"
+[project.demo.glue]
+out = "gen/glue"
+plain-root = "crate::plain"
+proto-root = "crate::proto"
+"#,
+    );
+    let generated = witforge()
+        .current_dir(&nested)
+        .args(["generate"])
+        .output()
+        .unwrap();
+    assert!(generated.status.success(), "{generated:?}");
+    assert!(repo.join("gen/rust/mod.rs").is_file());
+    assert!(repo.join("gen/proto/v0.proto").is_file());
+    assert!(repo.join("gen/schema/v0_2.schema.json").is_file());
+    assert!(repo.join("gen/glue/mod.rs").is_file());
+
+    let checked = witforge()
+        .current_dir(&nested)
+        .args(["generate", "--check"])
+        .output()
+        .unwrap();
+    assert!(checked.status.success(), "{checked:?}");
+
+    // 2. `--no-config` disables discovery cleanly.
+    let disabled = witforge()
+        .current_dir(&nested)
+        .args(["generate", "--no-config"])
+        .output()
+        .unwrap();
+    assert_eq!(disabled.status.code(), Some(2), "{disabled:?}");
+
+    // 3. Discovery stops at `.git` and does NOT escape into `outer/witforge.toml`.
+    fs::remove_file(repo.join("witforge.toml")).unwrap();
+    write_config(
+        &outer,
+        "version = 1\n[project.leaked]\nroot = \"wit\"\n[project.leaked.rust]\nout = \"out\"\n",
+    );
+    let stopped = witforge()
+        .current_dir(&nested)
+        .args(["generate"])
+        .output()
+        .unwrap();
+    assert_eq!(stopped.status.code(), Some(2), "{stopped:?}");
+
+    // 4. A malformed or multi-project `witforge.toml` above cwd MUST NOT break explicit CLI calls.
+    fs::write(repo.join("witforge.toml"), "version = [malformed toml\n").unwrap();
+    let explicit_out = repo.join("explicit-rust");
+    let explicit = witforge()
+        .current_dir(&nested)
+        .args(["rust"])
+        .arg(repo.join("wit"))
+        .args(["--out"])
+        .arg(&explicit_out)
+        .output()
+        .unwrap();
+    assert!(explicit.status.success(), "{explicit:?}");
+    assert!(explicit_out.join("mod.rs").is_file());
+
+    // 5. `generate --check` reports EVERY failing generator without stopping at the first.
+    write_config(
+        &repo,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.rust]
+out = "gen/rust"
+[project.demo.proto]
+out = "gen/proto"
+"#,
+    );
+    let mut rust_mod = fs::read_to_string(repo.join("gen/rust/mod.rs")).unwrap();
+    rust_mod.push_str("// drift\n");
+    fs::write(repo.join("gen/rust/mod.rs"), rust_mod).unwrap();
+    let mut proto_v0 = fs::read_to_string(repo.join("gen/proto/v0.proto")).unwrap();
+    proto_v0.push_str("// drift\n");
+    fs::write(repo.join("gen/proto/v0.proto"), proto_v0).unwrap();
+    let both_fail = witforge()
+        .current_dir(&repo)
+        .args(["generate", "--check", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(both_fail.status.code(), Some(1), "{both_fail:?}");
+    let json: serde_json::Value = serde_json::from_slice(&both_fail.stdout).unwrap();
+    let diags = json["diagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        2,
+        "generate --check must report drift from BOTH rust and proto: {diags:?}"
+    );
+    assert!(diags.iter().all(|d| d["code"] == "WF2001"));
+
+    fs::remove_dir_all(&base).unwrap();
 }

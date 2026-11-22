@@ -42,14 +42,17 @@ plain-root = "crate::plain"
 proto-root = "crate::proto"
 ```
 
-Then run:
+Then run every configured emitter at once (or run individual emitters):
 
 ```sh
-witforge rust --config witforge.toml
-witforge proto --config witforge.toml
-witforge schema --config witforge.toml
-witforge glue --config witforge.toml
+witforge generate --config witforge.toml
+witforge generate --config witforge.toml --check
 ```
+
+Inside a project directory or any subdirectory below it within the Git repository, `witforge.toml`
+is discovered upwards automatically (`witforge generate`, `witforge rust`, etc.); pass
+`--no-config` to disable discovery. Individual commands (`witforge rust`, `proto`, `schema`,
+`glue`) also continue to accept `--config witforge.toml` or explicit CLI flags.
 
 Paths inside `witforge.toml` (`root`, `released`, and every `out`) are resolved relative to the
 configuration file (or used as given when absolute, including `..` components) and are never

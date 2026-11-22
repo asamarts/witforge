@@ -177,7 +177,9 @@ witforge diff wit/v0.1 wit/v0.2
 ```
 
 Released WIT, lockfiles, dependency packages, and generated per-version Rust modules are immutable.
-Create a new version directory instead of editing a released one.
+Create a new version directory instead of editing a released one (or use the shorthand workflow
+commands `witforge release`, `witforge new-version`, `witforge check <root>`, `witforge generate`,
+and `witforge freeze` with automatic `witforge.toml` discovery).
 
 Add `--check` when CI must reject source- or generated-API-breaking changes. The evolved repository
 example intentionally adds defaultable fields, so its adapters can convert old values even though

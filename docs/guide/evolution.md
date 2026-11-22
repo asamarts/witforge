@@ -39,6 +39,10 @@ New-to-old conversion drops fields and flags that the older version does not hav
 
 ## Released versions
 
-List immutable version directories in `wit/released`. Do not edit their WIT, lockfile, dependency packages, or generated per-version Rust module. Create a new version directory instead.
+List immutable version directories in `wit/released` using `witforge release wit/v0.1` (which
+validates the directory and predecessor before appending to `wit/released`). Do not edit a
+released version's WIT, lockfile, dependency packages, or generated per-version Rust module.
+Create a new version directory instead (`witforge new-version wit` for a minor, or
+`witforge new-version wit --major` for a new major).
 
-Use the repository release-freeze script or an equivalent history check in CI.
+Use `witforge freeze` (with `fetch-depth: 0`) in CI to verify released history.

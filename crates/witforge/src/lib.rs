@@ -1375,6 +1375,92 @@ pub(crate) fn plain_directory_name(name: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+/// Refuse any symlink inside `directory` (recursively).
+///
+/// # Errors
+///
+/// Returns an operational error (`WF9004`) if any entry inside `directory` is a symlink, or an
+/// I/O error if `directory` cannot be read.
+pub fn ensure_no_symlinks_in_dir(directory: &Path, entry: &str) -> Result<()> {
+    ensure_no_symlinks(directory, entry)
+}
+
+/// Discover every canonical `v<major>.<minor>` version directory directly under `wit_root`,
+/// sorted in ascending `(major, minor)` order.
+///
+/// Refuses symlinked version directories, non-directory `v<major>.<minor>` entries, non-canonical
+/// version-like names (`v00.1`, `v0.1.1`), duplicate versions, and a root with no version
+/// directories.
+///
+/// # Errors
+///
+/// Returns an operational error (`WF9002` / `WF9004`) when `wit_root` cannot be read, holds no
+/// version directories, or contains an invalid, duplicate, non-directory, or symlinked version
+/// entry.
+pub fn discover_version_directories(wit_root: &Path) -> Result<Vec<(u64, u64, PathBuf)>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(wit_root)
+        .with_context(|| format!("failed to read WIT root {}", wit_root.display()))?
+    {
+        entries.push(entry?);
+    }
+    entries.sort_by(|left, right| {
+        left.file_name()
+            .as_encoded_bytes()
+            .cmp(right.file_name().as_encoded_bytes())
+    });
+    let mut versions = Vec::new();
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((major, minor)) = parse_version_directory(&name)? else {
+            continue;
+        };
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to read version directory {}", path.display()))?;
+        if file_type.is_symlink() {
+            ensure_version_directory(&path)?;
+        }
+        if !file_type.is_dir() {
+            return Err(operational_error(
+                diagnostic::codes::GUARD_REFUSED,
+                format!(
+                    "version entry `{}` is not a directory; expected a `v<major>.<minor>` directory",
+                    path.display()
+                ),
+                Some(path.display().to_string()),
+            ));
+        }
+        versions.push((major, minor, path));
+    }
+    versions.sort_by_key(|(major, minor, _)| (*major, *minor));
+    for pair in versions.windows(2) {
+        if pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 {
+            return Err(operational_error(
+                diagnostic::codes::GUARD_REFUSED,
+                format!(
+                    "duplicate version directories {} and {}",
+                    pair[0].2.display(),
+                    pair[1].2.display()
+                ),
+                Some(pair[1].2.display().to_string()),
+            ));
+        }
+    }
+    if versions.is_empty() {
+        return Err(operational_error(
+            diagnostic::codes::IO_ERROR,
+            format!(
+                "no v<major>.<minor> version directories under {}",
+                wit_root.display()
+            ),
+            Some(wit_root.display().to_string()),
+        ));
+    }
+    Ok(versions)
+}
+
 /// Refuse any symlink inside a released version directory.
 ///
 /// The freeze script checks the tracked history; this check also covers a working tree that was
