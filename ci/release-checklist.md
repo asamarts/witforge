@@ -318,3 +318,28 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] Main CI run 44958956278 (`https://github.com/asamarts/witforge/actions/runs/44958956278`)
       invoked the pinned published `asamarts/witforge@v0.6.0` Action against all four release
       targets; every target downloaded its matching 0.6.0 archive and passed a real contract check.
+
+## 0.7.0 record
+
+- [x] Release commit `34835c2`, annotated tag `v0.7.0`; both pushed to `main`.
+- [x] Exact-commit main CI run 45257896510
+      (`https://github.com/asamarts/witforge/actions/runs/45257896510/job/138011669536`) passed on
+      Linux, macOS 15, Windows, MSRV 1.88, security, the exact reviewed 0.6.0-to-0.7.0 API
+      exceptions, benchmark, packaging, generated output, release freeze, workflows, the
+      four-target pinned 0.6.0 Action matrix, the `prost` compile matrix, and the plan gate.
+- [x] Release run 45265747346 (`https://github.com/asamarts/witforge/actions/runs/45265747346`)
+      required that exact `ci ok`, compared seven fixture roots with all twelve historical release
+      generators, built and attested five platform archives, passed every pre-publish smoke,
+      published both crates through trusted OIDC, published the draft-first GitHub release, and
+      passed the tagged Action on Linux x86_64/arm64, macOS Intel/arm64, and Windows x86_64.
+- [x] Two earlier pre-publication attempts published no crate or release asset: the first exposed
+      a Git Bash/GNU tar Windows scratch-path mismatch and the second exposed a mistyped immutable
+      `crates-io-auth-action` commit pin. Each failed tag was removed before publication; both
+      defects are fixed in the final release commit and the protected final tag was then created.
+- [x] Independent verification downloaded every archive, checked every SHA-256 file and SLSA
+      provenance attestation, and confirmed the binary/license/README archive contents.
+      `cargo install witforge-cli --version 0.7.0 --locked` downloaded both published crates and
+      reported `witforge 0.7.0`; docs.rs serves the 0.7.0 library documentation.
+- [x] Alint PR #647 (`https://github.com/asamarts/alint/pull/647`, merge commit `188defd5a`)
+      regenerated the proof crate with the released binary. Consumer drift/control checks,
+      19 round-trip/inventory tests, Clippy, and every hosted PR check passed.

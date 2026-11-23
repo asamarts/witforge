@@ -17,6 +17,14 @@ Contracts without stability annotations do not gain those comments or deprecatio
 but should still run every generator with `--check`. Invalid annotation versions newly fail
 validation as documented under `W10-094`. Wire numbers and lockfile identity do not change.
 
+Release evidence: tag `v0.7.0` points to commit `34835c2`; exact-commit
+[CI run 45257896510](https://github.com/asamarts/witforge/actions/runs/45257896510) passed, and
+[release run 45265747346](https://github.com/asamarts/witforge/actions/runs/45265747346) published
+both crates plus five checksum- and provenance-verified platform archives and passed the tagged
+Action matrix. Alint [PR #647](https://github.com/asamarts/alint/pull/647) (`188defd5a`) regenerated
+its consumer with the released binary and passed the consumer controls, 19 round-trip/inventory
+tests, Clippy, and the full hosted CI suite.
+
 ### Added
 
 - **Adopter & contributor documentation and dual GitHub/Pages link checking (`W10-091`, `W10-092`):**
