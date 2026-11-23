@@ -306,7 +306,7 @@ fn generates_layout_check_drift_and_ownership() {
     assert!(mod_file.contains("pub mod v0_2;"));
     assert!(!mod_file.contains('\r'));
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
-    assert!(rust::check(&root, &out).unwrap().is_empty());
+    assert_eq!(rust::check(&root, &out).unwrap(), []);
 
     fs::write(out.join("v0_1.rs"), format!("{}\nchanged\n", rust::HEADER)).unwrap();
     let messages = rust::check(&root, &out).unwrap();
@@ -339,7 +339,7 @@ fn generates_layout_check_drift_and_ownership() {
     rust::generate(&root, &out).unwrap();
     assert!(!extra.exists());
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
-    assert!(rust::check(&root, &out).unwrap().is_empty());
+    assert_eq!(rust::check(&root, &out).unwrap(), []);
 
     let status = Command::new("rustc")
         .args([
@@ -405,7 +405,7 @@ fn generated_files_recognise_the_header_without_reading_files_as_text() {
     files.write(&out).unwrap();
     assert!(!stale.exists());
     assert_eq!(fs::read(&binary).unwrap(), bytes);
-    assert!(files.check(&out).unwrap().is_empty());
+    assert_eq!(files.check(&out).unwrap(), []);
 
     // An expected file with binary content is changed output, not an I/O error.
     let mut changed = format!("{}\n", rust::HEADER).into_bytes();
@@ -704,7 +704,7 @@ fn generation_never_overwrites_unowned_files_or_writes_through_symlinks() {
 
     rust::generate(&root, &out).unwrap();
     assert!(!stale.exists());
-    assert!(rust::check(&root, &out).unwrap().is_empty());
+    assert_eq!(rust::check(&root, &out).unwrap(), []);
     fs::remove_dir_all(&base).unwrap();
 }
 

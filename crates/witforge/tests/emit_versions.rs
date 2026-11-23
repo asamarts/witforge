@@ -158,7 +158,7 @@ fn generated_conversions_compile_and_apply_across_two_versions() {
     let root = fixture("versions/convert");
     let out = temp("run").join("generated");
     rust::generate(&root, &out).unwrap();
-    assert!(rust::check(&root, &out).unwrap().is_empty());
+    assert_eq!(rust::check(&root, &out).unwrap(), []);
     let source = fs::read_to_string(out.join("convert.rs")).unwrap();
     assert!(source.contains("pub mod v0_1_to_v0_2 {"), "{source}");
     assert!(source.contains("pub mod v0_2_to_v0_1 {"), "{source}");

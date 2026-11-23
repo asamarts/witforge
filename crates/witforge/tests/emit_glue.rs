@@ -379,10 +379,9 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     glue::generate(&root, &out, "crate::plain", "crate::proto").unwrap();
     assert!(out.join("mod.rs").is_file());
     assert!(out.join("v0.rs").is_file());
-    assert!(
-        glue::check(&root, &out, "crate::plain", "crate::proto")
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        glue::check(&root, &out, "crate::plain", "crate::proto").unwrap(),
+        []
     );
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
 

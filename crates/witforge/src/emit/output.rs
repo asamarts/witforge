@@ -1543,7 +1543,7 @@ mod tests {
             fs::set_permissions(&v01_path, perms).unwrap();
         }
         files = updated;
-        assert!(files.check(&out).unwrap().is_empty());
+        assert_eq!(files.check(&out).unwrap(), []);
 
         // Unrelated non-regular entries (subdir, dangling symlink, FIFO) and unreadable unrelated
         // file never abort or block write() or check().
@@ -1563,7 +1563,7 @@ mod tests {
             let mkfifo = std::process::Command::new("mkfifo").arg(&fifo).status();
             let has_fifo = mkfifo.is_ok_and(|status| status.success());
 
-            assert!(files.check(&out).unwrap().is_empty());
+            assert_eq!(files.check(&out).unwrap(), []);
             files.write(&out).unwrap();
             assert!(
                 active_tmp.exists(),

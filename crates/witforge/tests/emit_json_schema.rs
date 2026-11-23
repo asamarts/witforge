@@ -185,7 +185,7 @@ fn plan_generates_one_schema_per_version_and_checks_drift() {
     json_schema::generate(&root, &out).unwrap();
     assert!(out.join("v0_1.schema.json").is_file());
     assert!(out.join("v0_2.schema.json").is_file());
-    assert!(json_schema::check(&root, &out).unwrap().is_empty());
+    assert_eq!(json_schema::check(&root, &out).unwrap(), []);
 
     fs::write(
         out.join("v0_1.schema.json"),

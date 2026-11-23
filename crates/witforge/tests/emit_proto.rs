@@ -707,7 +707,7 @@ fn proto_plan_uses_highest_minor_and_layout_check_ownership() {
     fs::write(&unrelated, "keep me\n").unwrap();
     proto::generate(&root, &out).unwrap();
     assert!(out.join("v0.proto").is_file());
-    assert!(proto::check(&root, &out).unwrap().is_empty());
+    assert_eq!(proto::check(&root, &out).unwrap(), []);
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
     fs::write(
         out.join("v0.proto"),
