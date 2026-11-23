@@ -155,13 +155,13 @@ This is a summary of what tag `v0.6.0` contains; the changelog's 0.6.0 section i
 ## 1.0 and beyond
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
-      paused; the 1.0 release criteria (including the independent-adoption gate and the
-      post-second-audit gates) live in [release-1.0.md](docs/design/release-1.0.md) (`W10-001`,
-      `W10-002`, `W10-098`).
+      paused; the 1.0 release criteria (including the independent-adoption and real-evolution
+      gates) live in [release-1.0.md](docs/design/release-1.0.md) (`W10-001`, `W10-002`,
+      `W10-098`, `W10-099`, `W10-100`).
 - [ ] Continue bounded implementation work that does not speculate about consumer demand. The
       first 0.5.0 audit's remediation and the diff/conversion benchmark are complete.
-- [ ] Close the remaining post-0.6.0 tasks from the
-      [second audit](docs/design/audit-2026-11-18-second.md) (`W10-071`, `W10-076`, and `W10-079`
-      to `W10-097`) before 1.0. `aplan ready` lists what can start.
+- [ ] Complete the final pre-1.0 API tasks (`W10-094` to `W10-096`), publish them together in
+      0.7.0 (`W10-099`), and record one real consumer evolution across two witforge releases
+      (`W10-100`). `aplan ready` lists what can start.
 - [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
       JSON work behind their existing evidence or 1.0 triggers.
