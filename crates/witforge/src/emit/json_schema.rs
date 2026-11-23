@@ -13,6 +13,7 @@ use crate::emit::output::{
     GeneratedFileFinding, GeneratedFiles, ensure_outside_wit_root, json_header,
 };
 use crate::emit::rust::version_module_name;
+use crate::emit::stability_doc;
 use crate::emit::versions::{
     DepLayout, Version, load_versions, load_versions_with_released, same_dependency,
 };
@@ -303,7 +304,7 @@ fn definition_schema(
             result_schema(model, interface, result, root_major, dep_layout)?
         }
     };
-    Ok(with_description(&def.docs, schema))
+    Ok(with_metadata(&def.docs, &def.stability, schema))
 }
 
 fn type_schema(
@@ -446,15 +447,25 @@ fn integer_schema(minimum: i64, maximum: u64) -> String {
     format!("{{\"type\":\"integer\",\"minimum\":{minimum},\"maximum\":{maximum}}}")
 }
 
-fn with_description(description: &str, schema: String) -> String {
-    if description.is_empty() {
+fn with_metadata(description: &str, stability: &crate::model::Stability, schema: String) -> String {
+    let stability_description = stability_doc(stability);
+    let description = match (description.is_empty(), stability_description) {
+        (true, None) => None,
+        (false, None) => Some(description.to_string()),
+        (true, Some(stability)) => Some(stability),
+        (false, Some(stability)) => Some(format!("{description}\n\n{stability}")),
+    };
+    let mut metadata = Vec::new();
+    if let Some(description) = description {
+        metadata.push(format!("\"description\":{}", json_string(&description)));
+    }
+    if stability.deprecated().is_some() {
+        metadata.push("\"deprecated\":true".to_string());
+    }
+    if metadata.is_empty() {
         schema
     } else {
-        format!(
-            "{{\"description\":{},{}",
-            json_string(description),
-            &schema[1..]
-        )
+        format!("{{{},{}", metadata.join(","), &schema[1..])
     }
 }
 

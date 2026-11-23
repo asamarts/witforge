@@ -404,6 +404,15 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, sink: &mut Sink<'_>)
         }
         return;
     }
+    let stability_errors = stability_errors(&model);
+    if !stability_errors.is_empty() {
+        let map = locations.get_or_insert_with(|| contract.member_locations());
+        for (location, message) in stability_errors {
+            let loc = map.get(&location).cloned().or_else(|| pkg_loc.clone());
+            sink.emit_at(codes::SUBSET_ANNOTATION, location, message, loc);
+        }
+        return;
+    }
     let checks: [anyhow::Result<()>; 4] = [
         crate::emit::rust::validate_model(&model),
         crate::emit::proto::validate_model(&model),
@@ -425,6 +434,117 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, sink: &mut Sink<'_>)
                 sink.emit_at(code, pkg, message, pkg_loc.clone());
             }
         }
+    }
+}
+
+fn stability_errors(model: &crate::model::Model) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let package = format!("{}:{}", model.package.namespace, model.package.name);
+    collect_interface_stability_errors(
+        &package,
+        model.package.version,
+        &model.interfaces,
+        &mut out,
+    );
+    for world in &model.worlds {
+        let world_path = format!("{package}/{}", world.name);
+        collect_stability_errors(
+            &world_path,
+            model.package.version,
+            &world.stability,
+            &mut out,
+        );
+        for (side, interfaces) in [("import", &world.imports), ("export", &world.exports)] {
+            for interface in interfaces {
+                collect_stability_errors(
+                    &format!("{world_path}/{side}/{}", interface.qualified_name()),
+                    model.package.version,
+                    &interface.stability,
+                    &mut out,
+                );
+            }
+        }
+    }
+    for dependency in &model.dependencies {
+        let package = format!(
+            "{}:{}",
+            dependency.package.namespace, dependency.package.name
+        );
+        collect_interface_stability_errors(
+            &package,
+            dependency.package.version,
+            &dependency.interfaces,
+            &mut out,
+        );
+    }
+    out
+}
+
+fn collect_interface_stability_errors(
+    package: &str,
+    package_version: crate::model::Version,
+    interfaces: &[crate::model::Interface],
+    out: &mut Vec<(String, String)>,
+) {
+    for interface in interfaces {
+        let interface_path = format!("{package}/{}", interface.name);
+        collect_stability_errors(&interface_path, package_version, &interface.stability, out);
+        for def in &interface.types {
+            collect_stability_errors(
+                &format!("{interface_path}/{}", def.name),
+                package_version,
+                &def.stability,
+                out,
+            );
+        }
+        for function in &interface.functions {
+            collect_stability_errors(
+                &format!("{interface_path}#{}", function.name),
+                package_version,
+                &function.stability,
+                out,
+            );
+        }
+    }
+}
+
+fn collect_stability_errors(
+    path: &str,
+    package_version: crate::model::Version,
+    stability: &crate::model::Stability,
+    out: &mut Vec<(String, String)>,
+) {
+    for (annotation, version) in [
+        ("@since", stability.since()),
+        ("@deprecated", stability.deprecated()),
+    ] {
+        let Some(version) = version else {
+            continue;
+        };
+        if version.patch != 0 {
+            out.push((
+                path.to_string(),
+                format!(
+                    "{annotation} version `{version}` must be `<major>.<minor>.0`; patch versions are not supported"
+                ),
+            ));
+        }
+        if version > package_version {
+            out.push((
+                path.to_string(),
+                format!(
+                    "{annotation} version `{version}` is later than containing package version `{package_version}`"
+                ),
+            ));
+        }
+    }
+    if let (Some(since), Some(deprecated)) = (stability.since(), stability.deprecated())
+        && deprecated < since
+    {
+        out.push((
+            path.to_string(),
+            format!("@deprecated version `{deprecated}` is earlier than @since version `{since}`"),
+        ));
     }
 }
 

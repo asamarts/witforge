@@ -27,7 +27,7 @@ pub mod codes {
     pub const SUBSET_DEPENDENCY_VERSION: &str = "WF1012";
     /// Duplicate dependency package identity or dependency sharing the root package identity.
     pub const SUBSET_DEPENDENCY_IDENTITY: &str = "WF1013";
-    /// Unsupported WIT annotation (such as `@external-id`).
+    /// Unsupported WIT annotation or invalid stability/deprecation version.
     pub const SUBSET_ANNOTATION: &str = "WF1014";
     /// Resources and handles (`resource`, `borrow<T>`, `own<T>`) are not supported.
     pub const SUBSET_RESOURCE: &str = "WF1015";
@@ -188,7 +188,7 @@ pub const CATALOG: &[CodeInfo] = &[
     CodeInfo {
         code: codes::SUBSET_ANNOTATION,
         severity: Severity::Error,
-        summary: "Unsupported WIT annotation (only `@since`, `@unstable`, and `@deprecated` are accepted).",
+        summary: "Unsupported WIT annotation or invalid stability/deprecation version.",
         supersedes: Some(codes::SUBSET_UNSUPPORTED),
     },
     CodeInfo {
@@ -518,8 +518,10 @@ pub fn explanation(code: &str) -> Option<&'static str> {
              `namespace:name`.",
         ),
         codes::SUBSET_ANNOTATION => Some(
-            "Unsupported WIT annotation (such as `@external-id`; only `@since`, `@unstable`, and \
-             `@deprecated` are accepted).",
+            "Only `@since`, `@unstable`, and `@deprecated` are accepted. `@deprecated` must \
+             accompany `@since` or `@unstable`. Annotation versions must be \
+             `<major>.<minor>.0`, cannot be later than the containing package, and deprecation \
+             cannot predate `@since`.",
         ),
         codes::SUBSET_RESOURCE => {
             Some("Resources and handles (`resource`, `borrow<T>`, `own<T>`) are not supported.")

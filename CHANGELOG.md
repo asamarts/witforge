@@ -121,6 +121,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Consumer-visible stability and deprecation metadata (`W10-094`):**
+  - Added `Stability::Deprecated` with the WIT introduction/feature origin, deprecation version,
+    and deterministic note. Invalid annotation versions are refused, and WIT-root checks plus all
+    generators verify `@since` against the first declaration when the claimed version is present.
+  - Plain Rust now emits stability docs and `#[deprecated]`; protobuf emits stability comments,
+    `deprecated = true` options, and deprecated method-enum values; JSON Schema emits stability
+    descriptions and `"deprecated": true`. Generated Rust, prost, conversion, and glue code
+    compile under denied deprecation warnings without suppressing warnings in consumer code.
+  - `diff` reports introduction, unstable-feature, deprecation, and undeprecation changes as
+    non-breaking `stability-changed` entries in human and JSON output.
+  - **Library migration:** `ChangeKind` is deliberately exhaustive and gains the final pre-1.0
+    `StabilityChanged { from, to }` variant; exhaustive 0.6 matches must add that arm for 0.7.
+    Matches on `Stability` already require a wildcard because it is `#[non_exhaustive]`.
+
 - **Extensible library data types and a machine-checked public API inventory (`W10-095`):**
   - Marked every public struct and enum in `model`, `lock`, and `diagnostic`
     `#[non_exhaustive]`, and added constructors for model values, lockfile inputs, source

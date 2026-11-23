@@ -28,9 +28,10 @@ wire-compatible (no number changed meaning) yet **decode-breaking** (the new rea
 messages with `MissingField`, or the old reader rejects the new enum value with
 `UnknownEnumValue`).
 
-Root-package docs and stability attributes are not compared: they are not wire identity and do
-not change generated code. Dependency docs and stability are part of the exact pinned dependency
-graph described below.
+Root-package docs are not compared. Stability metadata changes are reported as
+`stability-changed`; they alter generated annotations but not wire identity, the WIT component
+shape, or generated type signatures. Dependency docs and stability remain part of the exact
+pinned dependency graph described below.
 
 ## Selecting the compared versions
 
@@ -89,6 +90,7 @@ types whose foreign dependency changed are reported in `conversion_omissions` be
 | `retyped` | A member, alias shape, or function result kept its name but changed type. |
 | `kind-changed` | A named type kept its name but changed kind, such as record to enum. |
 | `renumbered` | A common member kept its kind and type but changed wire number, including a function's method id. This is reported separately from a retype. |
+| `stability-changed` | An existing interface, type, function, world, or world import/export changed `@since`, `@unstable`, or `@deprecated` metadata. `from` and `to` carry canonical metadata strings. |
 
 Declaration order is compared for record fields, variant cases, enum cases, flags, functions,
 function parameters, and world imports and exports. Additions and removals are ignored when
@@ -133,6 +135,8 @@ The generated Rust API view tracks the exhaustive shapes in `rust` output:
 - reordering fields, cases, flags, or functions is not API-breaking (the generated names and
   Rust type shapes stay the same);
 - adding a new type or interface is additive; removing one is API-breaking.
+- changing stability or deprecation metadata is non-breaking in all compatibility views; the
+  generated declaration keeps the same name and type while consumer-facing annotations change.
 
 These rules deliberately do not run `rustc` or compare generated files. They describe the
 contract-level API surface, and `--check` is a gate, not a semantic-versioning replacement.
@@ -164,6 +168,7 @@ A change is `decode_breaking` when either `new_reads_old` or `old_reads_new` is 
 | Added standalone type, type-only interface, or world change | `true` | `true` | No existing wire message fails to decode |
 | Reordered record fields, cases, flags, functions, or parameters | `true` | `true` | Protobuf matches members by field number, not declaration order |
 | Retyped, kind-changed, renumbered, or reused reserved number | `false` | `false` | Wire encoding or field-number identity disagrees in both directions |
+| Stability or deprecation metadata changed | `true` | `true` | Generated annotations change; protobuf field numbers and value encodings do not |
 
 Important boundaries of this view:
 
@@ -231,8 +236,10 @@ fields):
 ```
 
 `added` changes also carry `defaulted`; `reordered` changes carry `before` and `after`;
-`renumbered` changes carry numeric `from` and `to`. A change's `number` is the new member's wire
-number when the change concerns a numbered member, or the old number for a removal.
+`renumbered` changes carry numeric `from` and `to`; `stability-changed` carries canonical string
+`from` and `to` values such as `stable(since=0.1.0)` and
+`deprecated(since=0.1.0,version=0.2.0)`. A change's `number` is the new member's wire number when
+the change concerns a numbered member, or the old number for a removal.
 
 `--check` (equivalent to `--check=wire,source,api`) exits `0` when no change breaks the default
 three views and `1` when at least one does; **`decode` is not part of the default `--check` set**

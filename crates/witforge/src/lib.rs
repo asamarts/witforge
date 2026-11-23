@@ -894,10 +894,11 @@ impl Contract {
                         world.span
                     };
                     record(
-                        format!("{pkg}/{world_name}/{item_name}"),
+                        format!("{pkg}/{world_name}/{verb}/{qualified}"),
                         Some(format!("{world_name}/{verb}/{qualified}")),
                         item_span,
                     );
+                    record(format!("{pkg}/{world_name}/{item_name}"), None, item_span);
                 }
             }
         }

@@ -80,6 +80,56 @@ fn generated_lock(dir: &Path) -> String {
 }
 
 #[test]
+fn stability_changes_are_reported_without_breaking_any_view() {
+    let root = std::env::temp_dir().join(format!("witforge-diff-stability-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let body = |version: &str, deprecated: bool| {
+        let deprecation = if deprecated {
+            format!("@deprecated(version = {version})\n")
+        } else {
+            String::new()
+        };
+        format!(
+            "package ex:t@{version};\n\
+             @since(version = 0.1.0)\n\
+             {deprecation}interface api {{\n\
+                 @since(version = 0.1.0)\n\
+                 {deprecation}record item {{ value: string }}\n\
+                 @since(version = 0.1.0)\n\
+                 {deprecation}get: func() -> item;\n\
+             }}\n\
+             @since(version = 0.1.0)\n\
+             {deprecation}world plugin {{\n\
+                 @since(version = 0.1.0)\n\
+                 {deprecation}export api;\n\
+             }}\n"
+        )
+    };
+    let old = write_contract(&root, "v0.1", &body("0.1.0", false));
+    let deprecated = write_contract(&root, "v0.2", &body("0.2.0", true));
+    let restored = write_contract(&root, "v0.3", &body("0.3.0", false));
+    let baseline_lock = generated_lock(&old);
+    for directory in [&old, &deprecated, &restored] {
+        let lock = generated_lock(directory);
+        assert_eq!(lock, baseline_lock, "stability changed wire.lock");
+        fs::write(directory.join("wire.lock"), lock).unwrap();
+    }
+
+    for (from, to) in [(&old, &deprecated), (&deprecated, &restored)] {
+        let report = witforge::diff::compare(from, to).unwrap();
+        assert_eq!(report.changes.len(), 5, "{report:#?}");
+        assert!(report.changes.iter().all(|change| {
+            matches!(change.kind, ChangeKind::StabilityChanged { .. })
+                && !change.wire_breaking
+                && !change.source_breaking
+                && !change.api_breaking
+        }));
+        assert_eq!(report.summary.breaking, 0);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn method_ids_are_compared_and_generators_agree() {
     let root = std::env::temp_dir().join(format!("witforge-diff-methods-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

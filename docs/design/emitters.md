@@ -98,9 +98,19 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
     - **World**: `///` entries on `pub const WORLDS` in `worlds.rs`.
     - **Dependency items**: follow the same rules in `witforge_deps.rs`, dependency `.proto`, and
       dependency `.schema.json`.
-  Empty docs are omitted. `@unstable` and `@since` are metadata in the current 0.x line: they are
-  carried in the model but do not change generated code. Docs and stability are not wire identity
-  and may change.
+  Empty WIT docs are omitted. Stability metadata adds a separate generated sentence without
+  changing the source docs: `Stable since WIT version <version>.`, `Unstable WIT feature
+  `<feature>`.`, and, when applicable, `Deprecated in WIT version <version>.`. Docs and stability
+  are not wire identity and may change; `diff` reports a stability change as non-breaking.
+- Plain Rust writes `#[deprecated(since = "<version>", note = "Deprecated in WIT version
+  <version>.")]` on deprecated interface modules and their traits, named types (including
+  aliases), and trait methods. Generated per-version, dependency, conversion, and glue modules
+  use an inner `#![allow(deprecated)]` only when they must reference a deprecated generated item,
+  so a consumer's `-D warnings` build remains clean while the consumer's own use still warns.
+  Stable and unstable items remain unconditional: WIT feature names do not become Cargo features.
+- Worlds and world imports/exports have no standalone declaration in plain Rust, protobuf, or
+  JSON Schema. Their stability remains in the model, is listed in `worlds.rs` documentation, and
+  participates in `diff`; no second generated world representation is synthesized.
 - `use` aliases and `type a = b` aliases are emitted as Rust type aliases in the interface that
   names them. Neither creates a protobuf type or a lockfile member; canonical types and proto
   references resolve through the alias to the defining type.
@@ -595,6 +605,11 @@ generation. See [`dependencies.md`](dependencies.md).
 - A named `list`, `option`, or `result` does not create a separate alias type in proto; its
   structural projection is used at each site. When that projection requires a message (a named
   result, or an option of a list/option), the message is named as described in section 4.4.
+- Stability sentences are emitted as `//` docs. A deprecated record, variant, enum, flags type,
+  named result, function request/response pair, or interface method enum carries `option
+  deprecated = true;`; the function's method-enum value carries `[deprecated = true]`.
+  `prost-build` projects those options to Rust `#[deprecated]`. An inlined alias or named
+  structural type with no protobuf declaration has no independent protobuf option.
 
 ### 4.3 Type mapping
 
@@ -1608,6 +1623,9 @@ The rest of the document is conventional JSON:
 - A `$ref` uses JSON Pointer escaping: `/` becomes `~1` and `~` becomes `~0`, so
   `types/span` is `#/definitions/types~1span`.
 - WIT docs on a type become a JSON Schema `description`; empty docs are omitted.
+- Stability sentences are appended to `description`, separated from WIT docs by one blank line.
+  A deprecated named type also has `"deprecated": true`. Draft 7 does not define that keyword,
+  so Draft 7 validators ignore it as an annotation rather than rejecting the schema.
 - The first line, LF line endings, final newline, deterministic ordering, output-root rules,
   stale-file removal, and `--check` behavior are the same ownership rules as section 1.
 

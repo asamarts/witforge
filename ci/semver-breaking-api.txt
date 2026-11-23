@@ -5,6 +5,7 @@ enum_marked_non_exhaustive enum Severity
 enum_marked_non_exhaustive enum Stability
 enum_marked_non_exhaustive enum TypeDefKind
 enum_marked_non_exhaustive enum TypeExpr
+enum_variant_added variant ChangeKind:StabilityChanged
 function_missing function witforge::emit::output::absolute
 pub_module_level_const_missing constant MAX_ALIAS_CHAIN
 pub_module_level_const_missing constant MAX_CANONICAL_TYPE_BYTES

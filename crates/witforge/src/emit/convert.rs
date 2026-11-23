@@ -16,7 +16,8 @@ use crate::emit::defaults::default_expr;
 use crate::emit::rust::{header_for, version_module_name};
 use crate::emit::versions::{Version, same_effective_dependency};
 use crate::emit::{
-    TypeRenderStyle, pascal_case, render_type, rust_ident, rustfmt, snake_case, type_kind_name,
+    TypeRenderStyle, model_has_deprecation, pascal_case, render_type, rust_ident, rustfmt,
+    snake_case, type_kind_name,
 };
 use crate::model::{
     Case, Dependency, Field, Interface, Model, QualifiedName, ResultExpr, TypeDef, TypeDefKind,
@@ -84,6 +85,12 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
     let mut out = String::new();
     writeln!(out, "{}", header_for(&package.namespace, &package.name))?;
     writeln!(out, "// source: {}:{}", package.namespace, package.name)?;
+    if versions
+        .iter()
+        .any(|version| model_has_deprecation(&version.model))
+    {
+        writeln!(out, "#![allow(deprecated)]")?;
+    }
     if !all_omissions.is_empty() {
         writeln!(out, "//")?;
         writeln!(

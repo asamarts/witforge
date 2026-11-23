@@ -11,13 +11,14 @@ use crate::emit::ident;
 use crate::emit::output::{
     GeneratedFileFinding, GeneratedFiles, comment_header, ensure_outside_wit_root,
 };
+use crate::emit::stability_doc;
 use crate::emit::versions::{
     DepLayout, Version, load_versions, load_versions_with_released, same_dependency,
 };
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
     Case, Dependency, Field, Function, MAX_WRAPPER_NAME_BYTES, MemberKind, Model, QualifiedName,
-    ResultExpr, TypeDef, TypeDefKind, TypeExpr,
+    ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr,
 };
 
 /// Legacy pre-0.6.0 shared ownership header.
@@ -229,6 +230,7 @@ struct Emitter<'a> {
     wrappers: BTreeMap<String, String>,
     /// The source type that produced each synthesized wrapper, for collision diagnostics.
     wrapper_sources: BTreeMap<String, String>,
+    wrapper_stability: BTreeMap<String, Stability>,
     live_keys: BTreeSet<String>,
     /// Dependency `.proto` files referenced by at least one emitted cross-package type reference.
     used_imports: BTreeSet<String>,
@@ -293,6 +295,7 @@ impl<'a> Emitter<'a> {
             enum_values: BTreeMap::new(),
             wrappers: BTreeMap::new(),
             wrapper_sources: BTreeMap::new(),
+            wrapper_stability: BTreeMap::new(),
             live_keys,
             used_imports: BTreeSet::new(),
         })
@@ -335,8 +338,20 @@ impl<'a> Emitter<'a> {
             self.emit_method_enum(&mut body, &interface)?;
         }
 
-        for wrapper in self.wrappers.values() {
+        for (name, wrapper) in &self.wrappers {
             writeln!(body)?;
+            if let Some(stability) = self.wrapper_stability.get(name) {
+                write_stability_docs(&mut body, 0, stability)?;
+                if stability.deprecated().is_some() {
+                    let line_end = wrapper
+                        .find('\n')
+                        .context("wrapper message has no opening line")?;
+                    body.push_str(&wrapper[..=line_end]);
+                    write_deprecated_option(&mut body, 2, stability)?;
+                    body.push_str(&wrapper[line_end + 1..]);
+                    continue;
+                }
+            }
             body.push_str(wrapper);
         }
 
@@ -384,7 +399,11 @@ impl<'a> Emitter<'a> {
                     interface: interface.to_string(),
                     name: def.name.clone(),
                 };
-                let _ = self.direct_named_option(&name, payload)?;
+                let wrapper = self.direct_named_option(&name, payload)?;
+                if self.wrappers.contains_key(&wrapper) {
+                    self.wrapper_stability
+                        .insert(wrapper, def.stability.clone());
+                }
                 Ok(())
             }
             TypeDefKind::Alias(target) => {
@@ -406,7 +425,9 @@ impl<'a> Emitter<'a> {
         let name = self.user_name(interface, &def.name)?;
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
+        write_stability_docs(out, 0, &def.stability)?;
         writeln!(out, "message {name} {{")?;
+        write_deprecated_option(out, 2, &def.stability)?;
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
@@ -478,7 +499,9 @@ impl<'a> Emitter<'a> {
         self.register_oneof_module(&name, format!("variant {interface}/{}", def.name))?;
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
+        write_stability_docs(out, 0, &def.stability)?;
         writeln!(out, "message {name} {{")?;
+        write_deprecated_option(out, 2, &def.stability)?;
         writeln!(out, "  oneof {ONEOF_VALUE} {{")?;
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
@@ -550,7 +573,9 @@ impl<'a> Emitter<'a> {
         let zero_value = ident::proto_enum_zero_value(&name);
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
+        write_stability_docs(out, 0, &def.stability)?;
         writeln!(out, "enum {name} {{")?;
+        write_deprecated_option(out, 2, &def.stability)?;
         self.register_enum_value(&zero_value)?;
         let mut prost_variants = BTreeMap::new();
         prost_variants.insert(
@@ -600,7 +625,9 @@ impl<'a> Emitter<'a> {
         let name = self.user_name(interface, &def.name)?;
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
+        write_stability_docs(out, 0, &def.stability)?;
         writeln!(out, "message {name} {{")?;
+        write_deprecated_option(out, 2, &def.stability)?;
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
@@ -659,7 +686,9 @@ impl<'a> Emitter<'a> {
         self.register_oneof_module(&name, format!("result {interface}/{}", def.name))?;
         writeln!(out)?;
         write_docs(out, 0, &def.docs)?;
+        write_stability_docs(out, 0, &def.stability)?;
         writeln!(out, "message {name} {{")?;
+        write_deprecated_option(out, 2, &def.stability)?;
         writeln!(out, "  oneof value {{")?;
         let ok = match &result.ok {
             Some(ok) => self.singular(ok)?,
@@ -685,7 +714,9 @@ impl<'a> Emitter<'a> {
         let request_name = self.function_name(interface, function, "Request")?;
         writeln!(out)?;
         write_docs(out, 0, &function.docs)?;
+        write_stability_docs(out, 0, &function.stability)?;
         writeln!(out, "message {request_name} {{")?;
+        write_deprecated_option(out, 2, &function.stability)?;
         let mut field_names = BTreeSet::new();
         let mut prost_fields = BTreeMap::new();
         let mut prost_accessors = BTreeMap::new();
@@ -742,7 +773,9 @@ impl<'a> Emitter<'a> {
 
         let response_name = self.function_name(interface, function, "Response")?;
         writeln!(out)?;
+        write_stability_docs(out, 0, &function.stability)?;
         writeln!(out, "message {response_name} {{")?;
+        write_deprecated_option(out, 2, &function.stability)?;
         if let Some(result) = &function.result {
             let ty = self.direct(result, true)?;
             writeln!(out, "  {ty} result = 1;")?;
@@ -759,8 +792,12 @@ impl<'a> Emitter<'a> {
         writeln!(out)?;
         if let Some(interface_def) = self.model.interface(interface) {
             write_docs(out, 0, &interface_def.docs)?;
+            write_stability_docs(out, 0, &interface_def.stability)?;
         }
         writeln!(out, "enum {name} {{")?;
+        if let Some(interface_def) = self.model.interface(interface) {
+            write_deprecated_option(out, 2, &interface_def.stability)?;
+        }
         self.register_enum_value(&zero_value)?;
         let mut prost_variants = BTreeMap::new();
         prost_variants.insert(
@@ -797,7 +834,13 @@ impl<'a> Emitter<'a> {
                         "interface `{interface}`: method values `{previous}` and `{value}` both map to prost variant `{prost_variant}`"
                     );
                 }
-                writeln!(out, "  {value} = {number};")?;
+                write_stability_docs(out, 2, &function.stability)?;
+                let deprecated = if function.stability.deprecated().is_some() {
+                    " [deprecated = true]"
+                } else {
+                    ""
+                };
+                writeln!(out, "  {value} = {number}{deprecated};")?;
             }
         }
         let reserved: Vec<(u32, String)> = reserved
@@ -2382,6 +2425,27 @@ const PROTO_KEYWORDS: &[&str] = &[
     "false",
 ];
 
+fn write_stability_docs(
+    out: &mut String,
+    indent: usize,
+    stability: &crate::model::Stability,
+) -> Result<()> {
+    if let Some(doc) = stability_doc(stability) {
+        write_docs(out, indent, &doc)?;
+    }
+    Ok(())
+}
+
+fn write_deprecated_option(
+    out: &mut String,
+    indent: usize,
+    stability: &crate::model::Stability,
+) -> Result<()> {
+    if stability.deprecated().is_some() {
+        writeln!(out, "{}option deprecated = true;", " ".repeat(indent))?;
+    }
+    Ok(())
+}
 fn write_docs(out: &mut String, indent: usize, docs: &str) -> Result<()> {
     docs::write_proto(out, indent, docs)
 }

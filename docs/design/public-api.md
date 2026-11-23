@@ -57,9 +57,15 @@ The explicit trait implementations in the checked inventory are promised API, in
 constructor does not make construction part of the compiler pipeline: `model::build` remains the
 normal way to obtain a model from WIT.
 
-The `diff` report types are deliberately fixed exhaustive values for 1.0. Adding a field to
-`ConversionImpact`, `DiffAnalysis`, or another listed diff value is a new type or a major-version
-change, not an additive minor change.
+`Stability::Deprecated` records its `@since` or unstable feature origin, WIT deprecation version,
+and deterministic consumer note. It is an additive variant because `Stability` became
+`#[non_exhaustive]` before this change.
+
+The `diff` report types are deliberately fixed exhaustive values for 1.0.
+`ChangeKind::StabilityChanged { from, to }` is the final pre-1.0 addition; 0.6 consumers matching
+`ChangeKind` add that arm during the 0.7 migration. Adding another field or variant to
+`ConversionImpact`, `DiffAnalysis`, `ChangeKind`, or another listed diff value after 1.0 is a
+major-version change, not an additive minor change.
 
 `diff::compare_with_impacts` returns the same `DiffReport` as `diff::compare` plus informational
 `ConversionImpact` notes. The notes do not change compatibility counts or `--check` behavior.

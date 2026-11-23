@@ -626,12 +626,14 @@ interface types {
 struct DependencySpec {
     version: &'static str,
     docs: &'static str,
+    stability: &'static str,
     field_docs: &'static str,
     field_type: &'static str,
 }
 
 const DEFAULT_DEPENDENCY: DependencySpec = DependencySpec {
     version: "0.1.0",
+    stability: "@since(version = 0.1.0)\n    ",
     docs: "",
     field_docs: "",
     field_type: "string",
@@ -663,12 +665,13 @@ interface api {{
                 r"package example:shared@{version};
 
 interface types {{
-    {docs}record thing {{
+    {docs}{stability}record thing {{
         {field_docs}value: {field_type},
     }}
 }}
 ",
                 version = spec.version,
+                stability = spec.stability,
                 docs = spec.docs,
                 field_docs = spec.field_docs,
                 field_type = spec.field_type
@@ -695,6 +698,10 @@ fn generators_and_diff_refuse_dependency_graph_changes() {
     };
     let changed_field_docs = DependencySpec {
         field_docs: "/// Changed field docs.\n        ",
+        ..DEFAULT_DEPENDENCY
+    };
+    let changed_stability = DependencySpec {
+        stability: "@since(version = 0.1.0)\n    @deprecated(version = 0.1.0)\n    ",
         ..DEFAULT_DEPENDENCY
     };
     let cases = [
@@ -733,6 +740,12 @@ fn generators_and_diff_refuse_dependency_graph_changes() {
             Some(DEFAULT_DEPENDENCY),
             Some(changed_field_docs),
             "dependency type `example:shared/types/thing` member metadata changes",
+        ),
+        (
+            "stability",
+            Some(DEFAULT_DEPENDENCY),
+            Some(changed_stability),
+            "dependency type `example:shared/types/thing` metadata changes",
         ),
     ];
 

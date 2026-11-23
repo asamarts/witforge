@@ -667,6 +667,11 @@ pub(crate) fn load_versions_with_released(
     let released = crate::load_root_released_manifest(wit_root, explicit_released)?;
     let discovered = discover_versions(wit_root)?;
     crate::validate_retirement_order(&discovered, &released, wit_root)?;
+    let mut since_history = model::SinceHistory::new(
+        discovered
+            .iter()
+            .map(|(major, minor, _)| model::Version::new(*major, *minor, 0)),
+    );
     let mut versions: Vec<Version> = Vec::new();
     let mut prev_lock_by_major: BTreeMap<u64, (PathBuf, WireLock)> = BTreeMap::new();
     let mut first_deps_by_major: BTreeMap<u64, Vec<Dependency>> = BTreeMap::new();
@@ -742,6 +747,35 @@ pub(crate) fn load_versions_with_released(
             }
         } else {
             first_package = Some((model.package.namespace.clone(), model.package.name.clone()));
+        }
+        let stability_errors = since_history.check(&model);
+        if !stability_errors.is_empty() {
+            let diagnostics = stability_errors
+                .iter()
+                .map(|(path, message)| {
+                    let mut diagnostic = Diagnostic::error(codes::SUBSET_ANNOTATION, message)
+                        .with_path(path.clone());
+                    if let Some((_, position)) = locations.get(path) {
+                        diagnostic = diagnostic.with_position(*position);
+                    }
+                    let mut located =
+                        LocatedDiagnostic::from_diagnostic(diagnostic).with_logical(path.clone());
+                    if let Some((file, _)) = locations.get(path) {
+                        located = located.with_file(file.clone());
+                    } else {
+                        located = located.with_file(directory.display().to_string());
+                    }
+                    located
+                })
+                .collect();
+            bail!(ContractError::with_located_diagnostics(
+                format!(
+                    "{}: invalid @since history: {}",
+                    directory.display(),
+                    stability_errors[0].1
+                ),
+                diagnostics,
+            ));
         }
         let previous = prev_lock_by_major.get(&major);
         let lock_path = directory.join("wire.lock");

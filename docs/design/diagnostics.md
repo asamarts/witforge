@@ -114,7 +114,7 @@ beside each split code for consumers updating JSON or SARIF filters.
 | `WF1011` | error | `WF1001` | Nested `package` block inside a version directory; dependencies must live under `deps/`. |
 | `WF1012` | error | `WF1001` | Dependency package under `deps/` has a missing or unsupported version (must be `<major>.<minor>.0`). |
 | `WF1013` | error | `WF1001` | Duplicate dependency package identity or dependency sharing the root package's `namespace:name`. |
-| `WF1014` | error | `WF1001` | Unsupported WIT annotation (such as `@external-id`; only `@since`, `@unstable`, and `@deprecated` are accepted). |
+| `WF1014` | error | `WF1001` | Only `@since`, `@unstable`, and `@deprecated` are accepted. `@deprecated` must accompany `@since` or `@unstable`. Annotation versions must be `<major>.<minor>.0`, cannot be later than the containing package, and deprecation cannot predate `@since`. |
 | `WF1015` | error | `WF1001` | Resources and handles (`resource`, `borrow<T>`, `own<T>`) are not supported. |
 | `WF1016` | error | `WF1001` | `future` and `stream` types are not supported. |
 | `WF1017` | error | `WF1001` | `char` primitive is not supported; use `string`. |

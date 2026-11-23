@@ -97,6 +97,98 @@ fn emits_glue_error_and_type_modules() {
     assert!(version.ends_with('\n'), "glue output has no final newline");
 }
 
+#[test]
+fn generated_stack_compiles_with_deprecated_items_under_deny_deprecated() {
+    let source = ScratchDir::new("stability-source");
+    let wit_root = source.path().join("wit");
+    let previous = wit_root.join("v0.1");
+    fs::create_dir_all(&previous).unwrap();
+    fs::write(
+        previous.join("contract.wit"),
+        "package ex:annotations@0.1.0;\n\
+         @since(version = 0.1.0)\n\
+         interface api {\n\
+             @since(version = 0.1.0)\n\
+             record old { value: string }\n\
+             @since(version = 0.1.0)\n\
+             echo: func(value: old) -> old;\n\
+         }\n\
+         @since(version = 0.1.0)\n\
+         world plugin {\n\
+             @since(version = 0.1.0)\n\
+             export api;\n\
+         }\n",
+    )
+    .unwrap();
+    let (_model, previous_lock) = setup_contract(&previous);
+    fs::write(previous.join("wire.lock"), previous_lock.render()).unwrap();
+    let version = wit_root.join("v0.2");
+    fs::create_dir_all(&version).unwrap();
+    fs::write(
+        version.join("contract.wit"),
+        "package ex:annotations@0.2.0;\n\
+         @since(version = 0.1.0)\n\
+         @deprecated(version = 0.2.0)\n\
+         interface api {\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             record old { value: string }\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             echo: func(value: old) -> old;\n\
+         }\n\
+         @since(version = 0.1.0)\n\
+         @deprecated(version = 0.2.0)\n\
+         world plugin {\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             export api;\n\
+         }\n",
+    )
+    .unwrap();
+    let (_model, lock) = setup_contract(&version);
+    fs::write(version.join("wire.lock"), lock.render()).unwrap();
+
+    let generated = ScratchDir::new("stability-generated");
+    let root = generated.path();
+    let plain = root.join("plain");
+    let proto_source = root.join("_proto_source");
+    let glue_dir = root.join("glue");
+    let plain_plan = rust::plan(&wit_root).unwrap();
+    let worlds = plain_plan.files().get("worlds.rs").unwrap();
+    assert!(
+        worlds.contains(
+            "World `plugin` stability: Stable since WIT version 0.1.0. Deprecated in WIT version 0.2.0."
+        ),
+        "{worlds}"
+    );
+    assert!(
+        worlds.contains(
+            "World `plugin` export `api` stability: Stable since WIT version 0.1.0. Deprecated in WIT version 0.2.0."
+        ),
+        "{worlds}"
+    );
+    plain_plan.write(&plain).unwrap();
+    proto::plan(&wit_root)
+        .unwrap()
+        .write(&proto_source)
+        .unwrap();
+    glue::plan(&wit_root, "crate::plain", "crate::proto")
+        .unwrap()
+        .write(&glue_dir)
+        .unwrap();
+    compile_proto_module(&proto_source, &root.join("proto"), false, false);
+    fs::write(
+        root.join("main.rs"),
+        "#![allow(dead_code)]\n#![deny(deprecated)]\n\
+         mod glue;\nmod plain;\nmod proto;\n\nfn main() {}\n",
+    )
+    .unwrap();
+    run_cargo_program(root, "prost = \"0.14\"\n", "deprecated generated stack");
+    source.finish();
+    generated.finish();
+}
+
 #[allow(clippy::too_many_lines)]
 #[test]
 fn glue_output_matches_golden() {

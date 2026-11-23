@@ -32,6 +32,8 @@ fi
 BASELINE="${ROOT}/ci/public-api-baseline-0.6.0.txt"
 APPROVED_BREAK="${ROOT}/ci/public-api-breaking-0.6.0.diff"
 ACTUAL_BREAK="${SCRATCH}/breaking.diff"
+APPROVED_CHANGES="${SCRATCH}/approved-changes.txt"
+ACTUAL_CHANGES="${SCRATCH}/actual-changes.txt"
 status=0
 diff -u --label v0.6.0 --label current "${BASELINE}" "${ACTUAL}" >"${ACTUAL_BREAK}" \
   || status=$?
@@ -39,7 +41,11 @@ if [[ ${status} -gt 1 ]]; then
   echo "failed to compare the published and current public API inventories" >&2
   exit "${status}"
 fi
-if ! diff -u "${APPROVED_BREAK}" "${ACTUAL_BREAK}"; then
+# Hunk offsets and unchanged context move after additive API growth. Compare the complete ordered
+# changed-line inventory; every added or removed API line remains exact and reviewable.
+grep -E '^[+-]' "${APPROVED_BREAK}" | grep -Ev '^(---|\+\+\+)' >"${APPROVED_CHANGES}"
+grep -E '^[+-]' "${ACTUAL_BREAK}" | grep -Ev '^(---|\+\+\+)' >"${ACTUAL_CHANGES}"
+if ! diff -u "${APPROVED_CHANGES}" "${ACTUAL_CHANGES}"; then
   echo >&2
   echo "the public API delta from 0.6.0 differs from the exact reviewed inventory" >&2
   exit 1

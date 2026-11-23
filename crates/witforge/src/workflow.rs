@@ -466,6 +466,11 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
     let manifest = load_root_released_manifest(wit_root, explicit_released)?;
     let versions = discover_version_directories(wit_root)?;
     validate_retirement_order(&versions, &manifest, wit_root)?;
+    let mut since_history = model::SinceHistory::new(
+        versions
+            .iter()
+            .map(|(major, minor, _)| model::Version::new(*major, *minor, 0)),
+    );
     let mut previous_by_major: BTreeMap<u64, PathBuf> = BTreeMap::new();
     let mut first_model: Option<Model> = None;
     let mut first_model_by_major: BTreeMap<u64, Model> = BTreeMap::new();
@@ -515,9 +520,10 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
             && subset::check_diagnostics(&contract).is_empty()
             && let Ok(current_model) = model::build(&contract)
         {
-            if let Some(baseline) = &first_model {
-                if baseline.package.namespace != current_model.package.namespace
-                    || baseline.package.name != current_model.package.name
+            let same_package = match &first_model {
+                Some(baseline)
+                    if baseline.package.namespace != current_model.package.namespace
+                        || baseline.package.name != current_model.package.name =>
                 {
                     result.error(
                         codes::PACKAGE_MISMATCH,
@@ -531,9 +537,34 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
                         ),
                         Some(directory.display().to_string()),
                     );
+                    false
                 }
-            } else {
-                first_model = Some(current_model.clone());
+                Some(_) => true,
+                None => {
+                    first_model = Some(current_model.clone());
+                    true
+                }
+            };
+            if same_package {
+                let stability_errors = since_history.check(&current_model);
+                if !stability_errors.is_empty() {
+                    let locations = contract.member_locations();
+                    for (path, message) in stability_errors {
+                        let mut diagnostic = Diagnostic::error(codes::SUBSET_ANNOTATION, message)
+                            .with_path(path.clone());
+                        if let Some((_, position)) = locations.get(&path) {
+                            diagnostic = diagnostic.with_position(*position);
+                        }
+                        let mut located = LocatedDiagnostic::from_diagnostic(diagnostic)
+                            .with_logical(path.clone());
+                        if let Some((file, _)) = locations.get(&path) {
+                            located = located.with_file(file.clone());
+                        } else {
+                            located = located.with_file(directory.display().to_string());
+                        }
+                        result.push_error(located);
+                    }
+                }
             }
             if let Some(baseline) = first_model_by_major.get(&major) {
                 if let Err(error) = ensure_same_dependency_graph(baseline, &current_model) {

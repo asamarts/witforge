@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use witforge::emit::proto;
-use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model;
+use witforge::{SourceFile, load, load_sources};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -59,6 +59,63 @@ fn emits_interface_prefixed_types_fields_enums_flags_and_presence() {
         "{schema}"
     );
     assert!(schema.contains("optional bytes payload = 4;"), "{schema}");
+}
+
+#[test]
+fn emits_stability_docs_and_protobuf_deprecation_options() {
+    let contract = load_sources(vec![SourceFile::new(
+        "contract.wit".into(),
+        "package ex:annotations@0.2.0;\n\
+         @since(version = 0.1.0)\n\
+         @deprecated(version = 0.2.0)\n\
+         interface api {\n\
+             @unstable(feature = preview)\n\
+             record preview { value: string }\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             record old { value: string }\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             type old-option = option<list<string>>;\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             get-old: func() -> old;\n\
+         }\n"
+        .into(),
+    )])
+    .unwrap();
+    let model = model::build(&contract).unwrap();
+    let schema = proto::emit_major(&model, &lock_for(&model)).unwrap();
+    for expected in [
+        "// Unstable WIT feature `preview`.\nmessage ApiPreview {",
+        "// Stable since WIT version 0.1.0. Deprecated in WIT version 0.2.0.\nmessage ApiOld {\n  option deprecated = true;",
+        "message ApiGetOldRequest {\n  option deprecated = true;",
+        "// Stable since WIT version 0.1.0. Deprecated in WIT version 0.2.0.\nmessage ApiOldOption {\n  option deprecated = true;",
+        "message ApiGetOldResponse {\n  option deprecated = true;",
+        "enum ApiMethod {\n  option deprecated = true;",
+        "API_METHOD_GET_OLD = 1 [deprecated = true];",
+    ] {
+        assert!(
+            schema.contains(expected),
+            "missing {expected:?} in:\n{schema}"
+        );
+    }
+
+    let dir = std::env::temp_dir().join(format!("witforge-proto-stability-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let proto_path = dir.join("contract.proto");
+    fs::write(&proto_path, schema).unwrap();
+    let descriptors = protox::compile([&proto_path], [&dir]).unwrap();
+    let rust_out = dir.join("rust");
+    fs::create_dir_all(&rust_out).unwrap();
+    prost_build::Config::new()
+        .out_dir(&rust_out)
+        .compile_fds(descriptors)
+        .unwrap();
+    let generated = fs::read_to_string(rust_out.join("ex.annotations.v0.rs")).unwrap();
+    assert!(generated.contains("#[deprecated]"), "{generated}");
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

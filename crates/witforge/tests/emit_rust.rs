@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use witforge::emit::rust;
-use witforge::load;
 use witforge::model;
+use witforge::{SourceFile, load, load_sources};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -83,6 +83,89 @@ fn escapes_keywords_and_compiles_generated_code() {
         .unwrap();
     assert!(status.success(), "generated Rust did not compile");
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn emits_stability_docs_and_deprecation_without_leaking_lint_allows() {
+    let contract = load_sources(vec![SourceFile::new(
+        "contract.wit".into(),
+        "package ex:annotations@0.2.0;\n\
+         @since(version = 0.1.0)\n\
+         @deprecated(version = 0.2.0)\n\
+         interface api {\n\
+             @unstable(feature = preview)\n\
+             record preview { value: string }\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             record old { value: string }\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             get-old: func() -> old;\n\
+         }\n"
+        .into(),
+    )])
+    .unwrap();
+    let code = rust::emit_version(&model::build(&contract).unwrap()).unwrap();
+    for expected in [
+        "#![allow(deprecated)]",
+        "/// Unstable WIT feature `preview`.",
+        "/// Stable since WIT version 0.1.0. Deprecated in WIT version 0.2.0.",
+        "#[deprecated(since = \"0.2.0\", note = \"Deprecated in WIT version 0.2.0.\")]",
+    ] {
+        assert!(code.contains(expected), "missing {expected:?} in:\n{code}");
+    }
+    assert_eq!(
+        code.matches("#[deprecated(since = \"0.2.0\"").count(),
+        4,
+        "{code}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("witforge-emit-stability-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("generated.rs"), &code).unwrap();
+    fs::write(
+        dir.join("clean.rs"),
+        "#![deny(warnings)]\npub mod generated;\n",
+    )
+    .unwrap();
+    let clean = Command::new("rustc")
+        .current_dir(&dir)
+        .args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "--emit=metadata",
+            "-o",
+            "clean.rmeta",
+            "clean.rs",
+        ])
+        .status()
+        .unwrap();
+    assert!(clean.success(), "generated Rust failed under -D warnings");
+
+    fs::write(
+        dir.join("consumer.rs"),
+        "#![deny(deprecated)]\npub mod generated;\n\
+         pub fn consume(value: generated::api::Old) -> generated::api::Old { value }\n",
+    )
+    .unwrap();
+    let consumer = Command::new("rustc")
+        .current_dir(&dir)
+        .args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "--emit=metadata",
+            "-o",
+            "consumer.rmeta",
+            "consumer.rs",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        !consumer.success(),
+        "generated allow(deprecated) leaked into consumer code"
+    );
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

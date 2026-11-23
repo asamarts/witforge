@@ -16,7 +16,10 @@ use crate::emit::output::{
 };
 use crate::emit::rustfmt;
 use crate::emit::versions::{DepLayout, Version, load_versions, load_versions_with_released};
-use crate::emit::{RUST_KEYWORDS, pascal_case, rust_ident, snake_case};
+use crate::emit::{
+    RUST_KEYWORDS, dependency_has_deprecation, model_has_deprecation, pascal_case, rust_ident,
+    snake_case,
+};
 use crate::lock::WireLock;
 use crate::model::{
     Case, Dependency, Field, Flag, Interface, Model, QualifiedName, ResultExpr, TypeDef,
@@ -252,6 +255,15 @@ fn emit_dependency_glue_layout(
     let mut out = String::new();
     writeln!(out, "{header}")?;
     writeln!(out, "// source: wit/deps")?;
+    if layout
+        .by_major
+        .values()
+        .flatten()
+        .any(dependency_has_deprecation)
+        || layout.shared.values().any(dependency_has_deprecation)
+    {
+        writeln!(out, "#![allow(deprecated)]")?;
+    }
     writeln!(out)?;
     writeln!(out, "pub use super::GlueError;")?;
     let shared_slice: Vec<Dependency> = layout.shared.values().cloned().collect();
@@ -845,6 +857,9 @@ impl<'a> Emitter<'a> {
             "// source: {}:{}@{}",
             self.model.package.namespace, self.model.package.name, self.model.package.version
         )?;
+        if model_has_deprecation(self.model) {
+            writeln!(out, "#![allow(deprecated)]")?;
+        }
         let body = self.emit_body()?;
         let has_docs = !docs::sanitize_rust_lines(&self.model.package.docs).is_empty();
         if has_docs {

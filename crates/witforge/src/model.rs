@@ -6,7 +6,7 @@
 //! represent, such as resources, tuples, and world-defined types. Named types from standard
 //! `deps/` packages are represented with their package identity.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -58,11 +58,11 @@ impl fmt::Display for Version {
     }
 }
 
-/// WIT stability metadata attached to an item.
+/// WIT stability and deprecation metadata attached to an item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Stability {
-    /// No `@since` or `@unstable` attribute.
+    /// No `@since`, `@unstable`, or `@deprecated` attribute.
     Unknown,
     /// Explicitly tagged `@unstable(feature = ...)`.
     Unstable {
@@ -74,6 +74,138 @@ pub enum Stability {
         /// The version since which the item is stable.
         since: Version,
     },
+    /// Explicitly tagged `@deprecated(version = ...)` beside `@since` or `@unstable`.
+    Deprecated {
+        /// The stable version that introduced the item, when it has `@since`.
+        since: Option<Version>,
+        /// The unstable feature that owns the item, when it has `@unstable`.
+        feature: Option<String>,
+        /// The version that deprecated the item.
+        deprecated: Version,
+        /// The deterministic note emitted for consumers.
+        note: String,
+    },
+}
+
+impl Stability {
+    pub(crate) const fn since(&self) -> Option<Version> {
+        match self {
+            Self::Stable { since } => Some(*since),
+            Self::Deprecated { since, .. } => *since,
+            Self::Unknown | Self::Unstable { .. } => None,
+        }
+    }
+
+    pub(crate) const fn deprecated(&self) -> Option<Version> {
+        match self {
+            Self::Deprecated { deprecated, .. } => Some(*deprecated),
+            Self::Unknown | Self::Unstable { .. } | Self::Stable { .. } => None,
+        }
+    }
+
+    pub(crate) fn unstable_feature(&self) -> Option<&str> {
+        match self {
+            Self::Unstable { feature } => Some(feature),
+            Self::Deprecated { feature, .. } => feature.as_deref(),
+            Self::Unknown | Self::Stable { .. } => None,
+        }
+    }
+
+    pub(crate) fn deprecation_note(&self) -> Option<&str> {
+        match self {
+            Self::Deprecated { note, .. } => Some(note),
+            Self::Unknown | Self::Unstable { .. } | Self::Stable { .. } => None,
+        }
+    }
+}
+
+pub(crate) struct SinceHistory {
+    available: BTreeSet<Version>,
+    first_seen: BTreeMap<String, Version>,
+    reported: BTreeSet<(String, Version)>,
+}
+
+impl SinceHistory {
+    pub(crate) fn new(available: impl IntoIterator<Item = Version>) -> Self {
+        Self {
+            available: available.into_iter().collect(),
+            first_seen: BTreeMap::new(),
+            reported: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn check(&mut self, model: &Model) -> Vec<(String, String)> {
+        let mut errors = Vec::new();
+        for interface in &model.interfaces {
+            let interface_path = interface.name.clone();
+            self.check_item(
+                &interface_path,
+                model.package.version,
+                &interface.stability,
+                &mut errors,
+            );
+            for def in &interface.types {
+                self.check_item(
+                    &format!("{interface_path}/{}", def.name),
+                    model.package.version,
+                    &def.stability,
+                    &mut errors,
+                );
+            }
+            for function in &interface.functions {
+                self.check_item(
+                    &format!("{interface_path}#{}", function.name),
+                    model.package.version,
+                    &function.stability,
+                    &mut errors,
+                );
+            }
+        }
+        for world in &model.worlds {
+            let world_path = world.name.clone();
+            self.check_item(
+                &world_path,
+                model.package.version,
+                &world.stability,
+                &mut errors,
+            );
+            for (side, interfaces) in [("import", &world.imports), ("export", &world.exports)] {
+                for interface in interfaces {
+                    self.check_item(
+                        &format!("{world_path}/{side}/{}", interface.qualified_name()),
+                        model.package.version,
+                        &interface.stability,
+                        &mut errors,
+                    );
+                }
+            }
+        }
+        errors
+    }
+
+    fn check_item(
+        &mut self,
+        path: &str,
+        current: Version,
+        stability: &Stability,
+        errors: &mut Vec<(String, String)>,
+    ) {
+        let first = *self.first_seen.entry(path.to_string()).or_insert(current);
+        let Some(since) = stability.since() else {
+            return;
+        };
+        if self.available.contains(&since)
+            && first != since
+            && self.reported.insert((path.to_string(), since))
+        {
+            errors.push((
+                path.to_string(),
+                format!(
+                    "`{path}` declares `@since(version = {since})`, but its first declaration in this root is version {first}"
+                ),
+            ));
+        }
+    }
 }
 
 /// A type reference to a named type in the contract package or a standard `deps/` dependency.
@@ -1795,16 +1927,62 @@ fn docs(docs: &WitDocs) -> String {
 fn stability(stability: &WitStability) -> Stability {
     match stability {
         WitStability::Unknown => Stability::Unknown,
-        WitStability::Unstable { feature, .. } => Stability::Unstable {
+        WitStability::Unstable {
+            feature,
+            deprecated: None,
+        } => Stability::Unstable {
             feature: feature.clone(),
         },
-        WitStability::Stable { since, .. } => Stability::Stable {
-            since: Version {
-                major: since.major,
-                minor: since.minor,
-                patch: since.patch,
-            },
+        WitStability::Stable {
+            since,
+            deprecated: None,
+        } => Stability::Stable {
+            since: version(since.major, since.minor, since.patch),
         },
+        WitStability::Unstable {
+            feature,
+            deprecated: Some(deprecated),
+        } => deprecated_stability(
+            None,
+            Some(feature.clone()),
+            deprecated.major,
+            deprecated.minor,
+            deprecated.patch,
+        ),
+        WitStability::Stable {
+            since,
+            deprecated: Some(deprecated),
+        } => deprecated_stability(
+            Some(version(since.major, since.minor, since.patch)),
+            None,
+            deprecated.major,
+            deprecated.minor,
+            deprecated.patch,
+        ),
+    }
+}
+
+fn deprecated_stability(
+    since: Option<Version>,
+    feature: Option<String>,
+    major: u64,
+    minor: u64,
+    patch: u64,
+) -> Stability {
+    let deprecated = version(major, minor, patch);
+    Stability::Deprecated {
+        since,
+        feature,
+        deprecated,
+        note: format!("Deprecated in WIT version {deprecated}."),
+    }
+}
+
+const fn version(major: u64, minor: u64, patch: u64) -> Version {
+    Version {
+        major,
+        minor,
+        patch,
     }
 }
 

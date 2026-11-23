@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use jsonschema::Validator;
 use serde_json::{Value, json};
 use witforge::emit::json_schema;
-use witforge::load;
 use witforge::model;
+use witforge::{SourceFile, load, load_sources};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -60,6 +60,44 @@ fn emits_the_golden_schema_for_every_mapping_row() {
     let schema: Value = serde_json::from_str(&actual).unwrap();
     assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
     assert!(schema["definitions"].is_object());
+    jsonschema::validator_for(&schema).unwrap();
+}
+
+#[test]
+fn emits_stability_metadata_as_draft7_annotations() {
+    let contract = load_sources(vec![SourceFile::new(
+        "contract.wit".into(),
+        "package ex:annotations@0.2.0;\n\
+         interface api {\n\
+             @unstable(feature = preview)\n\
+             record preview { value: string }\n\
+             /// User documentation.\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             record old { value: string }\n\
+         }\n"
+        .into(),
+    )])
+    .unwrap();
+    let schema: Value = serde_json::from_str(
+        &json_schema::emit_version(&model::build(&contract).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let old = &schema["definitions"]["api/old"];
+    assert_eq!(old["deprecated"], true);
+    assert_eq!(
+        old["description"],
+        "User documentation.\n\nStable since WIT version 0.1.0. Deprecated in WIT version 0.2.0."
+    );
+    assert_eq!(
+        schema["definitions"]["api/preview"]["description"],
+        "Unstable WIT feature `preview`."
+    );
+    assert!(
+        schema["definitions"]["api/preview"]
+            .get("deprecated")
+            .is_none()
+    );
     jsonschema::validator_for(&schema).unwrap();
 }
 

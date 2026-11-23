@@ -147,6 +147,12 @@ pub enum Stability {
     Unknown,
     Unstable { feature: String },
     Stable { since: Version },
+    Deprecated {
+        since: Option<Version>,
+        feature: Option<String>,
+        deprecated: Version,
+        note: String,
+    },
 }
 ```
 
@@ -183,8 +189,11 @@ model::build(&Contract) -> Result<Model>
 - It MUST use the unmangled item name for functions, not the `[method]`-style name.
 - It MUST include every interface and world in the root package, including unused ones.
 - It MUST include `@unstable` items; all features are loaded.
-- It MUST copy docs and stability from `wit-parser`. Record fields, variant cases, enum cases,
-  and flags have no WIT stability attribute; their stability is the owning type's stability.
+- It MUST copy docs and stability from `wit-parser`, including the introduction or feature that
+  accompanies `@deprecated`. Because WIT's `@deprecated(version = ...)` has no note operand, the
+  model synthesizes the stable note `Deprecated in WIT version <version>.`. Record fields,
+  variant cases, enum cases, and flags have no WIT stability attribute; their stability is the
+  owning type's stability and a single member cannot be deprecated independently.
 - It MUST keep `type a = b` and `use` aliases as `TypeDefKind::Alias`; aliases create no lockfile
   members and are expanded for canonical types. Rust emits them as aliases; proto inlines them.
 - It MUST keep named `list`, `option`, and `result` types as their structural kinds (not as
@@ -208,8 +217,18 @@ model::build(&Contract) -> Result<Model>
   world reaches a dependency interface (explicitly or through `wit-parser`'s implicit import of a
   dependency used by a world item), every item in that dependency interface becomes required, and
   diagnostics for unsupported items there name the world item that pulled it in.
-- Only `@since`, `@unstable`, and `@deprecated` annotations are accepted. Any other annotation
-  (such as `@external-id`, or unknown attributes rejected by `wit-parser`) is refused.
+- Only `@since`, `@unstable`, and `@deprecated` annotations are accepted. `wit-parser` requires
+  `@deprecated(version = ...)` beside either `@since` or `@unstable`; deprecation by itself,
+  both introduction forms together, duplicate annotations, `@external-id`, and unknown
+  annotations are refused.
+- Every annotation version MUST be `<major>.<minor>.0` and no later than its containing package
+  version; a deprecation version MUST NOT predate its `@since` version. These are contract
+  violations when the syntax reaches the subset checker; version gates rejected by `wit-parser`
+  remain parse errors.
+- A WIT-root check and every generator compare `@since` against declaration history. When the
+  root contains the exact claimed version, the item MUST first appear in that directory. If the
+  claimed version is absent, a partial history cannot prove the introduction point and does not
+  reject it. A single-version `check` cannot perform this cross-version rule.
 - Names within one scope (interfaces and worlds of a package, types and functions of an interface,
   and live or reserved members of a lockfile parent) MUST be distinct ASCII case-insensitively;
   names in different scopes do not collide.
@@ -314,9 +333,10 @@ boundary, but internal conversion errors SHOULD name the item and the unsupporte
 - one fixture per supported construct: each primitive, record, variant with and without
   payload, enum, flags, list, option, named list/option/result, alias, `use` alias,
   one-sided/bare `result`, function with/without result, and each parameter kind;
-- docs and stability on interfaces, types, functions, and worlds;
-- `@unstable` items retained and `@since` carried;
-- escaped/keyword identifiers (`%type`, `%where`, `%self`) retained as raw names;
+- docs and stability on interfaces, types, functions, worlds, and world imports/exports;
+- stable and unstable deprecation forms, the synthesized note, invalid annotation versions, and
+  the parser requirement that deprecation accompany `@since` or `@unstable`;
+- `@unstable` items retained, `@since` carried, and root history validating the first declaration;
 - source order preserved for interfaces, types, members, functions, and parameters;
 - canonical display matches golden strings for every construct and nesting;
 - member extraction matches golden keys/kinds/types and skips aliases/named structural types;
@@ -329,11 +349,8 @@ boundary, but internal conversion errors SHOULD name the item and the unsupporte
 
 ## 8. Deferred and pre-golive
 
-- Source spans and structured diagnostics.
-- Deprecation attributes and doc examples.
-- Stability-aware generation/gating; the current 0.x line treats stability as metadata.
-- World role metadata in generated code (see the pre-golive world task).
-- A stable public model API before 1.0; its surface is fixed in
-  [`public-api.md`](public-api.md). Typed errors are not promised for 1.0: the boundary error
-  stays `anyhow::Error` with the `ContractError` classification (the same document's Errors
-  section).
+- Source spans in the public model. Structured diagnostics retain positions outside the model.
+- Resource, handle, and other post-1.0 subset expansion follows the public-API policy in
+  [`public-api.md`](public-api.md).
+- Typed errors are not promised for 1.0: the boundary stays `anyhow::Error` with
+  `ContractError` classification.

@@ -33,12 +33,56 @@ pub mod rust;
 pub(crate) mod rustfmt;
 pub(crate) mod versions;
 
-use crate::model::{TypeDefKind, TypeExpr};
+use crate::model::{Model, Stability, TypeDefKind, TypeExpr};
 
 pub(crate) use ident::{
     RUST_KEYWORDS, plain_ident as rust_ident, plain_pascal as pascal_case,
     plain_snake as snake_case,
 };
+
+pub(crate) fn stability_doc(stability: &Stability) -> Option<String> {
+    let state = if let Some(since) = stability.since() {
+        Some(format!("Stable since WIT version {since}."))
+    } else {
+        stability
+            .unstable_feature()
+            .map(|feature| format!("Unstable WIT feature `{feature}`."))
+    };
+    match (state, stability.deprecation_note()) {
+        (Some(state), Some(note)) => Some(format!("{state} {note}")),
+        (Some(state), None) => Some(state),
+        (None, Some(note)) => Some(note.to_string()),
+        (None, None) => None,
+    }
+}
+
+pub(crate) fn rust_deprecated_attribute(stability: &Stability) -> Option<String> {
+    Some(format!(
+        "#[deprecated(since = \"{}\", note = {:?})]",
+        stability.deprecated()?,
+        stability.deprecation_note()?
+    ))
+}
+pub(crate) fn model_has_deprecation(model: &Model) -> bool {
+    model.interfaces.iter().any(interface_has_deprecation)
+        || model.dependencies.iter().any(dependency_has_deprecation)
+}
+
+pub(crate) fn dependency_has_deprecation(dependency: &crate::model::Dependency) -> bool {
+    dependency.interfaces.iter().any(interface_has_deprecation)
+}
+
+fn interface_has_deprecation(interface: &crate::model::Interface) -> bool {
+    interface.stability.deprecated().is_some()
+        || interface
+            .types
+            .iter()
+            .any(|def| def.stability.deprecated().is_some())
+        || interface
+            .functions
+            .iter()
+            .any(|function| function.stability.deprecated().is_some())
+}
 
 /// How a type expression is rendered in diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

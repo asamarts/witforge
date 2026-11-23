@@ -37,7 +37,9 @@ awk '
   failed && /^  / {
     line = $0
     sub(/^  /, "", line)
-    if (failure == "enum_marked_non_exhaustive" || failure == "struct_marked_non_exhaustive") {
+    if (failure == "enum_marked_non_exhaustive" ||
+        failure == "struct_marked_non_exhaustive" ||
+        failure == "enum_variant_added") {
       split(line, parts, /[[:space:]]+/)
       print failure " " parts[1] " " parts[2]
     } else if (failure == "function_missing") {

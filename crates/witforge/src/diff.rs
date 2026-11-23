@@ -18,9 +18,9 @@
 //! definition of one) are marked `defaulted`: the generated old-to-new conversion can fill them,
 //! but the source and generated API still change.
 //!
-//! Root-package docs and stability attributes are not compared. They do not affect wire identity,
-//! generated code, or the component type. Dependency metadata is part of the exact pinned graph;
-//! a graph mismatch is refused before local declarations are compared.
+//! Root-package docs are not compared. Stability changes are reported as non-breaking metadata
+//! changes; dependency docs and stability remain part of the exact pinned graph and are refused
+//! before local declarations are compared.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -91,6 +91,13 @@ pub enum ChangeKind {
         /// The new number.
         to: u32,
     },
+    /// WIT stability, introduction, or deprecation metadata changed.
+    StabilityChanged {
+        /// The previous metadata.
+        from: String,
+        /// The new metadata.
+        to: String,
+    },
 }
 
 impl ChangeKind {
@@ -102,6 +109,7 @@ impl ChangeKind {
             Self::Removed => 3,
             Self::Added { .. } => 4,
             Self::Reordered { .. } => 5,
+            Self::StabilityChanged { .. } => 6,
         }
     }
 }
@@ -1222,6 +1230,12 @@ impl Builder<'_> {
             let Some(new_interface) = new.get(name) else {
                 continue;
             };
+            self.compare_stability(
+                ChangeElement::Interface,
+                *name,
+                &old_interface.stability,
+                &new_interface.stability,
+            );
             self.compare_types(old_interface, new_interface)?;
             self.compare_functions(old_interface, new_interface)?;
         }
@@ -1280,6 +1294,12 @@ impl Builder<'_> {
                 continue;
             };
             self.compare_type(old, old_def, new_def)?;
+            self.compare_stability(
+                ChangeElement::Type,
+                format!("{}/{}", old.name, name),
+                &old_def.stability,
+                &new_def.stability,
+            );
         }
         Ok(())
     }
@@ -1585,6 +1605,28 @@ impl Builder<'_> {
         Ok(())
     }
 
+    fn compare_stability(
+        &mut self,
+        element: ChangeElement,
+        path: impl Into<String>,
+        old: &crate::model::Stability,
+        new: &crate::model::Stability,
+    ) {
+        if old != new {
+            self.push(
+                ChangeKind::StabilityChanged {
+                    from: format_stability(old),
+                    to: format_stability(new),
+                },
+                element,
+                path,
+                None,
+                Breaking::NONE,
+                DecodeVerdict::COMPATIBLE,
+            );
+        }
+    }
+
     fn compare_function(
         &mut self,
         interface: &str,
@@ -1593,6 +1635,12 @@ impl Builder<'_> {
         new: &crate::model::Function,
     ) -> Result<()> {
         let path = format!("{interface}.{name}");
+        self.compare_stability(
+            ChangeElement::Function,
+            &path,
+            &old.stability,
+            &new.stability,
+        );
         let parent = format!("{interface}#{name}");
         let old_params: Vec<(String, String)> = old
             .params
@@ -1800,6 +1848,12 @@ impl Builder<'_> {
             let Some(new_world) = new.get(name) else {
                 continue;
             };
+            self.compare_stability(
+                ChangeElement::World,
+                *name,
+                &old_world.stability,
+                &new_world.stability,
+            );
             self.compare_world_side(
                 name,
                 "import",
@@ -1826,6 +1880,14 @@ impl Builder<'_> {
         new: &[WorldInterface],
     ) {
         let old_names: BTreeSet<String> = old.iter().map(WorldInterface::qualified_name).collect();
+        let old_by_name: BTreeMap<String, &WorldInterface> = old
+            .iter()
+            .map(|interface| (interface.qualified_name(), interface))
+            .collect();
+        let new_by_name: BTreeMap<String, &WorldInterface> = new
+            .iter()
+            .map(|interface| (interface.qualified_name(), interface))
+            .collect();
         let new_names: BTreeSet<String> = new.iter().map(WorldInterface::qualified_name).collect();
         for interface in new
             .iter()
@@ -1853,6 +1915,16 @@ impl Builder<'_> {
                 DecodeVerdict::COMPATIBLE,
             );
         }
+        for (name, old_interface) in &old_by_name {
+            if let Some(new_interface) = new_by_name.get(name) {
+                self.compare_stability(
+                    element,
+                    format!("{world}/{side}/{name}"),
+                    &old_interface.stability,
+                    &new_interface.stability,
+                );
+            }
+        }
         let before: Vec<String> = old
             .iter()
             .filter(|interface| new_names.contains(&interface.qualified_name()))
@@ -1872,6 +1944,29 @@ impl Builder<'_> {
                 Breaking::SOURCE,
                 DecodeVerdict::COMPATIBLE,
             );
+        }
+    }
+}
+fn format_stability(stability: &crate::model::Stability) -> String {
+    match stability {
+        crate::model::Stability::Unknown => "unknown".to_string(),
+        crate::model::Stability::Unstable { feature } => {
+            format!("unstable(feature={feature})")
+        }
+        crate::model::Stability::Stable { since } => format!("stable(since={since})"),
+        crate::model::Stability::Deprecated {
+            since,
+            feature,
+            deprecated,
+            ..
+        } => {
+            let origin = match (since, feature) {
+                (Some(since), None) => format!("since={since}"),
+                (None, Some(feature)) => format!("feature={feature}"),
+                (Some(since), Some(feature)) => format!("since={since},feature={feature}"),
+                (None, None) => "origin=unknown".to_string(),
+            };
+            format!("deprecated({origin},version={deprecated})")
         }
     }
 }

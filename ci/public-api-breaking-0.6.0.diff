@@ -152,6 +152,8 @@
  field witforge::diff::Change.api_breaking
  field witforge::diff::Change.element
  field witforge::diff::Change.kind
++field witforge::diff::ChangeKind::StabilityChanged.from
++field witforge::diff::ChangeKind::StabilityChanged.to
 @@ -47,6 +163,15 @@
  field witforge::diff::ConversionImpact.missing_path
  field witforge::diff::ConversionImpact.to_version
@@ -195,6 +197,10 @@
  field witforge::lock::Changes.added
  field witforge::lock::Changes.dropped
  field witforge::lock::Changes.reintroduced
++field witforge::model::Stability::Deprecated.deprecated
++field witforge::model::Stability::Deprecated.feature
++field witforge::model::Stability::Deprecated.note
++field witforge::model::Stability::Deprecated.since
 @@ -159,37 +299,87 @@
  field witforge::model::WorldInterface.stability
  field witforge::subset::Violation.location
@@ -758,6 +764,8 @@
  signature witforge::diff::ChangeKind {"params":[],"where_predicates":[]}
  signature witforge::diff::ChangeKind::Added.defaulted {"struct_field":{"primitive":"bool"}}
  signature witforge::diff::ChangeKind::KindChanged.from {"struct_field":{"resolved_path":{"path":"String","args":null}}}
++signature witforge::diff::ChangeKind::StabilityChanged.from {"struct_field":{"resolved_path":{"path":"String","args":null}}}
++signature witforge::diff::ChangeKind::StabilityChanged.to {"struct_field":{"resolved_path":{"path":"String","args":null}}}
 @@ -532,6 +967,21 @@
  signature witforge::diff::ConversionImpact.missing_path {"struct_field":{"resolved_path":{"path":"String","args":null}}}
  signature witforge::diff::ConversionImpact.to_version {"struct_field":{"resolved_path":{"path":"crate::model::Version","args":null}}}
@@ -987,6 +995,10 @@
  signature witforge::model::ResultExpr.ok {"struct_field":{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"TypeExpr","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}}}
 +signature witforge::model::ResultExpr::new {"function":{"sig":{"inputs":[["ok",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"TypeExpr","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}}],["err",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"TypeExpr","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
  signature witforge::model::Stability {"params":[],"where_predicates":[]}
++signature witforge::model::Stability::Deprecated.deprecated {"struct_field":{"resolved_path":{"path":"Version","args":null}}}
++signature witforge::model::Stability::Deprecated.feature {"struct_field":{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}}}
++signature witforge::model::Stability::Deprecated.note {"struct_field":{"resolved_path":{"path":"String","args":null}}}
++signature witforge::model::Stability::Deprecated.since {"struct_field":{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Version","args":null}}}],"constraints":[]}}}}}
  signature witforge::model::Stability::Stable.since {"struct_field":{"resolved_path":{"path":"Version","args":null}}}
  signature witforge::model::Stability::Unstable.feature {"struct_field":{"resolved_path":{"path":"String","args":null}}}
 @@ -737,6 +1236,7 @@
@@ -1119,6 +1131,7 @@
  variant witforge::diff::ChangeKind::Renumbered
  variant witforge::diff::ChangeKind::Reordered
  variant witforge::diff::ChangeKind::Retyped
++variant witforge::diff::ChangeKind::StabilityChanged
 +variant witforge::emit::output::GeneratedFileStatus::Changed
 +variant witforge::emit::output::GeneratedFileStatus::Extra
 +variant witforge::emit::output::GeneratedFileStatus::Missing
@@ -1128,6 +1141,7 @@
  variant witforge::lock::LockMode::Against
  variant witforge::lock::LockMode::Default
  variant witforge::lock::LockMode::First
++variant witforge::model::Stability::Deprecated
 @@ -858,3 +1436,14 @@
  variant witforge::model::TypeExpr::U32
  variant witforge::model::TypeExpr::U64

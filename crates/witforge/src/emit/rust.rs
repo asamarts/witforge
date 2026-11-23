@@ -10,7 +10,10 @@ use crate::emit::output::{
     GeneratedFileFinding, GeneratedFiles, comment_header, ensure_outside_wit_root,
 };
 use crate::emit::versions::{DepLayout, Version, load_versions, load_versions_with_released};
-use crate::emit::{docs, pascal_case, rust_ident, rustfmt, snake_case};
+use crate::emit::{
+    dependency_has_deprecation, docs, model_has_deprecation, pascal_case,
+    rust_deprecated_attribute, rust_ident, rustfmt, snake_case, stability_doc,
+};
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
 /// Legacy pre-0.6.0 shared ownership header.
@@ -277,6 +280,9 @@ fn emit_version_with_resolver(
         writeln!(out)?;
         let _ = docs::write_rust_inner(&mut out, &model.package.docs)?;
     }
+    if model_has_deprecation(model) {
+        writeln!(out, "#![allow(deprecated)]")?;
+    }
 
     let mut modules = BTreeMap::new();
     let mut traits = BTreeMap::new();
@@ -322,6 +328,8 @@ fn emit_version_with_resolver(
             &interface.docs,
             &format!("Interface `{}`.", interface.name),
         )?;
+        write_stability_doc(&mut out, 0, &interface.stability)?;
+        write_deprecated_attribute(&mut out, 0, &interface.stability)?;
         if module == parent_module {
             writeln!(out, "#[allow(clippy::module_inception)]")?;
         }
@@ -419,6 +427,15 @@ fn emit_dependency_bindings_layout(
             out,
             "// serde derives require the consumer's `serde` crate with `derive`."
         )?;
+    }
+    if layout
+        .by_major
+        .values()
+        .flatten()
+        .any(dependency_has_deprecation)
+        || layout.shared.values().any(dependency_has_deprecation)
+    {
+        writeln!(out, "#![allow(deprecated)]")?;
     }
     let shared_slice: Vec<crate::model::Dependency> = layout.shared.values().cloned().collect();
     let shared_resolver = |ns: &str, pkg: &str| -> Result<String> {
@@ -554,6 +571,8 @@ fn emit_dep_group(
                     dependency.package.namespace, dependency.package.name, interface.name
                 ),
             )?;
+            write_stability_doc(out, indent + 4, &interface.stability)?;
+            write_deprecated_attribute(out, indent + 4, &interface.stability)?;
             if interface_module == module {
                 writeln!(out, "{iface_prefix}#[allow(clippy::module_inception)]")?;
             }
@@ -678,6 +697,8 @@ fn emit_type_def(
         | TypeDefKind::Result(_) => format!("Type alias `{}/{}`.", interface.name, def.name),
     };
     rustfmt::write_docs_or(out, indent, &def.docs, &fallback_doc)?;
+    write_stability_doc(out, indent, &def.stability)?;
+    write_deprecated_attribute(out, indent, &def.stability)?;
     match &def.kind {
         TypeDefKind::Record(fields) => {
             emit_record(
@@ -846,6 +867,8 @@ fn emit_trait(
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     writeln!(out, "{prefix}/// Trait for interface `{}`.", interface.name)?;
+    write_stability_doc(out, indent, &interface.stability)?;
+    write_deprecated_attribute(out, indent, &interface.stability)?;
     writeln!(out, "{prefix}pub trait {trait_name} {{")?;
     let mut function_names = BTreeMap::new();
     for (idx, function) in interface.functions.iter().enumerate() {
@@ -865,6 +888,8 @@ fn emit_trait(
             &function.docs,
             &format!("Function `{}#{}`.", interface.name, function.name),
         )?;
+        write_stability_doc(out, indent + 4, &function.stability)?;
+        write_deprecated_attribute(out, indent + 4, &function.stability)?;
         let mut params = vec!["&self".to_string()];
         let mut param_names = BTreeMap::new();
         for param in &function.params {
@@ -1145,6 +1170,23 @@ fn emit_worlds(versions: &[Version]) -> Result<String> {
                     }
                 }
             }
+            if let Some(stability) = stability_doc(&world.stability) {
+                writeln!(out, "    ///")?;
+                writeln!(out, "    /// World `{}` stability: {stability}", world.name)?;
+            }
+            for (side, interfaces) in [("import", &world.imports), ("export", &world.exports)] {
+                for interface in interfaces {
+                    if let Some(stability) = stability_doc(&interface.stability) {
+                        writeln!(out, "    ///")?;
+                        writeln!(
+                            out,
+                            "    /// World `{}` {side} `{}` stability: {stability}",
+                            world.name,
+                            interface.qualified_name()
+                        )?;
+                    }
+                }
+            }
         }
         match version.model.worlds.as_slice() {
             [] => {
@@ -1192,6 +1234,28 @@ fn write_world_fields(out: &mut String, indent: usize, world: &crate::model::Wor
     let exports_rendered =
         rustfmt::fmt_string_slice(indent, &exports, indent + "exports: ".len(), 1);
     writeln!(out, "{prefix}exports: {exports_rendered},")?;
+    Ok(())
+}
+
+fn write_stability_doc(
+    out: &mut String,
+    indent: usize,
+    stability: &crate::model::Stability,
+) -> Result<()> {
+    if let Some(doc) = stability_doc(stability) {
+        writeln!(out, "{}/// {doc}", " ".repeat(indent))?;
+    }
+    Ok(())
+}
+
+fn write_deprecated_attribute(
+    out: &mut String,
+    indent: usize,
+    stability: &crate::model::Stability,
+) -> Result<()> {
+    if let Some(attribute) = rust_deprecated_attribute(stability) {
+        writeln!(out, "{}{attribute}", " ".repeat(indent))?;
+    }
     Ok(())
 }
 

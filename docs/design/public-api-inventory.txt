@@ -158,6 +158,8 @@ field witforge::diff::ChangeKind::Reordered.after
 field witforge::diff::ChangeKind::Reordered.before
 field witforge::diff::ChangeKind::Retyped.from
 field witforge::diff::ChangeKind::Retyped.to
+field witforge::diff::ChangeKind::StabilityChanged.from
+field witforge::diff::ChangeKind::StabilityChanged.to
 field witforge::diff::ConversionImpact.from_version
 field witforge::diff::ConversionImpact.missing_member
 field witforge::diff::ConversionImpact.missing_path
@@ -267,6 +269,10 @@ field witforge::model::QualifiedName.interface
 field witforge::model::QualifiedName.name
 field witforge::model::ResultExpr.err
 field witforge::model::ResultExpr.ok
+field witforge::model::Stability::Deprecated.deprecated
+field witforge::model::Stability::Deprecated.feature
+field witforge::model::Stability::Deprecated.note
+field witforge::model::Stability::Deprecated.since
 field witforge::model::Stability::Stable.since
 field witforge::model::Stability::Unstable.feature
 field witforge::model::TypeDef.docs
@@ -961,6 +967,8 @@ signature witforge::diff::ChangeKind::Reordered.after {"struct_field":{"resolved
 signature witforge::diff::ChangeKind::Reordered.before {"struct_field":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}}}
 signature witforge::diff::ChangeKind::Retyped.from {"struct_field":{"resolved_path":{"path":"String","args":null}}}
 signature witforge::diff::ChangeKind::Retyped.to {"struct_field":{"resolved_path":{"path":"String","args":null}}}
+signature witforge::diff::ChangeKind::StabilityChanged.from {"struct_field":{"resolved_path":{"path":"String","args":null}}}
+signature witforge::diff::ChangeKind::StabilityChanged.to {"struct_field":{"resolved_path":{"path":"String","args":null}}}
 signature witforge::diff::ConversionImpact {"params":[],"where_predicates":[]}
 signature witforge::diff::ConversionImpact.from_version {"struct_field":{"resolved_path":{"path":"crate::model::Version","args":null}}}
 signature witforge::diff::ConversionImpact.missing_member {"struct_field":{"resolved_path":{"path":"String","args":null}}}
@@ -1229,6 +1237,10 @@ signature witforge::model::ResultExpr.err {"struct_field":{"resolved_path":{"pat
 signature witforge::model::ResultExpr.ok {"struct_field":{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"TypeExpr","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}}}
 signature witforge::model::ResultExpr::new {"function":{"sig":{"inputs":[["ok",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"TypeExpr","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}}],["err",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"TypeExpr","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::model::Stability {"params":[],"where_predicates":[]}
+signature witforge::model::Stability::Deprecated.deprecated {"struct_field":{"resolved_path":{"path":"Version","args":null}}}
+signature witforge::model::Stability::Deprecated.feature {"struct_field":{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}}}
+signature witforge::model::Stability::Deprecated.note {"struct_field":{"resolved_path":{"path":"String","args":null}}}
+signature witforge::model::Stability::Deprecated.since {"struct_field":{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Version","args":null}}}],"constraints":[]}}}}}
 signature witforge::model::Stability::Stable.since {"struct_field":{"resolved_path":{"path":"Version","args":null}}}
 signature witforge::model::Stability::Unstable.feature {"struct_field":{"resolved_path":{"path":"String","args":null}}}
 signature witforge::model::TypeDef {"params":[],"where_predicates":[]}
@@ -1391,6 +1403,7 @@ variant witforge::diff::ChangeKind::Removed
 variant witforge::diff::ChangeKind::Renumbered
 variant witforge::diff::ChangeKind::Reordered
 variant witforge::diff::ChangeKind::Retyped
+variant witforge::diff::ChangeKind::StabilityChanged
 variant witforge::emit::output::GeneratedFileStatus::Changed
 variant witforge::emit::output::GeneratedFileStatus::Extra
 variant witforge::emit::output::GeneratedFileStatus::Missing
@@ -1409,6 +1422,7 @@ variant witforge::model::MemberKind::Flag
 variant witforge::model::MemberKind::Method
 variant witforge::model::MemberKind::Param
 variant witforge::model::MemberKind::VariantCase
+variant witforge::model::Stability::Deprecated
 variant witforge::model::Stability::Stable
 variant witforge::model::Stability::Unknown
 variant witforge::model::Stability::Unstable

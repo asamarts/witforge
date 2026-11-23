@@ -152,6 +152,52 @@ interface types {
 }
 
 #[test]
+fn diff_renders_stability_changes_as_nonbreaking_metadata() {
+    let root = workspace("stability");
+    contract(
+        &root,
+        "old/v0.1",
+        "package example:tasks@0.1.0;\n\
+         interface types {\n\
+             @since(version = 0.1.0)\n\
+             record old { id: u64 }\n\
+         }\n",
+    );
+    contract(
+        &root,
+        "new/v0.2",
+        "package example:tasks@0.2.0;\n\
+         interface types {\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             record old { id: u64 }\n\
+         }\n",
+    );
+    let old = root.join("old/v0.1");
+    let new = root.join("new/v0.2");
+    lock(&root, "old/v0.1");
+    lock(&root, "new/v0.2");
+
+    let output = diff(&old, &new, &["--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let change = &report["changes"][0];
+    assert_eq!(change["kind"], "stability-changed");
+    assert_eq!(change["element"], "type");
+    assert_eq!(change["path"], "types/old");
+    assert_eq!(change["from"], "stable(since=0.1.0)");
+    assert_eq!(change["to"], "deprecated(since=0.1.0,version=0.2.0)");
+    assert_eq!(report["summary"]["breaking"], 0);
+
+    let checked = diff(&old, &new, &["--check"]);
+    assert!(checked.status.success(), "{checked:?}");
+    let human = String::from_utf8(checked.stdout).unwrap();
+    assert!(human.contains("stability-changed"), "{human}");
+    assert!(human.contains("result: COMPATIBLE"), "{human}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn diff_reports_a_pure_reorder_as_source_breaking_only() {
     let root = workspace("reorder");
     contract(

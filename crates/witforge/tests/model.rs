@@ -110,6 +110,119 @@ fn model_fixture_preserves_shape_docs_stability_and_escaped_names() {
     assert_fixture_function_and_world_docs(&model);
 }
 
+#[test]
+fn stability_annotations_are_validated_and_preserved() {
+    let contract = load_sources(vec![SourceFile::new(
+        "contract.wit".into(),
+        "package ex:annotations@0.2.0;\n\
+         @since(version = 0.1.0)\n\
+         @deprecated(version = 0.2.0)\n\
+         interface api {\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             record old-record { value: string }\n\
+             @unstable(feature = preview)\n\
+             @deprecated(version = 0.2.0)\n\
+             old-fn: func();\n\
+         }\n\
+         @since(version = 0.1.0)\n\
+         @deprecated(version = 0.2.0)\n\
+         world plugin {\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             import api;\n\
+             @unstable(feature = preview)\n\
+             export api;\n\
+         }\n"
+        .into(),
+    )])
+    .unwrap();
+    assert_eq!(witforge::subset::check_diagnostics(&contract), []);
+    let model = model::build(&contract).unwrap();
+    let expected_stable = Stability::Deprecated {
+        since: Some(model::Version::new(0, 1, 0)),
+        feature: None,
+        deprecated: model::Version::new(0, 2, 0),
+        note: "Deprecated in WIT version 0.2.0.".into(),
+    };
+    assert_eq!(model.interfaces[0].stability, expected_stable);
+    assert_eq!(model.interfaces[0].types[0].stability, expected_stable);
+    assert_eq!(
+        model.interfaces[0].functions[0].stability,
+        Stability::Deprecated {
+            since: None,
+            feature: Some("preview".into()),
+            deprecated: model::Version::new(0, 2, 0),
+            note: "Deprecated in WIT version 0.2.0.".into(),
+        }
+    );
+    assert_eq!(model.worlds[0].stability, expected_stable);
+    assert_eq!(model.worlds[0].imports[0].stability, expected_stable);
+    assert_eq!(
+        model.worlds[0].exports[0].stability,
+        Stability::Unstable {
+            feature: "preview".into()
+        }
+    );
+}
+
+#[test]
+fn invalid_stability_annotations_are_refused() {
+    let invalid = load_sources(vec![SourceFile::new(
+        "contract.wit".into(),
+        "package ex:annotations@0.2.0;\n\
+         @since(version = 0.1.1)\n\
+         interface patch {}\n\
+         @since(version = 0.2.0)\n\
+         @deprecated(version = 0.1.0)\n\
+         interface backwards {}\n\
+         @since(version = 0.1.0)\n\
+         @deprecated(version = 0.1.1)\n\
+         interface deprecated-patch {}\n"
+            .into(),
+    )])
+    .unwrap();
+    let messages: Vec<String> = witforge::subset::check_diagnostics(&invalid)
+        .into_iter()
+        .map(|diagnostic| diagnostic.message)
+        .collect();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.contains("patch versions"))
+            .count(),
+        2
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("earlier than @since"))
+    );
+    let future_error = load_sources(vec![SourceFile::new(
+        "contract.wit".into(),
+        "package ex:annotations@0.2.0;\n\
+         @since(version = 0.3.0)\n\
+         interface future-item {}\n"
+            .into(),
+    )])
+    .unwrap_err();
+    assert!(format!("{future_error:#}").contains("unreleased version 0.3.0"));
+
+    let parser_error = load_sources(vec![SourceFile::new(
+        "contract.wit".into(),
+        "package ex:annotations@0.2.0;\n\
+         @deprecated(version = 0.2.0)\n\
+         interface invalid {}\n"
+            .into(),
+    )])
+    .unwrap_err();
+    assert!(
+        format!("{parser_error:#}")
+            .contains("cannot specify both @deprecated without @since or @unstable")
+    );
+}
+
 fn assert_fixture_package_and_order(model: &Model) {
     assert_eq!(model.package.namespace, "example");
     assert_eq!(model.package.name, "model");

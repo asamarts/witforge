@@ -2374,6 +2374,9 @@ fn change_json(change: &diff::Change, decode: diff::DecodeVerdict) -> Value {
             (kind, json!({ "from": from, "to": to }))
         }
         ChangeKind::Renumbered { from, to } => ("renumbered", json!({ "from": from, "to": to })),
+        ChangeKind::StabilityChanged { from, to } => {
+            ("stability-changed", json!({ "from": from, "to": to }))
+        }
     };
     object.insert("kind".to_string(), Value::String(kind.to_string()));
     if let Some(extra) = extra.as_object() {
@@ -2396,6 +2399,9 @@ fn change_label(change: &diff::Change) -> (&'static str, String) {
         ChangeKind::Retyped { from, to } => ("retyped", format!("{from} -> {to}")),
         ChangeKind::KindChanged { from, to } => ("kind-changed", format!("{from} -> {to}")),
         ChangeKind::Renumbered { from, to } => ("renumbered", format!("{from} -> {to}")),
+        ChangeKind::StabilityChanged { from, to } => {
+            ("stability-changed", format!("{from} -> {to}"))
+        }
     }
 }
 
