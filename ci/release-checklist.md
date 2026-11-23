@@ -111,15 +111,14 @@ explicit release-owner action.
 - [ ] Verify GitHub Private Vulnerability Reporting is enabled
       (`gh api repos/asamarts/witforge/private-vulnerability-reporting` returns `{"enabled": true}`;
       enabled and verified 2026-11-22).
-- [ ] Run the gates of [Before publishing](#before-publishing), then set
-      `release_type="$(bash ci/semver-release-type.sh .)"` and run
-      `cargo semver-checks check-release -p witforge --release-type "$release_type"`,
-      `ci/check-release.sh`, `ci/publish.sh --dry-run`, `BUF_REQUIRED=1 ci/check-buf-history.sh`,
-      and the aplan commands (also in CI). The selector permits the reviewed W10-095 break only
-      through the 0.7.0 tag commit and restores `minor` once that tag is an ancestor. Neither
-      compatibility gate names a baseline: the semver check compares with the newest published
-      release, and the protobuf check walks every release tag, so there is nothing to advance
-      after a release.
+- [ ] Run the gates of [Before publishing](#before-publishing), then run
+      `ci/check-semver.sh`, `ci/check-release.sh`, `ci/publish.sh --dry-run`,
+      `BUF_REQUIRED=1 ci/check-buf-history.sh`, and the aplan commands (also in CI). Before and on
+      the 0.7.0 tag, the semver check requires the minor-compatibility failures to equal the exact
+      reviewed W10-095/W10-096 inventory; once that tag is an ancestor, it requires ordinary
+      minor compatibility. Neither compatibility gate names a baseline: the semver check compares
+      the newest published release, and the protobuf check walks every release tag, so there is
+      nothing to advance after a release.
 - [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass. Record the commit SHA
       and job URL; `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push
       --status success` must identify that run.

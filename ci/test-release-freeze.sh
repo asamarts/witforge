@@ -42,6 +42,7 @@ commit() {
 
 # A repository with v0.1 and v0.2 in the working tree, nothing committed.
 unreleased() {
+    cd "${TMP}"
     rm -rf "${TMP}/repo"
     git init -q "${TMP}/repo"
     cd "${TMP}/repo"

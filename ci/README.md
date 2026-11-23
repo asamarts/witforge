@@ -74,14 +74,16 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   policy, and the public [`SECURITY.md`](../SECURITY.md) policy.
 - **benchmark**: runs the small/large contract budget in release mode; property tests run in
   the normal test matrix and in the MSRV job.
-- **package**: `cargo publish --workspace --dry-run`, which packages and verifies both crates,
-  and `ci/test-publish.sh`, which checks that a repeated `ci/publish.sh --dry-run` verifies the
-  CLI against the current library rather than a copy cargo cached for an earlier run.
+- **package**: `ci/test-publish.sh` bumps a committed scratch copy to an unpublished version,
+  packages and verifies both crates through `ci/publish.sh --dry-run`, then changes the library
+  and repeats to prove the CLI is always verified against the current library. A direct workspace
+  dry run at an already-published version would resolve the CLI against crates.io's older copy.
 - **public API compatibility**: installs cargo-semver-checks 0.51.0 and compares the library
-  with the newest release on crates.io that is not newer than the workspace version. The
-  version-scoped selector in `ci/semver-release-type.sh` permits the reviewed W10-095 break
-  through the 0.7.0 tag commit and returns to `--release-type minor` once that tag is an ancestor.
-  The baseline is not named, so it advances with each release.
+  with the newest release on crates.io that is not newer than the workspace version. Before and
+  on the 0.7.0 tag, `ci/check-semver.sh` still runs the minor-compatibility lints and requires
+  their failures to equal `ci/semver-breaking-api.txt`, the exact reviewed W10-095/W10-096
+  break inventory. Once that tag is an ancestor, the check requires ordinary minor
+  compatibility. The baseline is not named, so it advances with each release.
 - **documented public API**: `ci/check-public-api.sh` uses pinned `nightly-2026-09-11` rustdoc JSON
   to compare every public item, field, variant, associated item, explicit trait implementation,
   and extensibility attribute with `docs/design/public-api-inventory.txt`.

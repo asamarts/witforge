@@ -15,9 +15,10 @@ completeness alone is not enough.
       reviewed at 0.4.1 covered. **One planned pre-1.0 exception:** the pre-1.0 minor release
       that lands `W10-095` (marking library model, lockfile, and diagnostic types
       `#[non_exhaustive]` and making unlisted public items private, together with `W10-096`'s
-      structured check findings) breaks the library interface on purpose; `ci.yml` and
-      `release.yml` lift `--release-type minor` for that single release only and restore it for
-      every release after it before 1.0.0
+      structured check findings) breaks the library interface on purpose. Before and on the
+      0.7.0 tag commit, `ci.yml` and `release.yml` still run every minor-compatibility lint and
+      require its failures to equal the exact reviewed W10-095/W10-096 inventory. Once that tag
+      is an ancestor of `HEAD`, ordinary minor compatibility is restored automatically.
 - [ ] the boundary error policy is published: `anyhow::Error` plus the stable `ContractError`
       classification, with no unclassified contract failure
 - [ ] the conformance matrix and `tests/conformance.rs` cover every supported WIT construct and

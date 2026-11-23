@@ -91,13 +91,10 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Install cargo-semver-checks
         run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # W10-095 is the sole planned pre-1.0 API break. The selector returns `major` on the
-      # 0.7.0 tag commit and automatically restores `minor` once that tag is an ancestor.
+      # Before and on the 0.7.0 tag, require exactly the reviewed W10-095/W10-096 semver failures.
+      # Once that tag is an ancestor, this automatically restores ordinary minor compatibility.
       - name: Enforce the version-scoped library API policy
-        shell: bash
-        run: |
-          release_type="$(bash ci/semver-release-type.sh .)"
-          cargo semver-checks check-release -p witforge --release-type "$release_type"
+        run: ci/check-semver.sh
       - name: Install buf
         shell: bash
         env:

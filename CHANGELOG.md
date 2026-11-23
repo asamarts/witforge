@@ -128,9 +128,11 @@ All notable changes to this project are documented here. The format follows
     and downstream struct literals must use the documented constructors, `Default`, parsers, or
     builders.
   - Added a pinned-rustdoc, machine-checked inventory of every public item, field, variant,
-    associated item, explicit trait implementation, and extensibility attribute. Removed the
-    unused `emit::output::absolute` function and made the four internal model size-limit constants
-    private.
+    associated item, explicit trait implementation, and extensibility attribute. The semver gate
+    separately requires its minor-compatibility failures to equal the exact reviewed pre-1.0
+    break inventory through the 0.7.0 tag, so the temporary exception cannot admit an unlisted
+    break. Removed the unused `emit::output::absolute` function and made the four internal model
+    size-limit constants private.
   - **Library migration:** this is the planned pre-1.0 source break. Search library consumers for
     struct literals of `witforge::model`, `witforge::lock`, or `witforge::diagnostic` values and
     for exhaustive matches on their enums; replace literals with constructors and add wildcard

@@ -230,11 +230,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      # Packages and verifies both crates, the CLI against the library through a temporary
-      # registry, so a packaging mistake shows up before a release tag.
-      - run: cargo publish --workspace --dry-run --locked
-      # A second dry run after a library change verifies the CLI against the change, not against
-      # the library cargo unpacked and built for the first run.
+      # Bump a committed scratch copy to an unpublished version, package and verify both crates
+      # through the same temporary-registry flow as release publication, then change the library
+      # and repeat. A direct dry run at the workspace's already-published version would resolve
+      # the CLI against crates.io's older library and fail whenever main uses a new library API.
       - run: ci/test-publish.sh
 
   semver:
@@ -252,13 +251,11 @@ jobs:
         with:
           toolchain: stable
       - run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # W10-095 is the sole planned pre-1.0 API break. The selector permits it through the
-      # 0.7.0 tag commit, then returns to `minor` once that tag is on an ancestor of HEAD.
-      # No baseline is named, so cargo-semver-checks compares with the newest release on
-      # crates.io that is not newer than the workspace version.
-      - run: |
-          release_type="$(bash ci/semver-release-type.sh .)"
-          cargo semver-checks check-release -p witforge --release-type "$release_type"
+      # W10-095 and W10-096 are the final reviewed pre-1.0 API break. Before and on the 0.7.0
+      # tag, this runs every minor-compatibility lint and compares the exact failures with the
+      # reviewed inventory. Once that tag is an ancestor of HEAD, ordinary minor compatibility
+      # is restored. The crates.io baseline is never named, so it advances with each release.
+      - run: ci/check-semver.sh
 
   public-api:
     name: documented public API
