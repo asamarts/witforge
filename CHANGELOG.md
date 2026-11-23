@@ -121,6 +121,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Extensible library data types and a machine-checked public API inventory (`W10-095`):**
+  - Marked every public struct and enum in `model`, `lock`, and `diagnostic`
+    `#[non_exhaustive]`, and added constructors for model values, lockfile inputs, source
+    positions, and related locations. Downstream exhaustive matches now require a wildcard arm,
+    and downstream struct literals must use the documented constructors, `Default`, parsers, or
+    builders.
+  - Added a pinned-rustdoc, machine-checked inventory of every public item, field, variant,
+    associated item, explicit trait implementation, and extensibility attribute. Removed the
+    unused `emit::output::absolute` function and made the four internal model size-limit constants
+    private.
+  - **Library migration:** this is the planned pre-1.0 source break. Search library consumers for
+    struct literals of `witforge::model`, `witforge::lock`, or `witforge::diagnostic` values and
+    for exhaustive matches on their enums; replace literals with constructors and add wildcard
+    match arms. Replace any use of `emit::output::absolute` with `std::path::absolute`, and do not
+    depend on the former internal model limit constants.
+
 - **Source positions, SARIF 2.1.0 physical/logical/related locations, and public diagnostic guide (`W10-080`):**
   - Structured diagnostics (JSON and SARIF) now report physical file paths (cwd-relative with `/`
     or percent-encoded `file:///` URIs outside cwd, never `..` or Windows `\\?\`), 1-based UTF-16

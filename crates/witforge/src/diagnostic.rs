@@ -129,6 +129,7 @@ pub mod codes {
 
 /// Catalogue metadata for one stable diagnostic code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CodeInfo {
     /// The stable diagnostic code (for example `WF1015`).
     pub code: &'static str,
@@ -637,6 +638,7 @@ pub fn explanation(code: &str) -> Option<&'static str> {
 
 /// The severity of a structured diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Severity {
     /// The command cannot produce a valid result.
     Error,
@@ -666,6 +668,7 @@ impl fmt::Display for Severity {
 
 /// A one-based source position. Columns are counted in UTF-16 code units (matching SARIF 2.1.0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Position {
     /// The first line of the range (1-based).
     pub line: usize,
@@ -677,9 +680,23 @@ pub struct Position {
     pub end_column: usize,
 }
 
+impl Position {
+    /// Create a one-based UTF-16 source range.
+    #[must_use]
+    pub const fn new(line: usize, column: usize, end_line: usize, end_column: usize) -> Self {
+        Self {
+            line,
+            column,
+            end_line,
+            end_column,
+        }
+    }
+}
+
 /// A secondary physical source location related to a diagnostic (for example, the `wire.lock`
 /// entry corresponding to a WIT contract discrepancy).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RelatedLocation {
     /// Physical file path.
     pub file: String,
@@ -689,11 +706,24 @@ pub struct RelatedLocation {
     pub message: String,
 }
 
+impl RelatedLocation {
+    /// Create a related physical source location.
+    #[must_use]
+    pub fn new(file: String, position: Option<Position>, message: String) -> Self {
+        Self {
+            file,
+            position,
+            message,
+        }
+    }
+}
+
 /// A [`Diagnostic`] paired with optional declaring physical file, logical contract/member name,
 /// and secondary related locations.
 ///
 /// Kept separate from [`Diagnostic`] so 0.x additions remain minor-SemVer compatible with 0.6.0.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LocatedDiagnostic {
     /// The core diagnostic (`code`, `severity`, `message`, `path`, `position`).
     pub diagnostic: Diagnostic,
@@ -741,6 +771,7 @@ impl LocatedDiagnostic {
 
 /// One machine-readable diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Diagnostic {
     /// A stable code from the diagnostic catalogue.
     pub code: &'static str,

@@ -85,10 +85,7 @@ fn alint_contract_passes_subset_and_model() {
 fn alint_contract_shapes_and_members_are_stable() {
     let model = model();
     let node = model
-        .type_def(&QualifiedName {
-            interface: "types".into(),
-            name: "node".into(),
-        })
+        .type_def(&QualifiedName::new("types".into(), "node".into()))
         .unwrap();
     let node_cases = match &node.kind {
         TypeDefKind::Variant(cases) => cases
@@ -105,10 +102,7 @@ fn alint_contract_shapes_and_members_are_stable() {
     );
 
     let row = model
-        .type_def(&QualifiedName {
-            interface: "types".into(),
-            name: "row".into(),
-        })
+        .type_def(&QualifiedName::new("types".into(), "row".into()))
         .unwrap();
     let row_fields = match &row.kind {
         TypeDefKind::Record(fields) => fields

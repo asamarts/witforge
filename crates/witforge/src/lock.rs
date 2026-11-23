@@ -36,11 +36,20 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A package name in a lockfile key: `namespace:name`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct PackageName {
     /// The package namespace.
     pub namespace: String,
     /// The package name.
     pub name: String,
+}
+
+impl PackageName {
+    /// Create a lockfile package name.
+    #[must_use]
+    pub fn new(namespace: String, name: String) -> Self {
+        Self { namespace, name }
+    }
 }
 
 impl fmt::Display for PackageName {
@@ -51,6 +60,7 @@ impl fmt::Display for PackageName {
 
 /// A parsed, typed lockfile key.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum MemberKey {
     /// `package/interface/type.member`.
     TypeMember {
@@ -229,6 +239,7 @@ impl fmt::Display for MemberKey {
 
 /// One lockfile entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Entry {
     /// The wire number, unique within the member's parent.
     pub number: u32,
@@ -238,6 +249,19 @@ pub struct Entry {
     pub ty: Option<String>,
     /// Whether the member was removed (its number stays taken).
     pub reserved: bool,
+}
+
+impl Entry {
+    /// Create a lockfile entry.
+    #[must_use]
+    pub fn new(number: u32, kind: MemberKind, ty: Option<String>, reserved: bool) -> Self {
+        Self {
+            number,
+            kind,
+            ty,
+            reserved,
+        }
+    }
 }
 
 /// One parent's declaration-order fingerprint and the names it fingerprints.
@@ -266,6 +290,7 @@ impl Order {
 
 /// A parsed lockfile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WireLock {
     entries: BTreeMap<MemberKey, Entry>,
     orders: BTreeMap<String, Order>,
@@ -278,6 +303,7 @@ pub struct WireLock {
 
 /// The classification baseline for a lock operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LockMode<'a> {
     /// Treat every existing entry as released; the default conservative mode.
     Default,
@@ -289,6 +315,7 @@ pub enum LockMode<'a> {
 
 /// One released or structural lockfile discrepancy.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Discrepancy {
     /// The lockfile key the discrepancy concerns, or the order parent for a reorder.
     pub key: String,
@@ -298,6 +325,7 @@ pub struct Discrepancy {
 
 /// What a reconciliation changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Changes {
     /// Members that were assigned a new number.
     pub added: Vec<(String, u32)>,
@@ -330,6 +358,7 @@ impl Changes {
 /// The lockfile is left unchanged when `discrepancies` is non-empty or `changes.reintroduced`
 /// is non-empty. Use this type when a caller must report every refusal instead of the first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Reconciliation {
     /// The changes that a successful reconciliation would make.
     pub changes: Changes,

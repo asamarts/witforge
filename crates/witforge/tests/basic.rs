@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use witforge::lock::{HEADER, WireLock};
 use witforge::{load, model, subset};
@@ -90,12 +91,12 @@ fn lock_is_append_only_across_changes() {
         .filter(|m| m.key() != "example:plugin/types/span.end")
         .cloned()
         .collect();
-    edited.push(model::Member {
-        parent: "example:plugin/types/span".into(),
-        name: "line".into(),
-        kind: model::MemberKind::Field,
-        ty: Some("u64".into()),
-    });
+    edited.push(model::Member::new(
+        "example:plugin/types/span".into(),
+        "line".into(),
+        model::MemberKind::Field,
+        Some("u64".into()),
+    ));
     let older = lock.clone();
     let changes = lock.reconcile(&edited).unwrap();
     assert_eq!(
@@ -166,12 +167,12 @@ fn append_only_check_refuses_renumbering_and_deletion() {
 fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum() {
     // 18999 is the last usable number before protobuf's reserved range.
     let mut lock = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 18999 field u64\n")).unwrap();
-    let member = model::Member {
-        parent: "a:b/i/t".into(),
-        name: "y".into(),
-        kind: model::MemberKind::Field,
-        ty: Some("u64".into()),
-    };
+    let member = model::Member::new(
+        "a:b/i/t".into(),
+        "y".into(),
+        model::MemberKind::Field,
+        Some("u64".into()),
+    );
     let changes = lock.reconcile(&[member]).unwrap();
     assert_eq!(changes.added, vec![("a:b/i/t.y".to_string(), 20_000)]);
     assert_eq!(lock.get("a:b/i/t.y").unwrap().number, 20_000);
@@ -179,12 +180,12 @@ fn number_assignment_skips_the_protobuf_reserved_range_and_stops_at_the_maximum(
     // The last valid field number cannot be followed by another member in the same parent.
     let mut full =
         WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 536870911 field u64\n")).unwrap();
-    let member = model::Member {
-        parent: "a:b/i/t".into(),
-        name: "y".into(),
-        kind: model::MemberKind::Field,
-        ty: Some("u64".into()),
-    };
+    let member = model::Member::new(
+        "a:b/i/t".into(),
+        "y".into(),
+        model::MemberKind::Field,
+        Some("u64".into()),
+    );
     let err = full.reconcile(&[member]).unwrap_err();
     assert!(format!("{err:#}").contains("no protobuf field numbers left"));
     assert!(full.get("a:b/i/t.y").is_none());
@@ -212,6 +213,152 @@ fn parse_rejects_bad_lockfiles() {
     ] {
         assert!(WireLock::parse(&bad).is_err(), "{bad:?} should fail");
     }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn public_data_types_are_extensible_and_constructible_downstream() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-public-api-consumer-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    let dependency = env!("CARGO_MANIFEST_DIR")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    fs::write(
+        root.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"witforge-public-api-consumer\"\nversion = \"0.0.0\"\n\
+             edition = \"2021\"\n\n[dependencies]\nwitforge = {{ path = \"{dependency}\" }}\n\n[workspace]\n"
+        ),
+    )
+    .unwrap();
+
+    let positive = r#"
+use witforge::diagnostic::{Diagnostic, LocatedDiagnostic, Position, RelatedLocation, Severity};
+use witforge::lock::{Entry, PackageName};
+use witforge::model::{
+    Case, Dependency, Field, Flag, Function, Interface, Member, MemberKind, Model, Package, Param,
+    QualifiedName, ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr, Version, World,
+    WorldInterface,
+};
+
+pub fn construct() {
+    let version = Version::new(0, 1, 0);
+    let qualified = QualifiedName::new("types".into(), "value".into());
+    let result = ResultExpr::new(Some(Box::new(TypeExpr::Named(qualified))), None);
+    let field = Field::new("value".into(), String::new(), TypeExpr::U64);
+    let case = Case::new("some".into(), String::new(), Some(TypeExpr::U64));
+    let flag = Flag::new("enabled".into(), String::new());
+    let type_def = TypeDef::new(
+        "value".into(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Record(vec![field]),
+    );
+    let param = Param::new("input".into(), TypeExpr::Result(result));
+    let function = Function::new(
+        "call".into(),
+        String::new(),
+        Stability::Unknown,
+        vec![param],
+        Some(TypeExpr::U64),
+    );
+    let interface = Interface::new(
+        "types".into(),
+        String::new(),
+        Stability::Unknown,
+        vec![type_def],
+        vec![function],
+    );
+    let package = Package::new("example".into(), "api".into(), version, String::new());
+    let world_interface =
+        WorldInterface::new("types".into(), None, String::new(), Stability::Unknown);
+    let world = World::new(
+        "plugin".into(),
+        String::new(),
+        Stability::Unknown,
+        vec![world_interface],
+        Vec::new(),
+    );
+    let dependency = Dependency::new(package.clone(), vec![interface.clone()]);
+    let model = Model::new(package, vec![interface], vec![world], vec![dependency]);
+    let member = Member::new(
+        "example:api/types/value".into(),
+        "value".into(),
+        MemberKind::Field,
+        Some("u64".into()),
+    );
+    let package_name = PackageName::new("example".into(), "api".into());
+    let entry = Entry::new(1, MemberKind::Field, Some("u64".into()), false);
+    let position = Position::new(1, 1, 1, 2);
+    let related = RelatedLocation::new("contract.wit".into(), Some(position), "declared here".into());
+    let diagnostic = Diagnostic::new("WF0000", Severity::Note, "note");
+    let located = LocatedDiagnostic::from_diagnostic(diagnostic).with_related(related);
+    let _ = (model, member, package_name, entry, case, flag, located);
+}
+"#;
+    fs::write(root.join("src/lib.rs"), positive).unwrap();
+    let target = root.join("target");
+    let manifest = root.join("Cargo.toml");
+    let output = Command::new(env!("CARGO"))
+        .args(["check", "--offline", "--quiet", "--manifest-path"])
+        .arg(&manifest)
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "public constructors did not compile:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let negative = r#"
+use witforge::diagnostic::{Position, Severity};
+use witforge::lock::{LockMode, PackageName};
+use witforge::model::{Stability, Version};
+
+pub fn structs() {
+    let _ = Version { major: 0, minor: 1, patch: 0 };
+    let _ = PackageName { namespace: "example".into(), name: "api".into() };
+    let _ = Position { line: 1, column: 1, end_line: 1, end_column: 2 };
+}
+
+pub fn enums(stability: Stability, mode: LockMode<'_>, severity: Severity) {
+    match stability {
+        Stability::Unknown | Stability::Unstable { .. } | Stability::Stable { .. } => {}
+    }
+    match mode {
+        LockMode::Default | LockMode::First | LockMode::Against(_) => {}
+    }
+    match severity {
+        Severity::Error | Severity::Warning | Severity::Note => {}
+    }
+}
+"#;
+    fs::write(root.join("src/lib.rs"), negative).unwrap();
+    let output = Command::new(env!("CARGO"))
+        .args(["check", "--offline", "--quiet", "--manifest-path"])
+        .arg(&manifest)
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "non-exhaustive API unexpectedly compiled"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.matches("error[E0639]").count() >= 3,
+        "expected struct-literal refusals:\n{stderr}"
+    );
+    assert!(
+        stderr.matches("error[E0004]").count() >= 3,
+        "expected exhaustive-match refusals:\n{stderr}"
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn temp_wit_dir(name: &str, contract: &str) -> std::path::PathBuf {

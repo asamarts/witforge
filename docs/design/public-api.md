@@ -17,23 +17,46 @@ The public surface is the modules and items below. Within 1.x:
 
 | Module | Stable surface |
 |---|---|
-| crate root | `Contract`, `ContractError`, `DiagnosticError`, `load`, `is_contract_error`, `error_diagnostics`, `error_located_diagnostics`, `ReleasedManifest` (including `is_retired`, `retired_directories`, `live_directories`), `validate_retirement_order`, `discover_version_directories`, `ensure_no_symlinks_in_dir`, release-manifest helpers, version-directory and released-directory helpers |
-| `model` | `Version`, `Stability`, `QualifiedName`, `TypeExpr`, `ResultExpr`, `Field`, `Case`, `Flag`, `TypeDef`, `TypeDefKind`, `Param`, `Function`, `Interface`, `WorldInterface`, `World`, `Package`, `Dependency`, `Model`, `MemberKind`, `Member`, `build`, and `members` |
-| `lock` | `HEADER`, `ORDER_HEADER`, `PackageName`, `MemberKey`, `Entry`, `WireLock`, `LockMode`, `Changes`, `Discrepancy`, `Reconciliation`, and their documented methods |
+| crate root | `Contract`, `ContractError`, `DiagnosticError`, `load`, `is_contract_error`, `error_diagnostics`, `error_located_diagnostics`, `ensure_same_dependency_graph`, `RELEASED_MANIFEST`, `ReleasedManifest`, `validate_retirement_order`, `discover_version_directories`, `ensure_no_symlinks_in_dir`, `default_released_manifest`, `ensure_version_directory`, `ensure_directory_version`, `load_released_manifest`, `load_root_released_manifest`, `ensure_not_released`, `is_released`, `ensure_lockfile_not_released` |
+| `model` | `Version`, `Stability`, `QualifiedName`, `TypeExpr`, `ResultExpr`, `Field`, `Case`, `Flag`, `TypeDef`, `TypeDefKind`, `Param`, `Function`, `Interface`, `WorldInterface`, `World`, `Package`, `Dependency`, `Model`, `MemberKind`, `Member`, `build`, `members`, and their documented constructors, lookups, canonicalization, and member extraction methods |
+| `lock` | `HEADER`, `ORDER_HEADER`, `PackageName`, `MemberKey`, `Entry`, `WireLock`, `LockMode`, `Changes`, `Discrepancy`, `Reconciliation`, and their documented constructors, parsing, reconciliation, validation, inspection, rendering, and writing methods |
 | `emit::rust` | `HEADER`, `plan`, `plan_with_serde`, `plan_with_released`, `generate`, `generate_with_serde`, `check`, `check_with_serde`, `version_module_name`, `emit_version`, `emit_version_with_serde` |
 | `emit::proto` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_major` |
 | `emit::json_schema` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_version` |
 | `emit::glue` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
-| `emit::output` | `GeneratedFiles`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root`, `absolute` |
+| `emit::output` | `GeneratedFiles` and its documented methods, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
 | `diff` | `Endpoint`, `Change`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `ConversionOmission`, `DecodeVerdict`, `DecodeSummary`, `DiffAnalysis`, `FullDiff`, `compare`, `compare_with_impacts`, `compare_omissions`, `compare_with_locations`, `compare_with_omissions`, `compare_full` |
-| `diagnostic` | `codes`, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity` |
+| `diagnostic` | `codes` and its constants, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity`, and their documented constructors and builders |
 | `freeze` | `FreezeOptions`, `FreezeReport`, `check_root` |
 | `subset` | `Violation`, `check`, `check_diagnostics`, `check_located_diagnostics` |
 
+The exact line-oriented inventory is
+[`public-api-inventory.txt`](public-api-inventory.txt). It records every public module, type,
+variant, field, function, associated item, explicit trait implementation, and
+`#[non_exhaustive]` promise. `ci/check-public-api.sh` regenerates it from rustdoc JSON under the
+pinned `nightly-2026-09-11` toolchain and fails on either an undocumented addition or a removal.
+The module table above is the human map; the checked inventory is the exhaustive surface.
+
+## Data type evolution and construction
+
+Every public struct and enum in `model`, `lock`, and `diagnostic` is `#[non_exhaustive]`.
+Downstream matches therefore require a wildcard arm, and downstream code constructs public
+model values, lockfile inputs, and diagnostic locations through the documented `new` constructors,
+`Default`, parsers, or builders rather than struct literals. Their public fields remain readable
+and mutable. Adding a field or variant is compatible within 1.x; changing or removing an existing
+field or variant remains breaking.
+
+The explicit trait implementations in the checked inventory are promised API, including derived
+`Debug`, `Clone`, `Copy`, equality, ordering, hashing, and `Default` implementations. Adding a
+constructor does not make construction part of the compiler pipeline: `model::build` remains the
+normal way to obtain a model from WIT.
+
+The `diff` report types are deliberately fixed exhaustive values for 1.0. Adding a field to
+`ConversionImpact`, `DiffAnalysis`, or another listed diff value is a new type or a major-version
+change, not an additive minor change.
+
 `diff::compare_with_impacts` returns the same `DiffReport` as `diff::compare` plus informational
 `ConversionImpact` notes. The notes do not change compatibility counts or `--check` behavior.
-`ConversionImpact` and `DiffAnalysis` are fixed value types for 1.0: adding a field is a new type
-or a major-version change, not an additive minor change.
 
 `Contract` is opaque: its `wit-parser` fields are crate-private and cannot be constructed or
 mutated by downstream code.

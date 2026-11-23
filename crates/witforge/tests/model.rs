@@ -122,10 +122,7 @@ fn assert_fixture_package_and_order(model: &Model) {
 
 fn assert_fixture_shapes(model: &Model) {
     let all = model
-        .type_def(&QualifiedName {
-            interface: "primitives".into(),
-            name: "all".into(),
-        })
+        .type_def(&QualifiedName::new("primitives".into(), "all".into()))
         .unwrap();
     match &all.kind {
         TypeDefKind::Record(fields) => {
@@ -144,10 +141,7 @@ fn assert_fixture_shapes(model: &Model) {
     }
 
     let choice = model
-        .type_def(&QualifiedName {
-            interface: "primitives".into(),
-            name: "choice".into(),
-        })
+        .type_def(&QualifiedName::new("primitives".into(), "choice".into()))
         .unwrap();
     match &choice.kind {
         TypeDefKind::Variant(cases) => {
@@ -165,10 +159,7 @@ fn assert_fixture_shapes(model: &Model) {
         ("all", "record"),
     ] {
         let def = model
-            .type_def(&QualifiedName {
-                interface: "primitives".into(),
-                name: name.into(),
-            })
+            .type_def(&QualifiedName::new("primitives".into(), name.into()))
             .unwrap();
         match (matches_kind, &def.kind) {
             ("enum", TypeDefKind::Enum(_))
@@ -179,10 +170,7 @@ fn assert_fixture_shapes(model: &Model) {
     }
 
     let ewhere = model
-        .type_def(&QualifiedName {
-            interface: "type".into(),
-            name: "where".into(),
-        })
+        .type_def(&QualifiedName::new("type".into(), "where".into()))
         .unwrap();
     match &ewhere.kind {
         TypeDefKind::Record(fields) => {
@@ -206,10 +194,7 @@ fn assert_fixture_type_docs(model: &Model) {
         }
     );
     let all = model
-        .type_def(&QualifiedName {
-            interface: "primitives".into(),
-            name: "all".into(),
-        })
+        .type_def(&QualifiedName::new("primitives".into(), "all".into()))
         .unwrap();
     assert_eq!(all.docs.trim(), "A record containing every primitive.");
     assert_eq!(
@@ -226,10 +211,7 @@ fn assert_fixture_type_docs(model: &Model) {
     assert_eq!(fields[11].docs.trim(), "A string.");
 
     let choice = model
-        .type_def(&QualifiedName {
-            interface: "primitives".into(),
-            name: "choice".into(),
-        })
+        .type_def(&QualifiedName::new("primitives".into(), "choice".into()))
         .unwrap();
     assert_eq!(
         choice.docs.trim(),
@@ -243,10 +225,7 @@ fn assert_fixture_type_docs(model: &Model) {
     assert_eq!(cases[1].docs.trim(), "No payload.");
 
     let status = model
-        .type_def(&QualifiedName {
-            interface: "primitives".into(),
-            name: "status".into(),
-        })
+        .type_def(&QualifiedName::new("primitives".into(), "status".into()))
         .unwrap();
     assert_eq!(status.docs.trim(), "An enum.");
     let status_cases = match &status.kind {
@@ -257,10 +236,10 @@ fn assert_fixture_type_docs(model: &Model) {
     assert_eq!(status_cases[1].docs.trim(), "Done.");
 
     let permissions = model
-        .type_def(&QualifiedName {
-            interface: "primitives".into(),
-            name: "permissions".into(),
-        })
+        .type_def(&QualifiedName::new(
+            "primitives".into(),
+            "permissions".into(),
+        ))
         .unwrap();
     assert_eq!(permissions.docs.trim(), "Flags.");
     let flags = match &permissions.kind {
@@ -271,10 +250,10 @@ fn assert_fixture_type_docs(model: &Model) {
     assert_eq!(flags[1].docs.trim(), "Write permission.");
 
     let experimental = model
-        .type_def(&QualifiedName {
-            interface: "primitives".into(),
-            name: "experimental".into(),
-        })
+        .type_def(&QualifiedName::new(
+            "primitives".into(),
+            "experimental".into(),
+        ))
         .unwrap();
     assert_eq!(
         experimental.stability,
@@ -606,10 +585,10 @@ fn assert_package_and_types(model: &Model) {
             assert_eq!(cases[0].name, "replace");
             assert_eq!(
                 cases[0].payload,
-                Some(TypeExpr::Named(QualifiedName {
-                    interface: "types".into(),
-                    name: "span".into(),
-                }))
+                Some(TypeExpr::Named(QualifiedName::new(
+                    "types".into(),
+                    "span".into(),
+                )))
             );
             assert_eq!(cases[1].name, "delete-file");
             assert_eq!(cases[1].payload, None);
@@ -644,6 +623,7 @@ fn assert_analyzer(model: &Model) {
         Some(TypeExpr::Result(ResultExpr {
             ok: Some(ok),
             err: Some(err),
+            ..
         })) => {
             assert_eq!(**err, TypeExpr::String);
             match &**ok {
@@ -683,10 +663,7 @@ fn assert_world_and_lookup(model: &Model) {
     assert!(model.interface("missing").is_none());
     assert_eq!(
         model
-            .type_def(&QualifiedName {
-                interface: "types".into(),
-                name: "span".into(),
-            })
+            .type_def(&QualifiedName::new("types".into(), "span".into()))
             .unwrap()
             .name,
         "span"
@@ -706,10 +683,7 @@ fn build_carries_docs_and_stability_and_keeps_unstable_items() {
         }
     );
     let span = model
-        .type_def(&QualifiedName {
-            interface: "types".into(),
-            name: "span".into(),
-        })
+        .type_def(&QualifiedName::new("types".into(), "span".into()))
         .unwrap();
     assert_eq!(span.docs.trim(), "A stable span.");
     assert_eq!(
@@ -719,10 +693,7 @@ fn build_carries_docs_and_stability_and_keeps_unstable_items() {
         }
     );
     let mode = model
-        .type_def(&QualifiedName {
-            interface: "types".into(),
-            name: "mode".into(),
-        })
+        .type_def(&QualifiedName::new("types".into(), "mode".into()))
         .unwrap();
     assert_eq!(
         mode.stability,
@@ -750,17 +721,14 @@ fn build_carries_docs_and_stability_and_keeps_unstable_items() {
     );
     assert_eq!(
         read.params[0].ty,
-        TypeExpr::Named(QualifiedName {
-            interface: "types".into(),
-            name: "span".into(),
-        })
+        TypeExpr::Named(QualifiedName::new("types".into(), "span".into()))
     );
     assert_eq!(
         read.result,
-        Some(TypeExpr::Named(QualifiedName {
-            interface: "types".into(),
-            name: "span".into(),
-        }))
+        Some(TypeExpr::Named(QualifiedName::new(
+            "types".into(),
+            "span".into(),
+        )))
     );
     assert_eq!(types.functions[1].name, "write");
     assert_eq!(types.functions[1].result, None);
@@ -838,10 +806,7 @@ world plugin {
 }
 
 fn named(interface: &str, name: &str) -> TypeExpr {
-    TypeExpr::Named(QualifiedName {
-        interface: interface.into(),
-        name: name.into(),
-    })
+    TypeExpr::Named(QualifiedName::new(interface.into(), name.into()))
 }
 
 #[test]
@@ -887,10 +852,10 @@ fn canonical_types_cover_primitives_and_nesting() {
     );
 
     let nested = TypeExpr::List(Box::new(TypeExpr::Option(Box::new(TypeExpr::Result(
-        ResultExpr {
-            ok: Some(Box::new(TypeExpr::U8)),
-            err: Some(Box::new(TypeExpr::String)),
-        },
+        ResultExpr::new(
+            Some(Box::new(TypeExpr::U8)),
+            Some(Box::new(TypeExpr::String)),
+        ),
     )))));
     assert_eq!(
         model.canonical_type(&nested).unwrap(),
@@ -904,28 +869,28 @@ fn canonical_types_cover_primitives_and_nesting() {
     );
     assert_eq!(
         model
-            .canonical_type(&TypeExpr::Result(ResultExpr {
-                ok: Some(Box::new(TypeExpr::U32)),
-                err: None,
-            }))
+            .canonical_type(&TypeExpr::Result(ResultExpr::new(
+                Some(Box::new(TypeExpr::U32)),
+                None,
+            )))
             .unwrap(),
         "result<u32,_>"
     );
     assert_eq!(
         model
-            .canonical_type(&TypeExpr::Result(ResultExpr {
-                ok: None,
-                err: Some(Box::new(TypeExpr::String)),
-            }))
+            .canonical_type(&TypeExpr::Result(ResultExpr::new(
+                None,
+                Some(Box::new(TypeExpr::String)),
+            )))
             .unwrap(),
         "result<_,string>"
     );
     assert_eq!(
         model
-            .canonical_type(&TypeExpr::Result(ResultExpr {
-                ok: Some(Box::new(named("analyzer", "finding"))),
-                err: Some(Box::new(named("analyzer", "finding"))),
-            }))
+            .canonical_type(&TypeExpr::Result(ResultExpr::new(
+                Some(Box::new(named("analyzer", "finding"))),
+                Some(Box::new(named("analyzer", "finding"))),
+            )))
             .unwrap(),
         "result<types/finding,types/finding>"
     );
@@ -1015,54 +980,48 @@ fn canonical_types_reject_missing_types_and_cycles() {
     let mut model = build("ok");
     assert!(model.canonical_type(&named("types", "missing")).is_err());
 
-    let cycle = QualifiedName {
-        interface: "analyzer".into(),
-        name: "cycle".into(),
-    };
-    model.interfaces[1].types.push(TypeDef {
-        name: "cycle".into(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Alias(TypeExpr::Named(cycle.clone())),
-    });
+    let cycle = QualifiedName::new("analyzer".into(), "cycle".into());
+    model.interfaces[1].types.push(TypeDef::new(
+        "cycle".into(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Alias(TypeExpr::Named(cycle.clone())),
+    ));
     assert!(model.canonical_type(&TypeExpr::Named(cycle)).is_err());
 
     for (name, kind) in [
         (
             "cycle-list",
-            TypeDefKind::List(TypeExpr::Named(QualifiedName {
-                interface: "analyzer".into(),
-                name: "cycle-list".into(),
-            })),
+            TypeDefKind::List(TypeExpr::Named(QualifiedName::new(
+                "analyzer".into(),
+                "cycle-list".into(),
+            ))),
         ),
         (
             "cycle-option",
-            TypeDefKind::Option(TypeExpr::Named(QualifiedName {
-                interface: "analyzer".into(),
-                name: "cycle-option".into(),
-            })),
+            TypeDefKind::Option(TypeExpr::Named(QualifiedName::new(
+                "analyzer".into(),
+                "cycle-option".into(),
+            ))),
         ),
         (
             "cycle-result",
-            TypeDefKind::Result(ResultExpr {
-                ok: Some(Box::new(TypeExpr::Named(QualifiedName {
-                    interface: "analyzer".into(),
-                    name: "cycle-result".into(),
-                }))),
-                err: None,
-            }),
+            TypeDefKind::Result(ResultExpr::new(
+                Some(Box::new(TypeExpr::Named(QualifiedName::new(
+                    "analyzer".into(),
+                    "cycle-result".into(),
+                )))),
+                None,
+            )),
         ),
     ] {
-        let name = QualifiedName {
-            interface: "analyzer".into(),
-            name: name.into(),
-        };
-        model.interfaces[1].types.push(TypeDef {
-            name: name.name.clone(),
-            docs: String::new(),
-            stability: Stability::Unknown,
+        let name = QualifiedName::new("analyzer".into(), name.into());
+        model.interfaces[1].types.push(TypeDef::new(
+            name.name.clone(),
+            String::new(),
+            Stability::Unknown,
             kind,
-        });
+        ));
         assert!(model.canonical_type(&TypeExpr::Named(name)).is_err());
     }
 }
@@ -1286,10 +1245,7 @@ interface user {
     assert_eq!(call.params[0].name, "value");
     assert_eq!(
         call.params[0].ty,
-        TypeExpr::Named(QualifiedName {
-            interface: "user".into(),
-            name: "local-where".into(),
-        })
+        TypeExpr::Named(QualifiedName::new("user".into(), "local-where".into(),))
     );
     assert_eq!(call.result, Some(call.params[0].ty.clone()));
 
@@ -1437,11 +1393,7 @@ fn public_model_api_is_usable_without_wit_parser() {
 #[test]
 fn qualified_names_render_as_interface_slash_type() {
     assert_eq!(
-        QualifiedName {
-            interface: "types".into(),
-            name: "span".into(),
-        }
-        .to_string(),
+        QualifiedName::new("types".into(), "span".into()).to_string(),
         "types/span"
     );
 }

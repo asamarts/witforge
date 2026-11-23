@@ -42,57 +42,46 @@ fn type_expr(seed: u8, depth: u8) -> TypeExpr {
         0..=11 => primitive(seed),
         12 => TypeExpr::Option(Box::new(type_expr(seed / 3, depth + 1))),
         13 => TypeExpr::List(Box::new(type_expr(seed / 5, depth + 1))),
-        _ => TypeExpr::Result(ResultExpr {
-            ok: Some(Box::new(type_expr(seed / 2, depth + 1))),
-            err: Some(Box::new(type_expr(seed / 7, depth + 1))),
-        }),
+        _ => TypeExpr::Result(ResultExpr::new(
+            Some(Box::new(type_expr(seed / 2, depth + 1))),
+            Some(Box::new(type_expr(seed / 7, depth + 1))),
+        )),
     }
 }
 
 fn named(interface: &str, name: &str) -> TypeExpr {
-    TypeExpr::Named(QualifiedName {
-        interface: interface.to_string(),
-        name: name.to_string(),
-    })
+    TypeExpr::Named(QualifiedName::new(interface.to_string(), name.to_string()))
 }
 
 fn case(name: &str, payload: Option<TypeExpr>) -> Case {
-    Case {
-        name: name.to_string(),
-        docs: String::new(),
-        payload,
-    }
+    Case::new(name.to_string(), String::new(), payload)
 }
 
 fn field(name: &str, ty: TypeExpr) -> Field {
-    Field {
-        name: name.to_string(),
-        docs: String::new(),
-        ty,
-    }
+    Field::new(name.to_string(), String::new(), ty)
 }
 
 /// Build a model containing every supported type definition kind, every [`TypeExpr`], a world,
 /// a function, and named aliases and structural types.
 #[allow(clippy::too_many_lines)]
 fn model(fields: &[u8], params: &[u8], result: u8) -> Model {
-    let record0 = TypeDef {
-        name: "record0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Record(
+    let record0 = TypeDef::new(
+        "record0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Record(
             fields
                 .iter()
                 .enumerate()
                 .map(|(index, seed)| field(&format!("f{index}"), type_expr(*seed, 0)))
                 .collect(),
         ),
-    };
-    let record1 = TypeDef {
-        name: "record1".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Record(vec![
+    );
+    let record1 = TypeDef::new(
+        "record1".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Record(vec![
             field("named", named("types", "record0")),
             field(
                 "nested-list",
@@ -103,12 +92,12 @@ fn model(fields: &[u8], params: &[u8], result: u8) -> Model {
                 TypeExpr::Option(Box::new(named("types", "option0"))),
             ),
         ]),
-    };
-    let variant = TypeDef {
-        name: "variant0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Variant(vec![
+    );
+    let variant = TypeDef::new(
+        "variant0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Variant(vec![
             case("empty", None),
             case("payload", Some(type_expr(fields[0], 0))),
             case(
@@ -116,98 +105,85 @@ fn model(fields: &[u8], params: &[u8], result: u8) -> Model {
                 Some(TypeExpr::List(Box::new(type_expr(result, 0)))),
             ),
         ]),
-    };
-    let enumeration = TypeDef {
-        name: "enum0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Enum(vec![case("a", None), case("b", None), case("c", None)]),
-    };
-    let flags = TypeDef {
-        name: "flags0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Flags(vec![
-            Flag {
-                name: "a".to_string(),
-                docs: String::new(),
-            },
-            Flag {
-                name: "b".to_string(),
-                docs: String::new(),
-            },
+    );
+    let enumeration = TypeDef::new(
+        "enum0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Enum(vec![case("a", None), case("b", None), case("c", None)]),
+    );
+    let flags = TypeDef::new(
+        "flags0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Flags(vec![
+            Flag::new("a".to_string(), String::new()),
+            Flag::new("b".to_string(), String::new()),
         ]),
-    };
-    let alias = TypeDef {
-        name: "alias0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Alias(named("types", "record0")),
-    };
-    let list = TypeDef {
-        name: "list0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::List(type_expr(result, 0)),
-    };
-    let option = TypeDef {
-        name: "option0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Option(type_expr(result, 1)),
-    };
-    let result_type = TypeDef {
-        name: "result0".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Result(ResultExpr {
-            ok: Some(Box::new(type_expr(result, 0))),
-            err: Some(Box::new(type_expr(result / 2, 0))),
-        }),
-    };
-    let one_sided_result = TypeDef {
-        name: "result1".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        kind: TypeDefKind::Result(ResultExpr {
-            ok: Some(Box::new(named("types", "record0"))),
-            err: None,
-        }),
-    };
-    let function = Function {
-        name: "call".to_string(),
-        docs: String::new(),
-        stability: Stability::Unknown,
-        params: params
+    );
+    let alias = TypeDef::new(
+        "alias0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Alias(named("types", "record0")),
+    );
+    let list = TypeDef::new(
+        "list0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::List(type_expr(result, 0)),
+    );
+    let option = TypeDef::new(
+        "option0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Option(type_expr(result, 1)),
+    );
+    let result_type = TypeDef::new(
+        "result0".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Result(ResultExpr::new(
+            Some(Box::new(type_expr(result, 0))),
+            Some(Box::new(type_expr(result / 2, 0))),
+        )),
+    );
+    let one_sided_result = TypeDef::new(
+        "result1".to_string(),
+        String::new(),
+        Stability::Unknown,
+        TypeDefKind::Result(ResultExpr::new(
+            Some(Box::new(named("types", "record0"))),
+            None,
+        )),
+    );
+    let function = Function::new(
+        "call".to_string(),
+        String::new(),
+        Stability::Unknown,
+        params
             .iter()
             .enumerate()
-            .map(|(index, seed)| Param {
-                name: format!("p{index}"),
-                ty: type_expr(*seed, 0),
-            })
-            .chain(std::iter::once(Param {
-                name: "named".to_string(),
-                ty: named("types", "record0"),
-            }))
+            .map(|(index, seed)| Param::new(format!("p{index}"), type_expr(*seed, 0)))
+            .chain(std::iter::once(Param::new(
+                "named".to_string(),
+                named("types", "record0"),
+            )))
             .collect(),
-        result: Some(type_expr(result, 0)),
-    };
-    Model {
-        package: Package {
-            namespace: "example".to_string(),
-            name: "properties".to_string(),
-            version: Version {
-                major: 0,
-                minor: 1,
-                patch: 0,
-            },
-            docs: String::new(),
-        },
-        interfaces: vec![Interface {
-            name: "types".to_string(),
-            docs: String::new(),
-            stability: Stability::Unknown,
-            types: vec![
+        Some(type_expr(result, 0)),
+    );
+    Model::new(
+        Package::new(
+            "example".to_string(),
+            "properties".to_string(),
+            Version::new(0, 1, 0),
+            String::new(),
+        ),
+        vec![Interface::new(
+            "types".to_string(),
+            String::new(),
+            Stability::Unknown,
+            vec![
                 record0,
                 record1,
                 variant,
@@ -219,27 +195,27 @@ fn model(fields: &[u8], params: &[u8], result: u8) -> Model {
                 result_type,
                 one_sided_result,
             ],
-            functions: vec![function],
-        }],
-        worlds: vec![World {
-            name: "world0".to_string(),
-            docs: String::new(),
-            stability: Stability::Unknown,
-            imports: vec![WorldInterface {
-                interface: "types".to_string(),
-                package: None,
-                docs: String::new(),
-                stability: Stability::Unknown,
-            }],
-            exports: vec![WorldInterface {
-                interface: "types".to_string(),
-                package: None,
-                docs: String::new(),
-                stability: Stability::Unknown,
-            }],
-        }],
-        dependencies: Vec::new(),
-    }
+            vec![function],
+        )],
+        vec![World::new(
+            "world0".to_string(),
+            String::new(),
+            Stability::Unknown,
+            vec![WorldInterface::new(
+                "types".to_string(),
+                None,
+                String::new(),
+                Stability::Unknown,
+            )],
+            vec![WorldInterface::new(
+                "types".to_string(),
+                None,
+                String::new(),
+                Stability::Unknown,
+            )],
+        )],
+        Vec::new(),
+    )
 }
 
 proptest! {

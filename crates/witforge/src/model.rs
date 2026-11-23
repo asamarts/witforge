@@ -20,16 +20,17 @@ use wit_parser::{
 use crate::Contract;
 
 /// Maximum nested `list`, `option`, and `result` levels in one type expression.
-pub const MAX_TYPE_NESTING: usize = 32;
+pub(crate) const MAX_TYPE_NESTING: usize = 32;
 /// Maximum number of alias links followed while resolving one type expression.
-pub const MAX_ALIAS_CHAIN: usize = 32;
+pub(crate) const MAX_ALIAS_CHAIN: usize = 32;
 /// Maximum bytes in one canonical type string.
-pub const MAX_CANONICAL_TYPE_BYTES: usize = 1024;
+pub(crate) const MAX_CANONICAL_TYPE_BYTES: usize = 1024;
 /// Maximum bytes in one synthesized protobuf wrapper name.
-pub const MAX_WRAPPER_NAME_BYTES: usize = 1024;
+pub(crate) const MAX_WRAPPER_NAME_BYTES: usize = 1024;
 
 /// A contract version, used for package versions and `@since` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct Version {
     /// Major version.
     pub major: u64,
@@ -37,6 +38,18 @@ pub struct Version {
     pub minor: u64,
     /// Patch version.
     pub patch: u64,
+}
+
+impl Version {
+    /// Create a contract version.
+    #[must_use]
+    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
 }
 
 impl fmt::Display for Version {
@@ -47,6 +60,7 @@ impl fmt::Display for Version {
 
 /// WIT stability metadata attached to an item.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Stability {
     /// No `@since` or `@unstable` attribute.
     Unknown,
@@ -64,6 +78,7 @@ pub enum Stability {
 
 /// A type reference to a named type in the contract package or a standard `deps/` dependency.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct QualifiedName {
     /// The defining interface.
     pub interface: String,
@@ -78,6 +93,12 @@ impl fmt::Display for QualifiedName {
 }
 
 impl QualifiedName {
+    /// Create a reference to a named type.
+    #[must_use]
+    pub fn new(interface: String, name: String) -> Self {
+        Self { interface, name }
+    }
+
     /// The package identity when this name belongs to a dependency, as
     /// `(namespace, package)`; `None` for a name in the root package.
     #[must_use]
@@ -103,6 +124,7 @@ impl QualifiedName {
 
 /// A type expression in the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TypeExpr {
     /// `bool`.
     Bool,
@@ -140,6 +162,7 @@ pub enum TypeExpr {
 
 /// The two payload slots of a `result`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ResultExpr {
     /// The success payload, or `None` for `_`.
     pub ok: Option<Box<TypeExpr>>,
@@ -147,8 +170,17 @@ pub struct ResultExpr {
     pub err: Option<Box<TypeExpr>>,
 }
 
+impl ResultExpr {
+    /// Create the payload slots of a `result`.
+    #[must_use]
+    pub fn new(ok: Option<Box<TypeExpr>>, err: Option<Box<TypeExpr>>) -> Self {
+        Self { ok, err }
+    }
+}
+
 /// A record field.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Field {
     /// The field name.
     pub name: String,
@@ -158,8 +190,17 @@ pub struct Field {
     pub ty: TypeExpr,
 }
 
+impl Field {
+    /// Create a record field.
+    #[must_use]
+    pub fn new(name: String, docs: String, ty: TypeExpr) -> Self {
+        Self { name, docs, ty }
+    }
+}
+
 /// A variant or enum case.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Case {
     /// The case name.
     pub name: String,
@@ -169,8 +210,21 @@ pub struct Case {
     pub payload: Option<TypeExpr>,
 }
 
+impl Case {
+    /// Create a variant or enum case.
+    #[must_use]
+    pub fn new(name: String, docs: String, payload: Option<TypeExpr>) -> Self {
+        Self {
+            name,
+            docs,
+            payload,
+        }
+    }
+}
+
 /// A flags member.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Flag {
     /// The flag name.
     pub name: String,
@@ -178,8 +232,17 @@ pub struct Flag {
     pub docs: String,
 }
 
+impl Flag {
+    /// Create a flags member.
+    #[must_use]
+    pub fn new(name: String, docs: String) -> Self {
+        Self { name, docs }
+    }
+}
+
 /// The definition of a named type in an interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TypeDef {
     /// The type name.
     pub name: String,
@@ -191,8 +254,22 @@ pub struct TypeDef {
     pub kind: TypeDefKind,
 }
 
+impl TypeDef {
+    /// Create a named type definition.
+    #[must_use]
+    pub fn new(name: String, docs: String, stability: Stability, kind: TypeDefKind) -> Self {
+        Self {
+            name,
+            docs,
+            stability,
+            kind,
+        }
+    }
+}
+
 /// The shape of a named type.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TypeDefKind {
     /// A record.
     Record(Vec<Field>),
@@ -214,6 +291,7 @@ pub enum TypeDefKind {
 
 /// A function parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Param {
     /// The parameter name.
     pub name: String,
@@ -221,8 +299,17 @@ pub struct Param {
     pub ty: TypeExpr,
 }
 
+impl Param {
+    /// Create a function parameter.
+    #[must_use]
+    pub fn new(name: String, ty: TypeExpr) -> Self {
+        Self { name, ty }
+    }
+}
+
 /// An interface function.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Function {
     /// The unmangled WIT item name.
     pub name: String,
@@ -236,8 +323,29 @@ pub struct Function {
     pub result: Option<TypeExpr>,
 }
 
+impl Function {
+    /// Create an interface function.
+    #[must_use]
+    pub fn new(
+        name: String,
+        docs: String,
+        stability: Stability,
+        params: Vec<Param>,
+        result: Option<TypeExpr>,
+    ) -> Self {
+        Self {
+            name,
+            docs,
+            stability,
+            params,
+            result,
+        }
+    }
+}
+
 /// A named interface and its definitions.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Interface {
     /// The interface name.
     pub name: String,
@@ -251,8 +359,29 @@ pub struct Interface {
     pub functions: Vec<Function>,
 }
 
+impl Interface {
+    /// Create a named interface.
+    #[must_use]
+    pub fn new(
+        name: String,
+        docs: String,
+        stability: Stability,
+        types: Vec<TypeDef>,
+        functions: Vec<Function>,
+    ) -> Self {
+        Self {
+            name,
+            docs,
+            stability,
+            types,
+            functions,
+        }
+    }
+}
+
 /// A named interface imported or exported by a world.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WorldInterface {
     /// The interface name within its package.
     pub interface: String,
@@ -265,6 +394,22 @@ pub struct WorldInterface {
 }
 
 impl WorldInterface {
+    /// Create a world import or export of a named interface.
+    #[must_use]
+    pub fn new(
+        interface: String,
+        package: Option<Package>,
+        docs: String,
+        stability: Stability,
+    ) -> Self {
+        Self {
+            interface,
+            package,
+            docs,
+            stability,
+        }
+    }
+
     /// The package-qualified interface name, as `namespace:package/interface` for a dependency
     /// and `interface` for a local interface.
     #[must_use]
@@ -278,6 +423,7 @@ impl WorldInterface {
 
 /// A world and its imported and exported interfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct World {
     /// The world name.
     pub name: String,
@@ -291,8 +437,29 @@ pub struct World {
     pub exports: Vec<WorldInterface>,
 }
 
+impl World {
+    /// Create a world.
+    #[must_use]
+    pub fn new(
+        name: String,
+        docs: String,
+        stability: Stability,
+        imports: Vec<WorldInterface>,
+        exports: Vec<WorldInterface>,
+    ) -> Self {
+        Self {
+            name,
+            docs,
+            stability,
+            imports,
+            exports,
+        }
+    }
+}
+
 /// The contract package metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Package {
     /// The package namespace.
     pub namespace: String,
@@ -304,8 +471,22 @@ pub struct Package {
     pub docs: String,
 }
 
+impl Package {
+    /// Create contract package metadata.
+    #[must_use]
+    pub fn new(namespace: String, name: String, version: Version, docs: String) -> Self {
+        Self {
+            namespace,
+            name,
+            version,
+            docs,
+        }
+    }
+}
+
 /// One resolved dependency package from the standard `deps/` layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Dependency {
     /// The dependency package metadata.
     pub package: Package,
@@ -313,8 +494,20 @@ pub struct Dependency {
     pub interfaces: Vec<Interface>,
 }
 
+impl Dependency {
+    /// Create a resolved dependency package.
+    #[must_use]
+    pub fn new(package: Package, interfaces: Vec<Interface>) -> Self {
+        Self {
+            package,
+            interfaces,
+        }
+    }
+}
+
 /// The owned model of one contract version.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Model {
     /// The package metadata.
     pub package: Package,
@@ -327,6 +520,22 @@ pub struct Model {
 }
 
 impl Model {
+    /// Create an owned contract model.
+    #[must_use]
+    pub fn new(
+        package: Package,
+        interfaces: Vec<Interface>,
+        worlds: Vec<World>,
+        dependencies: Vec<Dependency>,
+    ) -> Self {
+        Self {
+            package,
+            interfaces,
+            worlds,
+            dependencies,
+        }
+    }
+
     /// Find an interface by name.
     #[must_use]
     pub fn interface(&self, name: &str) -> Option<&Interface> {
@@ -1609,6 +1818,7 @@ fn source_key(span: Span) -> (u8, u32) {
 
 /// The kind of a numbered lockfile member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum MemberKind {
     /// A record field.
     Field,
@@ -1663,6 +1873,7 @@ impl std::str::FromStr for MemberKind {
 
 /// One numbered lockfile member: a field, case, flag, method id, or parameter.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub struct Member {
     /// The parent whose number space the member belongs to.
     ///
@@ -1682,6 +1893,17 @@ pub struct Member {
 }
 
 impl Member {
+    /// Create a numbered lockfile member.
+    #[must_use]
+    pub fn new(parent: String, name: String, kind: MemberKind, ty: Option<String>) -> Self {
+        Self {
+            parent,
+            name,
+            kind,
+            ty,
+        }
+    }
+
     /// The lockfile key, `parent.name`.
     ///
     /// The package version is deliberately not part of the key, so a version bump never

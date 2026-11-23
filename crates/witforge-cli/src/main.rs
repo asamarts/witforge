@@ -3204,10 +3204,7 @@ fn read_previous(path: Option<&Path>) -> Result<(Option<WireLock>, BTreeMap<Stri
 }
 
 fn package_name(model: &model::Model) -> PackageName {
-    PackageName {
-        namespace: model.package.namespace.clone(),
-        name: model.package.name.clone(),
-    }
+    PackageName::new(model.package.namespace.clone(), model.package.name.clone())
 }
 
 /// Read the current lockfile and its text. Only `--first` treats a missing one as empty: in
@@ -3393,11 +3390,8 @@ impl LockDiagnosticContext<'_> {
                 .with_file(file.clone())
                 .with_logical(key.to_string());
             if let Some(msg) = related_msg {
-                item = item.with_related(RelatedLocation {
-                    file: lock_file,
-                    position: lock_pos,
-                    message: msg.to_string(),
-                });
+                item =
+                    item.with_related(RelatedLocation::new(lock_file, lock_pos, msg.to_string()));
             }
             item
         } else {
@@ -3409,11 +3403,11 @@ impl LockDiagnosticContext<'_> {
                 .with_logical(key.to_string())
         };
         if prefer_lock && let (Some((file, pos)), Some(msg)) = (wit_loc, related_msg) {
-            located = located.with_related(RelatedLocation {
-                file: file.clone(),
-                position: Some(*pos),
-                message: msg.to_string(),
-            });
+            located = located.with_related(RelatedLocation::new(
+                file.clone(),
+                Some(*pos),
+                msg.to_string(),
+            ));
         }
         located
     }
@@ -3458,11 +3452,11 @@ impl LockDiagnosticContext<'_> {
             LocatedDiagnostic::from_diagnostic(diag)
                 .with_file(file.clone())
                 .with_logical(key.to_string())
-                .with_related(RelatedLocation {
-                    file: lock_file,
-                    position: lock_pos,
-                    message: "conflicting entry in wire.lock".to_string(),
-                })
+                .with_related(RelatedLocation::new(
+                    lock_file,
+                    lock_pos,
+                    "conflicting entry in wire.lock".to_string(),
+                ))
         } else {
             if let Some(pos) = lock_pos {
                 diag = diag.with_position(pos);

@@ -1198,12 +1198,6 @@ fn resolve_components(original: &Path, path: &Path, depth: usize) -> Result<Path
     Ok(current)
 }
 
-/// A resolved output root used for diagnostics.
-#[must_use]
-pub fn absolute(path: &Path) -> PathBuf {
-    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -108,6 +108,7 @@ jobs:
       - run: shellcheck ci/*.sh
       - run: bash ci/test-release-asset.sh
       - run: bash ci/test-release-version.sh
+      - run: bash ci/test-semver-release-type.sh
       - run: node --test action/test.js
       # Execute the checked-out action through GitHub's JavaScript-action runtime. Unit tests
       # call index.js directly and therefore cannot catch a retired `runs.using` value or an
@@ -245,17 +246,34 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
       - run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # Override the inferred release type: the declared 1.0 policy preserves the released
-      # library surface rather than permitting a last-minute breaking change. No baseline is
-      # named, so cargo-semver-checks compares with the newest release on crates.io that is not
-      # newer than the workspace version; a named baseline has to be advanced by hand and was
-      # still 0.4.1 when 0.5.0 shipped.
-      - run: cargo semver-checks check-release -p witforge --release-type minor
+      # W10-095 is the sole planned pre-1.0 API break. The selector permits it through the
+      # 0.7.0 tag commit, then returns to `minor` once that tag is on an ancestor of HEAD.
+      # No baseline is named, so cargo-semver-checks compares with the newest release on
+      # crates.io that is not newer than the workspace version.
+      - run: |
+          release_type="$(bash ci/semver-release-type.sh .)"
+          cargo semver-checks check-release -p witforge --release-type "$release_type"
+
+  public-api:
+    name: documented public API
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: nightly-2026-09-11
+      - run: ci/check-public-api.sh
 
   benchmark:
     name: benchmark budget
@@ -484,7 +502,7 @@ jobs:
   ok:
     name: ci ok
     if: always()
-    needs: [lint, workflows, published-action, test, msrv, package, semver, generated, plan, benchmark, security, buf, floating-stable, fuzz-smoke]
+    needs: [lint, workflows, published-action, test, msrv, package, semver, public-api, generated, plan, benchmark, security, buf, floating-stable, fuzz-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

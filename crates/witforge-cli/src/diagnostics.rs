@@ -511,11 +511,11 @@ pub(crate) fn located_note(
         located = located.with_file(file.clone());
     }
     if let Some((file, position, rel_msg)) = related {
-        located = located.with_related(witforge::diagnostic::RelatedLocation {
+        located = located.with_related(witforge::diagnostic::RelatedLocation::new(
             file,
             position,
-            message: rel_msg.to_string(),
-        });
+            rel_msg.to_string(),
+        ));
     }
     located
 }

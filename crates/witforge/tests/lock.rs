@@ -9,6 +9,15 @@ use witforge::lock::{HEADER, LockMode, MemberKey, ORDER_HEADER, PackageName, Wir
 use witforge::model::{self, Member, MemberKind};
 use witforge::{ReleasedManifest, ensure_not_released, load, load_released_manifest};
 
+fn member(parent: &str, name: &str, kind: MemberKind, ty: Option<&str>) -> Member {
+    Member::new(
+        parent.to_string(),
+        name.to_string(),
+        kind,
+        ty.map(ToString::to_string),
+    )
+}
+
 #[test]
 fn v2_round_trip_sorts_and_renders_typed_entries() {
     let text = format!(
@@ -121,12 +130,7 @@ fn against_catches_reorders_but_ignores_additions_and_removals() {
 
     // Adding a member to the same parent is not a reorder of common members.
     let mut added = members.clone();
-    added.push(Member {
-        parent: parent.clone(),
-        name: "extra".to_string(),
-        kind: MemberKind::Field,
-        ty: Some("u8".to_string()),
-    });
+    added.push(member(&parent, "extra", MemberKind::Field, Some("u8")));
     baseline
         .drift_with(&added, LockMode::Against(&baseline))
         .unwrap();
@@ -209,10 +213,7 @@ fn order_sections_are_checked_against_the_contract_package() {
         order_fingerprint(&["x"])
     );
     let lock = WireLock::parse(&text).unwrap();
-    let package = PackageName {
-        namespace: "a".to_string(),
-        name: "b".to_string(),
-    };
+    let package = PackageName::new("a".to_string(), "b".to_string());
     let error = lock.check_package(&package).unwrap_err();
     assert!(
         format!("{error:#}").contains("order fingerprint"),
@@ -514,24 +515,9 @@ fn canonical_type_tokens_accept_the_supported_grammar() {
 #[test]
 fn reconcile_records_and_checks_kind_and_type() {
     let members = [
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "x".into(),
-            kind: MemberKind::Field,
-            ty: Some("u64".into()),
-        },
-        Member {
-            parent: "a:b/i".into(),
-            name: "f".into(),
-            kind: MemberKind::Method,
-            ty: Some("result<_,_>".into()),
-        },
-        Member {
-            parent: "a:b/i#f".into(),
-            name: "p".into(),
-            kind: MemberKind::Param,
-            ty: Some("types/span".into()),
-        },
+        member("a:b/i/t", "x", MemberKind::Field, Some("u64")),
+        member("a:b/i", "f", MemberKind::Method, Some("result<_,_>")),
+        member("a:b/i#f", "p", MemberKind::Param, Some("types/span")),
     ];
     let mut lock = WireLock::default();
     let changes = lock.reconcile(&members).unwrap();
@@ -540,12 +526,7 @@ fn reconcile_records_and_checks_kind_and_type() {
     assert_eq!(entry.kind, MemberKind::Field);
     assert_eq!(entry.ty.as_deref(), Some("u64"));
 
-    let edited = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::Field,
-        ty: Some("u16".into()),
-    }];
+    let edited = [member("a:b/i/t", "x", MemberKind::Field, Some("u16"))];
     let mut edited_lock = lock.clone();
     let report = edited_lock.reconcile_report(&edited).unwrap();
     assert!(
@@ -650,21 +631,11 @@ fn append_only_check_rejects_kind_and_type_changes() {
 
 #[test]
 fn reconcile_does_not_mutate_on_error() {
-    let members = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::Field,
-        ty: Some("u64".into()),
-    }];
+    let members = [member("a:b/i/t", "x", MemberKind::Field, Some("u64"))];
     let mut lock = WireLock::default();
     lock.reconcile(&members).unwrap();
     let before = lock.clone();
-    let retyped_members = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::Field,
-        ty: Some("u16".into()),
-    }];
+    let retyped_members = [member("a:b/i/t", "x", MemberKind::Field, Some("u16"))];
     let report = lock.reconcile_report(&retyped_members).unwrap();
     assert!(!report.discrepancies.is_empty(), "{report:?}");
     assert_eq!(lock, before);
@@ -732,18 +703,8 @@ fn first_mode_updates_drops_and_readds_drafts() {
     ))
     .unwrap();
     let members = [
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "x".into(),
-            kind: MemberKind::Field,
-            ty: Some("u16".into()),
-        },
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "y".into(),
-            kind: MemberKind::Field,
-            ty: Some("string".into()),
-        },
+        member("a:b/i/t", "x", MemberKind::Field, Some("u16")),
+        member("a:b/i/t", "y", MemberKind::Field, Some("string")),
     ];
     let changes = lock.reconcile_with(&members, LockMode::First).unwrap();
     assert_eq!(
@@ -777,30 +738,10 @@ fn against_mode_updates_drafts_but_protects_released_entries() {
     ))
     .unwrap();
     let members = [
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "x".into(),
-            kind: MemberKind::Field,
-            ty: Some("u64".into()),
-        },
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "y".into(),
-            kind: MemberKind::Field,
-            ty: Some("string".into()),
-        },
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "z".into(),
-            kind: MemberKind::Field,
-            ty: Some("u64".into()),
-        },
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "w".into(),
-            kind: MemberKind::Field,
-            ty: Some("u8".into()),
-        },
+        member("a:b/i/t", "x", MemberKind::Field, Some("u64")),
+        member("a:b/i/t", "y", MemberKind::Field, Some("string")),
+        member("a:b/i/t", "z", MemberKind::Field, Some("u64")),
+        member("a:b/i/t", "w", MemberKind::Field, Some("u8")),
     ];
     let changes = current
         .reconcile_with(&members, LockMode::Against(&previous))
@@ -839,12 +780,7 @@ fn against_mode_updates_drafts_but_protects_released_entries() {
     assert!(removed.get("a:b/i/t.x").unwrap().reserved);
 
     let mut retyped = previous.clone();
-    let changed_members = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::Field,
-        ty: Some("u16".into()),
-    }];
+    let changed_members = [member("a:b/i/t", "x", MemberKind::Field, Some("u16"))];
     let report = retyped
         .reconcile_report_with(&changed_members, LockMode::Against(&previous))
         .unwrap();
@@ -862,12 +798,7 @@ fn against_mode_updates_drafts_but_protects_released_entries() {
     let mut reintroduced = reintroduced_previous.clone();
     let changes = reintroduced
         .reconcile_with(
-            &[Member {
-                parent: "a:b/i/t".into(),
-                name: "x".into(),
-                kind: MemberKind::Field,
-                ty: Some("u64".into()),
-            }],
+            &[member("a:b/i/t", "x", MemberKind::Field, Some("u64"))],
             LockMode::Against(&reintroduced_previous),
         )
         .unwrap();
@@ -953,12 +884,7 @@ fn against_mode_rejects_a_missing_released_entry() {
 fn first_mode_readds_a_reserved_draft() {
     let mut lock =
         WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64 reserved\n")).unwrap();
-    let members = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::Field,
-        ty: Some("u64".into()),
-    }];
+    let members = [member("a:b/i/t", "x", MemberKind::Field, Some("u64"))];
     let changes = lock.reconcile_with(&members, LockMode::First).unwrap();
     assert_eq!(changes.dropped, vec![("a:b/i/t.x".to_string(), 1)]);
     assert_eq!(changes.added, vec![("a:b/i/t.x".to_string(), 1)]);
@@ -967,18 +893,8 @@ fn first_mode_readds_a_reserved_draft() {
 
 #[test]
 fn order_section_must_name_every_live_member_of_every_parent() {
-    let a = Member {
-        parent: "a:b/i/t".into(),
-        name: "a".into(),
-        kind: MemberKind::Field,
-        ty: Some("u32".into()),
-    };
-    let b = Member {
-        parent: "a:b/i/t".into(),
-        name: "b".into(),
-        kind: MemberKind::Field,
-        ty: Some("u32".into()),
-    };
+    let a = member("a:b/i/t", "a", MemberKind::Field, Some("u32"));
+    let b = member("a:b/i/t", "b", MemberKind::Field, Some("u32"));
     let lock_for = |members: &[Member]| {
         let mut lock = WireLock::default();
         lock.reconcile(members).unwrap();
@@ -1019,12 +935,7 @@ fn order_section_must_name_every_live_member_of_every_parent() {
             .is_err()
     );
 
-    let other = Member {
-        parent: "a:b/i/other".into(),
-        name: "a".into(),
-        kind: MemberKind::Field,
-        ty: Some("u32".into()),
-    };
+    let other = member("a:b/i/other", "a", MemberKind::Field, Some("u32"));
     let unknown = lock_for(&[other]);
     let error = unknown
         .validate_order_section(std::slice::from_ref(&a), false)
@@ -1057,12 +968,7 @@ a:b/i/t.old = 1 enum-case reserved\n\
 a:b/i/t.new = 2 field u64\n"
     ))
     .unwrap();
-    let members = [Member {
-        parent: "a:b/i/t".into(),
-        name: "new".into(),
-        kind: MemberKind::Field,
-        ty: Some("u64".into()),
-    }];
+    let members = [member("a:b/i/t", "new", MemberKind::Field, Some("u64"))];
     let report = mixed.drift_report(&members).unwrap();
     let message = report
         .discrepancies
@@ -1105,12 +1011,7 @@ a:b/i/t.one = 1 enum-case\n\
 a:b/i/t.two = 2 enum-case\n"
     ))
     .unwrap();
-    let members = [Member {
-        parent: "a:b/i/t".into(),
-        name: "one".into(),
-        kind: MemberKind::Field,
-        ty: Some("u32".into()),
-    }];
+    let members = [member("a:b/i/t", "one", MemberKind::Field, Some("u32"))];
     let changes = lock.reconcile_with(&members, LockMode::First).unwrap();
     assert_eq!(changes.dropped, vec![("a:b/i/t.two".to_string(), 2)]);
     assert_eq!(
@@ -1246,12 +1147,7 @@ fn generated_members(indices: &[(u8, u8)]) -> Vec<Member> {
         let parent = format!("a:b/i/t{parent}");
         let name = format!("x{field}");
         if seen.insert((parent.clone(), name.clone())) {
-            members.push(Member {
-                parent,
-                name,
-                kind: MemberKind::Field,
-                ty: Some("u64".into()),
-            });
+            members.push(member(&parent, &name, MemberKind::Field, Some("u64")));
         }
     }
     members
@@ -1402,11 +1298,13 @@ fn every_repository_lockfile_uses_the_tightened_grammar() {
 #[test]
 fn number_assignment_is_linear_in_a_wide_contract() {
     let members: Vec<Member> = (0..16_000)
-        .map(|index| Member {
-            parent: "a:b/i/t".into(),
-            name: format!("m{index:05}"),
-            kind: MemberKind::Field,
-            ty: Some("u32".into()),
+        .map(|index| {
+            member(
+                "a:b/i/t",
+                &format!("m{index:05}"),
+                MemberKind::Field,
+                Some("u32"),
+            )
         })
         .collect();
     let mut lock = WireLock::default();
@@ -1430,15 +1328,17 @@ a:b/i/t.n2 = 6 field u8\n"
     .unwrap();
     let members = ["a", "b", "c", "d", "n2", "new1", "new2"]
         .into_iter()
-        .map(|name| Member {
-            parent: "a:b/i/t".into(),
-            name: name.to_string(),
-            kind: MemberKind::Field,
-            ty: Some(if matches!(name, "a" | "b" | "c" | "d") {
-                "u32".to_string()
-            } else {
-                "u8".to_string()
-            }),
+        .map(|name| {
+            member(
+                "a:b/i/t",
+                name,
+                MemberKind::Field,
+                Some(if matches!(name, "a" | "b" | "c" | "d") {
+                    "u32"
+                } else {
+                    "u8"
+                }),
+            )
         })
         .collect::<Vec<_>>();
     let mut current = previous.clone();
@@ -1467,29 +1367,14 @@ fn draft_removal_of_a_released_member_can_be_restored() {
         "{HEADER}\na:b/i/t.a = 1 field u64\na:b/i/t.b = 2 field u64\n"
     ))
     .unwrap();
-    let members_a = [Member {
-        parent: "a:b/i/t".into(),
-        name: "a".into(),
-        kind: MemberKind::Field,
-        ty: Some("u64".into()),
-    }];
+    let members_a = [member("a:b/i/t", "a", MemberKind::Field, Some("u64"))];
     let members_a_c = [
         members_a[0].clone(),
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "c".into(),
-            kind: MemberKind::Field,
-            ty: Some("u64".into()),
-        },
+        member("a:b/i/t", "c", MemberKind::Field, Some("u64")),
     ];
     let members_a_b_c = [
         members_a[0].clone(),
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "b".into(),
-            kind: MemberKind::Field,
-            ty: Some("u64".into()),
-        },
+        member("a:b/i/t", "b", MemberKind::Field, Some("u64")),
         members_a_c[1].clone(),
     ];
     let mut current = previous.clone();
@@ -1532,42 +1417,12 @@ a:b/i#m.p = 1 param u64\n"
     ))
     .unwrap();
     let members = vec![
-        Member {
-            parent: "a:b/i/t".into(),
-            name: "x".into(),
-            kind: MemberKind::Field,
-            ty: Some("u64".into()),
-        },
-        Member {
-            parent: "a:b/i/v".into(),
-            name: "c".into(),
-            kind: MemberKind::VariantCase,
-            ty: Some("u64".into()),
-        },
-        Member {
-            parent: "a:b/i/e".into(),
-            name: "c".into(),
-            kind: MemberKind::EnumCase,
-            ty: None,
-        },
-        Member {
-            parent: "a:b/i/f".into(),
-            name: "g".into(),
-            kind: MemberKind::Flag,
-            ty: None,
-        },
-        Member {
-            parent: "a:b/i".into(),
-            name: "m".into(),
-            kind: MemberKind::Method,
-            ty: Some("u64".into()),
-        },
-        Member {
-            parent: "a:b/i#m".into(),
-            name: "p".into(),
-            kind: MemberKind::Param,
-            ty: Some("u64".into()),
-        },
+        member("a:b/i/t", "x", MemberKind::Field, Some("u64")),
+        member("a:b/i/v", "c", MemberKind::VariantCase, Some("u64")),
+        member("a:b/i/e", "c", MemberKind::EnumCase, None),
+        member("a:b/i/f", "g", MemberKind::Flag, None),
+        member("a:b/i", "m", MemberKind::Method, Some("u64")),
+        member("a:b/i#m", "p", MemberKind::Param, Some("u64")),
     ];
     let mut current = previous.clone();
     let report = current
@@ -1599,12 +1454,7 @@ a:b/i#m.p = 1 param u64\n"
 #[test]
 fn restoring_a_draft_removal_with_a_different_type_or_kind_is_refused() {
     let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64\n")).unwrap();
-    let retyped = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::Field,
-        ty: Some("u16".into()),
-    }];
+    let retyped = [member("a:b/i/t", "x", MemberKind::Field, Some("u16"))];
     let mut current = previous.clone();
     current
         .reconcile_report_with(&[], LockMode::Against(&previous))
@@ -1622,12 +1472,7 @@ fn restoring_a_draft_removal_with_a_different_type_or_kind_is_refused() {
     );
     assert!(current.get("a:b/i/t.x").unwrap().reserved);
 
-    let rekinded = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::VariantCase,
-        ty: Some("u64".into()),
-    }];
+    let rekinded = [member("a:b/i/t", "x", MemberKind::VariantCase, Some("u64"))];
     let report = current
         .reconcile_report_with(&rekinded, LockMode::Against(&previous))
         .unwrap();
@@ -1639,12 +1484,7 @@ fn restoring_a_draft_removal_with_a_different_type_or_kind_is_refused() {
 fn a_member_reserved_in_the_baseline_cannot_be_restored() {
     let previous =
         WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field u64 reserved\n")).unwrap();
-    let members = [Member {
-        parent: "a:b/i/t".into(),
-        name: "x".into(),
-        kind: MemberKind::Field,
-        ty: Some("u64".into()),
-    }];
+    let members = [member("a:b/i/t", "x", MemberKind::Field, Some("u64"))];
     let mut current = previous.clone();
     let report = current
         .reconcile_report_with(&members, LockMode::Against(&previous))
@@ -1659,12 +1499,7 @@ fn a_member_reserved_in_the_baseline_cannot_be_restored() {
 #[test]
 fn a_draft_member_removed_and_readded_gets_a_new_number() {
     let previous = WireLock::parse(&format!("{HEADER}\na:b/i/t.a = 1 field u64\n")).unwrap();
-    let member = |name: &str| Member {
-        parent: "a:b/i/t".into(),
-        name: name.to_string(),
-        kind: MemberKind::Field,
-        ty: Some("u64".into()),
-    };
+    let member = |name: &str| member("a:b/i/t", name, MemberKind::Field, Some("u64"));
     let mut current = previous.clone();
     current
         .reconcile_report_with(&[member("a"), member("c")], LockMode::Against(&previous))
@@ -1692,12 +1527,7 @@ fn a_draft_member_removed_and_readded_gets_a_new_number() {
 
 #[test]
 fn case_variant_of_a_reserved_member_is_refused() {
-    let mk = |parent: &str, name: &str, kind: MemberKind, ty: Option<&str>| Member {
-        parent: parent.to_string(),
-        name: name.to_string(),
-        kind,
-        ty: ty.map(ToString::to_string),
-    };
+    let mk = member;
     let cases = [
         ("a:b/i/r", MemberKind::Field, Some("u32")),
         ("a:b/i/v", MemberKind::VariantCase, Some("u32")),
@@ -1804,18 +1634,8 @@ fn case_variant_of_a_reserved_member_is_refused() {
 #[test]
 fn live_case_collisions_match_between_reconcile_and_case_collisions() {
     let live_collision = [
-        Member {
-            parent: "a:b/i/r".to_string(),
-            name: "foo-bar".to_string(),
-            kind: MemberKind::Field,
-            ty: Some("u32".to_string()),
-        },
-        Member {
-            parent: "a:b/i/r".to_string(),
-            name: "FOO-bar".to_string(),
-            kind: MemberKind::Field,
-            ty: Some("u32".to_string()),
-        },
+        member("a:b/i/r", "foo-bar", MemberKind::Field, Some("u32")),
+        member("a:b/i/r", "FOO-bar", MemberKind::Field, Some("u32")),
     ];
     let mut fresh = WireLock::default();
     let reconcile_report = fresh

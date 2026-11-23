@@ -91,10 +91,13 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Install cargo-semver-checks
         run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # No baseline is named: cargo-semver-checks compares with the newest release on crates.io
-      # that is not newer than the workspace version, which is the previous release here.
-      - name: Deny library API breaks since the previous release
-        run: cargo semver-checks check-release -p witforge --release-type minor
+      # W10-095 is the sole planned pre-1.0 API break. The selector returns `major` on the
+      # 0.7.0 tag commit and automatically restores `minor` once that tag is an ancestor.
+      - name: Enforce the version-scoped library API policy
+        shell: bash
+        run: |
+          release_type="$(bash ci/semver-release-type.sh .)"
+          cargo semver-checks check-release -p witforge --release-type "$release_type"
       - name: Install buf
         shell: bash
         env:

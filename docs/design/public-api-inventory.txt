@@ -1,0 +1,804 @@
+attribute #[non_exhaustive] witforge::diagnostic::CodeInfo
+attribute #[non_exhaustive] witforge::diagnostic::Diagnostic
+attribute #[non_exhaustive] witforge::diagnostic::LocatedDiagnostic
+attribute #[non_exhaustive] witforge::diagnostic::Position
+attribute #[non_exhaustive] witforge::diagnostic::RelatedLocation
+attribute #[non_exhaustive] witforge::diagnostic::Severity
+attribute #[non_exhaustive] witforge::lock::Changes
+attribute #[non_exhaustive] witforge::lock::Discrepancy
+attribute #[non_exhaustive] witforge::lock::Entry
+attribute #[non_exhaustive] witforge::lock::LockMode
+attribute #[non_exhaustive] witforge::lock::MemberKey
+attribute #[non_exhaustive] witforge::lock::PackageName
+attribute #[non_exhaustive] witforge::lock::Reconciliation
+attribute #[non_exhaustive] witforge::lock::WireLock
+attribute #[non_exhaustive] witforge::model::Case
+attribute #[non_exhaustive] witforge::model::Dependency
+attribute #[non_exhaustive] witforge::model::Field
+attribute #[non_exhaustive] witforge::model::Flag
+attribute #[non_exhaustive] witforge::model::Function
+attribute #[non_exhaustive] witforge::model::Interface
+attribute #[non_exhaustive] witforge::model::Member
+attribute #[non_exhaustive] witforge::model::MemberKind
+attribute #[non_exhaustive] witforge::model::Model
+attribute #[non_exhaustive] witforge::model::Package
+attribute #[non_exhaustive] witforge::model::Param
+attribute #[non_exhaustive] witforge::model::QualifiedName
+attribute #[non_exhaustive] witforge::model::ResultExpr
+attribute #[non_exhaustive] witforge::model::Stability
+attribute #[non_exhaustive] witforge::model::TypeDef
+attribute #[non_exhaustive] witforge::model::TypeDefKind
+attribute #[non_exhaustive] witforge::model::TypeExpr
+attribute #[non_exhaustive] witforge::model::Version
+attribute #[non_exhaustive] witforge::model::World
+attribute #[non_exhaustive] witforge::model::WorldInterface
+constant witforge::RELEASED_MANIFEST
+constant witforge::diagnostic::CATALOG
+constant witforge::diagnostic::HELP_BASE_URL
+constant witforge::diagnostic::codes::CLI_USAGE
+constant witforge::diagnostic::codes::CONVERSION_REFUSED
+constant witforge::diagnostic::codes::DEPENDENCY_GRAPH_MISMATCH
+constant witforge::diagnostic::codes::DIFF_BREAKING
+constant witforge::diagnostic::codes::DIFF_COMPATIBLE
+constant witforge::diagnostic::codes::DIFF_CONVERSION_BLOCKER
+constant witforge::diagnostic::codes::DIFF_CONVERSION_IMPACT
+constant witforge::diagnostic::codes::DIRECTORY_VERSION_MISMATCH
+constant witforge::diagnostic::codes::GENERATED_DRIFT
+constant witforge::diagnostic::codes::GUARD_REFUSED
+constant witforge::diagnostic::codes::IDENTIFIER_COLLISION
+constant witforge::diagnostic::codes::INTERNAL_ERROR
+constant witforge::diagnostic::codes::IO_ERROR
+constant witforge::diagnostic::codes::LOCKFILE_BASELINE_NO_DEPS
+constant witforge::diagnostic::codes::LOCKFILE_CHANGED_DRAFT
+constant witforge::diagnostic::codes::LOCKFILE_ERROR
+constant witforge::diagnostic::codes::LOCKFILE_MISSING_NUMBER
+constant witforge::diagnostic::codes::LOCKFILE_NON_CANONICAL
+constant witforge::diagnostic::codes::LOCKFILE_REINTRODUCED
+constant witforge::diagnostic::codes::LOCKFILE_RESTORABLE_DRAFT
+constant witforge::diagnostic::codes::LOCKFILE_STALE_DRAFT
+constant witforge::diagnostic::codes::LOCKFILE_UNRESERVED_REMOVAL
+constant witforge::diagnostic::codes::LOCKFILE_WRONG_PACKAGE
+constant witforge::diagnostic::codes::LOCK_ADDED
+constant witforge::diagnostic::codes::LOCK_DROPPED
+constant witforge::diagnostic::codes::LOCK_RESERVED
+constant witforge::diagnostic::codes::LOCK_RESTORED
+constant witforge::diagnostic::codes::LOCK_UPDATED
+constant witforge::diagnostic::codes::PACKAGE_MISMATCH
+constant witforge::diagnostic::codes::PARSE_ERROR
+constant witforge::diagnostic::codes::RELEASE_FREEZE_VIOLATION
+constant witforge::diagnostic::codes::SUBSET_ACCESSOR
+constant witforge::diagnostic::codes::SUBSET_ANNOTATION
+constant witforge::diagnostic::codes::SUBSET_ASYNC_FUNCTION
+constant witforge::diagnostic::codes::SUBSET_CHAR
+constant witforge::diagnostic::codes::SUBSET_DEPENDENCY_IDENTITY
+constant witforge::diagnostic::codes::SUBSET_DEPENDENCY_VERSION
+constant witforge::diagnostic::codes::SUBSET_EMPTY_RECORD
+constant witforge::diagnostic::codes::SUBSET_ERROR_CONTEXT
+constant witforge::diagnostic::codes::SUBSET_FIXED_LENGTH_LIST
+constant witforge::diagnostic::codes::SUBSET_FUTURE_OR_STREAM
+constant witforge::diagnostic::codes::SUBSET_INLINE_INTERFACE
+constant witforge::diagnostic::codes::SUBSET_MAP
+constant witforge::diagnostic::codes::SUBSET_NAMED_WORLD_INTERFACE
+constant witforge::diagnostic::codes::SUBSET_NESTED_PACKAGE
+constant witforge::diagnostic::codes::SUBSET_PACKAGE_VERSION
+constant witforge::diagnostic::codes::SUBSET_RESOURCE
+constant witforge::diagnostic::codes::SUBSET_TUPLE
+constant witforge::diagnostic::codes::SUBSET_TYPE_LIMIT
+constant witforge::diagnostic::codes::SUBSET_UNSUPPORTED
+constant witforge::diagnostic::codes::SUBSET_WORLD_FOREIGN_INTERFACE
+constant witforge::diagnostic::codes::SUBSET_WORLD_FUNCTION
+constant witforge::diagnostic::codes::SUBSET_WORLD_TYPE
+constant witforge::diff::DecodeVerdict::COMPATIBLE
+constant witforge::diff::DecodeVerdict::INCOMPATIBLE
+constant witforge::emit::glue::HEADER
+constant witforge::emit::json_schema::HEADER
+constant witforge::emit::proto::HEADER
+constant witforge::emit::rust::HEADER
+constant witforge::lock::HEADER
+constant witforge::lock::ORDER_HEADER
+enum witforge::diagnostic::Severity
+enum witforge::diff::ChangeKind
+enum witforge::lock::LockMode
+enum witforge::lock::MemberKey
+enum witforge::model::MemberKind
+enum witforge::model::Stability
+enum witforge::model::TypeDefKind
+enum witforge::model::TypeExpr
+field witforge::diagnostic::CodeInfo.code
+field witforge::diagnostic::CodeInfo.severity
+field witforge::diagnostic::CodeInfo.summary
+field witforge::diagnostic::CodeInfo.supersedes
+field witforge::diagnostic::Diagnostic.code
+field witforge::diagnostic::Diagnostic.message
+field witforge::diagnostic::Diagnostic.path
+field witforge::diagnostic::Diagnostic.position
+field witforge::diagnostic::Diagnostic.severity
+field witforge::diagnostic::LocatedDiagnostic.diagnostic
+field witforge::diagnostic::LocatedDiagnostic.file
+field witforge::diagnostic::LocatedDiagnostic.logical
+field witforge::diagnostic::LocatedDiagnostic.related
+field witforge::diagnostic::Position.column
+field witforge::diagnostic::Position.end_column
+field witforge::diagnostic::Position.end_line
+field witforge::diagnostic::Position.line
+field witforge::diagnostic::RelatedLocation.file
+field witforge::diagnostic::RelatedLocation.message
+field witforge::diagnostic::RelatedLocation.position
+field witforge::diff::Change.api_breaking
+field witforge::diff::Change.element
+field witforge::diff::Change.kind
+field witforge::diff::Change.number
+field witforge::diff::Change.path
+field witforge::diff::Change.source_breaking
+field witforge::diff::Change.wire_breaking
+field witforge::diff::ChangeKind::Added.defaulted
+field witforge::diff::ChangeKind::KindChanged.from
+field witforge::diff::ChangeKind::KindChanged.to
+field witforge::diff::ChangeKind::Renumbered.from
+field witforge::diff::ChangeKind::Renumbered.to
+field witforge::diff::ChangeKind::Reordered.after
+field witforge::diff::ChangeKind::Reordered.before
+field witforge::diff::ChangeKind::Retyped.from
+field witforge::diff::ChangeKind::Retyped.to
+field witforge::diff::ConversionImpact.from_version
+field witforge::diff::ConversionImpact.missing_member
+field witforge::diff::ConversionImpact.missing_path
+field witforge::diff::ConversionImpact.to_version
+field witforge::diff::ConversionImpact.type_path
+field witforge::diff::ConversionOmission.from_version
+field witforge::diff::ConversionOmission.reason
+field witforge::diff::ConversionOmission.to_version
+field witforge::diff::ConversionOmission.type_path
+field witforge::diff::DecodeSummary.breaking
+field witforge::diff::DecodeSummary.new_reads_old_breaking
+field witforge::diff::DecodeSummary.old_reads_new_breaking
+field witforge::diff::DecodeVerdict.new_reads_old
+field witforge::diff::DecodeVerdict.old_reads_new
+field witforge::diff::DiffAnalysis.conversion_impacts
+field witforge::diff::DiffAnalysis.report
+field witforge::diff::DiffReport.changes
+field witforge::diff::DiffReport.new
+field witforge::diff::DiffReport.old
+field witforge::diff::DiffReport.summary
+field witforge::diff::Endpoint.package
+field witforge::diff::Endpoint.path
+field witforge::diff::Endpoint.version
+field witforge::diff::FullDiff.analysis
+field witforge::diff::FullDiff.conversion_omissions
+field witforge::diff::FullDiff.decode_summary
+field witforge::diff::FullDiff.decode_verdicts
+field witforge::diff::FullDiff.locations
+field witforge::diff::Summary.api_breaking
+field witforge::diff::Summary.breaking
+field witforge::diff::Summary.changes
+field witforge::diff::Summary.source_breaking
+field witforge::diff::Summary.wire_breaking
+field witforge::freeze::FreezeOptions.base
+field witforge::freeze::FreezeReport.checks
+field witforge::freeze::FreezeReport.manifest
+field witforge::freeze::FreezeReport.no_manifest
+field witforge::freeze::FreezeReport.root
+field witforge::freeze::FreezeReport.violations
+field witforge::lock::Changes.added
+field witforge::lock::Changes.dropped
+field witforge::lock::Changes.reintroduced
+field witforge::lock::Changes.reserved
+field witforge::lock::Changes.updated
+field witforge::lock::Discrepancy.key
+field witforge::lock::Discrepancy.message
+field witforge::lock::Entry.kind
+field witforge::lock::Entry.number
+field witforge::lock::Entry.reserved
+field witforge::lock::Entry.ty
+field witforge::lock::LockMode::Against.0
+field witforge::lock::MemberKey::Method.function
+field witforge::lock::MemberKey::Method.interface
+field witforge::lock::MemberKey::Method.package
+field witforge::lock::MemberKey::Parameter.function
+field witforge::lock::MemberKey::Parameter.interface
+field witforge::lock::MemberKey::Parameter.package
+field witforge::lock::MemberKey::Parameter.parameter
+field witforge::lock::MemberKey::TypeMember.interface
+field witforge::lock::MemberKey::TypeMember.member
+field witforge::lock::MemberKey::TypeMember.package
+field witforge::lock::MemberKey::TypeMember.type_name
+field witforge::lock::PackageName.name
+field witforge::lock::PackageName.namespace
+field witforge::lock::Reconciliation.changes
+field witforge::lock::Reconciliation.discrepancies
+field witforge::lock::Reconciliation.restored
+field witforge::model::Case.docs
+field witforge::model::Case.name
+field witforge::model::Case.payload
+field witforge::model::Dependency.interfaces
+field witforge::model::Dependency.package
+field witforge::model::Field.docs
+field witforge::model::Field.name
+field witforge::model::Field.ty
+field witforge::model::Flag.docs
+field witforge::model::Flag.name
+field witforge::model::Function.docs
+field witforge::model::Function.name
+field witforge::model::Function.params
+field witforge::model::Function.result
+field witforge::model::Function.stability
+field witforge::model::Interface.docs
+field witforge::model::Interface.functions
+field witforge::model::Interface.name
+field witforge::model::Interface.stability
+field witforge::model::Interface.types
+field witforge::model::Member.kind
+field witforge::model::Member.name
+field witforge::model::Member.parent
+field witforge::model::Member.ty
+field witforge::model::Model.dependencies
+field witforge::model::Model.interfaces
+field witforge::model::Model.package
+field witforge::model::Model.worlds
+field witforge::model::Package.docs
+field witforge::model::Package.name
+field witforge::model::Package.namespace
+field witforge::model::Package.version
+field witforge::model::Param.name
+field witforge::model::Param.ty
+field witforge::model::QualifiedName.interface
+field witforge::model::QualifiedName.name
+field witforge::model::ResultExpr.err
+field witforge::model::ResultExpr.ok
+field witforge::model::Stability::Stable.since
+field witforge::model::Stability::Unstable.feature
+field witforge::model::TypeDef.docs
+field witforge::model::TypeDef.kind
+field witforge::model::TypeDef.name
+field witforge::model::TypeDef.stability
+field witforge::model::TypeDefKind::Alias.0
+field witforge::model::TypeDefKind::Enum.0
+field witforge::model::TypeDefKind::Flags.0
+field witforge::model::TypeDefKind::List.0
+field witforge::model::TypeDefKind::Option.0
+field witforge::model::TypeDefKind::Record.0
+field witforge::model::TypeDefKind::Result.0
+field witforge::model::TypeDefKind::Variant.0
+field witforge::model::TypeExpr::List.0
+field witforge::model::TypeExpr::Named.0
+field witforge::model::TypeExpr::Option.0
+field witforge::model::TypeExpr::Result.0
+field witforge::model::Version.major
+field witforge::model::Version.minor
+field witforge::model::Version.patch
+field witforge::model::World.docs
+field witforge::model::World.exports
+field witforge::model::World.imports
+field witforge::model::World.name
+field witforge::model::World.stability
+field witforge::model::WorldInterface.docs
+field witforge::model::WorldInterface.interface
+field witforge::model::WorldInterface.package
+field witforge::model::WorldInterface.stability
+field witforge::subset::Violation.location
+field witforge::subset::Violation.message
+function witforge::Contract::member_locations
+function witforge::ContractError::diagnostics
+function witforge::ContractError::from_error
+function witforge::ContractError::located_diagnostics
+function witforge::ContractError::new
+function witforge::ContractError::with_diagnostic
+function witforge::ContractError::with_diagnostics
+function witforge::ContractError::with_located_diagnostic
+function witforge::ContractError::with_located_diagnostics
+function witforge::DiagnosticError::diagnostics
+function witforge::DiagnosticError::located_diagnostics
+function witforge::DiagnosticError::new
+function witforge::DiagnosticError::single
+function witforge::DiagnosticError::single_located
+function witforge::DiagnosticError::with_located
+function witforge::ReleasedManifest::contains
+function witforge::ReleasedManifest::directories
+function witforge::ReleasedManifest::is_retired
+function witforge::ReleasedManifest::live_directories
+function witforge::ReleasedManifest::load
+function witforge::ReleasedManifest::retired_directories
+function witforge::default_released_manifest
+function witforge::diagnostic::Diagnostic::error
+function witforge::diagnostic::Diagnostic::new
+function witforge::diagnostic::Diagnostic::with_path
+function witforge::diagnostic::Diagnostic::with_position
+function witforge::diagnostic::LocatedDiagnostic::from_diagnostic
+function witforge::diagnostic::LocatedDiagnostic::with_file
+function witforge::diagnostic::LocatedDiagnostic::with_logical
+function witforge::diagnostic::LocatedDiagnostic::with_related
+function witforge::diagnostic::Position::new
+function witforge::diagnostic::RelatedLocation::new
+function witforge::diagnostic::Severity::as_str
+function witforge::diagnostic::explanation
+function witforge::diagnostic::help_uri
+function witforge::diagnostic::lookup
+function witforge::diff::Change::is_breaking
+function witforge::diff::DecodeVerdict::is_breaking
+function witforge::diff::compare
+function witforge::diff::compare_full
+function witforge::diff::compare_omissions
+function witforge::diff::compare_with_impacts
+function witforge::diff::compare_with_locations
+function witforge::diff::compare_with_omissions
+function witforge::discover_version_directories
+function witforge::emit::glue::check
+function witforge::emit::glue::emit_root
+function witforge::emit::glue::emit_version
+function witforge::emit::glue::generate
+function witforge::emit::glue::plan
+function witforge::emit::glue::plan_with_released
+function witforge::emit::glue::validate_module_root
+function witforge::emit::json_schema::check
+function witforge::emit::json_schema::emit_version
+function witforge::emit::json_schema::generate
+function witforge::emit::json_schema::plan
+function witforge::emit::json_schema::plan_with_released
+function witforge::emit::output::GeneratedFiles::check
+function witforge::emit::output::GeneratedFiles::check_with_command
+function witforge::emit::output::GeneratedFiles::files
+function witforge::emit::output::GeneratedFiles::header
+function witforge::emit::output::GeneratedFiles::insert
+function witforge::emit::output::GeneratedFiles::new
+function witforge::emit::output::GeneratedFiles::unified_diff
+function witforge::emit::output::GeneratedFiles::write
+function witforge::emit::output::ensure_distinct_output_roots
+function witforge::emit::output::ensure_outside_released
+function witforge::emit::output::ensure_outside_wit_root
+function witforge::emit::output::resolve_output_root
+function witforge::emit::proto::check
+function witforge::emit::proto::emit_major
+function witforge::emit::proto::generate
+function witforge::emit::proto::plan
+function witforge::emit::proto::plan_with_released
+function witforge::emit::rust::check
+function witforge::emit::rust::check_with_serde
+function witforge::emit::rust::emit_version
+function witforge::emit::rust::emit_version_with_serde
+function witforge::emit::rust::generate
+function witforge::emit::rust::generate_with_serde
+function witforge::emit::rust::plan
+function witforge::emit::rust::plan_with_released
+function witforge::emit::rust::plan_with_serde
+function witforge::emit::rust::version_module_name
+function witforge::ensure_directory_version
+function witforge::ensure_lockfile_not_released
+function witforge::ensure_no_symlinks_in_dir
+function witforge::ensure_not_released
+function witforge::ensure_same_dependency_graph
+function witforge::ensure_version_directory
+function witforge::error_diagnostics
+function witforge::error_located_diagnostics
+function witforge::freeze::FreezeReport::is_ok
+function witforge::freeze::check_root
+function witforge::is_contract_error
+function witforge::is_released
+function witforge::load
+function witforge::load_released_manifest
+function witforge::load_root_released_manifest
+function witforge::lock::Changes::is_empty
+function witforge::lock::Entry::new
+function witforge::lock::MemberKey::from_member
+function witforge::lock::MemberKey::key
+function witforge::lock::MemberKey::package
+function witforge::lock::MemberKey::parent
+function witforge::lock::MemberKey::parse
+function witforge::lock::PackageName::new
+function witforge::lock::Reconciliation::is_empty
+function witforge::lock::WireLock::case_collisions
+function witforge::lock::WireLock::check_append_only
+function witforge::lock::WireLock::check_package
+function witforge::lock::WireLock::drift
+function witforge::lock::WireLock::drift_report
+function witforge::lock::WireLock::drift_report_with
+function witforge::lock::WireLock::drift_with
+function witforge::lock::WireLock::entries
+function witforge::lock::WireLock::entry_positions
+function witforge::lock::WireLock::get
+function witforge::lock::WireLock::is_canonical
+function witforge::lock::WireLock::parse
+function witforge::lock::WireLock::reconcile
+function witforge::lock::WireLock::reconcile_report
+function witforge::lock::WireLock::reconcile_report_with
+function witforge::lock::WireLock::reconcile_with
+function witforge::lock::WireLock::render
+function witforge::lock::WireLock::validate_order_section
+function witforge::lock::WireLock::write_atomic
+function witforge::model::Case::new
+function witforge::model::Dependency::new
+function witforge::model::Field::new
+function witforge::model::Flag::new
+function witforge::model::Function::new
+function witforge::model::Interface::new
+function witforge::model::Member::key
+function witforge::model::Member::new
+function witforge::model::MemberKind::as_str
+function witforge::model::Model::canonical_type
+function witforge::model::Model::dependency_package
+function witforge::model::Model::interface
+function witforge::model::Model::members
+function witforge::model::Model::new
+function witforge::model::Model::type_def
+function witforge::model::Package::new
+function witforge::model::Param::new
+function witforge::model::QualifiedName::interface_name
+function witforge::model::QualifiedName::is_foreign
+function witforge::model::QualifiedName::new
+function witforge::model::QualifiedName::package
+function witforge::model::ResultExpr::new
+function witforge::model::TypeDef::new
+function witforge::model::TypeExpr::canonical
+function witforge::model::Version::new
+function witforge::model::World::new
+function witforge::model::WorldInterface::new
+function witforge::model::WorldInterface::qualified_name
+function witforge::model::build
+function witforge::model::members
+function witforge::subset::check
+function witforge::subset::check_diagnostics
+function witforge::subset::check_located_diagnostics
+function witforge::validate_retirement_order
+impl Clone for witforge::ContractError
+impl Clone for witforge::DiagnosticError
+impl Clone for witforge::ReleasedManifest
+impl Clone for witforge::diagnostic::CodeInfo
+impl Clone for witforge::diagnostic::Diagnostic
+impl Clone for witforge::diagnostic::LocatedDiagnostic
+impl Clone for witforge::diagnostic::Position
+impl Clone for witforge::diagnostic::RelatedLocation
+impl Clone for witforge::diagnostic::Severity
+impl Clone for witforge::diff::Change
+impl Clone for witforge::diff::ChangeKind
+impl Clone for witforge::diff::ConversionImpact
+impl Clone for witforge::diff::ConversionOmission
+impl Clone for witforge::diff::DecodeSummary
+impl Clone for witforge::diff::DecodeVerdict
+impl Clone for witforge::diff::DiffAnalysis
+impl Clone for witforge::diff::DiffReport
+impl Clone for witforge::diff::Endpoint
+impl Clone for witforge::diff::FullDiff
+impl Clone for witforge::diff::Summary
+impl Clone for witforge::emit::output::GeneratedFiles
+impl Clone for witforge::freeze::FreezeOptions
+impl Clone for witforge::freeze::FreezeReport
+impl Clone for witforge::lock::Changes
+impl Clone for witforge::lock::Discrepancy
+impl Clone for witforge::lock::Entry
+impl Clone for witforge::lock::LockMode
+impl Clone for witforge::lock::MemberKey
+impl Clone for witforge::lock::PackageName
+impl Clone for witforge::lock::Reconciliation
+impl Clone for witforge::lock::WireLock
+impl Clone for witforge::model::Case
+impl Clone for witforge::model::Dependency
+impl Clone for witforge::model::Field
+impl Clone for witforge::model::Flag
+impl Clone for witforge::model::Function
+impl Clone for witforge::model::Interface
+impl Clone for witforge::model::Member
+impl Clone for witforge::model::MemberKind
+impl Clone for witforge::model::Model
+impl Clone for witforge::model::Package
+impl Clone for witforge::model::Param
+impl Clone for witforge::model::QualifiedName
+impl Clone for witforge::model::ResultExpr
+impl Clone for witforge::model::Stability
+impl Clone for witforge::model::TypeDef
+impl Clone for witforge::model::TypeDefKind
+impl Clone for witforge::model::TypeExpr
+impl Clone for witforge::model::Version
+impl Clone for witforge::model::World
+impl Clone for witforge::model::WorldInterface
+impl Clone for witforge::subset::Violation
+impl Copy for witforge::diagnostic::CodeInfo
+impl Copy for witforge::diagnostic::Position
+impl Copy for witforge::diagnostic::Severity
+impl Copy for witforge::diff::DecodeSummary
+impl Copy for witforge::diff::DecodeVerdict
+impl Copy for witforge::diff::Summary
+impl Copy for witforge::lock::LockMode
+impl Copy for witforge::model::MemberKind
+impl Copy for witforge::model::Version
+impl Debug for witforge::Contract
+impl Debug for witforge::ContractError
+impl Debug for witforge::DiagnosticError
+impl Debug for witforge::ReleasedManifest
+impl Debug for witforge::diagnostic::CodeInfo
+impl Debug for witforge::diagnostic::Diagnostic
+impl Debug for witforge::diagnostic::LocatedDiagnostic
+impl Debug for witforge::diagnostic::Position
+impl Debug for witforge::diagnostic::RelatedLocation
+impl Debug for witforge::diagnostic::Severity
+impl Debug for witforge::diff::Change
+impl Debug for witforge::diff::ChangeKind
+impl Debug for witforge::diff::ConversionImpact
+impl Debug for witforge::diff::ConversionOmission
+impl Debug for witforge::diff::DecodeSummary
+impl Debug for witforge::diff::DecodeVerdict
+impl Debug for witforge::diff::DiffAnalysis
+impl Debug for witforge::diff::DiffReport
+impl Debug for witforge::diff::Endpoint
+impl Debug for witforge::diff::FullDiff
+impl Debug for witforge::diff::Summary
+impl Debug for witforge::emit::output::GeneratedFiles
+impl Debug for witforge::freeze::FreezeOptions
+impl Debug for witforge::freeze::FreezeReport
+impl Debug for witforge::lock::Changes
+impl Debug for witforge::lock::Discrepancy
+impl Debug for witforge::lock::Entry
+impl Debug for witforge::lock::LockMode
+impl Debug for witforge::lock::MemberKey
+impl Debug for witforge::lock::PackageName
+impl Debug for witforge::lock::Reconciliation
+impl Debug for witforge::lock::WireLock
+impl Debug for witforge::model::Case
+impl Debug for witforge::model::Dependency
+impl Debug for witforge::model::Field
+impl Debug for witforge::model::Flag
+impl Debug for witforge::model::Function
+impl Debug for witforge::model::Interface
+impl Debug for witforge::model::Member
+impl Debug for witforge::model::MemberKind
+impl Debug for witforge::model::Model
+impl Debug for witforge::model::Package
+impl Debug for witforge::model::Param
+impl Debug for witforge::model::QualifiedName
+impl Debug for witforge::model::ResultExpr
+impl Debug for witforge::model::Stability
+impl Debug for witforge::model::TypeDef
+impl Debug for witforge::model::TypeDefKind
+impl Debug for witforge::model::TypeExpr
+impl Debug for witforge::model::Version
+impl Debug for witforge::model::World
+impl Debug for witforge::model::WorldInterface
+impl Debug for witforge::subset::Violation
+impl Default for witforge::ReleasedManifest
+impl Default for witforge::diff::DecodeSummary
+impl Default for witforge::diff::Summary
+impl Default for witforge::freeze::FreezeOptions
+impl Default for witforge::lock::Changes
+impl Default for witforge::lock::Reconciliation
+impl Default for witforge::lock::WireLock
+impl Default for witforge::model::ResultExpr
+impl Display for witforge::ContractError
+impl Display for witforge::DiagnosticError
+impl Display for witforge::diagnostic::Severity
+impl Display for witforge::lock::MemberKey
+impl Display for witforge::lock::PackageName
+impl Display for witforge::model::MemberKind
+impl Display for witforge::model::QualifiedName
+impl Display for witforge::model::Version
+impl Display for witforge::subset::Violation
+impl Eq for witforge::ContractError
+impl Eq for witforge::DiagnosticError
+impl Eq for witforge::ReleasedManifest
+impl Eq for witforge::diagnostic::CodeInfo
+impl Eq for witforge::diagnostic::Diagnostic
+impl Eq for witforge::diagnostic::LocatedDiagnostic
+impl Eq for witforge::diagnostic::Position
+impl Eq for witforge::diagnostic::RelatedLocation
+impl Eq for witforge::diagnostic::Severity
+impl Eq for witforge::diff::Change
+impl Eq for witforge::diff::ChangeKind
+impl Eq for witforge::diff::ConversionImpact
+impl Eq for witforge::diff::ConversionOmission
+impl Eq for witforge::diff::DecodeSummary
+impl Eq for witforge::diff::DecodeVerdict
+impl Eq for witforge::diff::DiffAnalysis
+impl Eq for witforge::diff::DiffReport
+impl Eq for witforge::diff::Endpoint
+impl Eq for witforge::diff::FullDiff
+impl Eq for witforge::diff::Summary
+impl Eq for witforge::emit::output::GeneratedFiles
+impl Eq for witforge::freeze::FreezeOptions
+impl Eq for witforge::freeze::FreezeReport
+impl Eq for witforge::lock::Changes
+impl Eq for witforge::lock::Discrepancy
+impl Eq for witforge::lock::Entry
+impl Eq for witforge::lock::LockMode
+impl Eq for witforge::lock::MemberKey
+impl Eq for witforge::lock::PackageName
+impl Eq for witforge::lock::Reconciliation
+impl Eq for witforge::lock::WireLock
+impl Eq for witforge::model::Case
+impl Eq for witforge::model::Dependency
+impl Eq for witforge::model::Field
+impl Eq for witforge::model::Flag
+impl Eq for witforge::model::Function
+impl Eq for witforge::model::Interface
+impl Eq for witforge::model::Member
+impl Eq for witforge::model::MemberKind
+impl Eq for witforge::model::Model
+impl Eq for witforge::model::Package
+impl Eq for witforge::model::Param
+impl Eq for witforge::model::QualifiedName
+impl Eq for witforge::model::ResultExpr
+impl Eq for witforge::model::Stability
+impl Eq for witforge::model::TypeDef
+impl Eq for witforge::model::TypeDefKind
+impl Eq for witforge::model::TypeExpr
+impl Eq for witforge::model::Version
+impl Eq for witforge::model::World
+impl Eq for witforge::model::WorldInterface
+impl Eq for witforge::subset::Violation
+impl Error for witforge::ContractError
+impl Error for witforge::DiagnosticError
+impl FromStr for witforge::model::MemberKind
+impl Hash for witforge::lock::MemberKey
+impl Hash for witforge::lock::PackageName
+impl Hash for witforge::model::MemberKind
+impl Hash for witforge::model::QualifiedName
+impl Hash for witforge::model::Version
+impl Ord for witforge::diagnostic::Severity
+impl Ord for witforge::lock::MemberKey
+impl Ord for witforge::lock::PackageName
+impl Ord for witforge::model::Member
+impl Ord for witforge::model::MemberKind
+impl Ord for witforge::model::QualifiedName
+impl Ord for witforge::model::Version
+impl PartialEq for witforge::ContractError
+impl PartialEq for witforge::DiagnosticError
+impl PartialEq for witforge::ReleasedManifest
+impl PartialEq for witforge::diagnostic::CodeInfo
+impl PartialEq for witforge::diagnostic::Diagnostic
+impl PartialEq for witforge::diagnostic::LocatedDiagnostic
+impl PartialEq for witforge::diagnostic::Position
+impl PartialEq for witforge::diagnostic::RelatedLocation
+impl PartialEq for witforge::diagnostic::Severity
+impl PartialEq for witforge::diff::Change
+impl PartialEq for witforge::diff::ChangeKind
+impl PartialEq for witforge::diff::ConversionImpact
+impl PartialEq for witforge::diff::ConversionOmission
+impl PartialEq for witforge::diff::DecodeSummary
+impl PartialEq for witforge::diff::DecodeVerdict
+impl PartialEq for witforge::diff::DiffAnalysis
+impl PartialEq for witforge::diff::DiffReport
+impl PartialEq for witforge::diff::Endpoint
+impl PartialEq for witforge::diff::FullDiff
+impl PartialEq for witforge::diff::Summary
+impl PartialEq for witforge::emit::output::GeneratedFiles
+impl PartialEq for witforge::freeze::FreezeOptions
+impl PartialEq for witforge::freeze::FreezeReport
+impl PartialEq for witforge::lock::Changes
+impl PartialEq for witforge::lock::Discrepancy
+impl PartialEq for witforge::lock::Entry
+impl PartialEq for witforge::lock::LockMode
+impl PartialEq for witforge::lock::MemberKey
+impl PartialEq for witforge::lock::PackageName
+impl PartialEq for witforge::lock::Reconciliation
+impl PartialEq for witforge::lock::WireLock
+impl PartialEq for witforge::model::Case
+impl PartialEq for witforge::model::Dependency
+impl PartialEq for witforge::model::Field
+impl PartialEq for witforge::model::Flag
+impl PartialEq for witforge::model::Function
+impl PartialEq for witforge::model::Interface
+impl PartialEq for witforge::model::Member
+impl PartialEq for witforge::model::MemberKind
+impl PartialEq for witforge::model::Model
+impl PartialEq for witforge::model::Package
+impl PartialEq for witforge::model::Param
+impl PartialEq for witforge::model::QualifiedName
+impl PartialEq for witforge::model::ResultExpr
+impl PartialEq for witforge::model::Stability
+impl PartialEq for witforge::model::TypeDef
+impl PartialEq for witforge::model::TypeDefKind
+impl PartialEq for witforge::model::TypeExpr
+impl PartialEq for witforge::model::Version
+impl PartialEq for witforge::model::World
+impl PartialEq for witforge::model::WorldInterface
+impl PartialEq for witforge::subset::Violation
+impl PartialOrd for witforge::diagnostic::Severity
+impl PartialOrd for witforge::lock::MemberKey
+impl PartialOrd for witforge::lock::PackageName
+impl PartialOrd for witforge::model::Member
+impl PartialOrd for witforge::model::MemberKind
+impl PartialOrd for witforge::model::QualifiedName
+impl PartialOrd for witforge::model::Version
+module witforge
+module witforge::diagnostic
+module witforge::diagnostic::codes
+module witforge::diff
+module witforge::emit
+module witforge::emit::glue
+module witforge::emit::json_schema
+module witforge::emit::output
+module witforge::emit::proto
+module witforge::emit::rust
+module witforge::freeze
+module witforge::lock
+module witforge::model
+module witforge::subset
+struct witforge::Contract
+struct witforge::ContractError
+struct witforge::DiagnosticError
+struct witforge::ReleasedManifest
+struct witforge::diagnostic::CodeInfo
+struct witforge::diagnostic::Diagnostic
+struct witforge::diagnostic::LocatedDiagnostic
+struct witforge::diagnostic::Position
+struct witforge::diagnostic::RelatedLocation
+struct witforge::diff::Change
+struct witforge::diff::ConversionImpact
+struct witforge::diff::ConversionOmission
+struct witforge::diff::DecodeSummary
+struct witforge::diff::DecodeVerdict
+struct witforge::diff::DiffAnalysis
+struct witforge::diff::DiffReport
+struct witforge::diff::Endpoint
+struct witforge::diff::FullDiff
+struct witforge::diff::Summary
+struct witforge::emit::output::GeneratedFiles
+struct witforge::freeze::FreezeOptions
+struct witforge::freeze::FreezeReport
+struct witforge::lock::Changes
+struct witforge::lock::Discrepancy
+struct witforge::lock::Entry
+struct witforge::lock::PackageName
+struct witforge::lock::Reconciliation
+struct witforge::lock::WireLock
+struct witforge::model::Case
+struct witforge::model::Dependency
+struct witforge::model::Field
+struct witforge::model::Flag
+struct witforge::model::Function
+struct witforge::model::Interface
+struct witforge::model::Member
+struct witforge::model::Model
+struct witforge::model::Package
+struct witforge::model::Param
+struct witforge::model::QualifiedName
+struct witforge::model::ResultExpr
+struct witforge::model::TypeDef
+struct witforge::model::Version
+struct witforge::model::World
+struct witforge::model::WorldInterface
+struct witforge::subset::Violation
+variant witforge::diagnostic::Severity::Error
+variant witforge::diagnostic::Severity::Note
+variant witforge::diagnostic::Severity::Warning
+variant witforge::diff::ChangeKind::Added
+variant witforge::diff::ChangeKind::KindChanged
+variant witforge::diff::ChangeKind::Removed
+variant witforge::diff::ChangeKind::Renumbered
+variant witforge::diff::ChangeKind::Reordered
+variant witforge::diff::ChangeKind::Retyped
+variant witforge::lock::LockMode::Against
+variant witforge::lock::LockMode::Default
+variant witforge::lock::LockMode::First
+variant witforge::lock::MemberKey::Method
+variant witforge::lock::MemberKey::Parameter
+variant witforge::lock::MemberKey::TypeMember
+variant witforge::model::MemberKind::EnumCase
+variant witforge::model::MemberKind::Field
+variant witforge::model::MemberKind::Flag
+variant witforge::model::MemberKind::Method
+variant witforge::model::MemberKind::Param
+variant witforge::model::MemberKind::VariantCase
+variant witforge::model::Stability::Stable
+variant witforge::model::Stability::Unknown
+variant witforge::model::Stability::Unstable
+variant witforge::model::TypeDefKind::Alias
+variant witforge::model::TypeDefKind::Enum
+variant witforge::model::TypeDefKind::Flags
+variant witforge::model::TypeDefKind::List
+variant witforge::model::TypeDefKind::Option
+variant witforge::model::TypeDefKind::Record
+variant witforge::model::TypeDefKind::Result
+variant witforge::model::TypeDefKind::Variant
+variant witforge::model::TypeExpr::Bool
+variant witforge::model::TypeExpr::F32
+variant witforge::model::TypeExpr::F64
+variant witforge::model::TypeExpr::List
+variant witforge::model::TypeExpr::Named
+variant witforge::model::TypeExpr::Option
+variant witforge::model::TypeExpr::Result
+variant witforge::model::TypeExpr::S16
+variant witforge::model::TypeExpr::S32
+variant witforge::model::TypeExpr::S64
+variant witforge::model::TypeExpr::S8
+variant witforge::model::TypeExpr::String
+variant witforge::model::TypeExpr::U16
+variant witforge::model::TypeExpr::U32
+variant witforge::model::TypeExpr::U64
+variant witforge::model::TypeExpr::U8

@@ -70,6 +70,7 @@ fn collect_expr(expr: &TypeExpr, primitives: &mut BTreeSet<&'static str>, nested
                 collect_expr(err, primitives, nested);
             }
         }
+        other => panic!("uncovered type expression in the conformance fixture: {other:?}"),
     }
 }
 
@@ -95,6 +96,7 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
                 TypeDefKind::List(_) => "list",
                 TypeDefKind::Option(_) => "option",
                 TypeDefKind::Result(_) => "result",
+                other => panic!("uncovered type definition in the conformance fixture: {other:?}"),
             });
             stability.insert(format!("{:?}", def.stability));
             match &def.kind {
@@ -122,6 +124,7 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
                     }
                 }
                 TypeDefKind::Flags(_) => {}
+                other => panic!("uncovered type definition in the conformance fixture: {other:?}"),
             }
         }
         for function in &interface.functions {
