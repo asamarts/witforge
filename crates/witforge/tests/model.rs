@@ -70,6 +70,26 @@ fn in_memory_loading_preserves_names_order_and_dependencies() {
     assert_eq!(model::build(&second_contract).unwrap(), first);
     assert_eq!(second_contract.member_locations(), locations);
 
+    let direct_dependency = load_sources(vec![
+        SourceFile::new(
+            "contract.wit".into(),
+            "package ex:root@0.1.0;\n\
+             interface api { use ex:shared/types@0.1.0.{thing}; record wrapper { value: thing } }\n"
+                .into(),
+        ),
+        SourceFile::new(
+            "deps/shared.wit".into(),
+            "package ex:shared@0.1.0;\ninterface types { record thing { id: u64 } }\n".into(),
+        ),
+    ])
+    .unwrap();
+    assert_eq!(
+        model::build(&direct_dependency).unwrap().dependencies[0]
+            .package
+            .name,
+        "shared"
+    );
+
     for invalid in [
         SourceFile::new("../contract.wit".into(), String::new()),
         SourceFile::new("nested/contract.wit".into(), String::new()),
