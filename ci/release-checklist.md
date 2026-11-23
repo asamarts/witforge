@@ -343,3 +343,8 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] Alint PR #647 (`https://github.com/asamarts/alint/pull/647`, merge commit `188defd5a`)
       regenerated the proof crate with the released binary. Consumer drift/control checks,
       19 round-trip/inventory tests, Clippy, and every hosted PR check passed.
+- [x] Post-release main CI run 45279025604
+      (`https://github.com/asamarts/witforge/actions/runs/45279025604/job/138061874035`) restored
+      ordinary semver compatibility against published 0.7.0, enforced the tagged signature
+      inventory baseline, and ran the published 0.7.0 Action successfully on Linux x86_64/arm64,
+      macOS Intel/arm64, and Windows x86_64.
