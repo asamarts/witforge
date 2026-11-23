@@ -14,10 +14,11 @@ completeness alone is not enough.
       passed this check against 0.4.1, so comparing with the newest release keeps the surface
       reviewed at 0.4.1 covered. **One planned pre-1.0 exception:** the pre-1.0 minor release
       that lands `W10-095` (marking library model, lockfile, and diagnostic types
-      `#[non_exhaustive]` and making unlisted public items private, together with `W10-096`'s
-      structured check findings) breaks the library interface on purpose. Before and on the
-      0.7.0 tag commit, `ci.yml` and `release.yml` require cargo-semver-checks' failures and the
-      complete rustdoc API delta from 0.6.0 to equal their reviewed W10-095/W10-096 inventories.
+      `#[non_exhaustive]` and making unlisted public items private), `W10-096`'s structured
+      workflows/findings, and `W10-094`'s final `ChangeKind` variant plus stability metadata
+      breaks the library interface on purpose. Before and on the 0.7.0 tag commit, `ci.yml` and
+      `release.yml` require cargo-semver-checks' failures and the complete rustdoc API delta from
+      0.6.0 to equal their reviewed W10-094/W10-095/W10-096 inventories.
       Once that tag is an ancestor of `HEAD`, ordinary minor compatibility is restored
       automatically.
 - [ ] the boundary error policy is published: `anyhow::Error` plus the stable `ContractError`

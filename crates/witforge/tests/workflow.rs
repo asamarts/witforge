@@ -1,7 +1,7 @@
 //! Library-owned check and lock orchestration.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use witforge::diagnostic::codes;
 use witforge::workflow::{self, Baseline, CheckTargetKind, VersionOptions};
@@ -141,10 +141,9 @@ fn root_check_validates_since_at_the_first_declaration() {
             .contains("first declaration in this root is version 0.1.0")
     );
     assert!(
-        diagnostic
-            .file
-            .as_deref()
-            .is_some_and(|file| file.ends_with("v0.2/contract.wit"))
+        diagnostic.file.as_deref().is_some_and(|file| {
+            Path::new(file).ends_with(Path::new("v0.2").join("contract.wit"))
+        })
     );
     let generator_error = witforge::emit::rust::plan(&root).unwrap_err();
     assert!(witforge::is_contract_error(&generator_error));
