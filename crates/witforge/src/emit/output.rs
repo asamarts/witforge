@@ -1648,23 +1648,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn stale_removal_reports_a_persistent_permission_error() {
+    fn stale_removal_reports_a_persistent_error() {
         let path =
-            std::env::temp_dir().join(format!("witforge-stale-readonly-{}", std::process::id()));
-        let _ = fs::remove_file(&path);
-        fs::write(&path, "owned\n").unwrap();
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&path, permissions).unwrap();
+            std::env::temp_dir().join(format!("witforge-stale-directory-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir(&path).unwrap();
 
         let error = format!("{:#}", remove_stale_file(&path).unwrap_err());
-        assert!(error.contains("witforge-stale-readonly"), "{error}");
+        assert!(error.contains("witforge-stale-directory"), "{error}");
 
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        permissions.set_readonly(false);
-        fs::set_permissions(&path, permissions).unwrap();
-        fs::remove_file(path).unwrap();
+        fs::remove_dir(path).unwrap();
     }
 
     #[test]
