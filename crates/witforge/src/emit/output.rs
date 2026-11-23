@@ -356,14 +356,7 @@ impl GeneratedFiles {
             write_atomic(&path, bytes)?;
         }
         for path in stale {
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(err)
-                        .with_context(|| format!("failed to remove stale {}", path.display()));
-                }
-            }
+            remove_stale_file(&path)?;
         }
         Ok(())
     }
@@ -996,6 +989,36 @@ fn parse_scoped_header(line: &str) -> Option<(&str, &str)> {
     Some((generator, contract))
 }
 
+#[cfg(not(windows))]
+fn remove_stale_file(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove stale {}", path.display())),
+    }
+}
+
+#[cfg(windows)]
+fn remove_stale_file(path: &Path) -> Result<()> {
+    const RETRIES: usize = 32;
+    for attempt in 0..=RETRIES {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied && attempt < RETRIES => {
+                // Windows refuses deletion while another process has the file open without
+                // delete sharing. A concurrent witforge writer only holds that handle briefly.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to remove stale {}", path.display()));
+            }
+        }
+    }
+    unreachable!("the final removal attempt returns")
+}
+
 /// Replace `path` with `contents` through a temporary file in the same directory.
 ///
 /// A failed write leaves the previous file untouched and removes the temporary file. The
@@ -1621,6 +1644,27 @@ mod tests {
         assert_eq!(leftovers, 0);
 
         fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stale_removal_reports_a_persistent_permission_error() {
+        let path =
+            std::env::temp_dir().join(format!("witforge-stale-readonly-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "owned\n").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+
+        let error = format!("{:#}", remove_stale_file(&path).unwrap_err());
+        assert!(error.contains("witforge-stale-readonly"), "{error}");
+
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&path, permissions).unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

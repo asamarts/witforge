@@ -987,8 +987,10 @@ Every command also accepts the global `--format human|json|sarif`
   Generation validates every version before writing the first file, removes stale generated files
   only after all expected writes succeed, and never touches files without the header (skipping
   unreadable unrelated files while still failing with an error naming any unreadable expected
-  file). A failed run may leave a mix of old and new files, but never a truncated file; rerunning
-  after fixing the input completes it.
+  file). Windows stale-file deletion retries a sharing `PermissionDenied` for at most 32 one-
+  millisecond waits so a concurrent reader can close its handle; a persistent permission error
+  still fails and names the stale path. A failed run may leave a mix of old and new files, but
+  never a truncated file; rerunning after fixing the input completes it.
 - Generation never replaces a symlink, writes through one at an expected file's path, or
   overwrites a file it does not own. Before anything is written or removed, every expected path
   that already exists must be a regular file that starts with the header; a symlink, a directory
