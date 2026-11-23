@@ -143,9 +143,11 @@ All notable changes to this project are documented here. The format follows
     builders.
   - Added a pinned-rustdoc, machine-checked inventory of every public item, field and function
     signature, variant, associated item, explicit trait implementation, and extensibility
-    attribute. The gate also requires the complete API delta from 0.6.0 to equal the reviewed
-    pre-1.0 inventory, while cargo-semver-checks separately requires its detected failures to
-    equal the checked exception through the 0.7.0 tag. Removed the unused
+    attribute. Through the 0.7.0 tag commit, the gate requires the complete API delta from 0.6.0
+    to equal the reviewed pre-1.0 inventory, while cargo-semver-checks separately requires its
+    detected failures to equal the checked exception. On descendants of the tag, the tag's
+    inventory becomes the signature-aware baseline: removals and type/signature changes fail,
+    while reviewed additive entries remain possible. Removed the unused
     `emit::output::absolute` function and made the four internal model size-limit constants
     private.
   - **Library migration:** this is the planned pre-1.0 source break. Search library consumers for

@@ -251,9 +251,9 @@ jobs:
         with:
           toolchain: stable
       - run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # W10-095 and W10-096 are the final reviewed pre-1.0 API break. Before and on the 0.7.0
-      # tag, this runs every minor-compatibility lint and compares the exact failures with the
-      # reviewed inventory. Once that tag is an ancestor of HEAD, ordinary minor compatibility
+      # W10-094, W10-095, and W10-096 are the final reviewed pre-1.0 API break. Before and on the
+      # 0.7.0 tag, this runs every minor-compatibility lint and compares the exact failures with
+      # the reviewed inventory. Once that tag is an ancestor of HEAD, ordinary minor compatibility
       # is restored. The crates.io baseline is never named, so it advances with each release.
       - run: ci/check-semver.sh
 
@@ -266,10 +266,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: nightly-2026-09-11
+      - run: bash ci/test-public-api-policy.sh
       - run: ci/check-public-api.sh
 
   benchmark:

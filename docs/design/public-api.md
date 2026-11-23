@@ -35,9 +35,12 @@ The exact line-oriented inventory is
 [`public-api-inventory.txt`](public-api-inventory.txt). It records every public module, type,
 variant, field and function signature, associated item, explicit trait implementation, and
 `#[non_exhaustive]` promise. `ci/check-public-api.sh` regenerates it from rustdoc JSON under the
-pinned `nightly-2026-09-11` toolchain, and also requires the complete delta from the checked
-0.6.0 inventory to equal the reviewed pre-1.0 break inventory. An undocumented addition,
-removal, or signature/type change therefore fails. The module table above is the human map; the
+pinned `nightly-2026-09-11` toolchain. Before and on the 0.7.0 tag commit, the complete delta
+from the checked 0.6.0 inventory must equal the reviewed pre-1.0 break inventory. On descendants
+of the tag, the tag's own inventory becomes the signature-aware baseline: every tagged entry
+must remain while additive entries are allowed. Cargo-semver-checks independently enforces Rust
+semver against the newest published release. An undocumented addition, removal, signature/type
+change, or extensibility change therefore fails. The module table above is the human map; the
 checked inventory is the exhaustive surface.
 
 ## Data type evolution and construction

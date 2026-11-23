@@ -86,8 +86,10 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   not named, so it advances with each release.
 - **documented public API**: `ci/check-public-api.sh` uses pinned `nightly-2026-09-11` rustdoc JSON
   to compare every public item, field and function signature, variant, associated item, explicit
-  trait implementation, and extensibility attribute with `docs/design/public-api-inventory.txt`;
-  it also requires the complete delta from 0.6.0 to equal the reviewed pre-1.0 inventory.
+  trait implementation, and extensibility attribute with `docs/design/public-api-inventory.txt`.
+  Before and on the 0.7.0 tag, the complete delta from 0.6.0 must equal the reviewed pre-1.0
+  inventory. On descendants, the tag's inventory becomes the signature-aware baseline:
+  removals and changed signatures/types fail while additive entries are allowed.
 - **buf** (workflow dispatch only): optional `buf breaking` through `ci/check-buf-history.sh`.
   The old schema is generated from each release tag by that tag's published witforge binary;
   the candidate binary generates only the new schema. Every fixture WIT root is checked against
