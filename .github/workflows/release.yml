@@ -323,7 +323,7 @@ jobs:
       - name: Mint a short-lived crates.io token
         id: auth
         if: steps.missing.outputs.crates != ''
-        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca7638054cd9 # v1.0.6
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
       # Uses `--no-verify` so no dependency build scripts execute while holding the publish token;
       # the `.crate` tarballs were already verified and digest-checked against the unprivileged
       # `verify` job above.
