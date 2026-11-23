@@ -14,7 +14,7 @@ configuration options.
 ### From crates.io
 
 ```sh
-cargo install witforge-cli --version 0.6.0 --locked
+cargo install witforge-cli --version 0.7.0 --locked
 witforge --version
 ```
 
@@ -40,7 +40,7 @@ configured via `[package.metadata.binstall]`.
 Download and verify a prebuilt archive before extracting it:
 
 ```sh
-VERSION=0.6.0
+VERSION=0.7.0
 TARGET=x86_64-unknown-linux-gnu
 BASE="https://github.com/asamarts/witforge/releases/download/v${VERSION}"
 curl -sSfLO "${BASE}/witforge-${VERSION}-${TARGET}.tar.gz"

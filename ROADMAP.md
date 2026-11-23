@@ -152,16 +152,26 @@ This is a summary of what tag `v0.6.0` contains; the changelog's 0.6.0 section i
       output-root guards, deterministic multi-file loading, and the `prost` compile matrix) and
       release 0.6.0 (2026-11-21, `W10-069`).
 
+## 0.7.0: final pre-1.0 surface (released)
+
+This is a summary of what tag `v0.7.0` contains; the changelog's 0.7.0 section is the full list.
+
+- [x] Make public model, lockfile, and diagnostic data extensible; move check/lock workflows and
+      typed findings into the library; expose deterministic in-memory package loading.
+- [x] Carry `@since`, `@unstable`, and `@deprecated` through validation, Rust, protobuf, JSON
+      Schema, world metadata, and non-breaking stability diffs.
+- [x] Complete the second-audit command workflows, version retirement, cross-major dependency and
+      conversion handling, diagnostics, Action hardening, supply-chain provenance, documentation,
+      fuzzing, and release gates.
+- [x] Release 0.7.0 (2026-11-23, `W10-099`) as the final planned pre-1.0 Rust-library break.
+
 ## 1.0 and beyond
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
       paused; the 1.0 release criteria (including the independent-adoption and real-evolution
       gates) live in [release-1.0.md](docs/design/release-1.0.md) (`W10-001`, `W10-002`,
-      `W10-098`, `W10-099`, `W10-100`).
-- [ ] Continue bounded implementation work that does not speculate about consumer demand. The
-      first 0.5.0 audit's remediation and the diff/conversion benchmark are complete.
-- [ ] Complete the final pre-1.0 API tasks (`W10-094` to `W10-096`), publish them together in
-      0.7.0 (`W10-099`), and record one real consumer evolution across two witforge releases
-      (`W10-100`). `aplan ready` lists what can start.
+      `W10-098`, `W10-100`).
+- [ ] Record one real consumer evolution across two witforge releases (`W10-100`) after 0.7.0.
+- [ ] Continue bounded implementation work that does not speculate about consumer demand.
 - [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
       JSON work behind their existing evidence or 1.0 triggers.

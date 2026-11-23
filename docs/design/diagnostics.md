@@ -21,7 +21,7 @@ JSON diagnostics use this versioned envelope:
 ```json
 {
   "version": 1,
-  "tool": { "name": "witforge", "version": "0.6.0" },
+  "tool": { "name": "witforge", "version": "0.7.0" },
   "diagnostics": [
     {
       "code": "WF1015",

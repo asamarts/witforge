@@ -23,7 +23,7 @@ types directly.
 Install the current release:
 
 ```sh
-cargo install witforge-cli --version 0.6.0 --locked
+cargo install witforge-cli --version 0.7.0 --locked
 witforge --version
 ```
 

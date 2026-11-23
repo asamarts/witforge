@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-23
+
+0.7.0 is the final planned pre-1.0 Rust-library source break. Library consumers must apply the
+`W10-094`, `W10-095`, and `W10-096` migration notes below before moving their dependency.
+
+Generated output changes for every contract that uses `@since`, `@unstable`, or `@deprecated`:
+regenerate and commit plain Rust, protobuf, JSON Schema, glue, and shared metadata together.
+Contracts without stability annotations do not gain those comments or deprecation attributes,
+but should still run every generator with `--check`. Invalid annotation versions newly fail
+validation as documented under `W10-094`. Wire numbers and lockfile identity do not change.
+
 ### Added
 
 - **Adopter & contributor documentation and dual GitHub/Pages link checking (`W10-091`, `W10-092`):**
