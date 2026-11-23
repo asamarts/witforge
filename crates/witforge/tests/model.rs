@@ -3,10 +3,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use witforge::load;
 use witforge::model::{
     self, MemberKind, Model, QualifiedName, ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr,
 };
+use witforge::{SourceFile, load, load_sources};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -31,6 +31,54 @@ fn build(name: &str) -> Model {
 
 fn model_fixture() -> Model {
     build("model")
+}
+
+#[test]
+fn in_memory_loading_preserves_names_order_and_dependencies() {
+    let sources = vec![
+        SourceFile::new(
+            "z_world.wit".to_string(),
+            "package ex:root@0.1.0;\nworld plugin { export api; }\n".to_string(),
+        ),
+        SourceFile::new(
+            "deps/shared/types.wit".to_string(),
+            "package ex:shared@0.1.0;\ninterface types { record thing { id: u64 } }\n".to_string(),
+        ),
+        SourceFile::new(
+            "a_contract.wit".to_string(),
+            "package ex:root@0.1.0;\n\
+             interface api { use ex:shared/types@0.1.0.{thing}; record wrapper { value: thing } }\n"
+                .to_string(),
+        ),
+    ];
+    let contract = load_sources(sources.clone()).unwrap();
+    let first = model::build(&contract).unwrap();
+    assert_eq!(first.package.name, "root");
+    assert_eq!(first.dependencies.len(), 1);
+    assert_eq!(first.dependencies[0].package.name, "shared");
+    assert_eq!(first.worlds[0].exports[0].interface, "api");
+    let locations = contract.member_locations();
+    let wrapper_location = locations
+        .iter()
+        .find(|(key, _)| key.ends_with("api/wrapper.value"))
+        .unwrap_or_else(|| panic!("wrapper field location missing from {locations:#?}"));
+    assert_eq!(wrapper_location.1.0, "a_contract.wit");
+
+    let mut reversed = sources;
+    reversed.reverse();
+    let second_contract = load_sources(reversed).unwrap();
+    assert_eq!(model::build(&second_contract).unwrap(), first);
+    assert_eq!(second_contract.member_locations(), locations);
+
+    for invalid in [
+        SourceFile::new("../contract.wit".into(), String::new()),
+        SourceFile::new("nested/contract.wit".into(), String::new()),
+        SourceFile::new(r"deps\shared\contract.wit".into(), String::new()),
+    ] {
+        assert!(load_sources(vec![invalid]).is_err());
+    }
+    let duplicate = SourceFile::new("contract.wit".into(), "package ex:root@0.1.0;".into());
+    assert!(load_sources(vec![duplicate.clone(), duplicate]).is_err());
 }
 
 #[test]

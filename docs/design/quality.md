@@ -27,11 +27,15 @@ emitter boundaries with shapes the hand-written golden fixtures may not cover.
 [`fuzz/`](../../fuzz/) is a separate `cargo-fuzz` workspace with three targets (`wit-package`,
 `lockfile`, and the structure-aware `structured-contract`), a tracked fixture-derived seed corpus
 under `fuzz/seeds/` (while `fuzz/corpus/` remains ignored), and a WIT keyword dictionary
-(`fuzz/wit.dict`). Instead of discarding emitter results, `wit-package` and `structured-contract`
-assert that any subset-clean contract builds, locks canonically and idempotently, generates
-deterministically across all four emitters, has an empty self-diff, and converts across two
-identical adjacent minors. The same structure-aware generator (including one-letter and upper-case
-words, multi-file roots, and `deps/` packages) and invariants run in the stable test suite as
+(`fuzz/wit.dict`). Fuzz runs copy tracked seeds to a scratch corpus because libFuzzer writes new
+inputs into every corpus directory it receives. `wit-package` parses and validates candidates
+through the in-memory `load_sources` boundary before materializing only subset-clean contracts
+for filesystem-wide checks. Instead of discarding emitter results, `wit-package` and
+`structured-contract` assert that
+any subset-clean contract builds, locks canonically and idempotently, generates deterministically
+across all four emitters, has an empty self-diff, and converts across two identical adjacent
+minors. The same structure-aware generator (including one-letter and upper-case words, multi-file
+roots, and `deps/` packages) and invariants run in the stable test suite as
 `structured_contracts_satisfy_fuzz_invariants` in `crates/witforge/tests/properties.rs`. The
 weekly scheduled `fuzz-smoke` job in `.github/workflows/ci.yml` runs all three targets under pinned
 `nightly-2026-09-11` for a bounded time and uploads `fuzz/artifacts/` on failure. Stable CI also

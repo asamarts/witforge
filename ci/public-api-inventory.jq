@@ -10,6 +10,32 @@ def public_path_items:
       or .value.kind == "variant")
   | "\(.value.kind) \(.value.path | join("::"))";
 
+def api_shape:
+  walk(if type == "object" then del(.id, .span) else . end);
+
+def public_path_signatures($root):
+  $root.paths
+  | to_entries[]
+  | select(.value.crate_id == 0)
+  | select(.value.kind == "function" or .value.kind == "constant")
+  | .key as $id
+  | (.value.path | join("::")) as $path
+  | "signature \($path) \(($root.index[$id].inner | api_shape | tojson))";
+
+def public_type_signatures($root):
+  $root.paths
+  | to_entries[]
+  | select(.value.crate_id == 0)
+  | select(.value.kind == "struct" or .value.kind == "enum")
+  | .key as $id
+  | (.value.path | join("::")) as $path
+  | (if .value.kind == "struct" then
+       $root.index[$id].inner.struct.generics
+     else
+       $root.index[$id].inner.enum.generics
+     end) as $generics
+  | "signature \($path) \(($generics | api_shape | tojson))";
+
 
 def public_struct_fields($root):
   $root.paths
@@ -18,9 +44,10 @@ def public_struct_fields($root):
   | .key as $id
   | (.value.path | join("::")) as $path
   | ($root.index[$id].inner.struct.kind.plain.fields // [])[] as $field_id
-  | $root.index[($field_id | tostring)]
-  | select(.visibility == "public")
-  | "field \($path).\(.name)";
+  | $root.index[($field_id | tostring)] as $field
+  | select($field.visibility == "public")
+  | ("field \($path).\($field.name)",
+     "signature \($path).\($field.name) \(($field.inner | api_shape | tojson))");
 
 def public_variant_fields($root):
   $root.paths
@@ -36,7 +63,8 @@ def public_variant_fields($root):
     end as $field
   | select($field.value != null)
   | ($root.index[($field.value | tostring)].name // ($field.key | tostring)) as $name
-  | "field \($path).\($name)";
+  | ("field \($path).\($name)",
+     "signature \($path).\($name) \(($root.index[($field.value | tostring)].inner | api_shape | tojson))");
 
 def public_inherent_items($root):
   $root.paths
@@ -52,15 +80,16 @@ def public_inherent_items($root):
   | $root.index[($impl_id | tostring)].inner.impl as $impl
   | select($impl.trait == null)
   | $impl.items[] as $item_id
-  | $root.index[($item_id | tostring)]
-  | select(.visibility == "public")
-  | (.inner | keys[0]) as $kind
+  | $root.index[($item_id | tostring)] as $item
+  | select($item.visibility == "public")
+  | ($item.inner | keys[0]) as $kind
   | select($kind == "function" or $kind == "assoc_const" or $kind == "assoc_type")
   | (if $kind == "assoc_const" then "constant"
      elif $kind == "assoc_type" then "type"
      else "function"
      end) as $label
-  | "\($label) \($type.path)::\(.name)";
+  | ("\($label) \($type.path)::\($item.name)",
+     "signature \($type.path)::\($item.name) \(($item.inner | api_shape | tojson))");
 
 def explicit_trait_impls($root):
   $root.paths
@@ -94,6 +123,8 @@ def extensibility_attributes($root):
 . as $root
 | [
     public_path_items,
+    public_path_signatures($root),
+    public_type_signatures($root),
     public_struct_fields($root),
     public_variant_fields($root),
     public_inherent_items($root),

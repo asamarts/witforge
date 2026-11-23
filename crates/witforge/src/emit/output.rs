@@ -1,6 +1,7 @@
 //! Generated-output ownership: expected files, atomic replacement, and `--check` drift.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
@@ -42,6 +43,127 @@ enum HeaderKind {
     Foreign(String),
     /// Does not carry any witforge generated header.
     Unowned,
+}
+
+/// The reason committed generated output differs from the expected file set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GeneratedFileStatus {
+    /// An expected generated file is absent.
+    Missing,
+    /// An expected generated file has different bytes.
+    Changed {
+        /// The first differing line or binary/line-ending explanation.
+        detail: String,
+    },
+    /// An owned generated file is no longer expected.
+    Extra,
+    /// An expected output path is a symbolic link.
+    Symlink,
+    /// An expected output path exists but is not a regular file.
+    NotRegular,
+    /// An expected regular file does not carry witforge's ownership header.
+    Unowned,
+}
+
+impl GeneratedFileStatus {
+    const fn sort_rank(&self) -> u8 {
+        match self {
+            // Preserve the previous lexicographic message order without rendering temporary
+            // strings: backtick, changed, extra, generated, missing.
+            Self::Unowned => 0,
+            Self::Changed { .. } => 1,
+            Self::Extra => 2,
+            Self::Symlink | Self::NotRegular => 3,
+            Self::Missing => 4,
+        }
+    }
+}
+
+/// One structured generated-output discrepancy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GeneratedFileFinding {
+    /// The physical generated-file path.
+    pub path: PathBuf,
+    /// Why the file differs or cannot be replaced.
+    pub status: GeneratedFileStatus,
+    /// The exact command that regenerates the output, when supplied by the caller.
+    pub regenerate_command: Option<String>,
+}
+
+impl GeneratedFileFinding {
+    fn new(path: PathBuf, status: GeneratedFileStatus, regenerate_command: Option<&str>) -> Self {
+        Self {
+            path,
+            status,
+            regenerate_command: regenerate_command.map(str::to_string),
+        }
+    }
+
+    fn fmt_hint(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.regenerate_command.as_deref() {
+            Some(command) => write!(f, "; run `{command}`"),
+            None => Ok(()),
+        }
+    }
+    /// Render the byte-stable human message for this finding.
+    #[must_use]
+    pub fn message(&self) -> String {
+        self.to_string()
+    }
+
+    /// Convert this finding into the stable generated-drift diagnostic.
+    #[must_use]
+    pub fn diagnostic(&self) -> crate::diagnostic::LocatedDiagnostic {
+        let file = self.path.display().to_string();
+        crate::diagnostic::LocatedDiagnostic::from_diagnostic(
+            crate::diagnostic::Diagnostic::error(
+                crate::diagnostic::codes::GENERATED_DRIFT,
+                self.to_string(),
+            )
+            .with_path(file.clone()),
+        )
+        .with_file(file)
+    }
+}
+
+impl fmt::Display for GeneratedFileFinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.status {
+            GeneratedFileStatus::Missing => {
+                write!(f, "missing generated file `{}`", self.path.display())?;
+                self.fmt_hint(f)
+            }
+            GeneratedFileStatus::Changed { detail } => {
+                write!(
+                    f,
+                    "changed generated file `{}`: {detail}",
+                    self.path.display()
+                )?;
+                self.fmt_hint(f)
+            }
+            GeneratedFileStatus::Extra => {
+                write!(f, "extra generated file `{}`", self.path.display())?;
+                self.fmt_hint(f)
+            }
+            GeneratedFileStatus::Symlink => write!(
+                f,
+                "generated file `{}` is a symlink; generation refuses to write through it",
+                self.path.display()
+            ),
+            GeneratedFileStatus::NotRegular => write!(
+                f,
+                "generated file `{}` is not a regular file; generation refuses to replace it",
+                self.path.display()
+            ),
+            GeneratedFileStatus::Unowned => write!(
+                f,
+                "`{}` does not start with witforge's header, so generation refuses to overwrite it",
+                self.path.display()
+            ),
+        }
+    }
 }
 
 /// A set of generated files that share one ownership-header line.
@@ -248,34 +370,42 @@ impl GeneratedFiles {
 
     /// Compare the expected files with `out`.
     ///
-    /// Returns one message per missing, changed, or extra generated file, and per expected path
-    /// that [`GeneratedFiles::write`] would refuse: a symlink, something other than a regular
-    /// file, or an unowned file. Only regular files are read, so a FIFO or a device at an
-    /// expected path cannot block the check. Files without a witforge header (including
-    /// unreadable unrelated files) and active `.witforge.*.tmp` temporaries at other paths are
-    /// ignored.
+    /// Returns one structured finding per missing, changed, or extra generated file, and per
+    /// expected path that [`GeneratedFiles::write`] would refuse: a symlink, something other
+    /// than a regular file, or an unowned file. Only regular files are read, so a FIFO or a
+    /// device at an expected path cannot block the check. Files without a witforge header
+    /// (including unreadable unrelated files) and active `.witforge.*.tmp` temporaries at other
+    /// paths are ignored.
     ///
     /// # Errors
     ///
     /// Returns an error when the output root is missing or cannot be read, when any file in `out`
     /// carries another generator's or another contract's header, or when an expected file cannot
     /// be inspected or read.
-    pub fn check(&self, out: &Path) -> Result<Vec<String>> {
+    pub fn check(&self, out: &Path) -> Result<Vec<GeneratedFileFinding>> {
         self.check_inner(out, None)
     }
 
-    /// Like [`GeneratedFiles::check`], appending `regenerate_command` as the fix hint on each
-    /// missing, changed, or extra generated-file message.
+    /// Like [`GeneratedFiles::check`], carrying `regenerate_command` as structured fix metadata
+    /// on each missing, changed, or extra generated-file finding.
     ///
     /// # Errors
     ///
     /// Returns the same errors as [`GeneratedFiles::check`].
-    pub fn check_with_command(&self, out: &Path, regenerate_command: &str) -> Result<Vec<String>> {
+    pub fn check_with_command(
+        &self,
+        out: &Path,
+        regenerate_command: &str,
+    ) -> Result<Vec<GeneratedFileFinding>> {
         self.check_inner(out, Some(regenerate_command))
     }
 
     #[allow(clippy::too_many_lines)]
-    fn check_inner(&self, out: &Path, regenerate_command: Option<&str>) -> Result<Vec<String>> {
+    fn check_inner(
+        &self,
+        out: &Path,
+        regenerate_command: Option<&str>,
+    ) -> Result<Vec<GeneratedFileFinding>> {
         if !out.is_dir() {
             return Err(crate::operational_error(
                 crate::diagnostic::codes::IO_ERROR,
@@ -283,9 +413,6 @@ impl GeneratedFiles {
                 Some(out.display().to_string()),
             ));
         }
-        let hint = |suffix: &str| {
-            regenerate_command.map_or_else(String::new, |cmd| format!("{suffix}run `{cmd}`"))
-        };
         let mut extra = Vec::new();
         for entry in sorted_output_entries(out)? {
             let file_type = match entry.file_type() {
@@ -320,26 +447,26 @@ impl GeneratedFiles {
                     ));
                 }
                 HeaderKind::Owned | HeaderKind::LegacyShared if !self.files.contains_key(&name) => {
-                    extra.push(format!(
-                        "extra generated file `{}`{}",
-                        path.display(),
-                        hint("; ")
+                    extra.push(GeneratedFileFinding::new(
+                        path,
+                        GeneratedFileStatus::Extra,
+                        regenerate_command,
                     ));
                 }
                 HeaderKind::Owned | HeaderKind::LegacyShared | HeaderKind::Unowned => {}
             }
         }
 
-        let mut messages = extra;
+        let mut findings = extra;
         for (name, expected) in &self.files {
             let path = out.join(name);
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    messages.push(format!(
-                        "missing generated file `{}`{}",
-                        path.display(),
-                        hint("; ")
+                    findings.push(GeneratedFileFinding::new(
+                        path,
+                        GeneratedFileStatus::Missing,
+                        regenerate_command,
                     ));
                     continue;
                 }
@@ -349,14 +476,16 @@ impl GeneratedFiles {
                 }
             };
             if metadata.file_type().is_symlink() {
-                messages.push(format!(
-                    "generated file `{}` is a symlink; generation refuses to write through it",
-                    path.display()
+                findings.push(GeneratedFileFinding::new(
+                    path,
+                    GeneratedFileStatus::Symlink,
+                    regenerate_command,
                 ));
             } else if !metadata.is_file() {
-                messages.push(format!(
-                    "generated file `{}` is not a regular file; generation refuses to replace it",
-                    path.display()
+                findings.push(GeneratedFileFinding::new(
+                    path,
+                    GeneratedFileStatus::NotRegular,
+                    regenerate_command,
                 ));
             } else {
                 match self.classify(&path)? {
@@ -365,10 +494,10 @@ impl GeneratedFiles {
                             .with_context(|| format!("failed to read {}", path.display()))?;
                         if actual != expected.as_bytes() {
                             let detail = describe_change(&actual, expected);
-                            messages.push(format!(
-                                "changed generated file `{}`: {detail}{}",
-                                path.display(),
-                                hint("; ")
+                            findings.push(GeneratedFileFinding::new(
+                                path,
+                                GeneratedFileStatus::Changed { detail },
+                                regenerate_command,
                             ));
                         }
                     }
@@ -385,17 +514,22 @@ impl GeneratedFiles {
                         ));
                     }
                     HeaderKind::Unowned => {
-                        messages.push(format!(
-                            "`{}` does not start with witforge's header, so generation refuses to \
-                             overwrite it",
-                            path.display()
+                        findings.push(GeneratedFileFinding::new(
+                            path,
+                            GeneratedFileStatus::Unowned,
+                            regenerate_command,
                         ));
                     }
                 }
             }
         }
-        messages.sort();
-        Ok(messages)
+        findings.sort_by(|left, right| {
+            left.status
+                .sort_rank()
+                .cmp(&right.status.sort_rank())
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        Ok(findings)
     }
 
     /// Render a unified diff between the current files in `out` and this expected file set.
@@ -1409,7 +1543,7 @@ mod tests {
             fs::set_permissions(&v01_path, perms).unwrap();
         }
         files = updated;
-        assert_eq!(files.check(&out).unwrap(), Vec::<String>::new());
+        assert!(files.check(&out).unwrap().is_empty());
 
         // Unrelated non-regular entries (subdir, dangling symlink, FIFO) and unreadable unrelated
         // file never abort or block write() or check().
@@ -1429,7 +1563,7 @@ mod tests {
             let mkfifo = std::process::Command::new("mkfifo").arg(&fifo).status();
             let has_fifo = mkfifo.is_ok_and(|status| status.success());
 
-            assert_eq!(files.check(&out).unwrap(), Vec::<String>::new());
+            assert!(files.check(&out).unwrap().is_empty());
             files.write(&out).unwrap();
             assert!(
                 active_tmp.exists(),
@@ -1511,30 +1645,55 @@ mod tests {
         fs::remove_file(out.join("v0_1.rs")).unwrap();
         fs::write(out.join("stale.rs"), format!("{header}\n// stale\n")).unwrap();
 
-        let messages = files
+        let findings = files
             .check_with_command(&out, "witforge rust wit --out gen")
             .unwrap();
-        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert_eq!(findings.len(), 3, "{findings:?}");
         assert!(
-            messages.iter().any(|m| m.contains("changed generated file")
-                && m.contains("first difference at line 2")
-                && m.contains("pub mod v0_1;")
-                && m.contains("pub mod wrong;")
-                && m.contains("run `witforge rust wit --out gen`")),
-            "{messages:?}"
+            findings.iter().any(|finding| {
+                finding.path.ends_with("mod.rs")
+                    && matches!(
+                        &finding.status,
+                        GeneratedFileStatus::Changed { detail }
+                            if detail.contains("first difference at line 2")
+                                && detail.contains("pub mod v0_1;")
+                                && detail.contains("pub mod wrong;")
+                    )
+                    && finding.regenerate_command.as_deref() == Some("witforge rust wit --out gen")
+            }),
+            "{findings:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("missing generated file")
-                && m.contains("v0_1.rs")
-                && m.contains("run `witforge rust wit --out gen`")),
-            "{messages:?}"
+            findings.iter().any(|finding| {
+                finding.path.ends_with("v0_1.rs")
+                    && finding.status == GeneratedFileStatus::Missing
+                    && finding.regenerate_command.as_deref() == Some("witforge rust wit --out gen")
+            }),
+            "{findings:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("extra generated file")
-                && m.contains("stale.rs")
-                && m.contains("run `witforge rust wit --out gen`")),
-            "{messages:?}"
+            findings.iter().any(|finding| {
+                finding.path.ends_with("stale.rs")
+                    && finding.status == GeneratedFileStatus::Extra
+                    && finding.regenerate_command.as_deref() == Some("witforge rust wit --out gen")
+            }),
+            "{findings:?}"
         );
+        for finding in &findings {
+            let diagnostic = finding.diagnostic();
+            assert_eq!(
+                diagnostic.diagnostic.code,
+                crate::diagnostic::codes::GENERATED_DRIFT
+            );
+            assert_eq!(
+                diagnostic.diagnostic.path.as_deref(),
+                Some(finding.path.to_string_lossy().as_ref())
+            );
+            assert_eq!(
+                diagnostic.file.as_deref(),
+                Some(finding.path.to_string_lossy().as_ref())
+            );
+        }
 
         let diff = files.unified_diff(&out).unwrap();
         assert!(diff.contains("--- a/"), "{diff}");
@@ -1549,13 +1708,18 @@ mod tests {
         files.write(&out).unwrap();
         let crlf = format!("{header}\r\npub mod v0_1;\r\n");
         fs::write(out.join("mod.rs"), crlf).unwrap();
-        let crlf_msgs = files
+        let crlf_findings = files
             .check_with_command(&out, "witforge rust wit --out gen")
             .unwrap();
-        assert_eq!(crlf_msgs.len(), 1, "{crlf_msgs:?}");
+        assert_eq!(crlf_findings.len(), 1, "{crlf_findings:?}");
         assert!(
-            crlf_msgs[0].contains("line endings differ") && crlf_msgs[0].contains("core.autocrlf"),
-            "{crlf_msgs:?}"
+            matches!(
+                &crlf_findings[0].status,
+                GeneratedFileStatus::Changed { detail }
+                    if detail.contains("line endings differ")
+                        && detail.contains("core.autocrlf")
+            ),
+            "{crlf_findings:?}"
         );
         let crlf_diff = files.unified_diff(&out).unwrap();
         assert!(crlf_diff.contains("\\r"), "{crlf_diff}");

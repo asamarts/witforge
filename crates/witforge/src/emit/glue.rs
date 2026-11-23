@@ -11,7 +11,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::emit::docs;
 use crate::emit::ident;
-use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
+use crate::emit::output::{
+    GeneratedFileFinding, GeneratedFiles, comment_header, ensure_outside_wit_root,
+};
 use crate::emit::rustfmt;
 use crate::emit::versions::{DepLayout, Version, load_versions, load_versions_with_released};
 use crate::emit::{RUST_KEYWORDS, pascal_case, rust_ident, snake_case};
@@ -209,7 +211,7 @@ pub fn generate(wit_root: &Path, out: &Path, plain_root: &str, proto_root: &str)
 
 /// Check generated glue output under `out` without writing.
 ///
-/// Returns one message per missing, changed, or extra generated file.
+/// Returns one structured finding per missing, changed, or extra generated file.
 ///
 /// # Errors
 ///
@@ -219,7 +221,7 @@ pub fn check(
     out: &Path,
     plain_root: &str,
     proto_root: &str,
-) -> Result<Vec<String>> {
+) -> Result<Vec<GeneratedFileFinding>> {
     ensure_outside_wit_root(wit_root, out)?;
     plan(wit_root, plain_root, proto_root)?.check(out)
 }

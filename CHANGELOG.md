@@ -127,17 +127,33 @@ All notable changes to this project are documented here. The format follows
     positions, and related locations. Downstream exhaustive matches now require a wildcard arm,
     and downstream struct literals must use the documented constructors, `Default`, parsers, or
     builders.
-  - Added a pinned-rustdoc, machine-checked inventory of every public item, field, variant,
-    associated item, explicit trait implementation, and extensibility attribute. The semver gate
-    separately requires its minor-compatibility failures to equal the exact reviewed pre-1.0
-    break inventory through the 0.7.0 tag, so the temporary exception cannot admit an unlisted
-    break. Removed the unused `emit::output::absolute` function and made the four internal model
-    size-limit constants private.
+  - Added a pinned-rustdoc, machine-checked inventory of every public item, field and function
+    signature, variant, associated item, explicit trait implementation, and extensibility
+    attribute. The gate also requires the complete API delta from 0.6.0 to equal the reviewed
+    pre-1.0 inventory, while cargo-semver-checks separately requires its detected failures to
+    equal the checked exception through the 0.7.0 tag. Removed the unused
+    `emit::output::absolute` function and made the four internal model size-limit constants
+    private.
   - **Library migration:** this is the planned pre-1.0 source break. Search library consumers for
     struct literals of `witforge::model`, `witforge::lock`, or `witforge::diagnostic` values and
     for exhaustive matches on their enums; replace literals with constructors and add wildcard
     match arms. Replace any use of `emit::output::absolute` with `std::path::absolute`, and do not
     depend on the former internal model limit constants.
+
+- **Library-owned check/lock workflows, in-memory loading, and typed findings (`W10-096`):**
+  - Added `SourceFile` / `load_sources` for deterministic in-memory root and textual `deps/`
+    packages with physical source names and positions, and moved single-version/root `check` plus
+    side-effect-free lock reconciliation into `witforge::workflow`. `LockReport` exposes canonical
+    text and writes only through an explicit method; the CLI retains configuration parsing,
+    rendering, and exit-status policy.
+  - Replaced generator `Vec<String>` drift results with `GeneratedFileFinding` /
+    `GeneratedFileStatus`, and replaced `diff::Change.element: String` with `ChangeElement`.
+    Generated-output paths and diff categories are now typed end to end; the CLI no longer derives
+    structure from message text. Human, JSON, and SARIF output remain unchanged.
+  - **Library migration:** callers of emitter `check` functions inspect each finding's `path` and
+    `status` (or call `message` / `diagnostic`) instead of parsing strings. Diff callers match
+    `ChangeElement` instead of comparing `Change.element` with string literals. `witforge.toml`
+    remains a CLI-only configuration model; library/build-script callers pass options directly.
 
 - **Source positions, SARIF 2.1.0 physical/logical/related locations, and public diagnostic guide (`W10-080`):**
   - Structured diagnostics (JSON and SARIF) now report physical file paths (cwd-relative with `/`

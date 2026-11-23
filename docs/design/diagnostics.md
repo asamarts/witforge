@@ -5,7 +5,8 @@ Status: implemented 2026-11-05 (`W8-002`); `WF3003` conversion-impact notes 2026
 cross-command parity, usage-error reporting, and internal-only `WF9000` 2026-11-21 (`W10-079`);
 physical file/line/column positions, UTF-16 columns, `logicalLocations`, `relatedLocations`,
 normalized SARIF URIs, rule `helpUri`, and exit-aligned `diff` levels 2026-11-21 (`W10-080`);
-`witforge explain <CODE>` and `--quiet` / `-q` 2026-11-21 (`W10-085`).
+`witforge explain <CODE>` and `--quiet` / `-q` 2026-11-21 (`W10-085`); library-owned
+check/lock reports and structured generated-file findings 2026-11-23 (`W10-096`).
 
 Every command keeps its human output as the default. `--format json` and `--format sarif` replace
 the diagnostic stream with a stable machine-readable form. Command-specific reports are
@@ -60,6 +61,19 @@ A contract violation emits the same diagnostic code, path, and message whichever
 (`check`, `lock`, `diff`, `rust`, `proto`, `schema`, or `glue`). Multiple violations remain
 separate diagnostics in the `diagnostics` / SARIF `results` array and are never joined into one
 message.
+
+## Library reports
+
+`workflow::check`, `workflow::check_root`, and `workflow::lock` return structured `Report`
+values. Each `Finding` carries its `LocatedDiagnostic`, rendering category, and exact human line;
+`LockReport` additionally carries canonical lockfile text and writes only when its explicit
+`write` method is called. The library neither prints nor chooses an exit status.
+
+Emitter `check` functions return `GeneratedFileFinding` values with a physical path,
+`GeneratedFileStatus` (`Missing`, `Changed`, `Extra`, `Symlink`, `NotRegular`, or `Unowned`), and
+optional regeneration-command metadata. Each finding converts directly to `WF2001`; the CLI never
+recovers a path or finding kind from message punctuation. `diff::Change.element` likewise uses
+the typed `ChangeElement` enum while retaining the same human and JSON labels.
 
 ## SARIF
 

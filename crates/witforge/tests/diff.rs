@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use witforge::diff::ChangeKind;
+use witforge::diff::{ChangeElement, ChangeKind};
 use witforge::lock::WireLock;
 use witforge::{load, model};
 
@@ -105,7 +105,8 @@ fn method_ids_are_compared_and_generators_agree() {
         .changes
         .iter()
         .filter(|change| {
-            matches!(change.kind, ChangeKind::Renumbered { .. }) && change.element == "method id"
+            matches!(change.kind, ChangeKind::Renumbered { .. })
+                && change.element == ChangeElement::MethodId
         })
         .collect();
     assert_eq!(renumbered.len(), 2, "{report:?}");
@@ -350,43 +351,55 @@ fn decode_verdicts_cover_retypes_kind_changes_renumbering_and_interfaces() {
     fs::write(new.join("wire.lock"), new_lock).unwrap();
 
     let full = witforge::diff::compare_full(&old, &new).unwrap();
-    let find = |path: &str, element: &str| {
+    let find = |path: &str, element: ChangeElement| {
         full.analysis
             .report
             .changes
             .iter()
             .zip(full.decode_verdicts.iter())
-            .find(|(c, _)| c.path == path && c.element == element)
-            .map_or_else(|| panic!("missing ({path}, {element})"), |(_, v)| *v)
+            .find(|(change, _)| change.path == path && change.element == element)
+            .map_or_else(
+                || panic!("missing ({path}, {element})"),
+                |(_, verdict)| *verdict,
+            )
     };
 
     assert_eq!(
-        find("types/r.a", "record field"),
+        find("types/r.a", ChangeElement::RecordField),
         DecodeVerdict::INCOMPATIBLE
     );
     assert_eq!(
-        find("types/r.b", "record field"),
+        find("types/r.b", ChangeElement::RecordField),
         DecodeVerdict::INCOMPATIBLE
     );
-    assert_eq!(find("types/k", "type"), DecodeVerdict::INCOMPATIBLE);
-    assert_eq!(find("types/ids", "type"), DecodeVerdict::INCOMPATIBLE);
-    assert_eq!(find("new-types", "interface"), DecodeVerdict::COMPATIBLE);
     assert_eq!(
-        find("new-api", "interface"),
+        find("types/k", ChangeElement::Type),
+        DecodeVerdict::INCOMPATIBLE
+    );
+    assert_eq!(
+        find("types/ids", ChangeElement::Type),
+        DecodeVerdict::INCOMPATIBLE
+    );
+    assert_eq!(
+        find("new-types", ChangeElement::Interface),
+        DecodeVerdict::COMPATIBLE
+    );
+    assert_eq!(
+        find("new-api", ChangeElement::Interface),
         DecodeVerdict {
             new_reads_old: true,
             old_reads_new: false,
         }
     );
     assert_eq!(
-        find("types/gone", "type"),
+        find("types/gone", ChangeElement::Type),
         DecodeVerdict {
             new_reads_old: false,
             old_reads_new: true,
         }
     );
     assert_eq!(
-        find("old-api", "interface"),
+        find("old-api", ChangeElement::Interface),
         DecodeVerdict {
             new_reads_old: false,
             old_reads_new: true,

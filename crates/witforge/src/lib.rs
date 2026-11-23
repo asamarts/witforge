@@ -8,8 +8,8 @@
 //! versions, and emits plain Rust types and traits, version-to-version adapters, a `.proto`
 //! schema, Draft 7 JSON Schema, and the glue that converts between the plain and protobuf types.
 //!
-//! - [`load`] parses a version directory's WIT package, and [`subset`] checks it against the
-//!   supported subset.
+//! - [`load`] parses a version directory's WIT package, [`load_sources`] parses the same layout
+//!   from named in-memory sources, and [`subset`] checks either against the supported subset.
 //! - [`model`] is the owned contract model the lockfile and the emitters consume.
 //! - [`lock`] reads, reconciles, and writes the `wire.lock` lockfile, and
 //!   [`ReleasedManifest`] reads the `released` manifest of frozen versions.
@@ -17,6 +17,8 @@
 //!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema), and
 //!   [glue](emit::glue) output for a WIT root and checks committed output for drift.
 //! - [`diagnostic`] defines the stable machine-readable diagnostics shared by the CLI commands.
+//! - [`workflow`] owns side-effect-free check and lock orchestration and returns structured
+//!   diagnostics; lockfile writing is explicit.
 //! - [`ContractError`] marks contract, lockfile, and output violations, as distinct from usage,
 //!   I/O, and parse errors.
 //!
@@ -31,6 +33,7 @@ pub mod freeze;
 pub mod lock;
 pub mod model;
 pub mod subset;
+pub mod workflow;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -466,9 +469,12 @@ fn snap_char_boundary_up(source: &str, mut offset: usize) -> usize {
 fn load_line_index<'a>(
     path: &str,
     cache: &'a mut BTreeMap<String, LineIndex>,
+    virtual_sources: Option<&BTreeMap<String, String>>,
 ) -> Option<&'a LineIndex> {
     if !cache.contains_key(path) {
-        let text = fs::read_to_string(path).ok()?;
+        let text = virtual_sources
+            .and_then(|sources| sources.get(path).cloned())
+            .or_else(|| fs::read_to_string(path).ok())?;
         cache.insert(path.to_string(), LineIndex::new(text));
     }
     cache.get(path)
@@ -480,11 +486,33 @@ pub(crate) fn resolve_span_cached(
     span: wit_parser::Span,
     cache: &mut BTreeMap<String, LineIndex>,
 ) -> Option<(String, diagnostic::Position)> {
-    let loc = source_map.resolve_span(span)?;
-    let path = loc.path.to_string();
-    let index = load_line_index(&path, cache)?;
-    let pos = index.position(loc.range.start, loc.range.end);
-    Some((path, pos))
+    resolve_span_cached_with_sources(source_map, span, cache, None)
+}
+
+fn resolve_span_cached_with_sources(
+    source_map: &SourceMap,
+    span: wit_parser::Span,
+    cache: &mut BTreeMap<String, LineIndex>,
+    virtual_sources: Option<&BTreeMap<String, String>>,
+) -> Option<(String, diagnostic::Position)> {
+    let location = source_map.resolve_span(span)?;
+    let path = location.path.to_string();
+    let index = load_line_index(&path, cache, virtual_sources)?;
+    let position = index.position(location.range.start, location.range.end);
+    Some((path, position))
+}
+
+pub(crate) fn resolve_contract_span_cached(
+    contract: &Contract,
+    span: wit_parser::Span,
+    cache: &mut BTreeMap<String, LineIndex>,
+) -> Option<(String, diagnostic::Position)> {
+    resolve_span_cached_with_sources(
+        &contract.resolve.source_map,
+        span,
+        cache,
+        Some(&contract.source_contents),
+    )
 }
 
 /// Resolve a `wit-parser` [`wit_parser::Span`] against `source_map`.
@@ -501,8 +529,9 @@ pub(crate) fn resolve_span_location(
 pub(crate) fn find_package_header_position(
     file: &str,
     cache: &mut BTreeMap<String, LineIndex>,
+    virtual_sources: Option<&BTreeMap<String, String>>,
 ) -> Option<(String, diagnostic::Position)> {
-    let index = load_line_index(file, cache)?;
+    let index = load_line_index(file, cache, virtual_sources)?;
     let mut in_block_comment = false;
     for (line_idx, raw) in index.body.lines().enumerate() {
         let line_no = line_idx + 1;
@@ -606,7 +635,7 @@ pub(crate) fn package_location(
             .map(|p| p.display().to_string());
     }
     let file = file?;
-    find_package_header_position(&file, cache)
+    find_package_header_position(&file, cache, Some(&contract.source_contents))
 }
 
 /// An interface explicitly imported by a root world: `(Option<(namespace, package)>, interface)`.
@@ -614,6 +643,26 @@ type ExplicitWorldImport = (Option<(String, String)>, String);
 /// A foreign world referenced by a root world's `include`: `(namespace, package, world_name)`.
 type ForeignWorldInclude = (String, String, String);
 
+/// One named UTF-8 WIT source used by [`load_sources`].
+///
+/// Names use `/` separators and follow the standard package layout: root files are
+/// `<name>.wit`; dependencies are `deps/<entry>.wit` or `deps/<entry>/<name>.wit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SourceFile {
+    /// Root-relative virtual source name.
+    pub name: String,
+    /// UTF-8 WIT source text.
+    pub contents: String,
+}
+
+impl SourceFile {
+    /// Create an in-memory WIT source.
+    #[must_use]
+    pub fn new(name: String, contents: String) -> Self {
+        Self { name, contents }
+    }
+}
 /// A parsed WIT package together with the resolve that owns it.
 ///
 /// The fields are crate-private so that `wit-parser` types do not become part of witforge's
@@ -633,6 +682,7 @@ pub struct Contract {
     pub(crate) dependency_entries: BTreeMap<PackageId, PathBuf>,
     pub(crate) explicit_world_imports: BTreeMap<String, BTreeSet<ExplicitWorldImport>>,
     pub(crate) included_foreign_worlds: BTreeMap<String, Vec<ForeignWorldInclude>>,
+    pub(crate) source_contents: BTreeMap<String, String>,
 }
 
 impl Contract {
@@ -706,7 +756,7 @@ impl Contract {
             }
         }
         let mut record = |full_key: String, short_key: Option<String>, span: wit_parser::Span| {
-            if let Some(loc) = resolve_span_cached(&resolve.source_map, span, &mut cache) {
+            if let Some(loc) = resolve_contract_span_cached(self, span, &mut cache) {
                 if let Some(short) = short_key {
                     out.entry(short).or_insert_with(|| loc.clone());
                 }
@@ -919,22 +969,194 @@ impl Contract {
 /// [`ContractError`] when the dependency graph pins more than one version of one package or a
 /// dependency uses the root package's namespace and name.
 pub fn load(dir: &Path) -> Result<Contract> {
-    let load_context = || format!("failed to load the WIT package in {}", dir.display());
+    let context = format!("failed to load the WIT package in {}", dir.display());
     let top_pkg = parse_sorted_dir(dir)
         .with_context(|| format!("failed to parse package: {}", dir.display()))
-        .with_context(load_context)?;
-    let (explicit_world_imports, included_foreign_worlds) =
-        collect_explicit_world_imports(&top_pkg.main);
-
+        .with_context(|| context.clone())?;
     let mut resolve = Resolve {
         all_features: true,
         ..Resolve::default()
     };
-    let loaded_deps = load_deps_dir(&dir.join("deps"), &mut resolve).with_context(load_context)?;
+    let loaded_deps =
+        load_deps_dir(&dir.join("deps"), &mut resolve).with_context(|| context.clone())?;
+    finish_load(
+        top_pkg,
+        loaded_deps,
+        resolve,
+        &context,
+        dir,
+        BTreeMap::new(),
+    )
+}
+
+/// Load a WIT package from named in-memory UTF-8 sources.
+///
+/// Source names use the same direct-root and standard `deps/` layout as [`load`]. Files and
+/// dependency entries are sorted by their UTF-8 names before parsing, so declaration order and
+/// diagnostics are deterministic regardless of caller insertion order. In-memory loading accepts
+/// textual `.wit` dependencies; use [`load`] when a dependency entry is a `.wasm` or `.wat` file.
+///
+/// # Errors
+///
+/// Returns an operational parse error for an empty, duplicate, absolute, parent-relative,
+/// backslash-containing, nested, or non-`.wit` source name, for a missing root source, or when
+/// WIT parsing or resolution fails. Returns a [`ContractError`] for an invalid dependency
+/// identity, like [`load`].
+pub fn load_sources(sources: Vec<SourceFile>) -> Result<Contract> {
+    let mut seen = BTreeSet::new();
+    let mut root_sources = Vec::new();
+    let mut dependency_sources: BTreeMap<String, Vec<&SourceFile>> = BTreeMap::new();
+    for source in &sources {
+        if source.name.is_empty()
+            || source.name.starts_with('/')
+            || source.name.contains('\\')
+            || !seen.insert(source.name.clone())
+        {
+            return Err(invalid_source_name(&source.name));
+        }
+        let parts: Vec<&str> = source.name.split('/').collect();
+        if parts
+            .iter()
+            .any(|part| part.is_empty() || *part == "." || *part == "..")
+            || parts.last().is_none_or(|name| !has_wit_extension(name))
+        {
+            return Err(invalid_source_name(&source.name));
+        }
+        match parts.as_slice() {
+            [_file] => root_sources.push(source),
+            ["deps", entry] => {
+                dependency_sources
+                    .entry((*entry).to_string())
+                    .or_default()
+                    .push(source);
+            }
+            ["deps", entry, _file] if !has_wit_extension(entry) => {
+                dependency_sources
+                    .entry((*entry).to_string())
+                    .or_default()
+                    .push(source);
+            }
+            _ => return Err(invalid_source_name(&source.name)),
+        }
+    }
+    if root_sources.is_empty() {
+        return Err(operational_error(
+            diagnostic::codes::PARSE_ERROR,
+            "in-memory WIT package has no root `.wit` source",
+            None,
+        ));
+    }
+
+    let top_pkg = parse_memory_group(&root_sources, "<memory>")?;
+    let mut loaded_deps = LoadedDeps::default();
+    for (entry, group_sources) in dependency_sources {
+        let entry_path = PathBuf::from("deps").join(&entry);
+        let group = parse_memory_group(&group_sources, &entry_path.display().to_string())
+            .with_context(|| format!("failed to parse package: {}", entry_path.display()))?;
+        for package in std::iter::once(&group.main).chain(&group.nested) {
+            loaded_deps
+                .scanned
+                .push((package.name.clone(), entry_path.clone()));
+            loaded_deps
+                .entries_by_package
+                .insert(package.name.clone(), entry_path.clone());
+        }
+        loaded_deps.groups.push(group);
+    }
+    let source_contents = sources
+        .into_iter()
+        .map(|source| (source.name, source.contents))
+        .collect();
+    let resolve = Resolve {
+        all_features: true,
+        ..Resolve::default()
+    };
+    finish_load(
+        top_pkg,
+        loaded_deps,
+        resolve,
+        "failed to load the in-memory WIT package",
+        Path::new("<memory>"),
+        source_contents,
+    )
+}
+
+fn has_wit_extension(name: &str) -> bool {
+    Path::new(name).extension() == Some(std::ffi::OsStr::new("wit"))
+}
+
+fn invalid_source_name(name: &str) -> anyhow::Error {
+    operational_error(
+        diagnostic::codes::PARSE_ERROR,
+        format!(
+            "invalid in-memory source name `{name}`; expected `<name>.wit`, \
+             `deps/<entry>.wit`, or `deps/<entry>/<name>.wit`"
+        ),
+        (!name.is_empty()).then(|| name.to_string()),
+    )
+}
+
+fn parse_memory_group(
+    sources: &[&SourceFile],
+    fallback_path: &str,
+) -> Result<UnresolvedPackageGroup> {
+    let mut sources = sources.to_vec();
+    sources.sort_by(|left, right| {
+        let left_file = left.name.rsplit('/').next().unwrap_or_default().as_bytes();
+        let right_file = right.name.rsplit('/').next().unwrap_or_default().as_bytes();
+        left_file
+            .cmp(right_file)
+            .then_with(|| left.name.as_bytes().cmp(right.name.as_bytes()))
+    });
+    let mut map = SourceMap::new();
+    for source in &sources {
+        map.push_str(&source.name, source.contents.clone());
+    }
+    map.parse().map_err(|(source_map, err)| {
+        let span = err.kind().span();
+        let resolved = resolve_span_location(&source_map, span);
+        let rendered = err.render(&source_map);
+        let message = if let Some(source) = sources
+            .iter()
+            .find(|source| source.contents.starts_with('\u{feff}'))
+        {
+            format!(
+                "{rendered} (note: {} starts with a UTF-8 byte-order mark (BOM))",
+                source.name
+            )
+        } else {
+            rendered
+        };
+        match resolved {
+            Some((file, position)) => operational_error_at(
+                diagnostic::codes::PARSE_ERROR,
+                message,
+                file,
+                Some(position),
+            ),
+            None => operational_error(
+                diagnostic::codes::PARSE_ERROR,
+                message,
+                Some(fallback_path.to_string()),
+            ),
+        }
+    })
+}
+
+fn finish_load(
+    top_pkg: UnresolvedPackageGroup,
+    loaded_deps: LoadedDeps,
+    mut resolve: Resolve,
+    context: &str,
+    fallback_path: &Path,
+    source_contents: BTreeMap<String, String>,
+) -> Result<Contract> {
+    let (explicit_world_imports, included_foreign_worlds) =
+        collect_explicit_world_imports(&top_pkg.main);
 
     // Check dependency identity before `push_groups` so duplicate package names become a
-    // `ContractError` (exit 1) naming the package, versions, and `deps/` entries rather than a
-    // `wit-parser` duplicate-package error (exit 2).
+    // `ContractError` naming the package, versions, and `deps/` entries rather than a
+    // `wit-parser` duplicate-package error.
     crate::model::ensure_dependency_identity(&top_pkg.main.name, &loaded_deps.scanned)?;
 
     let package = resolve
@@ -945,30 +1167,33 @@ pub fn load(dir: &Path) -> Result<Contract> {
             let err_anyhow: anyhow::Error = err.into();
             let rendered = resolve.render_error(&err_anyhow);
             match resolved {
-                Some((file, pos)) => {
-                    operational_error_at(diagnostic::codes::PARSE_ERROR, rendered, file, Some(pos))
-                }
+                Some((file, position)) => operational_error_at(
+                    diagnostic::codes::PARSE_ERROR,
+                    rendered,
+                    file,
+                    Some(position),
+                ),
                 None => operational_error(
                     diagnostic::codes::PARSE_ERROR,
                     rendered,
-                    Some(dir.display().to_string()),
+                    Some(fallback_path.display().to_string()),
                 ),
             }
         })
-        .with_context(load_context)?;
+        .with_context(|| context.to_string())?;
 
     let mut dependencies = Vec::new();
     let mut dependency_entries = BTreeMap::new();
-    for (id, pkg) in &resolve.packages {
+    for (id, package_data) in &resolve.packages {
         if id == package {
             continue;
         }
-        if let Some(entry) = loaded_deps
-            .binary_entries
-            .get(&id)
-            .cloned()
-            .or_else(|| loaded_deps.entries_by_package.get(&pkg.name).cloned())
-        {
+        if let Some(entry) = loaded_deps.binary_entries.get(&id).cloned().or_else(|| {
+            loaded_deps
+                .entries_by_package
+                .get(&package_data.name)
+                .cloned()
+        }) {
             dependencies.push(id);
             dependency_entries.insert(id, entry);
         }
@@ -980,9 +1205,11 @@ pub fn load(dir: &Path) -> Result<Contract> {
         dependency_entries,
         explicit_world_imports,
         included_foreign_worlds,
+        source_contents,
     })
 }
 
+#[derive(Default)]
 struct LoadedDeps {
     groups: Vec<UnresolvedPackageGroup>,
     entries_by_package: BTreeMap<PackageName, PathBuf>,

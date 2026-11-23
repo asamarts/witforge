@@ -6,11 +6,17 @@ pinned nightly toolchain with sanitizers.
 ```sh
 cargo install cargo-fuzz --version 0.13.2
 rustup toolchain install nightly-2026-09-11 --component rust-src
-cargo +nightly-2026-09-11 fuzz run wit-package fuzz/seeds/wit-package \
+rm -rf "$HOME/.tmp/witforge-fuzz"
+mkdir -p "$HOME/.tmp/witforge-fuzz"
+cp -R fuzz/seeds/wit-package "$HOME/.tmp/witforge-fuzz/wit-package"
+cp -R fuzz/seeds/lockfile "$HOME/.tmp/witforge-fuzz/lockfile"
+cp -R fuzz/seeds/structured-contract "$HOME/.tmp/witforge-fuzz/structured-contract"
+cargo +nightly-2026-09-11 fuzz run wit-package "$HOME/.tmp/witforge-fuzz/wit-package" \
   --target x86_64-unknown-linux-gnu -- -dict=fuzz/wit.dict -max_total_time=45
-cargo +nightly-2026-09-11 fuzz run lockfile fuzz/seeds/lockfile \
+cargo +nightly-2026-09-11 fuzz run lockfile "$HOME/.tmp/witforge-fuzz/lockfile" \
   --target x86_64-unknown-linux-gnu -- -max_total_time=45
-cargo +nightly-2026-09-11 fuzz run structured-contract fuzz/seeds/structured-contract \
+cargo +nightly-2026-09-11 fuzz run structured-contract \
+  "$HOME/.tmp/witforge-fuzz/structured-contract" \
   --target x86_64-unknown-linux-gnu -- -max_total_time=45
 ```
 
@@ -20,8 +26,9 @@ incompatible with the address sanitizer unless static linking is disabled.
 ## Targets, seeds, and invariants
 
 - `wit-package` (seeded by `fuzz/seeds/wit-package/` with `fuzz/wit.dict`): raw UTF-8 parser
-  robustness target. Whenever an input parses and passes `subset::check_diagnostics`, it asserts
-  the full compiler invariant suite below rather than discarding results.
+  robustness target. It parses and validates every candidate through `load_sources` before any
+  filesystem work; only subset-clean inputs are materialized to assert the full compiler invariant
+  suite below rather than discarding results.
 - `structured-contract` (seeded by `fuzz/seeds/structured-contract/`): structure-aware contract
   generator producing valid WIT contracts inside the supported subset—including one-letter and
   upper-case identifiers, Rust/proto/WIT keywords, multiple `.wit` files, and `deps/` packages—and
@@ -36,9 +43,10 @@ incompatible with the address sanitizer unless static linking is disabled.
 - `lockfile` (seeded by `fuzz/seeds/lockfile/`): parses arbitrary UTF-8 lockfile text and asserts
   canonical round-trip and re-render identity.
 
-The tracked seed directories live under `fuzz/seeds/`; the mutable working corpus (`fuzz/corpus/`)
-stays ignored by Git. All scratch directories are created under `TMPDIR` (via
-`std::env::temp_dir()`) and removed on drop.
+The tracked seed directories live under `fuzz/seeds/`; never pass them directly as libFuzzer's
+writable corpus. Copy them to scratch as above. The mutable working corpus (`fuzz/corpus/`) stays
+ignored by Git. All compiler scratch directories use `TMPDIR` (via `std::env::temp_dir()`) and
+are removed on drop.
 
 The same structure-aware generator and invariants run in the stable test suite as
 `structured_contracts_satisfy_fuzz_invariants` (`crates/witforge/tests/properties.rs`). The weekly

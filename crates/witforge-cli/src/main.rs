@@ -24,7 +24,7 @@
 //! All commands accept `--format human|json|sarif` (`human` default) and `-q`/`--quiet`.
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,24 +35,20 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Deserialize;
 
 use serde_json::{Value, json};
-use witforge::diagnostic::{
-    Diagnostic, LocatedDiagnostic, Position, RelatedLocation, Severity, codes,
-};
-use witforge::diff::{self, ChangeKind, DiffReport};
+use witforge::diagnostic::{Diagnostic, LocatedDiagnostic, Severity, codes};
+use witforge::diff::{self, ChangeElement, ChangeKind, DiffReport};
 use witforge::emit;
-use witforge::lock::{LockMode, PackageName, WireLock};
+use witforge::workflow as contract_workflow;
 mod completions;
 mod diagnostics;
 mod workflow;
 
-use diagnostics::{Format, Reporter, diagnostic_path, located_note};
+use diagnostics::{Format, Reporter, located_note};
 
 use witforge::{
     ContractError, DiagnosticError, ReleasedManifest, default_released_manifest,
-    discover_version_directories, ensure_directory_version, ensure_lockfile_not_released,
-    ensure_no_symlinks_in_dir, ensure_not_released, ensure_version_directory, error_diagnostics,
-    error_located_diagnostics, is_contract_error, is_released, load, load_released_manifest,
-    load_root_released_manifest, model, subset,
+    discover_version_directories, ensure_no_symlinks_in_dir, ensure_version_directory,
+    error_diagnostics, error_located_diagnostics, is_contract_error, load_root_released_manifest,
 };
 
 fn op_error(code: &'static str, message: impl Into<String>, path: Option<String>) -> anyhow::Error {
@@ -65,20 +61,6 @@ fn op_error(code: &'static str, message: impl Into<String>, path: Option<String>
     if let Some(file) = file {
         located = located.with_file(file);
     }
-    anyhow::Error::new(DiagnosticError::single_located(located))
-}
-
-fn op_error_at(
-    code: &'static str,
-    message: impl Into<String>,
-    file: String,
-    position: Option<Position>,
-) -> anyhow::Error {
-    let mut diagnostic = Diagnostic::error(code, message).with_path(file.clone());
-    if let Some(position) = position {
-        diagnostic = diagnostic.with_position(position);
-    }
-    let located = LocatedDiagnostic::from_diagnostic(diagnostic).with_file(file);
     anyhow::Error::new(DiagnosticError::single_located(located))
 }
 
@@ -998,16 +980,16 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
             let is_wit_root = fs::metadata(dir)
                 .ok()
                 .filter(fs::Metadata::is_dir)
-                .and_then(|_| workflow::classify_check_dir(dir).ok())
-                == Some(workflow::CheckTargetKind::WitRoot);
+                .and_then(|_| contract_workflow::classify_check_target(dir).ok())
+                == Some(contract_workflow::CheckTargetKind::WitRoot);
             if !is_wit_root {
                 ensure_version_directory(dir)?;
             }
         } else if !link_meta.is_dir() {
             ensure_version_directory(dir)?;
         }
-        return match workflow::classify_check_dir(dir)? {
-            workflow::CheckTargetKind::VersionDir => {
+        return match contract_workflow::classify_check_target(dir)? {
+            contract_workflow::CheckTargetKind::VersionDirectory => {
                 let single = Options {
                     dir: dir.clone(),
                     lock: options.lock.clone(),
@@ -1017,7 +999,7 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
                 };
                 check_single(&single, reporter)
             }
-            workflow::CheckTargetKind::WitRoot => {
+            contract_workflow::CheckTargetKind::WitRoot => {
                 if options.lock.is_some() || options.against.is_some() || options.first {
                     return Err(op_error(
                         codes::CLI_USAGE,
@@ -1028,7 +1010,7 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
                 }
                 check_wit_root(dir, options.released.as_deref(), reporter)
             }
-            workflow::CheckTargetKind::Both => Err(op_error(
+            contract_workflow::CheckTargetKind::Both => Err(op_error(
                 codes::CLI_USAGE,
                 format!(
                     "`{}` contains both WIT source/lockfile and `v<major>.<minor>` version \
@@ -1037,7 +1019,7 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
                 ),
                 Some(dir.display().to_string()),
             )),
-            workflow::CheckTargetKind::Neither => {
+            contract_workflow::CheckTargetKind::Neither => {
                 // Still check for malformed version-like entries (`v00.1`, `v0.1.1`) or symlinks.
                 ensure_version_directory(dir)?;
                 let _ = discover_version_directories(dir)?;
@@ -1051,6 +1033,11 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
                     Some(dir.display().to_string()),
                 ))
             }
+            _ => Err(op_error(
+                codes::INTERNAL_ERROR,
+                "unrecognized check target classification",
+                Some(dir.display().to_string()),
+            )),
         };
     }
 
@@ -1102,137 +1089,59 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
     })
 }
 
-/// Validate every version directory under `wit_root` in ascending semver order:
-/// released directories in default mode, the lowest minor of each major as `--first`, and every
-/// later minor `--against` its immediate same-major predecessor, plus cross-version package,
-/// dependency-graph, and lockfile-continuity checks.
-#[allow(clippy::too_many_lines)]
+fn contract_options(options: &Options) -> contract_workflow::VersionOptions {
+    let baseline = if let Some(path) = &options.against {
+        contract_workflow::Baseline::Against(path.clone())
+    } else if options.first {
+        contract_workflow::Baseline::First
+    } else {
+        contract_workflow::Baseline::Default
+    };
+    let mut result =
+        contract_workflow::VersionOptions::new(options.dir.clone()).with_baseline(baseline);
+    if let Some(path) = &options.lock {
+        result = result.with_lockfile(path.clone());
+    }
+    if let Some(path) = &options.released {
+        result = result.with_released(path.clone());
+    }
+    result
+}
+
+fn render_workflow_report(report: &contract_workflow::Report, reporter: &mut Reporter) -> ExitCode {
+    for finding in &report.findings {
+        if reporter.human() {
+            match finding.kind {
+                contract_workflow::FindingKind::Note => {
+                    if let Some(diagnostic) = &finding.diagnostic {
+                        reporter.note_located(&finding.human, diagnostic.clone());
+                    }
+                }
+                contract_workflow::FindingKind::Error
+                | contract_workflow::FindingKind::SubsetError
+                | contract_workflow::FindingKind::HumanOnlyError => {
+                    diagnostics::write_stderr_line(&finding.human);
+                }
+                _ => diagnostics::write_stderr_line(&finding.human),
+            }
+        } else if let Some(diagnostic) = &finding.diagnostic {
+            reporter.push_located(diagnostic.clone());
+        }
+    }
+    if report.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
 fn check_wit_root(
     wit_root: &Path,
     explicit_released: Option<&Path>,
     reporter: &mut Reporter,
 ) -> Result<ExitCode> {
-    let manifest = load_root_released_manifest(wit_root, explicit_released)?;
-    let versions = discover_version_directories(wit_root)?;
-    witforge::validate_retirement_order(&versions, &manifest, wit_root)?;
-    let mut prev_by_major: BTreeMap<u64, PathBuf> = BTreeMap::new();
-    let mut first_model: Option<model::Model> = None;
-    let mut first_model_by_major: BTreeMap<u64, model::Model> = BTreeMap::new();
-    let mut failed = false;
-    for (major, _minor, dir) in versions {
-        let dir_name = dir
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or_default();
-        let released = manifest.contains(dir_name) || is_released(&dir, explicit_released)?;
-        let prev_dir = prev_by_major.get(&major).cloned();
-        let (first, against) = if released {
-            (false, None)
-        } else if let Some(ref pred) = prev_dir {
-            let pred_lock = pred.join("wire.lock");
-            if !pred_lock.is_file() {
-                failed = true;
-                reporter.error(
-                    codes::LOCKFILE_ERROR,
-                    format!(
-                        "cannot check {} against predecessor {}: missing lockfile {}",
-                        dir.display(),
-                        pred.display(),
-                        pred_lock.display()
-                    ),
-                    Some(pred_lock.display().to_string()),
-                );
-                prev_by_major.insert(major, dir);
-                continue;
-            }
-            (false, Some(pred_lock))
-        } else {
-            (true, None)
-        };
-        let opts = Options {
-            dir: dir.clone(),
-            lock: None,
-            against: against.clone(),
-            first,
-            released: explicit_released.map(Path::to_path_buf),
-        };
-        match check_single(&opts, reporter) {
-            Ok(code) => {
-                if code != ExitCode::SUCCESS {
-                    failed = true;
-                }
-            }
-            Err(err) if is_contract_error(&err) => {
-                failed = true;
-                report_error_to_reporter(&err, reporter);
-            }
-            Err(err) => return Err(err),
-        }
-        // Cross-version checks: package identity, dependency graph, and released continuity.
-        if let Ok(contract) = load(&dir)
-            && subset::check_diagnostics(&contract).is_empty()
-            && let Ok(current_model) = model::build(&contract)
-        {
-            if let Some(ref baseline) = first_model {
-                if baseline.package.namespace != current_model.package.namespace
-                    || baseline.package.name != current_model.package.name
-                {
-                    failed = true;
-                    reporter.error(
-                        codes::PACKAGE_MISMATCH,
-                        format!(
-                            "{} declares package {}:{}, expected {}:{}",
-                            dir.display(),
-                            current_model.package.namespace,
-                            current_model.package.name,
-                            baseline.package.namespace,
-                            baseline.package.name
-                        ),
-                        Some(dir.display().to_string()),
-                    );
-                }
-            } else {
-                first_model = Some(current_model.clone());
-            }
-            if let Some(major_baseline) = first_model_by_major.get(&major) {
-                if let Err(err) =
-                    witforge::ensure_same_dependency_graph(major_baseline, &current_model)
-                {
-                    failed = true;
-                    reporter.error(
-                        codes::DEPENDENCY_GRAPH_MISMATCH,
-                        format!("{err:#}"),
-                        Some(dir.display().to_string()),
-                    );
-                }
-            } else {
-                first_model_by_major.insert(major, current_model);
-            }
-            if released
-                && let Some(ref pred) = prev_dir
-                && let Ok((cur_lock, _)) = read_required_lock(&dir.join("wire.lock"))
-                && let Ok((pred_lock, _)) = read_required_lock(&pred.join("wire.lock"))
-                && let Err(err) = cur_lock.check_append_only(&pred_lock)
-            {
-                failed = true;
-                reporter.error(
-                    codes::LOCKFILE_ERROR,
-                    format!(
-                        "{} does not continue {}: {err:#}",
-                        dir.join("wire.lock").display(),
-                        pred.join("wire.lock").display()
-                    ),
-                    Some(dir.join("wire.lock").display().to_string()),
-                );
-            }
-        }
-        prev_by_major.insert(major, dir);
-    }
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    let report = contract_workflow::check_root(wit_root, explicit_released)?;
+    Ok(render_workflow_report(&report, reporter))
 }
 
 fn report_error_to_reporter(error: &anyhow::Error, reporter: &mut Reporter) {
@@ -1251,439 +1160,17 @@ fn report_error_to_reporter(error: &anyhow::Error, reporter: &mut Reporter) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn check_single(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
-    ensure_version_directory(&options.dir)?;
-    ensure_not_wit_root(&options.dir, "check")?;
-    // `check` may verify a released directory; the manifest only has to be valid.
-    load_released_manifest(&options.dir, options.released.as_deref())?;
-    let contract = load(&options.dir)?;
-    let violations = subset::check_located_diagnostics(&contract);
-    if !violations.is_empty() {
-        // The model of a contract outside the subset is not built, so every locked member
-        // would look removed; report only the violations, as `lock` does.
-        for violation in violations {
-            reporter.push_subset_located(violation);
-        }
-        return Ok(ExitCode::from(1));
-    }
-    let member_locs = contract.member_locations();
-    let model = model::build(&contract)?;
-    ensure_directory_version(&options.dir, &model)?;
-    ensure_first_is_allowed(options, "check")?;
-    ensure_baseline_is_allowed(options, "check")?;
-    let members = model.members()?;
-    let lock_path = options
-        .lock
-        .clone()
-        .unwrap_or_else(|| options.dir.join("wire.lock"));
-    let (lock, text) = read_lock(&lock_path, options)?;
-    let lock_positions = text
-        .as_deref()
-        .map(WireLock::entry_positions)
-        .unwrap_or_default();
-    let (previous, against_positions) = read_previous(options.against.as_deref())?;
-    if let Some(against) = &options.against {
-        if let Some(baseline) = baseline_model(against)? {
-            if let Err(err) = witforge::ensure_same_dependency_graph(&model, &baseline) {
-                reporter.error(
-                    codes::DEPENDENCY_GRAPH_MISMATCH,
-                    format!("{err:#}"),
-                    Some(against.display().to_string()),
-                );
-                return Ok(ExitCode::from(1));
-            }
-        } else {
-            let against_str = against.display().to_string();
-            let diag = Diagnostic::new(
-                codes::LOCKFILE_BASELINE_NO_DEPS,
-                Severity::Note,
-                format!(
-                    "cannot compare the pinned dependency graph: baseline `{against_str}` is \
-                     not a version-directory wire.lock"
-                ),
-            )
-            .with_path(against_str.clone());
-            reporter.note_located(
-                &format!(
-                    "note: cannot compare the pinned dependency graph: baseline \
-                     `{against_str}` is not the wire.lock of a version directory; run a \
-                     generator over the WIT root"
-                ),
-                LocatedDiagnostic::from_diagnostic(diag).with_file(against_str),
-            );
-        }
-    }
-    let released = is_released(&options.dir, options.released.as_deref())?;
-    let remedy = if released {
-        Remedy::Released(options.dir.display().to_string())
-    } else {
-        Remedy::Lock(lock_command(options))
-    };
-    let package = package_name(&model);
-    if !check_lockfile_packages(
-        &package,
-        &lock,
-        &lock_path,
-        &lock_positions,
-        previous.as_ref(),
-        options.against.as_deref(),
-        &against_positions,
-        reporter,
-    ) {
-        return Ok(ExitCode::from(1));
-    }
-    let mode = lock_mode(options, previous.as_ref());
-    let case_collisions: BTreeSet<(String, String)> = lock
-        .case_collisions(&members, mode)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|diagnostic| (diagnostic.path.unwrap_or_default(), diagnostic.message))
-        .collect();
-    let report = match lock.drift_report_with(&members, mode) {
-        Ok(report) => report,
-        Err(err) => {
-            reporter.error(
-                "WF1100",
-                format!("{err:#}"),
-                Some(lock_path.display().to_string()),
-            );
-            return Ok(ExitCode::from(1));
-        }
-    };
-    // A lockfile written by hand, or edited by a tool that reorders or reformats it, is drift
-    // too: `lock` would rewrite it, and only its canonical form is reviewed. CRLF line endings
-    // are read as LF, since a checkout with `core.autocrlf` writes them. A released lockfile is
-    // exempt: `lock` refuses to rewrite it, and the freeze check guards it as it was released.
-    let canonical = released
-        || text
-            .as_deref()
-            .is_none_or(|text| lock.is_canonical(&text.replace("\r\n", "\n")));
-    if !canonical {
-        reporter.error(
-            "WF1106",
-            format!(
-                "lockfile {} is not in the form `witforge lock` writes; {}",
-                lock_path.display(),
-                remedy.advice(" to rewrite it")
-            ),
-            Some(lock_path.display().to_string()),
-        );
-    }
-    // A missing or wrong order section is checked when the entry set is current. A reorder
-    // with a current entry set still reaches this check in every mode. A non-canonical
-    // rendering is already reported above; the semantic check adds nothing to it.
-    if canonical
-        && report.is_empty()
-        && let Err(err) = lock.validate_order_section(&members, released)
-    {
-        reporter.error(
-            "WF1100",
-            format!("{err:#}; {}", remedy.advice(" to update the order section")),
-            Some(lock_path.display().to_string()),
-        );
-        return Ok(ExitCode::from(1));
-    }
-    if canonical
-        && report.is_empty()
-        && let Err(err) = emit::proto::emit_major(&model, &lock)
-    {
-        if is_contract_error(&err) {
-            if let Some(diags) = error_located_diagnostics(&err) {
-                for located in diags {
-                    let mut located = located.clone();
-                    if located.file.is_none() {
-                        located.file = Some(lock_path.display().to_string());
-                    }
-                    if located.diagnostic.path.is_none() {
-                        located.diagnostic = located
-                            .diagnostic
-                            .with_path(lock_path.display().to_string());
-                    }
-                    reporter.push_located(located);
-                }
-            } else {
-                reporter.error(
-                    codes::IDENTIFIER_COLLISION,
-                    format!("{err:#}"),
-                    Some(lock_path.display().to_string()),
-                );
-            }
-            return Ok(ExitCode::from(1));
-        }
-        return Err(err);
-    }
-    let lock_ctx = LockDiagnosticContext {
-        member_locs: &member_locs,
-        lock_file: &lock_path.display().to_string(),
-        lock_positions: &lock_positions,
-        against_file: options.against.as_deref().map(|p| p.display().to_string()),
-        against_positions: &against_positions,
-    };
-    report_check_changes(
-        &report.changes,
-        &report.discrepancies,
-        &case_collisions,
-        &report.restored,
-        options.against.is_some(),
-        &remedy,
-        &lock_ctx,
-        reporter,
-    );
-    if report.is_empty() && canonical {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(ExitCode::from(1))
-    }
+    let report = contract_workflow::check(&contract_options(options))?;
+    Ok(render_workflow_report(&report, reporter))
 }
 
-#[allow(clippy::too_many_lines)]
 fn lock(options: &Options, reporter: &mut Reporter) -> Result<ExitCode> {
-    ensure_not_released(&options.dir, options.released.as_deref())?;
-    ensure_not_wit_root(&options.dir, "lock")?;
-    let contract = load(&options.dir)?;
-    let violations = subset::check_located_diagnostics(&contract);
-    let violation_count = violations.len();
-    for violation in violations {
-        reporter.push_subset_located(violation);
+    let report = contract_workflow::lock(&contract_options(options))?;
+    if report.is_ok() {
+        report.write()?;
     }
-    if violation_count > 0 {
-        if reporter.human() {
-            bail!(ContractError::new(format!(
-                "{violation_count} subset violation(s); the lockfile was not updated"
-            )));
-        }
-        return Ok(ExitCode::from(1));
-    }
-    let member_locs = contract.member_locations();
-    let model = model::build(&contract)?;
-    ensure_directory_version(&options.dir, &model)?;
-    let members = model.members()?;
-    let lock_path = options
-        .lock
-        .clone()
-        .unwrap_or_else(|| options.dir.join("wire.lock"));
-    ensure_lockfile_not_released(&lock_path, &options.dir, options.released.as_deref())?;
-    ensure_first_is_allowed(options, "lock")?;
-    ensure_baseline_is_allowed(options, "lock")?;
-    let (mut lock, existing_text) = read_lock(&lock_path, options)?;
-    let lock_positions = existing_text
-        .as_deref()
-        .map(WireLock::entry_positions)
-        .unwrap_or_default();
-    let (previous, against_positions) = read_previous(options.against.as_deref())?;
-    let package = package_name(&model);
-    if !check_lockfile_packages(
-        &package,
-        &lock,
-        &lock_path,
-        &lock_positions,
-        previous.as_ref(),
-        options.against.as_deref(),
-        &against_positions,
-        reporter,
-    ) {
-        return Ok(ExitCode::from(1));
-    }
-    let mode = lock_mode(options, previous.as_ref());
-    let case_collisions: BTreeSet<(String, String)> = lock
-        .case_collisions(&members, mode)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|diagnostic| (diagnostic.path.unwrap_or_default(), diagnostic.message))
-        .collect();
-    // Every refusal from reconciling is a lockfile violation, as `check` reports it.
-    let report = match lock.reconcile_report_with(&members, mode) {
-        Ok(report) => report,
-        Err(err) => {
-            reporter.error(
-                codes::LOCKFILE_ERROR,
-                format!("{err:#}"),
-                Some(lock_path.display().to_string()),
-            );
-            return Ok(ExitCode::from(1));
-        }
-    };
-    let lock_file = lock_path.display().to_string();
-    let lock_ctx = LockDiagnosticContext {
-        member_locs: &member_locs,
-        lock_file: &lock_file,
-        lock_positions: &lock_positions,
-        against_file: options.against.as_deref().map(|p| p.display().to_string()),
-        against_positions: &against_positions,
-    };
-    let changes = &report.changes;
-    let mut refused = false;
-    for discrepancy in &report.discrepancies {
-        let code =
-            if case_collisions.contains(&(discrepancy.key.clone(), discrepancy.message.clone())) {
-                "WF1003"
-            } else {
-                "WF1100"
-            };
-        reporter.push_located(lock_ctx.locate_discrepancy(
-            code,
-            &discrepancy.key,
-            discrepancy.message.clone(),
-        ));
-        refused = true;
-    }
-    if !changes.reintroduced.is_empty() {
-        for (key, number) in &changes.reintroduced {
-            reporter.push_located(lock_ctx.locate_member(
-                "WF1103",
-                key,
-                reintroduced(key, *number, options.against.is_some()),
-                false,
-                Some("reserved entry in wire.lock"),
-            ));
-            refused = true;
-        }
-    }
-    if refused {
-        if reporter.human() {
-            bail!(ContractError::new(format!(
-                "{} lockfile discrepancy(s); the lockfile was not updated",
-                report.discrepancies.len() + changes.reintroduced.len()
-            )));
-        }
-        return Ok(ExitCode::from(1));
-    }
-    lock.write_atomic(&lock_path)?;
-    let written_positions = fs::read_to_string(&lock_path)
-        .ok()
-        .map(|text| WireLock::entry_positions(&text))
-        .unwrap_or_default();
-    report_lock_notes(
-        &report,
-        &member_locs,
-        &lock_file,
-        &written_positions,
-        reporter,
-    );
-    Ok(ExitCode::SUCCESS)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn check_lockfile_packages(
-    package: &PackageName,
-    lock: &WireLock,
-    lock_path: &Path,
-    lock_positions: &BTreeMap<String, Position>,
-    previous: Option<&WireLock>,
-    against_path: Option<&Path>,
-    against_positions: &BTreeMap<String, Position>,
-    reporter: &mut Reporter,
-) -> bool {
-    if let Err(err) = lock.check_package(package) {
-        let file = lock_path.display().to_string();
-        let pos = lock
-            .entries()
-            .find(|(key, _)| key.package() != package)
-            .and_then(|(key, _)| lock_positions.get(&key.key()).copied());
-        let mut diag = Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
-            .with_path(file.clone());
-        if let Some(pos) = pos {
-            diag = diag.with_position(pos);
-        }
-        reporter.push_located(LocatedDiagnostic::from_diagnostic(diag).with_file(file));
-        return false;
-    }
-    if let (Some(previous), Some(against_path)) = (previous, against_path)
-        && let Err(err) = previous.check_package(package)
-    {
-        let file = against_path.display().to_string();
-        let pos = previous
-            .entries()
-            .find(|(key, _)| key.package() != package)
-            .and_then(|(key, _)| against_positions.get(&key.key()).copied());
-        let mut diag = Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
-            .with_path(file.clone());
-        if let Some(pos) = pos {
-            diag = diag.with_position(pos);
-        }
-        reporter.push_located(LocatedDiagnostic::from_diagnostic(diag).with_file(file));
-        return false;
-    }
-    true
-}
-
-fn report_lock_notes(
-    report: &witforge::lock::Reconciliation,
-    member_locs: &BTreeMap<String, (String, Position)>,
-    lock_file: &str,
-    lock_positions: &BTreeMap<String, Position>,
-    reporter: &mut Reporter,
-) {
-    let changes = &report.changes;
-    let emit =
-        |reporter: &mut Reporter, code: &'static str, human: String, message: String, key: &str| {
-            let lock_pos = lock_positions.get(key).copied();
-            let wit_loc = member_locs.get(key);
-            let located = if wit_loc.is_some() {
-                located_note(
-                    code,
-                    message,
-                    key.to_string(),
-                    wit_loc,
-                    Some((lock_file.to_string(), lock_pos, "lockfile entry")),
-                )
-            } else {
-                let fallback = lock_pos.map(|pos| (lock_file.to_string(), pos));
-                let mut item =
-                    located_note(code, message, key.to_string(), fallback.as_ref(), None);
-                if item.file.is_none() {
-                    item = item.with_file(lock_file.to_string());
-                }
-                item
-            };
-            reporter.note_located(&human, located);
-        };
-    for (key, number) in &report.restored {
-        emit(
-            reporter,
-            "WF1205",
-            format!("restored {key} = {number}"),
-            format!("restored {key} = {number}"),
-            key,
-        );
-    }
-    for (key, number) in &changes.dropped {
-        emit(
-            reporter,
-            "WF1203",
-            format!("dropped  {key} = {number}"),
-            format!("dropped {key} = {number}"),
-            key,
-        );
-    }
-    for (key, _kind, _ty) in &changes.updated {
-        emit(
-            reporter,
-            "WF1204",
-            format!("updated  {key}"),
-            format!("updated {key}"),
-            key,
-        );
-    }
-    for (key, number) in &changes.reserved {
-        emit(
-            reporter,
-            "WF1202",
-            format!("reserved {key} = {number}"),
-            format!("reserved {key} = {number}"),
-            key,
-        );
-    }
-    for (key, number) in &changes.added {
-        emit(
-            reporter,
-            "WF1201",
-            format!("added    {key} = {number}"),
-            format!("added {key} = {number}"),
-            key,
-        );
-    }
+    Ok(render_workflow_report(&report.report, reporter))
 }
 
 fn guard_output_root(paths: &ResolvedPaths) -> Result<()> {
@@ -1711,14 +1198,14 @@ fn run_generator(
     reporter: &mut Reporter,
 ) -> Result<ExitCode> {
     if check {
-        let messages = files.check_with_command(out, regen_command)?;
-        if show_diff && reporter.human() && !messages.is_empty() {
+        let findings = files.check_with_command(out, regen_command)?;
+        if show_diff && reporter.human() && !findings.is_empty() {
             let diff_text = files.unified_diff(out)?;
             if !diff_text.is_empty() {
                 reporter.write_stdout_line(diff_text.trim_end_matches('\n'));
             }
         }
-        return Ok(check_messages(&messages, reporter));
+        return Ok(check_findings(&findings, reporter));
     }
     let diff_text = if show_diff && reporter.human() {
         Some(files.unified_diff(out)?)
@@ -2768,13 +2255,15 @@ fn conversion_blockers(report: &DiffReport) -> impl Iterator<Item = (&'static st
         .changes
         .iter()
         .filter_map(|change| match &change.kind {
-            ChangeKind::Added { defaulted: false } if change.element == "record field" => {
+            ChangeKind::Added { defaulted: false }
+                if change.element == ChangeElement::RecordField =>
+            {
                 Some(("required-addition", change))
             }
             ChangeKind::Retyped { .. }
                 if matches!(
-                    change.element.as_str(),
-                    "record field" | "variant case" | "type"
+                    change.element,
+                    ChangeElement::RecordField | ChangeElement::VariantCase | ChangeElement::Type
                 ) =>
             {
                 Some(("retyped", change))
@@ -2859,7 +2348,7 @@ fn diff_json(full: &diff::FullDiff) -> Value {
 
 fn change_json(change: &diff::Change, decode: diff::DecodeVerdict) -> Value {
     let mut value = json!({
-        "element": &change.element,
+        "element": change.element.as_str(),
         "path": &change.path,
         "number": change.number,
         "wire_breaking": change.wire_breaking,
@@ -2990,11 +2479,14 @@ fn status(breaking: bool) -> &'static str {
     if breaking { "BREAKING" } else { "compatible" }
 }
 
-fn check_messages(messages: &[String], reporter: &mut Reporter) -> ExitCode {
-    for message in messages {
-        reporter.error("WF2001", message, diagnostic_path(message));
+fn check_findings(
+    findings: &[emit::output::GeneratedFileFinding],
+    reporter: &mut Reporter,
+) -> ExitCode {
+    for finding in findings {
+        reporter.push_located(finding.diagnostic());
     }
-    if messages.is_empty() {
+    if findings.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
@@ -3041,578 +2533,6 @@ fn sibling_predecessor(dir: &Path) -> Option<(u64, PathBuf)> {
     best
 }
 
-/// Load the WIT model beside a version-directory baseline lockfile.
-///
-/// A baseline copied outside a version directory has no WIT to compare and returns `None`; the
-/// caller reports that the pinned dependency graph cannot be checked.
-fn baseline_model(path: &Path) -> Result<Option<model::Model>> {
-    let Some(parent) = path.parent() else {
-        return Ok(None);
-    };
-    if path.file_name().and_then(|name| name.to_str()) != Some("wire.lock")
-        || version_directory(parent).is_none()
-    {
-        return Ok(None);
-    }
-    let contract = load(parent)
-        .with_context(|| format!("failed to load the baseline version {}", parent.display()))?;
-    let violations = subset::check_located_diagnostics(&contract);
-    if !violations.is_empty() {
-        let messages: Vec<String> = violations
-            .iter()
-            .map(|located| match &located.diagnostic.path {
-                Some(path) => format!("{path}: {}", located.diagnostic.message),
-                None => located.diagnostic.message.clone(),
-            })
-            .collect();
-        bail!(ContractError::with_located_diagnostics(
-            format!("{}: {}", parent.display(), messages.join("; ")),
-            violations,
-        ));
-    }
-    Ok(Some(model::build(&contract)?))
-}
-
-fn same_parent(left: Option<&Path>, right: Option<&Path>) -> bool {
-    let (Some(left), Some(right)) = (left, right) else {
-        return false;
-    };
-    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
-    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
-    left == right
-}
-
-/// The command that continues `options`' directory against `baseline`.
-fn against_command(options: &Options, verb: &str, baseline: &Path) -> String {
-    let mut command = format!("witforge {verb} {}", shell_quote(&options.dir));
-    if let Some(lock) = &options.lock {
-        let _ = write!(command, " --lock {}", shell_quote(lock));
-    }
-    let _ = write!(command, " --against {}", shell_quote(baseline));
-    if let Some(released) = &options.released {
-        let _ = write!(command, " --released {}", shell_quote(released));
-    }
-    command
-}
-
-/// Refuse `--first` when the root already holds an earlier minor of the same major.
-fn ensure_first_is_allowed(options: &Options, verb: &str) -> Result<()> {
-    if !options.first {
-        return Ok(());
-    }
-    let current = fs::canonicalize(&options.dir).unwrap_or_else(|_| options.dir.clone());
-    let Some((major, _minor)) = version_directory(&current) else {
-        return Ok(());
-    };
-    let Some((predecessor_minor, predecessor)) = sibling_predecessor(&current) else {
-        return Ok(());
-    };
-    let baseline = predecessor.join("wire.lock");
-    bail!(ContractError::with_diagnostic(
-        Diagnostic::error(
-            codes::LOCKFILE_ERROR,
-            format!(
-                "`--first` is refused for `{}`: major {major} already has {} at minor \
-                 {predecessor_minor}, so a new minor continues that lockfile. Run `{}` instead",
-                options.dir.display(),
-                predecessor.display(),
-                against_command(options, verb, &baseline)
-            ),
-        )
-        .with_path(options.dir.display().to_string())
-    ));
-}
-
-/// Refuse a baseline from a sibling version directory of another major or one that skips the
-/// immediate predecessor.
-fn ensure_baseline_is_allowed(options: &Options, verb: &str) -> Result<()> {
-    let Some(against) = &options.against else {
-        return Ok(());
-    };
-    if against.file_name().and_then(|name| name.to_str()) != Some("wire.lock") || !against.is_file()
-    {
-        // A baseline outside a version directory is accepted as given.
-        return Ok(());
-    }
-    let current = fs::canonicalize(&options.dir).unwrap_or_else(|_| options.dir.clone());
-    let Some((current_major, current_minor)) = version_directory(&current) else {
-        return Ok(());
-    };
-    let Some(parent) = against.parent() else {
-        return Ok(());
-    };
-    let Some((baseline_major, baseline_minor)) = version_directory(parent) else {
-        return Ok(());
-    };
-    if !same_parent(current.parent(), parent.parent()) {
-        return Ok(());
-    }
-    if baseline_major != current_major {
-        bail!(ContractError::with_diagnostic(
-            Diagnostic::error(
-                codes::LOCKFILE_ERROR,
-                format!(
-                    "`--against {}` is the lockfile of major {baseline_major}, but `{}` is major \
-                     {current_major}; a new major starts a fresh lockfile with `--first`. Run \
-                     `witforge {verb} {} --first` instead",
-                    against.display(),
-                    options.dir.display(),
-                    shell_quote(&options.dir)
-                ),
-            )
-            .with_path(against.display().to_string())
-        ));
-    }
-    if baseline_minor < current_minor
-        && let Some((predecessor_minor, predecessor)) = sibling_predecessor(&current)
-        && baseline_minor != predecessor_minor
-    {
-        bail!(ContractError::with_diagnostic(
-            Diagnostic::error(
-                codes::LOCKFILE_ERROR,
-                format!(
-                    "`--against {}` skips the immediate predecessor `{}`; run `{}` instead",
-                    against.display(),
-                    predecessor.display(),
-                    against_command(options, verb, &predecessor.join("wire.lock"))
-                ),
-            )
-            .with_path(against.display().to_string())
-        ));
-    }
-    Ok(())
-}
-
-fn lock_mode<'a>(options: &Options, previous: Option<&'a WireLock>) -> LockMode<'a> {
-    if let Some(previous) = previous {
-        LockMode::Against(previous)
-    } else if options.first {
-        LockMode::First
-    } else {
-        LockMode::Default
-    }
-}
-
-fn read_previous(path: Option<&Path>) -> Result<(Option<WireLock>, BTreeMap<String, Position>)> {
-    match path {
-        Some(path) => {
-            let (lock, positions) = read_required_lock(path)?;
-            Ok((Some(lock), positions))
-        }
-        None => Ok((None, BTreeMap::new())),
-    }
-}
-
-fn package_name(model: &model::Model) -> PackageName {
-    PackageName::new(model.package.namespace.clone(), model.package.name.clone())
-}
-
-/// Read the current lockfile and its text. Only `--first` treats a missing one as empty: in
-/// default mode a fresh lockfile would renumber a new minor that should continue the previous
-/// one, and `--against` develops a copy of the previous lockfile.
-fn read_lock(path: &Path, options: &Options) -> Result<(WireLock, Option<String>)> {
-    match fs::read_to_string(path) {
-        Ok(text) => {
-            let lock = WireLock::parse(&text).map_err(|err| {
-                let position = error_diagnostics(&err)
-                    .and_then(|diags| diags.first())
-                    .and_then(|diag| diag.position);
-                op_error_at(
-                    codes::PARSE_ERROR,
-                    format!("in {}: {err:#}", path.display()),
-                    path.display().to_string(),
-                    position,
-                )
-            })?;
-            Ok((lock, Some(text)))
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            if options.first {
-                return Ok((WireLock::default(), None));
-            }
-            if let Some(previous) = &options.against {
-                return Err(op_error(
-                    codes::IO_ERROR,
-                    format!(
-                        "lockfile {} does not exist; a new minor starts as a copy of the previous \
-                         minor's lockfile: copy {} to {} first, then rerun `{}`",
-                        path.display(),
-                        previous.display(),
-                        path.display(),
-                        lock_command(options),
-                    ),
-                    Some(path.display().to_string()),
-                ));
-            }
-            let current = fs::canonicalize(&options.dir).unwrap_or_else(|_| options.dir.clone());
-            if let Some((major, _)) = version_directory(&current)
-                && let Some((_, predecessor)) = sibling_predecessor(&current)
-            {
-                let prev_lock = predecessor.join("wire.lock");
-                if prev_lock.is_file() {
-                    return Err(op_error(
-                        codes::IO_ERROR,
-                        format!(
-                            "lockfile {path} does not exist; major {major} already has \
-                             {prev_dir}, so copy {prev_lock} to {path} and run `{against}` (or \
-                             for a new major, create a fresh lockfile with `--first`)",
-                            path = path.display(),
-                            prev_dir = predecessor.display(),
-                            prev_lock = prev_lock.display(),
-                            against = against_command(options, "lock", &prev_lock),
-                        ),
-                        Some(path.display().to_string()),
-                    ));
-                }
-            }
-            Err(op_error(
-                codes::IO_ERROR,
-                format!(
-                    "lockfile {path} does not exist; for the first version of a package or of a \
-                     new major, create it with `{first}`; for a new minor, copy the previous \
-                     minor's wire.lock to {path} and run witforge lock on that directory with \
-                     --against pointing at the previous minor's wire.lock",
-                    path = path.display(),
-                    first = lock_command_with(options, Some("--first")),
-                ),
-                Some(path.display().to_string()),
-            ))
-        }
-        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
-    }
-}
-
-/// Refuse a WIT root passed to a single-version command (`check` or `lock`) with a clear list of
-/// the version directories found inside it.
-fn ensure_not_wit_root(dir: &Path, verb: &str) -> Result<()> {
-    let mut has_wit_files = false;
-    let mut found: Vec<(u64, u64, String, PathBuf)> = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Ok(());
-    };
-    for entry in entries.flatten() {
-        let entry_path = entry.path();
-        if entry_path.is_file()
-            && entry_path
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("wit"))
-        {
-            has_wit_files = true;
-            break;
-        }
-        if entry_path.is_dir()
-            && let Some((major, minor)) = version_directory(&entry_path)
-            && let Some(name) = entry_path.file_name().and_then(std::ffi::OsStr::to_str)
-        {
-            found.push((major, minor, name.to_string(), entry_path));
-        }
-    }
-    if has_wit_files || found.is_empty() {
-        return Ok(());
-    }
-    found.sort_by_key(|(major, minor, _, _)| (*major, *minor));
-    let names: Vec<&str> = found.iter().map(|(_, _, name, _)| name.as_str()).collect();
-    let example = &found.last().expect("non-empty").3;
-    Err(op_error(
-        codes::CLI_USAGE,
-        format!(
-            "`{}` is a WIT root containing version directories ({}), not a version directory; \
-             `{verb}` expects a single version directory (for example `witforge {verb} {}`)",
-            dir.display(),
-            names.join(", "),
-            shell_quote(example),
-        ),
-        Some(dir.display().to_string()),
-    ))
-}
-
-fn read_required_lock(path: &Path) -> Result<(WireLock, BTreeMap<String, Position>)> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let lock = WireLock::parse(&text).map_err(|err| {
-        let position = error_diagnostics(&err)
-            .and_then(|diags| diags.first())
-            .and_then(|diag| diag.position);
-        op_error_at(
-            codes::PARSE_ERROR,
-            format!("in {}: {err:#}", path.display()),
-            path.display().to_string(),
-            position,
-        )
-    })?;
-    let positions = WireLock::entry_positions(&text);
-    Ok((lock, positions))
-}
-
-struct LockDiagnosticContext<'a> {
-    member_locs: &'a BTreeMap<String, (String, Position)>,
-    lock_file: &'a str,
-    lock_positions: &'a BTreeMap<String, Position>,
-    against_file: Option<String>,
-    against_positions: &'a BTreeMap<String, Position>,
-}
-
-impl LockDiagnosticContext<'_> {
-    fn lock_entry(&self, key: &str) -> (String, Option<Position>) {
-        if let Some(pos) = self.lock_positions.get(key).copied() {
-            return (self.lock_file.to_string(), Some(pos));
-        }
-        if let Some(ref against) = self.against_file
-            && let Some(pos) = self.against_positions.get(key).copied()
-        {
-            return (against.clone(), Some(pos));
-        }
-        (self.lock_file.to_string(), None)
-    }
-
-    fn locate_member(
-        &self,
-        code: &'static str,
-        key: &str,
-        message: String,
-        prefer_lock: bool,
-        related_msg: Option<&str>,
-    ) -> LocatedDiagnostic {
-        let mut diag = Diagnostic::error(code, message).with_path(key.to_string());
-        let wit_loc = self.member_locs.get(key);
-        let (lock_file, lock_pos) = self.lock_entry(key);
-        let mut located = if prefer_lock {
-            if let Some(pos) = lock_pos {
-                diag = diag.with_position(pos);
-            }
-            LocatedDiagnostic::from_diagnostic(diag)
-                .with_file(lock_file)
-                .with_logical(key.to_string())
-        } else if let Some((file, pos)) = wit_loc {
-            diag = diag.with_position(*pos);
-            let mut item = LocatedDiagnostic::from_diagnostic(diag)
-                .with_file(file.clone())
-                .with_logical(key.to_string());
-            if let Some(msg) = related_msg {
-                item =
-                    item.with_related(RelatedLocation::new(lock_file, lock_pos, msg.to_string()));
-            }
-            item
-        } else {
-            if let Some(pos) = lock_pos {
-                diag = diag.with_position(pos);
-            }
-            LocatedDiagnostic::from_diagnostic(diag)
-                .with_file(lock_file)
-                .with_logical(key.to_string())
-        };
-        if prefer_lock && let (Some((file, pos)), Some(msg)) = (wit_loc, related_msg) {
-            located = located.with_related(RelatedLocation::new(
-                file.clone(),
-                Some(*pos),
-                msg.to_string(),
-            ));
-        }
-        located
-    }
-
-    fn locate_discrepancy(
-        &self,
-        code: &'static str,
-        key: &str,
-        message: String,
-    ) -> LocatedDiagnostic {
-        // For a case collision against a reserved entry, find the conflicting entry case-insensitively.
-        let mut diag = Diagnostic::error(code, message).with_path(key.to_string());
-        let wit_loc = self.member_locs.get(key);
-        let (lock_file, lock_pos) = self
-            .lock_positions
-            .get(key)
-            .copied()
-            .map(|pos| (self.lock_file.to_string(), Some(pos)))
-            .or_else(|| {
-                self.lock_positions
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
-                    .map(|(_, &pos)| (self.lock_file.to_string(), Some(pos)))
-            })
-            .or_else(|| {
-                self.against_file.as_ref().and_then(|file| {
-                    self.against_positions
-                        .get(key)
-                        .copied()
-                        .or_else(|| {
-                            self.against_positions
-                                .iter()
-                                .find(|(k, _)| k.eq_ignore_ascii_case(key))
-                                .map(|(_, &pos)| pos)
-                        })
-                        .map(|pos| (file.clone(), Some(pos)))
-                })
-            })
-            .unwrap_or_else(|| (self.lock_file.to_string(), None));
-        if let Some((file, pos)) = wit_loc {
-            diag = diag.with_position(*pos);
-            LocatedDiagnostic::from_diagnostic(diag)
-                .with_file(file.clone())
-                .with_logical(key.to_string())
-                .with_related(RelatedLocation::new(
-                    lock_file,
-                    lock_pos,
-                    "conflicting entry in wire.lock".to_string(),
-                ))
-        } else {
-            if let Some(pos) = lock_pos {
-                diag = diag.with_position(pos);
-            }
-            LocatedDiagnostic::from_diagnostic(diag)
-                .with_file(lock_file)
-                .with_logical(key.to_string())
-        }
-    }
-}
-
-/// How to fix what `check` reports: run `lock`, or, for a released version, which `lock`
-/// refuses, restore what was released.
-enum Remedy {
-    /// The `witforge lock` command, with the same mode and paths.
-    Lock(String),
-    /// The released version directory.
-    Released(String),
-}
-
-impl Remedy {
-    fn advice(&self, purpose: &str) -> String {
-        match self {
-            Self::Lock(command) => format!("run `{command}`{purpose}"),
-            Self::Released(dir) => format!(
-                "`{dir}` is released, so `witforge lock` refuses it; restore its released WIT \
-                 and wire.lock"
-            ),
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn report_check_changes(
-    changes: &witforge::lock::Changes,
-    discrepancies: &[witforge::lock::Discrepancy],
-    case_collisions: &BTreeSet<(String, String)>,
-    restored: &[(String, u32)],
-    against: bool,
-    remedy: &Remedy,
-    ctx: &LockDiagnosticContext<'_>,
-    reporter: &mut Reporter,
-) {
-    for discrepancy in discrepancies {
-        if case_collisions.contains(&(discrepancy.key.clone(), discrepancy.message.clone())) {
-            reporter.push_located(ctx.locate_discrepancy(
-                "WF1003",
-                &discrepancy.key,
-                discrepancy.message.clone(),
-            ));
-        } else {
-            reporter.push_located(ctx.locate_discrepancy(
-                "WF1100",
-                &discrepancy.key,
-                format!("{}; {}", discrepancy.message, remedy.advice("")),
-            ));
-        }
-    }
-    for (key, _) in restored {
-        reporter.push_located(ctx.locate_member(
-            "WF1108",
-            key,
-            format!(
-                "draft removal of {key} can be restored; {}",
-                remedy.advice("")
-            ),
-            false,
-            Some("reserved entry in wire.lock"),
-        ));
-    }
-    for (key, _) in &changes.added {
-        reporter.push_located(ctx.locate_member(
-            "WF1101",
-            key,
-            format!("{key} has no wire number; {}", remedy.advice("")),
-            false,
-            Some("wire.lock has no entry for this member"),
-        ));
-    }
-    for (key, number) in &changes.reserved {
-        reporter.push_located(ctx.locate_member(
-            "WF1102",
-            key,
-            format!(
-                "{key} = {number} is no longer in the contract; {}",
-                remedy.advice(" to reserve it")
-            ),
-            true,
-            None,
-        ));
-    }
-    for (key, number) in &changes.reintroduced {
-        reporter.push_located(ctx.locate_member(
-            "WF1103",
-            key,
-            reintroduced(key, *number, against),
-            false,
-            Some("reserved entry in wire.lock"),
-        ));
-    }
-    for (key, number) in &changes.dropped {
-        reporter.push_located(ctx.locate_member(
-            "WF1104",
-            key,
-            format!(
-                "stale draft {key} = {number}; {}",
-                remedy.advice(" to drop it")
-            ),
-            true,
-            None,
-        ));
-    }
-    for (key, _kind, _ty) in &changes.updated {
-        reporter.push_located(ctx.locate_member(
-            "WF1105",
-            key,
-            format!(
-                "draft {key} changed kind or type; {}",
-                remedy.advice(" to update it")
-            ),
-            false,
-            Some("existing entry in wire.lock"),
-        ));
-    }
-}
-
-/// The `witforge lock` command that fixes what `check` reports, with the same mode and paths,
-/// each quoted for a POSIX shell.
-fn lock_command(options: &Options) -> String {
-    let mode = if options.first {
-        Some("--first".to_string())
-    } else {
-        options
-            .against
-            .as_ref()
-            .map(|previous| format!("--against {}", shell_quote(previous)))
-    };
-    lock_command_with(options, mode.as_deref())
-}
-
-/// The `witforge lock` command for `options`' version directory, lockfile, and manifest, with
-/// `mode` (such as `--first`) in place of the options' own, each path quoted for a POSIX shell.
-fn lock_command_with(options: &Options, mode: Option<&str>) -> String {
-    let mut command = format!("witforge lock {}", shell_quote(&options.dir));
-    if let Some(lock) = &options.lock {
-        let _ = write!(command, " --lock {}", shell_quote(lock));
-    }
-    if let Some(mode) = mode {
-        let _ = write!(command, " {mode}");
-    }
-    if let Some(released) = &options.released {
-        let _ = write!(command, " --released {}", shell_quote(released));
-    }
-    command
-}
-
 /// `path` as one POSIX shell word that witforge reads as a path: unchanged when it holds only
 /// characters no shell treats specially, and single-quoted otherwise. A path that starts with
 /// `-` is relative, and gets a leading `./`, so the command line does not read it as an option.
@@ -3632,21 +2552,10 @@ fn shell_quote(path: &Path) -> String {
     }
 }
 
-fn reintroduced(key: &str, number: u32, against: bool) -> String {
-    if against {
-        format!(
-            "{key} was removed and its name and number {number} stay reserved; give the member a new name"
-        )
-    } else {
-        format!(
-            "{key} was removed and its name and number {number} stay reserved; if the removal was a draft, use `--against` with the released baseline; otherwise give the member a new name"
-        )
-    }
-}
-
 #[cfg(test)]
 mod reference_doc_tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn reference_guide_documents_every_cli_command_option_and_config_key() {

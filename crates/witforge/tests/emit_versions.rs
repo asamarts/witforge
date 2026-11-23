@@ -158,7 +158,7 @@ fn generated_conversions_compile_and_apply_across_two_versions() {
     let root = fixture("versions/convert");
     let out = temp("run").join("generated");
     rust::generate(&root, &out).unwrap();
-    assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
+    assert!(rust::check(&root, &out).unwrap().is_empty());
     let source = fs::read_to_string(out.join("convert.rs")).unwrap();
     assert!(source.contains("pub mod v0_1_to_v0_2 {"), "{source}");
     assert!(source.contains("pub mod v0_2_to_v0_1 {"), "{source}");
@@ -425,20 +425,25 @@ fn check_treats_convert_as_shared_generated_output() {
         format!("{}\nchanged\n", rust::HEADER),
     )
     .unwrap();
-    let messages = rust::check(&root, &out).unwrap();
+    let findings = rust::check(&root, &out).unwrap();
     assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("convert.rs") && message.contains("changed")),
-        "{messages:?}"
+        findings.iter().any(|finding| {
+            finding.path.ends_with("convert.rs")
+                && matches!(
+                    finding.status,
+                    witforge::emit::output::GeneratedFileStatus::Changed { .. }
+                )
+        }),
+        "{findings:?}"
     );
     fs::remove_file(out.join("convert.rs")).unwrap();
-    let messages = rust::check(&root, &out).unwrap();
+    let findings = rust::check(&root, &out).unwrap();
     assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("convert.rs") && message.contains("missing")),
-        "{messages:?}"
+        findings.iter().any(|finding| {
+            finding.path.ends_with("convert.rs")
+                && finding.status == witforge::emit::output::GeneratedFileStatus::Missing
+        }),
+        "{findings:?}"
     );
     fs::remove_dir_all(out.parent().unwrap()).unwrap();
 }

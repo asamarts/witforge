@@ -81,12 +81,13 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 - **public API compatibility**: installs cargo-semver-checks 0.51.0 and compares the library
   with the newest release on crates.io that is not newer than the workspace version. Before and
   on the 0.7.0 tag, `ci/check-semver.sh` still runs the minor-compatibility lints and requires
-  their failures to equal `ci/semver-breaking-api.txt`, the exact reviewed W10-095/W10-096
-  break inventory. Once that tag is an ancestor, the check requires ordinary minor
-  compatibility. The baseline is not named, so it advances with each release.
+  their failures to equal `ci/semver-breaking-api.txt`, the checked cargo-semver exception.
+  Once that tag is an ancestor, the check requires ordinary minor compatibility. The baseline is
+  not named, so it advances with each release.
 - **documented public API**: `ci/check-public-api.sh` uses pinned `nightly-2026-09-11` rustdoc JSON
-  to compare every public item, field, variant, associated item, explicit trait implementation,
-  and extensibility attribute with `docs/design/public-api-inventory.txt`.
+  to compare every public item, field and function signature, variant, associated item, explicit
+  trait implementation, and extensibility attribute with `docs/design/public-api-inventory.txt`;
+  it also requires the complete delta from 0.6.0 to equal the reviewed pre-1.0 inventory.
 - **buf** (workflow dispatch only): optional `buf breaking` through `ci/check-buf-history.sh`.
   The old schema is generated from each release tag by that tag's published witforge binary;
   the candidate binary generates only the new schema. Every fixture WIT root is checked against

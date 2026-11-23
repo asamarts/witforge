@@ -9,7 +9,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::emit::output::{GeneratedFiles, ensure_outside_wit_root, json_header};
+use crate::emit::output::{
+    GeneratedFileFinding, GeneratedFiles, ensure_outside_wit_root, json_header,
+};
 use crate::emit::rust::version_module_name;
 use crate::emit::versions::{
     DepLayout, Version, load_versions, load_versions_with_released, same_dependency,
@@ -111,10 +113,12 @@ pub fn generate(wit_root: &Path, out: &Path) -> Result<()> {
 
 /// Check generated JSON Schema output under `out` without writing.
 ///
+/// Returns one structured finding per missing, changed, or extra generated file.
+///
 /// # Errors
 ///
 /// Returns an error for invalid input, an output root inside the WIT tree, or an I/O failure.
-pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<String>> {
+pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<GeneratedFileFinding>> {
     ensure_outside_wit_root(wit_root, out)?;
     plan(wit_root)?.check(out)
 }

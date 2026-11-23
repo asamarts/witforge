@@ -1157,27 +1157,30 @@ fn examples_generated_code_compiles_and_roundtrips() {
         let ex_dir = root.join("examples").join(example);
         let wit_root = ex_dir.join("wit");
         let gen_dir = ex_dir.join("generated");
-        assert_eq!(
-            rust::check(&wit_root, &gen_dir.join("rust")).unwrap(),
-            Vec::<String>::new()
+        assert!(
+            rust::check(&wit_root, &gen_dir.join("rust"))
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!(
-            proto::check(&wit_root, &gen_dir.join("proto")).unwrap(),
-            Vec::<String>::new()
+        assert!(
+            proto::check(&wit_root, &gen_dir.join("proto"))
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!(
-            json_schema::check(&wit_root, &gen_dir.join("schema")).unwrap(),
-            Vec::<String>::new()
+        assert!(
+            json_schema::check(&wit_root, &gen_dir.join("schema"))
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!(
+        assert!(
             glue::check(
                 &wit_root,
                 &gen_dir.join("glue"),
                 "crate::generated::rust",
                 "crate::generated::proto",
             )
-            .unwrap(),
-            Vec::<String>::new()
+            .unwrap()
+            .is_empty()
         );
     }
 

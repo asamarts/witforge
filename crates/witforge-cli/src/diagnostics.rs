@@ -113,37 +113,6 @@ impl Reporter {
         }
     }
 
-    pub(crate) fn push_subset_located(&mut self, located: LocatedDiagnostic) {
-        if self.human() {
-            let loc = located
-                .logical
-                .as_deref()
-                .or(located.diagnostic.path.as_deref())
-                .unwrap_or_default();
-            write_stderr_line(&format!("error: {loc}: {}", located.diagnostic.message));
-        } else {
-            self.diagnostics.push(located);
-        }
-    }
-
-    pub(crate) fn error(
-        &mut self,
-        code: &'static str,
-        message: impl Into<String>,
-        path: Option<String>,
-    ) {
-        let mut diagnostic = Diagnostic::error(code, message);
-        let file = path.clone();
-        if let Some(path) = path {
-            diagnostic = diagnostic.with_path(path);
-        }
-        let mut located = LocatedDiagnostic::from_diagnostic(diagnostic);
-        if let Some(file) = file {
-            located = located.with_file(file);
-        }
-        self.push_located(located);
-    }
-
     pub(crate) fn note_located(&mut self, human: &str, located: LocatedDiagnostic) {
         if self.human() {
             if !self.quiet {
@@ -484,13 +453,6 @@ fn sarif_result(located: &LocatedDiagnostic) -> Value {
         result["relatedLocations"] = Value::Array(related);
     }
     result
-}
-
-pub(crate) fn diagnostic_path(message: &str) -> Option<String> {
-    let start = message.find('`')?;
-    let rest = &message[start + 1..];
-    let end = rest.find('`')?;
-    Some(rest[..end].to_string())
 }
 
 /// Build a [`LocatedDiagnostic`] for a note carrying a logical contract path and optional

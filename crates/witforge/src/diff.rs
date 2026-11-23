@@ -23,6 +23,7 @@
 //! a graph mismatch is refused before local declarations are compared.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -105,13 +106,110 @@ impl ChangeKind {
     }
 }
 
+/// The typed declaration category affected by a contract change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum ChangeElement {
+    /// A named interface.
+    Interface,
+    /// A named type.
+    Type,
+    /// A record field.
+    RecordField,
+    /// Record-field declaration order.
+    RecordFieldOrder,
+    /// A variant case.
+    VariantCase,
+    /// Variant-case declaration order.
+    VariantCaseOrder,
+    /// An enum case.
+    EnumCase,
+    /// Enum-case declaration order.
+    EnumCaseOrder,
+    /// A flags member.
+    Flag,
+    /// Flags declaration order.
+    FlagOrder,
+    /// A function parameter.
+    Parameter,
+    /// Parameter declaration order.
+    ParameterOrder,
+    /// A function result.
+    FunctionResult,
+    /// A protobuf method id.
+    MethodId,
+    /// An interface function.
+    Function,
+    /// Function declaration order.
+    FunctionOrder,
+    /// A world.
+    World,
+    /// A world import.
+    WorldImport,
+    /// World-import declaration order.
+    WorldImportOrder,
+    /// A world export.
+    WorldExport,
+    /// World-export declaration order.
+    WorldExportOrder,
+}
+
+impl ChangeElement {
+    /// The stable human and JSON label for this declaration category.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Interface => "interface",
+            Self::Type => "type",
+            Self::RecordField => "record field",
+            Self::RecordFieldOrder => "record field order",
+            Self::VariantCase => "variant case",
+            Self::VariantCaseOrder => "variant case order",
+            Self::EnumCase => "enum case",
+            Self::EnumCaseOrder => "enum case order",
+            Self::Flag => "flag",
+            Self::FlagOrder => "flag order",
+            Self::Parameter => "parameter",
+            Self::ParameterOrder => "parameter order",
+            Self::FunctionResult => "function result",
+            Self::MethodId => "method id",
+            Self::Function => "function",
+            Self::FunctionOrder => "function order",
+            Self::World => "world",
+            Self::WorldImport => "world import",
+            Self::WorldImportOrder => "world import order",
+            Self::WorldExport => "world export",
+            Self::WorldExportOrder => "world export order",
+        }
+    }
+
+    const fn order(self) -> Self {
+        match self {
+            Self::RecordField => Self::RecordFieldOrder,
+            Self::VariantCase => Self::VariantCaseOrder,
+            Self::EnumCase => Self::EnumCaseOrder,
+            Self::Flag => Self::FlagOrder,
+            Self::Parameter => Self::ParameterOrder,
+            Self::WorldImport => Self::WorldImportOrder,
+            Self::WorldExport => Self::WorldExportOrder,
+            other => other,
+        }
+    }
+}
+
+impl fmt::Display for ChangeElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// One change and its three compatibility verdicts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     /// What changed.
     pub kind: ChangeKind,
-    /// The kind of declaration, such as `record field` or `function`.
-    pub element: String,
+    /// The typed kind of declaration.
+    pub element: ChangeElement,
     /// The WIT path, without the package name.
     pub path: String,
     /// The wire number when the change concerns a numbered member.
@@ -1031,7 +1129,7 @@ enum MemberDecodeRule<'a> {
 }
 
 struct MemberComparison<'a> {
-    element: &'a str,
+    element: ChangeElement,
     path: &'a str,
     parent: &'a str,
     api_on_reorder: bool,
@@ -1043,7 +1141,7 @@ impl Builder<'_> {
     fn push(
         &mut self,
         kind: ChangeKind,
-        element: impl Into<String>,
+        element: ChangeElement,
         path: impl Into<String>,
         number: Option<u32>,
         breaking: Breaking,
@@ -1052,7 +1150,7 @@ impl Builder<'_> {
         self.changes.push((
             Change {
                 kind,
-                element: element.into(),
+                element,
                 path: path.into(),
                 number,
                 wire_breaking: breaking.wire,
@@ -1089,7 +1187,7 @@ impl Builder<'_> {
             };
             self.push(
                 ChangeKind::Added { defaulted: false },
-                "interface",
+                ChangeElement::Interface,
                 *name,
                 None,
                 Breaking::NONE,
@@ -1109,7 +1207,7 @@ impl Builder<'_> {
             };
             self.push(
                 ChangeKind::Removed,
-                "interface",
+                ChangeElement::Interface,
                 *name,
                 None,
                 Breaking {
@@ -1147,7 +1245,7 @@ impl Builder<'_> {
         {
             self.push(
                 ChangeKind::Added { defaulted: false },
-                "type",
+                ChangeElement::Type,
                 format!("{}/{}", old.name, name),
                 None,
                 Breaking::NONE,
@@ -1166,7 +1264,7 @@ impl Builder<'_> {
             };
             self.push(
                 ChangeKind::Removed,
-                "type",
+                ChangeElement::Type,
                 format!("{}/{}", old.name, name),
                 None,
                 Breaking {
@@ -1200,7 +1298,7 @@ impl Builder<'_> {
                     from: old_kind.to_string(),
                     to: new_kind.to_string(),
                 },
-                "type",
+                ChangeElement::Type,
                 path,
                 None,
                 Breaking {
@@ -1216,12 +1314,21 @@ impl Builder<'_> {
             (TypeDefKind::Record(old_fields), TypeDefKind::Record(new_fields)) => {
                 self.compare_record(interface, old, old_fields, new_fields)
             }
-            (TypeDefKind::Variant(old_cases), TypeDefKind::Variant(new_cases)) => {
-                self.compare_cases(interface, old, old_cases, new_cases, "variant case")
-            }
-            (TypeDefKind::Enum(old_cases), TypeDefKind::Enum(new_cases)) => {
-                self.compare_cases(interface, old, old_cases, new_cases, "enum case")
-            }
+            (TypeDefKind::Variant(old_cases), TypeDefKind::Variant(new_cases)) => self
+                .compare_cases(
+                    interface,
+                    old,
+                    old_cases,
+                    new_cases,
+                    ChangeElement::VariantCase,
+                ),
+            (TypeDefKind::Enum(old_cases), TypeDefKind::Enum(new_cases)) => self.compare_cases(
+                interface,
+                old,
+                old_cases,
+                new_cases,
+                ChangeElement::EnumCase,
+            ),
             (TypeDefKind::Flags(old_flags), TypeDefKind::Flags(new_flags)) => {
                 let old_names: Vec<String> =
                     old_flags.iter().map(|flag| flag.name.clone()).collect();
@@ -1231,7 +1338,7 @@ impl Builder<'_> {
                     &member_pairs(self.old, &parent, &old_names)?,
                     &member_pairs(self.new, &parent, &new_names)?,
                     &MemberComparison {
-                        element: "flag",
+                        element: ChangeElement::Flag,
                         path: &path,
                         parent: &parent,
                         api_on_reorder: false,
@@ -1249,7 +1356,7 @@ impl Builder<'_> {
                             from: old_shape,
                             to: new_shape,
                         },
-                        "type",
+                        ChangeElement::Type,
                         path,
                         None,
                         Breaking::SOURCE_API,
@@ -1292,7 +1399,7 @@ impl Builder<'_> {
             &member_pairs(self.old, &parent, &old_names)?,
             &member_pairs(self.new, &parent, &new_names)?,
             &MemberComparison {
-                element: "record field",
+                element: ChangeElement::RecordField,
                 path: &path,
                 parent: &parent,
                 api_on_reorder: false,
@@ -1311,7 +1418,7 @@ impl Builder<'_> {
         old: &TypeDef,
         old_cases: &[crate::model::Case],
         new_cases: &[crate::model::Case],
-        element: &str,
+        element: ChangeElement,
     ) -> Result<()> {
         let path = format!("{}/{}", interface.name, old.name);
         let parent = format!("{}/{}", interface.name, old.name);
@@ -1464,7 +1571,7 @@ impl Builder<'_> {
         if before != after {
             self.push(
                 ChangeKind::Reordered { before, after },
-                format!("{element} order"),
+                element.order(),
                 *path,
                 None,
                 Breaking {
@@ -1523,7 +1630,7 @@ impl Builder<'_> {
             &old_params,
             &new_params,
             &MemberComparison {
-                element: "parameter",
+                element: ChangeElement::Parameter,
                 path: &path,
                 parent: &parent,
                 api_on_reorder: true,
@@ -1542,7 +1649,7 @@ impl Builder<'_> {
                     from: old_result,
                     to: new_result,
                 },
-                "function result",
+                ChangeElement::FunctionResult,
                 path.clone(),
                 Some(self.new.number(interface, name)?),
                 Breaking::ALL,
@@ -1557,7 +1664,7 @@ impl Builder<'_> {
                     from: old_method,
                     to: new_method,
                 },
-                "method id",
+                ChangeElement::MethodId,
                 path,
                 Some(new_method),
                 Breaking::WIRE,
@@ -1592,7 +1699,7 @@ impl Builder<'_> {
             };
             self.push(
                 ChangeKind::Added { defaulted: false },
-                "function",
+                ChangeElement::Function,
                 format!("{}.{}", old.name, name),
                 Some(number),
                 Breaking {
@@ -1608,7 +1715,7 @@ impl Builder<'_> {
             let params = format!("{}/{}#{name}", self.old.endpoint.package, old.name);
             self.push(
                 ChangeKind::Removed,
-                "function",
+                ChangeElement::Function,
                 format!("{}.{}", old.name, name),
                 Some(self.old.number(&old.name, name)?),
                 Breaking {
@@ -1644,7 +1751,7 @@ impl Builder<'_> {
         if before != after {
             self.push(
                 ChangeKind::Reordered { before, after },
-                "function order",
+                ChangeElement::FunctionOrder,
                 old.name.clone(),
                 None,
                 Breaking::SOURCE,
@@ -1672,7 +1779,7 @@ impl Builder<'_> {
         for name in new.keys().filter(|name| !old.contains_key(*name)) {
             self.push(
                 ChangeKind::Added { defaulted: false },
-                "world",
+                ChangeElement::World,
                 *name,
                 None,
                 Breaking::NONE,
@@ -1682,7 +1789,7 @@ impl Builder<'_> {
         for name in old.keys().filter(|name| !new.contains_key(*name)) {
             self.push(
                 ChangeKind::Removed,
-                "world",
+                ChangeElement::World,
                 *name,
                 None,
                 Breaking::SOURCE,
@@ -1693,8 +1800,20 @@ impl Builder<'_> {
             let Some(new_world) = new.get(name) else {
                 continue;
             };
-            self.compare_world_side(name, "import", &old_world.imports, &new_world.imports);
-            self.compare_world_side(name, "export", &old_world.exports, &new_world.exports);
+            self.compare_world_side(
+                name,
+                "import",
+                ChangeElement::WorldImport,
+                &old_world.imports,
+                &new_world.imports,
+            );
+            self.compare_world_side(
+                name,
+                "export",
+                ChangeElement::WorldExport,
+                &old_world.exports,
+                &new_world.exports,
+            );
         }
     }
 
@@ -1702,6 +1821,7 @@ impl Builder<'_> {
         &mut self,
         world: &str,
         side: &str,
+        element: ChangeElement,
         old: &[WorldInterface],
         new: &[WorldInterface],
     ) {
@@ -1713,7 +1833,7 @@ impl Builder<'_> {
         {
             self.push(
                 ChangeKind::Added { defaulted: false },
-                format!("world {side}"),
+                element,
                 format!("{world}/{side}/{}", interface.qualified_name()),
                 None,
                 Breaking::SOURCE,
@@ -1726,7 +1846,7 @@ impl Builder<'_> {
         {
             self.push(
                 ChangeKind::Removed,
-                format!("world {side}"),
+                element,
                 format!("{world}/{side}/{}", interface.qualified_name()),
                 None,
                 Breaking::SOURCE,
@@ -1746,7 +1866,7 @@ impl Builder<'_> {
         if before != after {
             self.push(
                 ChangeKind::Reordered { before, after },
-                format!("world {side} order"),
+                element.order(),
                 format!("{world}/{side}"),
                 None,
                 Breaking::SOURCE,

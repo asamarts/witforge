@@ -35,63 +35,6 @@ pub(crate) fn discover_config() -> Option<PathBuf> {
     discover_config_from(&cwd)
 }
 
-/// Classification of a directory passed to `witforge check`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CheckTargetKind {
-    /// Holds WIT source / `wire.lock` / `deps/` directly and no `v<major>.<minor>` children.
-    VersionDir,
-    /// Holds one or more `v<major>.<minor>` directories and no direct WIT source/lockfile.
-    WitRoot,
-    /// Holds both direct WIT source/lockfile and `v<major>.<minor>` directories (ambiguous).
-    Both,
-    /// Holds neither direct WIT source/lockfile nor `v<major>.<minor>` directories.
-    Neither,
-}
-
-/// Classify an existing directory as a single version directory, a WIT root, both, or neither.
-pub(crate) fn classify_check_dir(path: &Path) -> Result<CheckTargetKind> {
-    let mut has_version_sources = false;
-    let mut has_version_dirs = false;
-    for entry in fs::read_dir(path)
-        .with_context(|| format!("failed to read directory {}", path.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("failed to read directory {}", path.display()))?;
-        let entry_path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "wire.lock" {
-            has_version_sources = true;
-            continue;
-        }
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", entry_path.display()))?;
-        let is_dir = file_type.is_dir() || (file_type.is_symlink() && entry_path.is_dir());
-        if is_dir && name == "deps" {
-            has_version_sources = true;
-            continue;
-        }
-        if !is_dir
-            && entry_path
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("wit"))
-        {
-            has_version_sources = true;
-            continue;
-        }
-        if crate::version_directory(&entry_path).is_some() {
-            has_version_dirs = true;
-        }
-    }
-    Ok(match (has_version_sources, has_version_dirs) {
-        (true, false) => CheckTargetKind::VersionDir,
-        (false, true) => CheckTargetKind::WitRoot,
-        (true, true) => CheckTargetKind::Both,
-        (false, false) => CheckTargetKind::Neither,
-    })
-}
-
 /// Create the next minor (`v<major>.<minor+1>`) or next major (`v<major+1>.0`) version directory
 /// under `wit_root` by copying WIT files, `deps/`, and (for a minor only) `wire.lock`, rewriting
 /// the `package ...@<old>;` version header in every root `.wit` file.

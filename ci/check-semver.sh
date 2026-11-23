@@ -7,7 +7,7 @@ ROOT="$(cd "${ROOT}" && pwd)"
 cd "${ROOT}"
 RELEASE_TYPE="$(bash "${ROOT}/ci/semver-release-type.sh" "${ROOT}")"
 if [[ "${RELEASE_TYPE}" == "minor" ]]; then
-  exec cargo semver-checks check-release -p witforge --release-type minor
+  exec env CARGO_TERM_COLOR=never cargo semver-checks check-release -p witforge --release-type minor
 fi
 if [[ "${RELEASE_TYPE}" != "major" ]]; then
   echo "unexpected semver release type: ${RELEASE_TYPE}" >&2
@@ -20,7 +20,7 @@ LOG="$(mktemp "${SCRATCH_BASE%/}/witforge-semver.XXXXXX")"
 ACTUAL="$(mktemp "${SCRATCH_BASE%/}/witforge-semver-api.XXXXXX")"
 trap 'rm -f "${LOG}" "${ACTUAL}"' EXIT
 
-if cargo semver-checks check-release -p witforge --release-type minor >"${LOG}" 2>&1; then
+if CARGO_TERM_COLOR=never cargo semver-checks check-release -p witforge --release-type minor >"${LOG}" 2>&1; then
   echo "the 0.7.0 exception is active, but the reviewed pre-1.0 break was not reported" >&2
   exit 1
 fi

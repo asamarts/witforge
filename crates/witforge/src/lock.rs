@@ -1165,6 +1165,10 @@ impl WireLock {
     /// Returns an I/O error from creating, writing, syncing, or renaming the temporary file.
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
         let rendered = self.render();
+        Self::write_rendered_atomic(path, &rendered)
+    }
+
+    pub(crate) fn write_rendered_atomic(path: &Path, rendered: &str) -> Result<()> {
         if fs::read(path).is_ok_and(|existing| existing == rendered.as_bytes()) {
             return Ok(());
         }

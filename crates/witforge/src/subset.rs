@@ -60,7 +60,7 @@ impl<'a> Sink<'a> {
     }
 
     fn resolve_span(&mut self, span: Span) -> Option<(String, Position)> {
-        crate::resolve_span_cached(&self.contract.resolve.source_map, span, &mut self.cache)
+        crate::resolve_contract_span_cached(self.contract, span, &mut self.cache)
     }
 
     fn package_location(&mut self, package_id: PackageId) -> Option<(String, Position)> {

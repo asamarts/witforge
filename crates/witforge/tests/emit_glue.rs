@@ -379,9 +379,10 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     glue::generate(&root, &out, "crate::plain", "crate::proto").unwrap();
     assert!(out.join("mod.rs").is_file());
     assert!(out.join("v0.rs").is_file());
-    assert_eq!(
-        glue::check(&root, &out, "crate::plain", "crate::proto").unwrap(),
-        Vec::<String>::new()
+    assert!(
+        glue::check(&root, &out, "crate::plain", "crate::proto")
+            .unwrap()
+            .is_empty()
     );
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
 
@@ -390,7 +391,7 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("changed generated")),
+            .any(|finding| finding.message().contains("changed generated")),
         "{messages:?}"
     );
     // A file without the header is one generation refuses to overwrite, and --check says so
@@ -400,7 +401,7 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("refuses to overwrite")),
+            .any(|finding| finding.message().contains("refuses to overwrite")),
         "{messages:?}"
     );
 
@@ -410,7 +411,7 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("extra generated")),
+            .any(|finding| finding.message().contains("extra generated")),
         "{messages:?}"
     );
 
@@ -419,7 +420,7 @@ fn glue_layout_check_and_ownership_match_other_emitters() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("missing generated")),
+            .any(|finding| finding.message().contains("missing generated")),
         "{messages:?}"
     );
 
@@ -2091,7 +2092,7 @@ interface types {
             .changes
             .iter()
             .zip(full.decode_verdicts.iter())
-            .find(|(c, _)| c.path == path && c.element == element)
+            .find(|(change, _)| change.path == path && change.element.as_str() == element)
             .map_or_else(
                 || {
                     panic!(

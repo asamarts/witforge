@@ -6,7 +6,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::emit::output::{GeneratedFiles, comment_header, ensure_outside_wit_root};
+use crate::emit::output::{
+    GeneratedFileFinding, GeneratedFiles, comment_header, ensure_outside_wit_root,
+};
 use crate::emit::versions::{DepLayout, Version, load_versions, load_versions_with_released};
 use crate::emit::{docs, pascal_case, rust_ident, rustfmt, snake_case};
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
@@ -171,12 +173,12 @@ pub fn generate_with_serde(wit_root: &Path, out: &Path, serde: bool) -> Result<(
 
 /// Check generated Rust output under `out` without writing.
 ///
-/// Returns one message per missing, changed, or extra generated file.
+/// Returns one structured finding per missing, changed, or extra generated file.
 ///
 /// # Errors
 ///
 /// Returns an error for invalid input, an output root inside the WIT tree, or an I/O failure.
-pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<String>> {
+pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<GeneratedFileFinding>> {
     check_with_serde(wit_root, out, false)
 }
 
@@ -185,7 +187,11 @@ pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<String>> {
 /// # Errors
 ///
 /// Returns the same errors as [`check`].
-pub fn check_with_serde(wit_root: &Path, out: &Path, serde: bool) -> Result<Vec<String>> {
+pub fn check_with_serde(
+    wit_root: &Path,
+    out: &Path,
+    serde: bool,
+) -> Result<Vec<GeneratedFileFinding>> {
     ensure_outside_wit_root(wit_root, out)?;
     plan_with_serde(wit_root, serde)?.check(out)
 }

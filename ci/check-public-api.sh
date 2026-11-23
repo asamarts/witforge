@@ -28,3 +28,19 @@ if ! diff -u "${EXPECTED}" "${ACTUAL}"; then
   cat "${ACTUAL}" >&2
   exit 1
 fi
+
+BASELINE="${ROOT}/ci/public-api-baseline-0.6.0.txt"
+APPROVED_BREAK="${ROOT}/ci/public-api-breaking-0.6.0.diff"
+ACTUAL_BREAK="${SCRATCH}/breaking.diff"
+status=0
+diff -u --label v0.6.0 --label current "${BASELINE}" "${ACTUAL}" >"${ACTUAL_BREAK}" \
+  || status=$?
+if [[ ${status} -gt 1 ]]; then
+  echo "failed to compare the published and current public API inventories" >&2
+  exit "${status}"
+fi
+if ! diff -u "${APPROVED_BREAK}" "${ACTUAL_BREAK}"; then
+  echo >&2
+  echo "the public API delta from 0.6.0 differs from the exact reviewed inventory" >&2
+  exit 1
+fi

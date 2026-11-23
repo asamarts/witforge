@@ -306,14 +306,14 @@ fn generates_layout_check_drift_and_ownership() {
     assert!(mod_file.contains("pub mod v0_2;"));
     assert!(!mod_file.contains('\r'));
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
-    assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
+    assert!(rust::check(&root, &out).unwrap().is_empty());
 
     fs::write(out.join("v0_1.rs"), format!("{}\nchanged\n", rust::HEADER)).unwrap();
     let messages = rust::check(&root, &out).unwrap();
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("changed generated")),
+            .any(|finding| finding.message().contains("changed generated")),
         "{messages:?}"
     );
 
@@ -323,7 +323,7 @@ fn generates_layout_check_drift_and_ownership() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("extra generated")),
+            .any(|finding| finding.message().contains("extra generated")),
         "{messages:?}"
     );
 
@@ -332,14 +332,14 @@ fn generates_layout_check_drift_and_ownership() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("missing generated")),
+            .any(|finding| finding.message().contains("missing generated")),
         "{messages:?}"
     );
 
     rust::generate(&root, &out).unwrap();
     assert!(!extra.exists());
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep me\n");
-    assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
+    assert!(rust::check(&root, &out).unwrap().is_empty());
 
     let status = Command::new("rustc")
         .args([
@@ -392,20 +392,20 @@ fn generated_files_recognise_the_header_without_reading_files_as_text() {
         .unwrap();
     let messages = files.check(&out).unwrap();
     assert_eq!(messages.len(), 2, "{messages:?}");
-    assert!(
-        messages[0].starts_with("extra generated file"),
-        "{messages:?}"
+    assert_eq!(
+        messages[0].status,
+        witforge::emit::output::GeneratedFileStatus::Extra
     );
-    assert!(messages[0].contains("stale.rs"), "{messages:?}");
-    assert!(
-        messages[1].starts_with("missing generated file"),
-        "{messages:?}"
+    assert!(messages[0].path.ends_with("stale.rs"), "{messages:?}");
+    assert_eq!(
+        messages[1].status,
+        witforge::emit::output::GeneratedFileStatus::Missing
     );
 
     files.write(&out).unwrap();
     assert!(!stale.exists());
     assert_eq!(fs::read(&binary).unwrap(), bytes);
-    assert_eq!(files.check(&out).unwrap(), Vec::<String>::new());
+    assert!(files.check(&out).unwrap().is_empty());
 
     // An expected file with binary content is changed output, not an I/O error.
     let mut changed = format!("{}\n", rust::HEADER).into_bytes();
@@ -413,22 +413,25 @@ fn generated_files_recognise_the_header_without_reading_files_as_text() {
     fs::write(out.join("mod.rs"), &changed).unwrap();
     let messages = files.check(&out).unwrap();
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(
-        messages[0].starts_with("changed generated file"),
-        "{messages:?}"
-    );
+    assert!(matches!(
+        messages[0].status,
+        witforge::emit::output::GeneratedFileStatus::Changed { .. }
+    ));
     // Without the header it is a file generation refuses to overwrite, so --check reports that
     // rather than output that generation would fix.
     fs::write(out.join("mod.rs"), [0xff, 0xfe]).unwrap();
     let messages = files.check(&out).unwrap();
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(messages[0].contains("refuses to overwrite"), "{messages:?}");
+    assert_eq!(
+        messages[0].status,
+        witforge::emit::output::GeneratedFileStatus::Unowned
+    );
     fs::remove_dir_all(&out).unwrap();
 }
 
 #[test]
 fn check_reports_what_generation_refuses_without_reading_special_files() {
-    use witforge::emit::output::GeneratedFiles;
+    use witforge::emit::output::{GeneratedFileStatus, GeneratedFiles};
     let out = std::env::temp_dir().join(format!("witforge-check-preflight-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out);
     fs::create_dir_all(&out).unwrap();
@@ -442,7 +445,7 @@ fn check_reports_what_generation_refuses_without_reading_special_files() {
     fs::create_dir(out.join("mod.rs")).unwrap();
     let messages = files.check(&out).unwrap();
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(messages[0].contains("not a regular file"), "{messages:?}");
+    assert_eq!(messages[0].status, GeneratedFileStatus::NotRegular);
     assert!(files.write(&out).is_err());
     fs::remove_dir(out.join("mod.rs")).unwrap();
 
@@ -463,7 +466,7 @@ fn check_reports_what_generation_refuses_without_reading_special_files() {
             .expect("--check blocked on a FIFO")
             .unwrap();
         assert_eq!(messages.len(), 1, "{messages:?}");
-        assert!(messages[0].contains("not a regular file"), "{messages:?}");
+        assert_eq!(messages[0].status, GeneratedFileStatus::NotRegular);
         fs::remove_file(&fifo).unwrap();
     }
     fs::remove_dir_all(&out).unwrap();
@@ -691,9 +694,9 @@ fn generation_never_overwrites_unowned_files_or_writes_through_symlinks() {
         assert_eq!(fs::read_to_string(&victim).unwrap(), "package a:b@0.1.0;\n");
         let messages = rust::check(&root, &out).unwrap();
         assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("is a symlink")),
+            messages.iter().any(|finding| {
+                finding.status == witforge::emit::output::GeneratedFileStatus::Symlink
+            }),
             "{messages:?}"
         );
         fs::remove_file(out.join("v0_2.rs")).unwrap();
@@ -701,7 +704,7 @@ fn generation_never_overwrites_unowned_files_or_writes_through_symlinks() {
 
     rust::generate(&root, &out).unwrap();
     assert!(!stale.exists());
-    assert_eq!(rust::check(&root, &out).unwrap(), Vec::<String>::new());
+    assert!(rust::check(&root, &out).unwrap().is_empty());
     fs::remove_dir_all(&base).unwrap();
 }
 

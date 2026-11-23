@@ -91,7 +91,7 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Install cargo-semver-checks
         run: cargo install --locked cargo-semver-checks --version 0.51.0
-      # Before and on the 0.7.0 tag, require exactly the reviewed W10-095/W10-096 semver failures.
+      # Before and on the 0.7.0 tag, require exactly the reviewed cargo-semver failure inventory.
       # Once that tag is an ancestor, this automatically restores ordinary minor compatibility.
       - name: Enforce the version-scoped library API policy
         run: ci/check-semver.sh

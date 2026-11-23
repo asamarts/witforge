@@ -114,11 +114,11 @@ explicit release-owner action.
 - [ ] Run the gates of [Before publishing](#before-publishing), then run
       `ci/check-semver.sh`, `ci/check-release.sh`, `ci/publish.sh --dry-run`,
       `BUF_REQUIRED=1 ci/check-buf-history.sh`, and the aplan commands (also in CI). Before and on
-      the 0.7.0 tag, the semver check requires the minor-compatibility failures to equal the exact
-      reviewed W10-095/W10-096 inventory; once that tag is an ancestor, it requires ordinary
-      minor compatibility. Neither compatibility gate names a baseline: the semver check compares
-      the newest published release, and the protobuf check walks every release tag, so there is
-      nothing to advance after a release.
+      the 0.7.0 tag, the semver failures and complete rustdoc API delta from 0.6.0 must equal the
+      reviewed W10-095/W10-096 inventories; once that tag is an ancestor, ordinary minor
+      compatibility applies. Neither the semver nor protobuf compatibility gate names a moving
+      baseline: cargo-semver-checks compares with the newest published release, and the protobuf
+      check walks every release tag, so there is nothing to advance after a release.
 - [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass. Record the commit SHA
       and job URL; `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push
       --status success` must identify that run.
