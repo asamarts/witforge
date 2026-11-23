@@ -238,7 +238,13 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           asset="witforge-${VERSION}-${TARGET}.tar.gz"
-          cd "$RUNNER_TEMP/artifact"
+          scratch_root="$RUNNER_TEMP"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            # Git Bash builtins accept `D:\...`, but GNU tar treats it as a literal relative
+            # path after `-C`. Normalize once for every external command in this step.
+            scratch_root="$(cygpath -u "$RUNNER_TEMP")"
+          fi
+          cd "$scratch_root/artifact"
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum -c "${asset}.sha256"
           else
@@ -247,13 +253,13 @@ jobs:
           gh attestation verify "${asset}" \
             --repo "${GITHUB_REPOSITORY}" \
             --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
-          mkdir -p "$RUNNER_TEMP/smoke-bin"
+          mkdir -p "$scratch_root/smoke-bin"
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            tar -xf "${asset}" -C "$RUNNER_TEMP/smoke-bin"
-            bin="$RUNNER_TEMP/smoke-bin/witforge.exe"
+            tar -xf "${asset}" -C "$scratch_root/smoke-bin"
+            bin="$scratch_root/smoke-bin/witforge.exe"
           else
-            tar -xzf "${asset}" -C "$RUNNER_TEMP/smoke-bin"
-            bin="$RUNNER_TEMP/smoke-bin/witforge"
+            tar -xzf "${asset}" -C "$scratch_root/smoke-bin"
+            bin="$scratch_root/smoke-bin/witforge"
             chmod +x "$bin"
           fi
           cd "$GITHUB_WORKSPACE"

@@ -58,6 +58,8 @@ validation as documented under `W10-094`. Wire numbers and lockfile identity do 
     verifying `.crate` SHA-256 digests against the unprivileged `verify` job) or creating a
     draft-first GitHub release without `--clobber`. The Action verifies build provenance with
     `gh attestation verify` on releases `0.7.0+` before extracting.
+  - Normalized Windows runner scratch paths before GNU tar extraction so the required Windows
+    pre-publish archive smoke runs before trusted publication.
   - Included `LICENSE-APACHE`, `LICENSE-MIT`, and `README.md` in every release archive, added
     `homepage`/`documentation`/`[package.metadata.binstall]` crate metadata, excluded `tests/`
     from the published `witforge` library crate, enabled GitHub Private Vulnerability Reporting,
