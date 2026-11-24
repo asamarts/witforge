@@ -16,8 +16,9 @@ Generated output changes:
   for documented record fields, flags, and variant cases (as well as record/variant/enum/flags type
   descriptions). Regenerate and commit JSON Schema files with `witforge schema` (or
   `witforge generate`).
-- **Protobuf (`W10-107`, `W10-115`):** Generated anonymous `Witforge*` wrapper messages now preserve
-  exact spacing and deterministic doc comments, and unused dependency `import` statements (such as a
+- **Protobuf (`W10-107`, `W10-115`):** Generated wrapper messages (both named option wrappers and
+  anonymous `Witforge*` wrappers) now preserve exact blank-line separation, named option wrappers
+  preserve deterministic doc comments, and unused dependency `import` statements (such as a
   world-only dependency interface not referenced by any proto message) are omitted while preserving
   every dependency transitively referenced in non-comment message/field bodies. Regenerate and
   commit `.proto` files if affected.
@@ -123,38 +124,48 @@ Generated output changes:
   - Added proto3 `json_name` collision checking against reserved members, fixed wrapper message doc
     comments and blank-line spacing, and gated dependency `import` statements to actually referenced
     packages.
-- **Documentation and comment drift (`W10-114`, `W10-121`):** Reconciled post-0.7.0 drift across
-  `AGENTS.md`, `crates/witforge/src/lib.rs`, `docs/design/{overview,lockfile,diff,diagnostics,
-  dependencies,action,emitters}.md`, `docs/guide/{ci,wiring,reference}.md`, and `docs/quickstart.md`.
-- **Adversarial audit hardening (`W10-115`–`W10-120`):**
+- **Documentation and comment drift (`W10-114`, `W10-121`, `W10-122`):** Reconciled post-0.7.0
+  drift across `AGENTS.md`, `crates/witforge/src/lib.rs`, `docs/index.md`,
+  `docs/design/{overview,lockfile,diff,diagnostics,dependencies,action,emitters,public-api,
+  public-api-inventory.txt}`, `docs/guide/{ci,wiring,reference,generated-output,
+  json-projections}.md`, `docs/quickstart.md`, `ci/{README,release-checklist}.md`,
+  `.github/workflows/ci.yml`, and `README.md`.
+- **Adversarial audit hardening (`W10-115`–`W10-120`, `W10-122`):**
   - Derived protobuf `import` statements from actual non-comment body references so transitive
     dependency imports are never dropped (`W10-115`).
   - Hardened `.github/workflows/{ci,release}.yml`, `action/index.js` (strict version regex,
     attestation timeout, UNC/Windows SARIF URI normalization, explicit `config` validation,
-    `failed-command=validate`), and `ci/check-release.sh` / `ci/check-version-references.sh` /
-    `ci/test-publish.sh` (`W10-116`).
-  - Fixed `witforge-build` module filename resolution for uppercase and Rust-keyword proto packages
-    (including `pbjson-build` `r#gen` compatibility), incremental `prost_include.rs` writes, and
-    pbjson prefix scoping (`W10-117`).
+    `failed-command` and SARIF flushing on spawn errors, 64 MiB `maxBuffer`),
+    `crates/witforge-cli/Cargo.toml` (Linux static `musl` `cargo-binstall` overrides), and
+    `ci/check-release.sh` (`fuzz/Cargo.lock` alignment) / `ci/check-version-references.sh` /
+    `ci/test-publish.sh` (`W10-116`, `W10-122`).
+  - Fixed `witforge-build` module filename resolution for uppercase and Rust-keyword proto packages,
+    trailing-separator `include_file` validation, incremental `pbjson` generation and stale
+    `.serde.rs` cleanup without disk probing, error-path scratch cleanup, incremental
+    `prost_include.rs` writes, and pbjson prefix scoping (`W10-117`, `W10-122`).
   - Populated dependency member wire numbers and aligned single-version validation (`WF1031`,
     `WF1002`, `WF1103`/`WF1105`, symlink refusal, canonical `retired` sorting, `--released` guard)
     in `witforge inspect` (`W10-118`).
   - Hardened `init` (all 44 WIT keywords, non-empty/symlink checks, atomic rollback), `new-version`
     (UTF-8 char-boundary safety, string-literal and nested-package lexing, `--from` gap/retired
-    checks, special-file refusal), `retire` (BOM handling, exit codes, retirement-order validation
-    on already-retired entries, diagnostic file paths), `freeze` (retirement order with invalid
-    entries, deleted manifest parent dir, case reconciliation, staged-index tampering, un-retire
-    line positions), `diff` (`preserves` kind/type check, dropped-reserved-number decode reuse,
-    human `result:` line matching `--check` views), `workflow` (zero-member missing lockfile,
-    explicit `--released` isolation in `check_root`, `check_release` continuity/report parity,
-    `lock` proto validation), `subset` (world-owned `use` stability), `SinceHistory`, `load_sources`
-    in-memory package header location, and Windows SARIF URI handling (`W10-119`).
-  - Fixed emitter `clippy::type_complexity`, alignment/alias-aware `clippy::large_enum_variant`,
-    Editions 2021/2024 `rustfmt` wrapping (`fmt_let_stmt`, `push_let_else_err`, long option
-    `if let`, defaulted `convert.rs` fields), `proto.rs` named-option wrapper ownership collisions
-    and enum/method `reserved_prost` checks, `docs.rs` tab/closing-banner/bullet-list normalization,
-    and `#![no_std]` + `serde` header/test coverage (`W10-120`).
-  `.github/workflows/ci.yml`, `README.md`, and `docs/design/public-api-inventory.txt`.
+    checks, `--released` and `project.released` support with symlink/parse-error propagation,
+    special-file refusal), `release` and `retire` (BOM handling, cross-root `--released` guard
+    including bare filenames, exit codes, retirement-order validation on already-retired entries,
+    diagnostic file paths), `freeze` (symlink refusal on `--released`, retirement order with invalid
+    entries, deleted manifest parent dir, case-insensitive index/`HEAD` reconciliation, staged-index
+    tampering, un-retire line positions), `diff` (`preserves` kind/type check,
+    dropped-reserved-number decode reuse, human `result:` line matching `--check` views), `workflow`
+    (zero-member missing lockfile, explicit `--released` isolation in `check_root`, `check_release`
+    symlink refusal and predecessor lockfile error reporting, `lock` proto validation), `subset`
+    (world-owned `use` stability), `SinceHistory`, `load_sources` cross-platform `/` virtual `deps/`
+    paths and in-memory package header location, and Windows SARIF URI handling (`W10-119`,
+    `W10-122`).
+  - Fixed emitter `clippy::type_complexity`, alignment/alias/niche-aware `clippy::large_enum_variant`,
+    Editions 2021/2024 `rustfmt` wrapping (`fmt_let_stmt`, `fmt_let_call`, `push_let_else_err`,
+    long option `if let` and `for` list loops, defaulted `convert.rs` fields), `proto.rs`
+    named-option wrapper ownership collisions and enum/method `reserved_prost` checks, `docs.rs`
+    real `wit-parser` block-comment gutter/banner normalization while preserving Markdown bullet
+    lists, and `#![no_std]` + `serde` header/test coverage (`W10-120`, `W10-122`).
 
 ## [0.7.0] - 2026-11-23
 

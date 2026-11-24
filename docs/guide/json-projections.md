@@ -23,7 +23,7 @@ the default shapes are:
 | Projection | Representative value |
 |---|---|
 | generated Rust with `--serde` | `{"start_byte":4,"id":9,"note":null}` |
-| generated Draft 7 JSON Schema | `{"start-byte":4,"id":9,"note":null}` |
+| generated JSON Schema (Draft 7 / 2020-12) | `{"start-byte":4,"id":9,"note":null}` |
 | emitted protobuf through proto3-JSON | `{"startByte":4,"id":"9"}` |
 
 ## Plain Rust Serde
@@ -53,9 +53,11 @@ spelling rather than the WIT spelling:
   `None` inside `option<f32>`/`option<f64>`). Formats that tag `Option` or encode binary IEEE-754
   floats round-trip both. See `docs/design/emitters.md` section 3.3 for the full mapping table.
 
-## Draft 7 JSON Schema
+## JSON Schema (Draft 7 / Draft 2020-12)
 
-The schema preserves the WIT member spelling, including `start-byte`. Every record property is
+The schema preserves the WIT member spelling, including `start-byte` (Draft 7 is the default with
+`definitions`; opt-in Draft 2020-12 uses `$defs` and native `deprecated: true` with the same JSON
+value shape). Every record property is
 required and records set `additionalProperties: false`. `option<T>` permits `null` as the
 property's value; it does not make the property omittable (`option<option<T>>` shares `null` for
 `None` and `Some(None)`, as in Serde). Integer schemas use the WIT type's exact numeric `minimum`
@@ -67,7 +69,7 @@ Every WIT `result`—including `result<T>`, `result<_, E>`, and bare `result`—
 object with `"ok"` or `"err"`, using `null` for a side without a payload (matching payload-less
 variant cases):
 
-| WIT value | Generated Rust `--serde` | Draft 7 JSON Schema |
+| WIT value | Generated Rust `--serde` | JSON Schema |
 |---|---|---|
 | `result<u32, string>` (`Ok(7)` / `Err("e")`) | `{"Ok":7}` / `{"Err":"e"}` | `{"ok":7}` / `{"err":"e"}` |
 | `result<u32>` (`Ok(7)` / `Err(())`) | `{"Ok":7}` / `{"Err":null}` | `{"ok":7}` / `{"err":null}` |

@@ -20,6 +20,12 @@ pkg-url = "{ repo }/releases/download/v{ version }/witforge-{ version }-{ target
 pkg-fmt = "tgz"
 bin-dir = "{ bin }{ binary-ext }"
 
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/witforge-{ version }-x86_64-unknown-linux-musl.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/witforge-{ version }-aarch64-unknown-linux-musl.tar.gz"
+
 [[bin]]
 name = "witforge"
 path = "src/main.rs"

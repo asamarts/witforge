@@ -662,11 +662,13 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if !out.pop() {
-                    out.push(component);
+            std::path::Component::ParentDir => match out.components().next_back() {
+                Some(std::path::Component::Normal(_)) => {
+                    out.pop();
                 }
-            }
+                Some(std::path::Component::RootDir | std::path::Component::Prefix(_)) => {}
+                _ => out.push(component),
+            },
             other => out.push(other),
         }
     }
@@ -680,13 +682,29 @@ fn canonicalize_best_effort(path: &Path) -> Result<PathBuf> {
         let cwd = std::env::current_dir().context("failed to read current directory")?;
         normalize_lexical(&cwd.join(path))
     };
-    if let Ok(meta) = fs::symlink_metadata(&abs)
-        && !meta.file_type().is_symlink()
-    {
-        return fs::canonicalize(&abs).map_err(Into::into);
-    }
     let mut missing = Vec::new();
     let mut cursor = abs.as_path();
+    if let Ok(meta) = fs::symlink_metadata(&abs) {
+        if !meta.file_type().is_symlink() {
+            return fs::canonicalize(&abs).map_err(Into::into);
+        }
+        // Preserve the final symlink component so downstream symlink checks see the symlink
+        // itself instead of canonicalizing it to its target.
+        let Some(name) = cursor.file_name() else {
+            return Err(anyhow::anyhow!(
+                "cannot resolve ancestor of {}",
+                path.display()
+            ));
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            return Err(anyhow::anyhow!(
+                "cannot resolve ancestor of {}",
+                path.display()
+            ));
+        };
+        cursor = parent;
+    }
     loop {
         if let Ok(canon) = fs::canonicalize(cursor) {
             let mut resolved = canon;
@@ -710,6 +728,13 @@ fn canonicalize_best_effort(path: &Path) -> Result<PathBuf> {
         };
         cursor = parent;
     }
+}
+
+fn git_bool_config(repo: &Path, key: &str) -> bool {
+    let Ok(output) = run_git(repo, &["config", "--bool", "--get", key]) else {
+        return false;
+    };
+    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
 }
 
 fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
@@ -746,12 +771,32 @@ fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
     })?;
     let mut rel_git = to_git_path(rel_manifest);
     // Reconcile against git's exact tracked spelling so a case-insensitive filesystem cannot
-    // bypass manifest history checks via alternate casing.
+    // bypass manifest history checks via alternate casing (even when `git rm`'d from the index).
     if let Ok(tracked) = git_nul_paths(repo, &["ls-files", "-z", "--", &rel_git])
         && tracked.len() == 1
         && tracked[0].eq_ignore_ascii_case(&rel_git)
     {
         rel_git = tracked.into_iter().next().unwrap_or(rel_git);
+    } else if git_bool_config(repo, "core.ignorecase") {
+        let mut candidates = std::collections::BTreeSet::new();
+        if let Ok(index_paths) = git_nul_paths(repo, &["ls-files", "-z"]) {
+            for tracked in index_paths {
+                if tracked.eq_ignore_ascii_case(&rel_git) {
+                    candidates.insert(tracked);
+                }
+            }
+        }
+        if let Ok(head_paths) = git_nul_paths(repo, &["ls-tree", "-r", "--name-only", "-z", "HEAD"])
+        {
+            for tracked in head_paths {
+                if tracked.eq_ignore_ascii_case(&rel_git) {
+                    candidates.insert(tracked);
+                }
+            }
+        }
+        if candidates.len() == 1 {
+            rel_git = candidates.into_iter().next().unwrap_or(rel_git);
+        }
     }
     Ok(rel_git)
 }

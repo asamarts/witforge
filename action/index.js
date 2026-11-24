@@ -691,6 +691,8 @@ function emitAnnotations(lines, write = (line) => console.log(line)) {
   for (const line of lines) write(line);
 }
 
+const MAX_SPAWN_BUFFER = 64 * 1024 * 1024;
+
 function runCommands(commands, options = {}) {
   const format = normalizeFormat(options.format);
   const sarifFile = String(options.sarifFile || '').trim() || DEFAULT_SARIF_FILE;
@@ -704,12 +706,16 @@ function runCommands(commands, options = {}) {
     log(`> ${command.join(' ')}`);
     if (format === 'human') {
       const result = spawn(command[0], command.slice(1), { stdio: 'inherit' });
-      if (result.error) throw result.error;
+      if (result.error) {
+        failed = { command, error: result.error };
+        break;
+      }
       if (result.status !== 0) {
         // Re-run the same read-only check/diff/freeze/--check command in structured JSON mode so
         // GitHub workflow annotations receive exact file/line/column spans.
         const probe = spawn(command[0], [...command.slice(1), '--format', 'json'], {
           encoding: 'utf8',
+          maxBuffer: MAX_SPAWN_BUFFER,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         if (!probe.error && probe.stdout) {
@@ -728,9 +734,13 @@ function runCommands(commands, options = {}) {
 
     const result = spawn(command[0], command.slice(1), {
       encoding: 'utf8',
+      maxBuffer: MAX_SPAWN_BUFFER,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (result.error) throw result.error;
+    if (result.error) {
+      failed = { command, error: result.error };
+      break;
+    }
     if (result.stderr) process.stderr.write(result.stderr);
     if (format === 'json') {
       if (result.stdout) process.stdout.write(result.stdout);
@@ -774,6 +784,7 @@ function runCommands(commands, options = {}) {
   if (failed) {
     const label = commandLabel(failed.command);
     setOutput('failed-command', label, env);
+    if (failed.error) throw failed.error;
     if (failed.status === null && failed.signal) {
       throw new Error(`${label} terminated by signal ${failed.signal}`);
     }

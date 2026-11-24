@@ -371,26 +371,56 @@ impl Config {
         } else {
             None
         };
+        let _raw_include_cleanup = TempFileGuard(raw_prost_include.clone());
 
         self.prost.compile_fds(descriptors).map_err(Error::Prost)?;
 
         #[cfg(feature = "pbjson")]
-        if pbjson_enabled {
+        let serde_by_pkg: BTreeMap<String, String> = if pbjson_enabled {
             let prefix_refs: Vec<&str> = pbjson_prefixes.iter().map(String::as_str).collect();
-            self.pbjson_builder
-                .out_dir(&out_dir)
+            let generated = self
+                .pbjson_builder
                 .register_descriptors(&encoded_descriptors)
                 .map_err(Error::Pbjson)?
-                .build(&prefix_refs)
+                .generate(&prefix_refs, |_| Ok(Vec::<u8>::new()))
                 .map_err(Error::Pbjson)?;
-        }
+            let mut emitted_by_pkg = BTreeMap::new();
+            let mut written_files = BTreeSet::new();
+            for (package, bytes) in generated {
+                let raw_pkg = package
+                    .path()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let serde_name = format!("{package}.serde.rs");
+                write_if_changed(&out_dir.join(&serde_name), &bytes)?;
+                written_files.insert(serde_name.clone());
+                emitted_by_pkg.insert(raw_pkg, serde_name);
+            }
+            for pkg in package_by_file.values() {
+                if !emitted_by_pkg.contains_key(pkg) {
+                    for candidate in pbjson_candidate_file_names(pkg) {
+                        if !written_files.contains(&candidate) {
+                            let stale = out_dir.join(&candidate);
+                            if stale.is_file() {
+                                let _ = fs::remove_file(stale);
+                            }
+                        }
+                    }
+                }
+            }
+            emitted_by_pkg
+        } else {
+            BTreeMap::new()
+        };
 
         if let Some(include_path) = &include_path {
             if has_dependencies {
                 #[cfg(feature = "pbjson")]
                 if pbjson_enabled && let Some(raw_path) = &raw_prost_include {
-                    let spliced = splice_pbjson_includes(&out_dir, raw_path, &package_by_file)?;
-                    let _ = fs::remove_file(raw_path);
+                    let spliced =
+                        splice_pbjson_includes(raw_path, &package_by_file, &serde_by_pkg)?;
                     write_if_changed(include_path, spliced.as_bytes())?;
                 }
                 #[cfg(not(feature = "pbjson"))]
@@ -400,8 +430,9 @@ impl Config {
                     &proto_files,
                     proto_dir,
                     &package_by_file,
-                    &out_dir,
                     include_path,
+                    #[cfg(feature = "pbjson")]
+                    &serde_by_pkg,
                     pbjson_enabled,
                 )?;
             }
@@ -438,10 +469,22 @@ pub fn compile_protos(proto_dir: impl AsRef<Path>) -> Result<BuildOutput, Error>
     Config::new().compile_protos(proto_dir)
 }
 
+struct TempFileGuard(Option<PathBuf>);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 fn validate_include_file_name(name: &Path) -> Result<(), Error> {
     let mut components = name.components();
     match (components.next(), components.next()) {
-        (Some(Component::Normal(part)), None) if !part.is_empty() => Ok(()),
+        (Some(Component::Normal(part)), None) if !part.is_empty() && name.as_os_str() == part => {
+            Ok(())
+        }
         _ => Err(Error::InvalidIncludeFile(name.to_path_buf())),
     }
 }
@@ -544,7 +587,7 @@ fn prost_file_name(pkg: &str) -> String {
 }
 
 #[cfg(feature = "pbjson")]
-fn pbjson_file_name(out_dir: &Path, pkg: &str) -> Option<String> {
+fn pbjson_candidate_file_names(pkg: &str) -> Vec<String> {
     let module = prost_build::Module::from_protobuf_package_name(pkg);
     let prost_stem = if module.is_empty() {
         "_".to_string()
@@ -552,11 +595,6 @@ fn pbjson_file_name(out_dir: &Path, pkg: &str) -> Option<String> {
         module.parts().collect::<Vec<_>>().join(".")
     };
     let primary = format!("{prost_stem}.serde.rs");
-    if out_dir.join(&primary).is_file() {
-        return Some(primary);
-    }
-    // `pbjson-build` 0.9 does not escape Edition 2024 `gen` (whereas `prost-build` 0.14 emits
-    // `r#gen`), nor `_`. Check that compatibility spelling too so both 0.9 and newer versions work.
     let compat_stem = module
         .parts()
         .map(|part| match part {
@@ -567,7 +605,11 @@ fn pbjson_file_name(out_dir: &Path, pkg: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(".");
     let fallback = format!("{compat_stem}.serde.rs");
-    out_dir.join(&fallback).is_file().then_some(fallback)
+    if fallback == primary {
+        vec![primary]
+    } else {
+        vec![primary, fallback]
+    }
 }
 
 #[cfg(feature = "pbjson")]
@@ -599,12 +641,12 @@ fn write_standalone_include(
     proto_files: &[PathBuf],
     proto_dir: &Path,
     package_by_file: &BTreeMap<String, String>,
-    out_dir: &Path,
     include_path: &Path,
+    #[cfg(feature = "pbjson")] serde_by_pkg: &BTreeMap<String, String>,
     pbjson_enabled: bool,
 ) -> Result<(), Error> {
     #[cfg(not(feature = "pbjson"))]
-    let _ = (out_dir, pbjson_enabled);
+    let _ = pbjson_enabled;
 
     let mut majors: BTreeMap<u64, String> = BTreeMap::new();
     for path in proto_files {
@@ -628,7 +670,7 @@ fn write_standalone_include(
         let _ = writeln!(out, "pub mod v{major} {{");
         let _ = writeln!(out, "    include!({rs_name:?});");
         #[cfg(feature = "pbjson")]
-        if pbjson_enabled && let Some(serde_name) = pbjson_file_name(out_dir, &pkg) {
+        if pbjson_enabled && let Some(serde_name) = serde_by_pkg.get(&pkg) {
             let _ = writeln!(out, "    include!({serde_name:?});");
         }
         let _ = writeln!(out, "}}");
@@ -639,9 +681,9 @@ fn write_standalone_include(
 
 #[cfg(feature = "pbjson")]
 fn splice_pbjson_includes(
-    out_dir: &Path,
     raw_include_path: &Path,
     package_by_file: &BTreeMap<String, String>,
+    serde_by_pkg: &BTreeMap<String, String>,
 ) -> Result<String, Error> {
     let text = fs::read_to_string(raw_include_path).map_err(|source| Error::Io {
         path: Some(raw_include_path.to_path_buf()),
@@ -651,8 +693,8 @@ fn splice_pbjson_includes(
     let mut serde_by_prost_file: BTreeMap<String, String> = BTreeMap::new();
     for pkg in package_by_file.values() {
         let prost_name = prost_file_name(pkg);
-        if let Some(serde_name) = pbjson_file_name(out_dir, pkg) {
-            serde_by_prost_file.insert(prost_name, serde_name);
+        if let Some(serde_name) = serde_by_pkg.get(pkg) {
+            serde_by_prost_file.insert(prost_name, serde_name.clone());
         }
     }
 

@@ -20,16 +20,17 @@ The public surface is the modules and items below. Within 1.x:
 | crate root | `Contract`, `SourceFile`, `ContractError`, `DiagnosticError`, `load`, `load_sources`, `is_contract_error`, `error_diagnostics`, `error_located_diagnostics`, `ensure_same_dependency_graph`, `RELEASED_MANIFEST`, `ReleasedManifest`, `validate_retirement_order`, `discover_version_directories`, `ensure_no_symlinks_in_dir`, `default_released_manifest`, `ensure_version_directory`, `ensure_directory_version`, `load_released_manifest`, `load_root_released_manifest`, `ensure_not_released`, `is_released`, `ensure_lockfile_not_released` |
 | `model` | `Version`, `Stability`, `QualifiedName`, `TypeExpr`, `ResultExpr`, `Field`, `Case`, `Flag`, `TypeDef`, `TypeDefKind`, `Param`, `Function`, `Interface`, `WorldInterface`, `World`, `Package`, `Dependency`, `Model`, `MemberKind`, `Member`, `build`, `members`, and their documented constructors, lookups, canonicalization, and member extraction methods |
 | `lock` | `HEADER`, `ORDER_HEADER`, `PackageName`, `MemberKey`, `Entry`, `WireLock`, `LockMode`, `Changes`, `Discrepancy`, `Reconciliation`, and their documented constructors, parsing, reconciliation, validation, inspection, rendering, and writing methods |
-| `emit::rust` | `HEADER`, `plan`, `plan_with_serde`, `plan_with_released`, `generate`, `generate_with_serde`, `check`, `check_with_serde`, `version_module_name`, `emit_version`, `emit_version_with_serde` |
+| `emit::rust` | `HEADER`, `RustOptions`, `plan`, `plan_with_serde`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_serde`, `check`, `check_with_serde`, `version_module_name`, `emit_version`, `emit_version_with_serde`, `emit_version_with_options` |
 | `emit::proto` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_major` |
-| `emit::json_schema` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_version` |
-| `emit::glue` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_version` |
+| `emit::json_schema` | `HEADER`, `JsonSchemaDraft`, `SchemaOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `emit_version`, `emit_version_with_options` |
+| `emit::glue` | `HEADER`, `GlueOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_root_with_options`, `emit_version`, `emit_version_with_options` |
 | `emit::output` | `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
 | `diff` | `Endpoint`, `Change`, `ChangeElement`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `ConversionOmission`, `DecodeVerdict`, `DecodeSummary`, `DiffAnalysis`, `FullDiff`, `compare`, `compare_with_impacts`, `compare_omissions`, `compare_with_locations`, `compare_with_omissions`, `compare_full` |
 | `diagnostic` | `codes` and its constants, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity`, and their documented constructors and builders |
-| `freeze` | `FreezeOptions`, `FreezeReport`, `check_root` |
+| `freeze` | `FreezeOptions`, `FreezeReport`, `check_root`, `check_root_with_manifest` |
+| `inspect` | `IR_VERSION`, `emit_version_json`, `inspect_version_json`, `inspect_root_json`, `summarize_version`, `summarize_root` |
 | `subset` | `Violation`, `check`, `check_diagnostics`, `check_located_diagnostics` |
-| `workflow` | `CheckTargetKind`, `Baseline`, `VersionOptions`, `FindingKind`, `Finding`, `Report`, `LockReport`, `classify_check_target`, `check`, `check_root`, `lock` |
+| `workflow` | `CheckTargetKind`, `Baseline`, `VersionOptions`, `FindingKind`, `Finding`, `Report`, `LockReport`, `classify_check_target`, `check`, `check_root`, `check_release`, `lock` |
 
 The exact line-oriented inventory is
 [`public-api-inventory.txt`](public-api-inventory.txt). It records every public module, type,
@@ -123,15 +124,18 @@ short Git commit and `-dirty` suffix on development builds):
 |---|---|---|
 | `witforge check [<PATH>]` | Validate one version directory or an entire WIT root (or configured projects) | `--lock`, `--first`, `--against`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge lock <WIT_DIR>` | Reconcile `wire.lock` for one version directory | `--lock`, `--first`, `--against`, `--released` |
-| `witforge rust [<WIT_ROOT>]` | Emit or check plain Rust types, traits, `convert.rs`, and `worlds.rs` | `--out`, `--check`, `--diff`, `--serde`, `--no-serde`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge rust [<WIT_ROOT>]` | Emit or check plain Rust types, traits, `convert.rs`, and `worlds.rs` | `--out`, `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge proto [<WIT_ROOT>]` | Emit or check protobuf schemas | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
-| `witforge schema [<WIT_ROOT>]` | Emit or check Draft 7 JSON Schema files | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
-| `witforge glue [<WIT_ROOT>]` | Emit or check Rust/prost glue | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
-| `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--released`, `--config`, `--no-config`, `--project` |
-| `witforge new-version [<WIT_ROOT>]` | Create the next minor (or `--major`) version directory from the latest version | `--major`, `--config`, `--no-config`, `--project` |
+| `witforge schema [<WIT_ROOT>]` | Emit or check JSON Schema files (Draft 7 default, opt-in Draft 2020-12) | `--out`, `--check`, `--diff`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge glue [<WIT_ROOT>]` | Emit or check Rust/prost glue | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--no-std`, `--std`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge init [DIR]` | Scaffold a new contract workspace (`wit/v0.1/`, `wire.lock`, `witforge.toml`) | `--package`, `--serde` |
+| `witforge new-version [<WIT_ROOT>]` | Create the next minor (or `--major`) version directory from the latest or `--from` version | `--major`, `--from`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge release <WIT_DIR>` | Validate a version directory and append it to `released` | `--released`, `--config`, `--no-config`, `--project` |
+| `witforge retire <WIT_DIR>` | Mark the oldest live released version `retired` in `released` | `--released`, `--config`, `--no-config`, `--project` |
 | `witforge diff <OLD> <NEW>` | Compare two version directories or WIT roots | `--json`, `--check[=VIEWS]` |
-| `witforge freeze [<WIT_ROOT>]` | Verify released directories have not changed in Git history | `--base`, `--config`, `--no-config`, `--project` |
+| `witforge inspect [<PATH>]` | Emit versioned JSON contract IR (`--json`) or a human contract summary | `--json`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge freeze [<WIT_ROOT>]` | Verify released directories have not changed in Git history | `--base`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge completions <SHELL>` | Print shell completions for `bash`, `zsh`, or `fish` | — |
 | `witforge explain <CODE>` | Print the catalogue explanation and documentation URL for a diagnostic code | — |
 

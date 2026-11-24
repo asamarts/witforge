@@ -203,5 +203,5 @@ still publishes what is missing.
 Each crate trusts this repository, `release.yml`, and the `release` environment on crates.io
 (the crate's Settings, Trusted Publishing). crates.io cannot do that for a crate that does not
 exist yet, so a new crate's first version is published by hand with a short-lived API token
-in `CARGO_REGISTRY_TOKEN` (`ci/publish.sh`), after which its trusted publisher is added and the
-token revoked; the release checklist has the steps.
+in `CARGO_REGISTRY_TOKEN` (`cargo publish --locked -p <crate>`), after which its trusted publisher
+is added and the token revoked; the release checklist has the steps.

@@ -671,8 +671,8 @@ pub(crate) fn package_location(
     }
     if let Some(entry) = contract.dependency_entry(package_id) {
         if let Some(sources) = virtual_sources {
-            let entry_key = entry.to_string_lossy();
-            if sources.contains_key(entry_key.as_ref()) {
+            let entry_key = entry.to_string_lossy().replace('\\', "/");
+            if sources.contains_key(entry_key.as_str()) {
                 return find_package_header_position(&entry_key, cache, Some(sources));
             }
             let prefix = format!("{entry_key}/");
@@ -1121,7 +1121,7 @@ pub fn load_sources(sources: Vec<SourceFile>) -> Result<Contract> {
     let top_pkg = parse_memory_group(&root_sources, "<memory>")?;
     let mut loaded_deps = LoadedDeps::default();
     for (entry, group_sources) in dependency_sources {
-        let entry_path = PathBuf::from("deps").join(&entry);
+        let entry_path = PathBuf::from(format!("deps/{entry}"));
         let group = parse_memory_group(&group_sources, &entry_path.display().to_string())
             .with_context(|| format!("failed to parse package: {}", entry_path.display()))?;
         for package in std::iter::once(&group.main).chain(&group.nested) {

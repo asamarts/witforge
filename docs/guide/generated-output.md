@@ -112,9 +112,10 @@ language.
 
 ## JSON Schema
 
-The schema emitter writes one Draft 7 document per contract version. Named WIT types live under
-`definitions`; records are closed objects whose properties are all required. An `option<T>` value
-accepts `null`, but the containing property is still required.
+The schema emitter writes one JSON Schema document per contract version (Draft 7 by default, or
+Draft 2020-12 via `--draft 2020-12` / `draft = "2020-12"`). Named WIT types live under
+`definitions` (or `$defs` in Draft 2020-12); records are closed objects whose properties are all
+required. An `option<T>` value accepts `null`, but the containing property is still required.
 
 ```json
 "types/item": {"description":"One item submitted to the ingester.","type":"object","properties":{"id":{"description":"Stable item id.","type":"integer","minimum":0,"maximum":18446744073709551615},"name":{"description":"Human-readable name.","type":"string"},"tags":{"description":"Free-form tags.","type":"array","items":{"type":"string"}},"note":{"description":"Optional note.","anyOf":[{"type":"string"},{"type":"null"}]}},"required":["id","name","tags","note"],"additionalProperties":false},

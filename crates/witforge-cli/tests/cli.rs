@@ -5310,3 +5310,173 @@ fn lifecycle_cli_audit_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn second_wave_audit_release_retire_and_new_version_manifest_guards() {
+    let base = std::env::temp_dir().join(format!(
+        "witforge-second-wave-cli-guards-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let wit_a = base.join("wit-a");
+    let wit_b = base.join("wit-b");
+    fs::create_dir_all(wit_a.join("v0.1")).unwrap();
+    fs::create_dir_all(wit_b.join("v0.1")).unwrap();
+    fs::write(
+        wit_a.join("v0.1/contract.wit"),
+        "package ex:a@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        wit_b.join("v0.1/contract.wit"),
+        "package ex:b@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_a.join("v0.1"))
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_b.join("v0.1"))
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // 1. `release` refuses `--released` pointing to another directory (explicit and bare filename).
+    let cross_rel = witforge()
+        .args(["release"])
+        .arg(wit_a.join("v0.1"))
+        .args(["--released"])
+        .arg(wit_b.join("released"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(cross_rel.status.code(), Some(2), "{cross_rel:?}");
+    let val: serde_json::Value = serde_json::from_slice(&cross_rel.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+    let bare_rel = witforge()
+        .current_dir(&wit_b)
+        .args(["release"])
+        .arg(wit_a.join("v0.1"))
+        .args(["--released", "released", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bare_rel.status.code(), Some(2), "{bare_rel:?}");
+    let val: serde_json::Value = serde_json::from_slice(&bare_rel.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+    // 2. `retire` refuses bare `--released released` when cwd != wit_root.
+    fs::write(wit_b.join("released"), "v0.1\nv0.2\n").unwrap();
+    let bare_retire = witforge()
+        .current_dir(&wit_b)
+        .args(["retire"])
+        .arg(wit_a.join("v0.1"))
+        .args(["--released", "released", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bare_retire.status.code(), Some(2), "{bare_retire:?}");
+    let val: serde_json::Value = serde_json::from_slice(&bare_retire.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+    // 3. `new-version` honors `project.released` and `--released`, refuses retired major lines,
+    //    and propagates malformed manifest errors instead of swallowing them.
+    let v10 = wit_a.join("v1.0");
+    fs::create_dir_all(&v10).unwrap();
+    fs::write(
+        v10.join("contract.wit"),
+        "package ex:a@1.0.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v10)
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    fs::write(wit_a.join("custom-released"), "v0.1 retired\nv1.0\n").unwrap();
+    fs::write(
+        base.join("witforge.toml"),
+        "version = 1\n[project.main]\nroot = \"wit-a\"\nreleased = \"wit-a/custom-released\"\n",
+    )
+    .unwrap();
+
+    // Via `witforge.toml` `project.released`: resurrecting retired major 0 is refused.
+    let retired_via_cfg = witforge()
+        .args(["new-version", "--from", "v0.1", "--config"])
+        .arg(base.join("witforge.toml"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        retired_via_cfg.status.code(),
+        Some(2),
+        "{retired_via_cfg:?}"
+    );
+    let val: serde_json::Value = serde_json::from_slice(&retired_via_cfg.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+    // Via explicit `--released`: resurrecting retired major 0 is refused.
+    let retired_via_flag = witforge()
+        .args(["new-version"])
+        .arg(&wit_a)
+        .args(["--from", "v0.1", "--released"])
+        .arg(wit_a.join("custom-released"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        retired_via_flag.status.code(),
+        Some(2),
+        "{retired_via_flag:?}"
+    );
+    let val: serde_json::Value = serde_json::from_slice(&retired_via_flag.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+    // Corrupt manifest is propagated rather than silently ignored.
+    fs::write(wit_a.join("corrupt-released"), "v0.1 invalid-token\n").unwrap();
+    let corrupt_nv = witforge()
+        .args(["new-version"])
+        .arg(&wit_a)
+        .args(["--from", "v0.1", "--released"])
+        .arg(wit_a.join("corrupt-released"))
+        .output()
+        .unwrap();
+    assert!(!corrupt_nv.status.success(), "{corrupt_nv:?}");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let sym = wit_a.join("sym-released");
+        symlink(wit_a.join("custom-released"), &sym).unwrap();
+        let sym_nv = witforge()
+            .args(["new-version"])
+            .arg(&wit_a)
+            .args(["--from", "v0.1", "--released"])
+            .arg(&sym)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(sym_nv.status.code(), Some(2), "{sym_nv:?}");
+        let val: serde_json::Value = serde_json::from_slice(&sym_nv.stdout).unwrap();
+        assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

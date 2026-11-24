@@ -353,20 +353,34 @@ pub(crate) fn fmt_let_stmt(indent: usize, binding: &str, expr: &str) -> String {
                 .filter(|arg| !arg.is_empty())
                 .collect();
             let head = format!("{prefix}let {binding} = ");
-            if head.len() + callee.len() < MAX_WIDTH {
-                let wrapped = fmt_call(indent, callee, &trimmed, head.len(), call_suffix.len() + 1);
-                return format!("{head}{wrapped}{call_suffix};");
-            }
             let rhs_indent = indent + 4;
-            let rhs_prefix = " ".repeat(rhs_indent);
-            let wrapped = fmt_call(
-                rhs_indent,
-                callee,
-                &trimmed,
-                rhs_indent,
-                call_suffix.len() + 1,
-            );
-            return format!("{prefix}let {binding} =\n{rhs_prefix}{wrapped}{call_suffix};");
+            if head.len() + callee.len() + call_suffix.len() >= MAX_WIDTH
+                && rhs_indent + callee.len() + call_suffix.len() < MAX_WIDTH
+            {
+                let rhs_prefix = " ".repeat(rhs_indent);
+                let wrapped = fmt_call(
+                    rhs_indent,
+                    callee,
+                    &trimmed,
+                    rhs_indent,
+                    call_suffix.len() + 1,
+                );
+                return format!("{prefix}let {binding} =\n{rhs_prefix}{wrapped}{call_suffix};");
+            }
+            let wrapped = fmt_call(indent, callee, &trimmed, head.len(), call_suffix.len() + 1);
+            return format!("{head}{wrapped}{call_suffix};");
+        }
+        // Single-dot field access (`&value.<long_field>` or `value.<long_field>`): when breaking
+        // after `=` still exceeds `MAX_WIDTH`, `rustfmt` breaks at `.` if that fits and otherwise
+        // keeps the assignment on a single line.
+        if let Some((recv, field)) = expr.split_once('.')
+            && !field.contains('.')
+            && !recv.contains(' ')
+        {
+            if indent + 4 + 1 + field.len() < MAX_WIDTH {
+                return format!("{prefix}let {binding} = {recv}\n{prefix}    .{field};");
+            }
+            return format!("{prefix}let {binding} = {expr};");
         }
         return format!("{prefix}let {binding} =\n{prefix}    {expr};");
     }
@@ -448,6 +462,14 @@ pub(crate) fn fmt_let_call(
     if !single_call.contains('\n') && indent + 4 + single_call.len() + q.len() < MAX_WIDTH {
         return format!("{prefix}let {binding} =\n{prefix}    {single_call}{q};");
     }
+    let rhs_indent = indent + 4;
+    if head.len() + callee.len() + q.len() >= MAX_WIDTH
+        && rhs_indent + callee.len() + q.len() < MAX_WIDTH
+    {
+        let rhs_prefix = " ".repeat(rhs_indent);
+        let wrapped = fmt_call(rhs_indent, callee, args, rhs_indent, q.len() + 1);
+        return format!("{prefix}let {binding} =\n{rhs_prefix}{wrapped}{q};");
+    }
     let wrapped = fmt_call(indent, callee, args, head.len(), q.len() + 1);
     format!("{head}{wrapped}{q};")
 }
@@ -493,4 +515,48 @@ fn split_top_level(text: &str, sep: char) -> Option<Vec<&str>> {
     }
     parts.push(&text[start..]);
     Some(parts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_let_stmt_and_let_call_break_at_exact_rustfmt_boundaries() {
+        // `head = "    let v0 = "` (len 13). With `callee` len 86, `head + callee == 99`:
+        // without `?` it stays on the same line, with `?` (`99 + 1 >= 100`) it breaks after `=`.
+        let callee_86 = format!("a::{}", "b".repeat(83));
+        assert_eq!(callee_86.len(), 86);
+        let args = vec![
+            "arg_one_long_name".to_string(),
+            "arg_two_long_name".to_string(),
+        ];
+
+        let no_try_call = fmt_let_call(4, "v0", &callee_86, &args, false);
+        assert!(
+            no_try_call.starts_with(&format!("    let v0 = {callee_86}(\n")),
+            "expected no break after `=` for len 99 without `?`: {no_try_call}"
+        );
+        let try_call = fmt_let_call(4, "v0", &callee_86, &args, true);
+        assert!(
+            try_call.starts_with(&format!("    let v0 =\n        {callee_86}(\n")),
+            "expected break after `=` for len 99 with `?`: {try_call}"
+        );
+
+        let expr_try = format!("{callee_86}(arg_one_long_name, arg_two_long_name)?");
+        let stmt_try = fmt_let_stmt(4, "v0", &expr_try);
+        assert_eq!(stmt_try, try_call);
+
+        // Single-dot field access longer than `MAX_WIDTH` after `=`: breaks at `.` when that fits,
+        // otherwise keeps single line matching rustfmt.
+        let field_90 = "f".repeat(90);
+        let dot_break = fmt_let_stmt(4, "v0", &format!("&value.{field_90}"));
+        assert_eq!(
+            dot_break,
+            format!("    let v0 = &value\n        .{field_90};")
+        );
+        let field_95 = "f".repeat(95);
+        let no_break = fmt_let_stmt(4, "v0", &format!("&value.{field_95}"));
+        assert_eq!(no_break, format!("    let v0 = &value.{field_95};"));
+    }
 }

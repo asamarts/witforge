@@ -743,3 +743,163 @@ fn workflow_subset_since_history_and_load_sources_audit_regressions() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn second_wave_audit_freeze_and_check_release_regressions() {
+    use std::process::Command;
+
+    let base = std::env::temp_dir().join(format!(
+        "witforge-second-wave-workflow-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. `check_release` must report corrupt/missing predecessor `wire.lock` even when the target
+    //    version is already listed in `released`.
+    let rel_root = base.join("rel-root");
+    let v01 = rel_root.join("v0.1");
+    let v02 = rel_root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:rel@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:rel@0.2.0;\ninterface api { record item { id: u64, name: option<string> } }\n",
+    )
+    .unwrap();
+    let r01 =
+        workflow::lock(&workflow::VersionOptions::new(v01.clone()).with_baseline(Baseline::First))
+            .unwrap();
+    assert!(r01.is_ok(), "{:?}", r01.report.findings);
+    fs::write(&r01.lockfile, r01.rendered.unwrap()).unwrap();
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    let r02 = workflow::lock(
+        &workflow::VersionOptions::new(v02.clone())
+            .with_baseline(Baseline::Against(v01.join("wire.lock"))),
+    )
+    .unwrap();
+    assert!(r02.is_ok(), "{:?}", r02.report.findings);
+    fs::write(&r02.lockfile, r02.rendered.unwrap()).unwrap();
+    fs::write(rel_root.join("released"), "v0.1\nv0.2\n").unwrap();
+    assert!(
+        workflow::check_release(&v02, None).unwrap().is_ok(),
+        "clean already-listed v0.2 must pass check_release"
+    );
+
+    // Corrupt predecessor wire.lock and verify `check_release` fails instead of silently skipping.
+    fs::write(v01.join("wire.lock"), "not a valid lockfile\n").unwrap();
+    let corrupt_pred = workflow::check_release(&v02, None).unwrap();
+    assert!(
+        !corrupt_pred.is_ok(),
+        "corrupt predecessor wire.lock must fail check_release on already-listed version"
+    );
+    assert!(
+        corrupt_pred.findings.iter().any(|f| f
+            .diagnostic
+            .as_ref()
+            .is_some_and(|d| d.diagnostic.code == witforge::diagnostic::codes::LOCKFILE_ERROR)),
+        "expected LOCKFILE_ERROR finding: {:?}",
+        corrupt_pred.findings
+    );
+
+    // 2. `freeze` case-insensitive manifest reconciliation (`core.ignorecase=true`) must catch
+    //    alternate-casing overrides (including after `git rm`) and never dereference a symlinked
+    //    `--released` manifest.
+    let git_repo = base.join("git-repo");
+    let git_wit = git_repo.join("wit");
+    let git_v01 = git_wit.join("v0.1");
+    fs::create_dir_all(&git_v01).unwrap();
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&git_repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.name", "Test"]);
+    run_git(&["config", "user.email", "test@example.invalid"]);
+    run_git(&["config", "commit.gpgsign", "false"]);
+    fs::write(
+        git_v01.join("contract.wit"),
+        "package ex:frz@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    let rg = workflow::lock(
+        &workflow::VersionOptions::new(git_v01.clone()).with_baseline(Baseline::First),
+    )
+    .unwrap();
+    assert!(rg.is_ok(), "{:?}", rg.report.findings);
+    fs::write(&rg.lockfile, rg.rendered.unwrap()).unwrap();
+    fs::write(git_wit.join("released"), "v0.1\n").unwrap();
+    run_git(&["add", "."]);
+    run_git(&["commit", "-q", "-m", "initial release"]);
+
+    // Enable core.ignorecase=true, stage removal of `wit/released`, create empty `wit/RELEASED`,
+    // and check with `--released wit/RELEASED`.
+    run_git(&["config", "core.ignorecase", "true"]);
+    run_git(&["rm", "-q", "wit/released"]);
+    fs::write(git_wit.join("RELEASED"), "").unwrap();
+    let case_report = witforge::freeze::check_root_with_manifest(
+        &git_wit,
+        Some(&git_wit.join("RELEASED")),
+        &witforge::freeze::FreezeOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        !case_report.is_ok(),
+        "case-insensitive manifest bypass must be caught by freeze: {case_report:?}"
+    );
+    assert_eq!(case_report.manifest, "wit/released");
+    let _ = fs::remove_file(git_wit.join("RELEASED"));
+    run_git(&["reset", "--hard", "-q", "HEAD"]);
+    run_git(&["config", "core.ignorecase", "false"]);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        // Dangling symlink manifest refused by `check_release`.
+        let dangling = rel_root.join("dangling-released");
+        symlink(rel_root.join("does-not-exist"), &dangling).unwrap();
+        let err = workflow::check_release(&v02, Some(&dangling)).unwrap_err();
+        let diags = witforge::error_diagnostics(&err).unwrap();
+        assert_eq!(diags[0].code, witforge::diagnostic::codes::GUARD_REFUSED);
+
+        // Symlinked `--released` pointing to a regular file in the repo must still be flagged as a
+        // symlink violation by `freeze::check_root_with_manifest`.
+        let link_manifest = git_wit.join("released-link");
+        symlink(git_wit.join("released"), &link_manifest).unwrap();
+        let sym_report = witforge::freeze::check_root_with_manifest(
+            &git_wit,
+            Some(&link_manifest),
+            &witforge::freeze::FreezeOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            !sym_report.is_ok(),
+            "symlinked --released must produce a freeze violation: {sym_report:?}"
+        );
+        assert!(
+            sym_report
+                .violations
+                .iter()
+                .any(|v| v.diagnostic.message.contains("symlink")),
+            "expected symlink violation: {:?}",
+            sym_report.violations
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

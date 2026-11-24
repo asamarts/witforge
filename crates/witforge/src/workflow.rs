@@ -695,7 +695,33 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
         || crate::default_released_manifest(version_dir),
         Path::to_path_buf,
     );
-    let manifest = if manifest_path.exists() {
+    let manifest_meta = match fs::symlink_metadata(&manifest_path) {
+        Ok(meta) => Some(meta),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(operational_error(
+                codes::IO_ERROR,
+                format!(
+                    "failed to inspect released manifest {}: {err}",
+                    manifest_path.display()
+                ),
+                Some(manifest_path.display().to_string()),
+            ));
+        }
+    };
+    if let Some(meta) = &manifest_meta
+        && meta.file_type().is_symlink()
+    {
+        return Err(operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{}` is a symlink; commit a regular file",
+                manifest_path.display()
+            ),
+            Some(manifest_path.display().to_string()),
+        ));
+    }
+    let manifest = if manifest_meta.is_some() {
         crate::ReleasedManifest::load(&manifest_path)?
     } else {
         crate::ReleasedManifest::default()
@@ -751,7 +777,7 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
         Baseline::First
     };
     let mut options = VersionOptions::new(version_dir.to_path_buf()).with_baseline(baseline);
-    if manifest_path.exists() {
+    if manifest_meta.is_some() {
         options = options.with_released(manifest_path);
     }
     let mut target_loaded = match check_with_loaded(&options, Some(already_listed), true) {
@@ -768,21 +794,57 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
     if !result.is_ok() {
         return Ok(result);
     }
-    if already_listed
-        && let Some(pred) = &predecessor
-        && let Ok((current_lock, _)) = read_required_lock(&version_dir.join("wire.lock"))
-        && let Ok((predecessor_lock, _)) = read_required_lock(&pred.join("wire.lock"))
-        && let Err(error) = current_lock.check_append_only(&predecessor_lock)
-    {
-        result.error(
-            codes::LOCKFILE_ERROR,
-            format!(
-                "{} does not continue {}: {error:#}",
-                version_dir.join("wire.lock").display(),
-                pred.join("wire.lock").display()
-            ),
-            Some(version_dir.join("wire.lock").display().to_string()),
-        );
+    if already_listed && let Some(pred) = &predecessor {
+        let current_lock_path = version_dir.join("wire.lock");
+        let pred_lock_path = pred.join("wire.lock");
+        match (
+            read_required_lock(&current_lock_path),
+            read_required_lock(&pred_lock_path),
+        ) {
+            (Ok((current_lock, _)), Ok((predecessor_lock, _))) => {
+                if let Err(error) = current_lock.check_append_only(&predecessor_lock) {
+                    result.error(
+                        codes::LOCKFILE_ERROR,
+                        format!(
+                            "{} does not continue {}: {error:#}",
+                            current_lock_path.display(),
+                            pred_lock_path.display()
+                        ),
+                        Some(current_lock_path.display().to_string()),
+                    );
+                }
+            }
+            (Err(error), _) => {
+                if is_contract_error(&error) {
+                    append_contract_error(&mut result, &error, Some(&current_lock_path));
+                } else {
+                    result.error(
+                        codes::LOCKFILE_ERROR,
+                        format!(
+                            "cannot verify {} against predecessor {}: {error:#}",
+                            current_lock_path.display(),
+                            pred_lock_path.display()
+                        ),
+                        Some(current_lock_path.display().to_string()),
+                    );
+                }
+            }
+            (_, Err(error)) => {
+                if is_contract_error(&error) {
+                    append_contract_error(&mut result, &error, Some(&pred_lock_path));
+                } else {
+                    result.error(
+                        codes::LOCKFILE_ERROR,
+                        format!(
+                            "cannot verify {} against predecessor {}: {error:#}",
+                            current_lock_path.display(),
+                            pred_lock_path.display()
+                        ),
+                        Some(pred_lock_path.display().to_string()),
+                    );
+                }
+            }
+        }
     }
 
     let mut since_history = model::SinceHistory::new(

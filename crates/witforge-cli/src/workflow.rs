@@ -421,6 +421,7 @@ pub(crate) fn create_new_version(
     wit_root: &Path,
     major_bump: bool,
     from_version: Option<&str>,
+    released_manifest: Option<(&Path, bool)>,
 ) -> Result<(PathBuf, PathBuf, bool)> {
     if !wit_root.is_dir() {
         return Err(op_error(
@@ -488,10 +489,48 @@ pub(crate) fn create_new_version(
             ));
         }
         // Refuse resurrecting a completely retired major line.
-        let default_manifest = wit_root.join("released");
-        if default_manifest.is_file()
-            && let Ok(manifest) = witforge::ReleasedManifest::load(&default_manifest)
-        {
+        let (manifest_path, explicit_cli_manifest) = match released_manifest {
+            Some((path, explicit)) => (path.to_path_buf(), explicit),
+            None => (wit_root.join("released"), false),
+        };
+        let manifest_meta = match fs::symlink_metadata(&manifest_path) {
+            Ok(meta) => Some(meta),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                if explicit_cli_manifest {
+                    return Err(op_error(
+                        codes::IO_ERROR,
+                        format!(
+                            "released manifest `{}` does not exist",
+                            manifest_path.display()
+                        ),
+                        Some(manifest_path.display().to_string()),
+                    ));
+                }
+                None
+            }
+            Err(err) => {
+                return Err(op_error(
+                    codes::IO_ERROR,
+                    format!(
+                        "failed to inspect released manifest `{}`: {err}",
+                        manifest_path.display()
+                    ),
+                    Some(manifest_path.display().to_string()),
+                ));
+            }
+        };
+        if let Some(meta) = &manifest_meta {
+            if meta.file_type().is_symlink() {
+                return Err(op_error(
+                    codes::GUARD_REFUSED,
+                    format!(
+                        "released manifest `{}` is a symlink; commit a regular file",
+                        manifest_path.display()
+                    ),
+                    Some(manifest_path.display().to_string()),
+                ));
+            }
+            let manifest = witforge::ReleasedManifest::load(&manifest_path)?;
             let all_major_retired = versions
                 .iter()
                 .filter(|(major, _, _)| *major == latest_major)
@@ -502,9 +541,9 @@ pub(crate) fn create_new_version(
                     format!(
                         "cannot create a new minor on major {latest_major}: every version of \
                          major {latest_major} is retired in {}",
-                        default_manifest.display()
+                        manifest_path.display()
                     ),
-                    Some(default_manifest.display().to_string()),
+                    Some(manifest_path.display().to_string()),
                 ));
             }
         }

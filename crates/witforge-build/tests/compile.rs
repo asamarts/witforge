@@ -551,3 +551,66 @@ fn scratch_consumer_crate_builds_and_roundtrips_standalone_and_deps_via_witforge
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn second_wave_audit_include_file_and_pbjson_incremental_cleanup() {
+    let base =
+        std::env::temp_dir().join(format!("witforge-build-second-wave-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let proto_dir = base.join("proto");
+    let out_dir = base.join("out");
+    fs::create_dir_all(&proto_dir).unwrap();
+    fs::create_dir_all(&out_dir).unwrap();
+
+    fs::write(
+        proto_dir.join("v0.proto"),
+        "syntax = \"proto3\";\npackage ex.demo.v0;\nmessage Item { uint64 id = 1; }\n",
+    )
+    .unwrap();
+
+    // 1. Trailing path separator in `include_file` is refused.
+    let err = witforge_build::Config::new()
+        .out_dir(&out_dir)
+        .include_file("prost_include.rs/")
+        .compile_protos(&proto_dir)
+        .unwrap_err();
+    assert!(
+        matches!(err, witforge_build::Error::InvalidIncludeFile(_)),
+        "expected InvalidIncludeFile for trailing slash, got {err:?}"
+    );
+
+    // 2. With `pbjson`, excluding a package on an incremental rebuild removes its stale `.serde.rs`
+    //    and omits it from `prost_include.rs` instead of re-including the old file from disk.
+    #[cfg(feature = "pbjson")]
+    {
+        let out_first = witforge_build::Config::new()
+            .out_dir(&out_dir)
+            .pbjson(true)
+            .compile_protos(&proto_dir)
+            .unwrap();
+        let include_path = out_first.include_file.as_ref().unwrap();
+        let serde_path = out_dir.join("ex.demo.v0.serde.rs");
+        assert!(serde_path.is_file(), "expected serde output on first build");
+        assert!(
+            fs::read_to_string(include_path)
+                .unwrap()
+                .contains("ex.demo.v0.serde.rs")
+        );
+
+        let mut excluded_cfg = witforge_build::Config::new().out_dir(&out_dir).pbjson(true);
+        excluded_cfg.pbjson_builder().exclude([".ex.demo.v0"]);
+        excluded_cfg.compile_protos(&proto_dir).unwrap();
+        assert!(
+            !serde_path.exists(),
+            "stale .serde.rs must be removed when package is excluded"
+        );
+        assert!(
+            !fs::read_to_string(include_path)
+                .unwrap()
+                .contains("ex.demo.v0.serde.rs"),
+            "prost_include.rs must not include excluded stale .serde.rs"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

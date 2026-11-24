@@ -9,7 +9,7 @@ witforge compiles one hand-written WIT package into runtime-independent contract
 
 - plain Rust types and interface traits;
 - protobuf messages with stable field and method numbers;
-- Draft 7 JSON Schema;
+- JSON Schema (Draft 7 default, opt-in Draft 2020-12);
 - checked Rust/protobuf conversion glue;
 - adapters between adjacent contract versions;
 - compatibility reports and deterministic CI checks.

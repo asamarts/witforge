@@ -167,6 +167,7 @@ explicit `--from` version.
 | `[WIT_ROOT]` | WIT root containing version directories; omit to use the configured project root. |
 | `--major` | Create `v<major+1>.0` without copying `wire.lock` instead of `v<major>.<minor+1>`. |
 | `--from <VERSION>` | Source version directory to clone (for example `v0.2`), allowing maintenance minors on an earlier major line. |
+| `--released <PATH>` | Path to the released-version manifest (defaults to `<WIT_ROOT>/released` or `project.<name>.released`). |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Select a single project from `witforge.toml`. |

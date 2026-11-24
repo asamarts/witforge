@@ -1767,3 +1767,208 @@ fn emitter_clippy_and_rustfmt_audit_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn second_wave_audit_emitter_niche_and_rustfmt_regressions() {
+    use std::process::Command;
+
+    let base = std::env::temp_dir().join(format!(
+        "witforge-second-wave-emitter-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+
+    // 1. Niche-optimized second-largest variant: `eight-opts` (8 * Option<String> = 192 B actual
+    //    with niche, 256 B without niche) vs `seventeen` (17 * String = 408 B; 408 - 192 = 216 B
+    //    triggers `clippy::large_enum_variant`!).
+    // 2. Very long option/list field names to exercise wrapped 2-dot option hoisting and long `for`
+    //    list hoisting in both glue and convert.rs under rustfmt 2021 and 2024.
+    let long_opt =
+        "extremely-long-optional-nested-payload-field-name-crossing-the-hundred-column-wrap";
+    let long_list =
+        "extremely-long-repeated-nested-payload-field-name-crossing-the-hundred-column-wrap";
+    let v01_wit = format!(
+        "package ex:audit@0.1.0;\n\
+         interface api {{\n\
+             record eight-opts {{\n\
+                 o1: option<string>,\n\
+                 o2: option<string>,\n\
+                 o3: option<string>,\n\
+                 o4: option<string>,\n\
+                 o5: option<string>,\n\
+                 o6: option<string>,\n\
+                 o7: option<string>,\n\
+                 o8: option<string>,\n\
+             }}\n\
+             record seventeen {{\n\
+                 f1: string, f2: string, f3: string, f4: string,\n\
+                 f5: string, f6: string, f7: string, f8: string,\n\
+                 f9: string, f10: string, f11: string, f12: string,\n\
+                 f13: string, f14: string, f15: string, f16: string,\n\
+                 f17: string,\n\
+             }}\n\
+             variant niche-disparity {{\n\
+                 small(eight-opts),\n\
+                 large(seventeen),\n\
+             }}\n\
+             record inner {{ id: u32 }}\n\
+             record container {{\n\
+                 {long_opt}: option<inner>,\n\
+                 {long_list}: list<inner>,\n\
+             }}\n\
+         }}\n"
+    );
+    let v02_wit = format!(
+        "package ex:audit@0.2.0;\n\
+         interface api {{\n\
+             record eight-opts {{\n\
+                 o1: option<string>,\n\
+                 o2: option<string>,\n\
+                 o3: option<string>,\n\
+                 o4: option<string>,\n\
+                 o5: option<string>,\n\
+                 o6: option<string>,\n\
+                 o7: option<string>,\n\
+                 o8: option<string>,\n\
+             }}\n\
+             record seventeen {{\n\
+                 f1: string, f2: string, f3: string, f4: string,\n\
+                 f5: string, f6: string, f7: string, f8: string,\n\
+                 f9: string, f10: string, f11: string, f12: string,\n\
+                 f13: string, f14: string, f15: string, f16: string,\n\
+                 f17: string,\n\
+             }}\n\
+             variant niche-disparity {{\n\
+                 small(eight-opts),\n\
+                 large(seventeen),\n\
+             }}\n\
+             record inner {{ id: u32, extra: option<string> }}\n\
+             record container {{\n\
+                 {long_opt}: option<inner>,\n\
+                 {long_list}: list<inner>,\n\
+             }}\n\
+         }}\n"
+    );
+    fs::write(v01.join("contract.wit"), v01_wit).unwrap();
+    fs::write(v02.join("contract.wit"), v02_wit).unwrap();
+
+    let r01 = witforge::workflow::lock(
+        &witforge::workflow::VersionOptions::new(v01.clone())
+            .with_baseline(witforge::workflow::Baseline::First),
+    )
+    .unwrap();
+    assert!(r01.is_ok(), "{:?}", r01.report.findings);
+    fs::write(&r01.lockfile, r01.rendered.unwrap()).unwrap();
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    let r02 = witforge::workflow::lock(
+        &witforge::workflow::VersionOptions::new(v02.clone())
+            .with_baseline(witforge::workflow::Baseline::Against(v01.join("wire.lock"))),
+    )
+    .unwrap();
+    assert!(r02.is_ok(), "{:?}", r02.report.findings);
+    fs::write(&r02.lockfile, r02.rendered.unwrap()).unwrap();
+
+    let rust_files = witforge::emit::rust::plan(&wit_root).unwrap();
+    let proto_files = witforge::emit::proto::plan(&wit_root).unwrap();
+    let glue_files = witforge::emit::glue::plan(&wit_root, "crate::plain", "crate::proto").unwrap();
+
+    // Write plain + proto + glue, verify every `.rs` file passes `rustfmt --check` under both
+    // Editions 2021 and 2024, and compile with `cargo clippy --lib -- -D warnings`.
+    let crate_dir = base.join("krate");
+    let src_dir = crate_dir.join("src");
+    let proto_dir = base.join("proto");
+    let plain_out = src_dir.join("plain");
+    let glue_out = src_dir.join("glue");
+    fs::create_dir_all(&src_dir).unwrap();
+    rust_files.write(&plain_out).unwrap();
+    proto_files.write(&proto_dir).unwrap();
+    glue_files.write(&glue_out).unwrap();
+
+    for edition in ["2021", "2024"] {
+        for dir in [&plain_out, &glue_out] {
+            for entry in fs::read_dir(dir).unwrap() {
+                let p = entry.unwrap().path();
+                if p.extension().is_some_and(|ext| ext == "rs") {
+                    let out = Command::new("rustfmt")
+                        .args(["--check", "--edition", edition])
+                        .arg(&p)
+                        .output()
+                        .unwrap();
+                    assert!(
+                        out.status.success(),
+                        "rustfmt --edition {edition} failed on {}:\nstdout:\n{}\nstderr:\n{}",
+                        p.display(),
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                }
+            }
+        }
+    }
+
+    let fds = protox::compile([proto_dir.join("v0.proto")], [&proto_dir]).unwrap();
+    let prost_out = src_dir.join("proto");
+    fs::create_dir_all(&prost_out).unwrap();
+    let mut prost_cfg = prost_build::Config::new();
+    prost_cfg.out_dir(&prost_out);
+    prost_cfg.compile_fds(fds).unwrap();
+    fs::write(
+        prost_out.join("mod.rs"),
+        "pub mod v0 { include!(\"ex.audit.v0.rs\"); }\n",
+    )
+    .unwrap();
+    fs::write(
+        src_dir.join("lib.rs"),
+        "pub mod plain;\n#[allow(clippy::all)]\npub mod proto;\npub mod glue;\n",
+    )
+    .unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"witforge-second-wave-emitter\"\n\
+         version = \"0.0.0\"\n\
+         edition = \"2024\"\n\
+         publish = false\n\
+         \n\
+         [dependencies]\n\
+         prost = \"0.14\"\n\
+         \n\
+         [workspace]\n",
+    )
+    .unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Cargo.lock"),
+        crate_dir.join("Cargo.lock"),
+    )
+    .unwrap();
+
+    let target_dir = base.join("cargo-target");
+    let clippy = Command::new(env!("CARGO"))
+        .args(["clippy", "--offline", "--lib", "--manifest-path"])
+        .arg(crate_dir.join("Cargo.toml"))
+        .args(["--", "-D", "warnings"])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        clippy.status.success(),
+        "clippy -D warnings failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&clippy.stdout),
+        String::from_utf8_lossy(&clippy.stderr)
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

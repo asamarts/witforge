@@ -3860,12 +3860,27 @@ impl Emitter<'_> {
         let pad = " ".repeat(indent);
         let inner_indent = indent + 4;
         let inner_pad = " ".repeat(inner_indent);
+        let mut iter_expr = list_expr.to_string();
         let borrowed = Self::borrowed(list_expr);
-        stmts.push(rustfmt::fmt_let_stmt(
+        let cap_stmt = rustfmt::fmt_let_stmt(
             indent,
             &format!("mut {out_var}"),
             &format!("{}::with_capacity({borrowed}.len())", self.vec_ty()),
-        ));
+        );
+        let mut for_header = format!("{pad}for {item_var} in {iter_expr} {{");
+        if for_header.len() > rustfmt::MAX_WIDTH || cap_stmt.contains('\n') {
+            let list_tmp = temps.fresh();
+            stmts.push(rustfmt::fmt_let_stmt(indent, &list_tmp, &iter_expr));
+            iter_expr = list_tmp;
+            for_header = format!("{pad}for {item_var} in {iter_expr} {{");
+            stmts.push(rustfmt::fmt_let_stmt(
+                indent,
+                &format!("mut {out_var}"),
+                &format!("{}::with_capacity({iter_expr}.len())", self.vec_ty()),
+            ));
+        } else {
+            stmts.push(cap_stmt);
+        }
         let mut loop_stmts = Vec::new();
         let encoded =
             self.emit_encode_singular(&mut loop_stmts, inner_indent, temps, &item_var, element)?;
@@ -3876,7 +3891,7 @@ impl Emitter<'_> {
             encoded,
             out_var.len() + ".push();".len(),
         );
-        let mut block = format!("{pad}for {item_var} in {list_expr} {{\n");
+        let mut block = format!("{for_header}\n");
         for stmt in loop_stmts {
             let _ = writeln!(block, "{stmt}");
         }
@@ -3900,11 +3915,26 @@ impl Emitter<'_> {
         let pad = " ".repeat(indent);
         let inner_indent = indent + 4;
         let inner_pad = " ".repeat(inner_indent);
-        stmts.push(rustfmt::fmt_let_stmt(
+        let mut iter_expr = list_expr.to_string();
+        let cap_stmt = rustfmt::fmt_let_stmt(
             indent,
             &format!("mut {out_var}"),
-            &format!("{}::with_capacity({list_expr}.len())", self.vec_ty()),
-        ));
+            &format!("{}::with_capacity({iter_expr}.len())", self.vec_ty()),
+        );
+        let mut for_header = format!("{pad}for {item_var} in {iter_expr} {{");
+        if for_header.len() > rustfmt::MAX_WIDTH || cap_stmt.contains('\n') {
+            let list_tmp = temps.fresh();
+            stmts.push(rustfmt::fmt_let_stmt(indent, &list_tmp, &iter_expr));
+            iter_expr = list_tmp;
+            for_header = format!("{pad}for {item_var} in {iter_expr} {{");
+            stmts.push(rustfmt::fmt_let_stmt(
+                indent,
+                &format!("mut {out_var}"),
+                &format!("{}::with_capacity({iter_expr}.len())", self.vec_ty()),
+            ));
+        } else {
+            stmts.push(cap_stmt);
+        }
         let mut loop_stmts = Vec::new();
         let decoded = self.emit_decode_singular(
             &mut loop_stmts,
@@ -3921,7 +3951,7 @@ impl Emitter<'_> {
             decoded,
             out_var.len() + ".push();".len(),
         );
-        let mut block = format!("{pad}for {item_var} in {list_expr} {{\n");
+        let mut block = format!("{for_header}\n");
         for stmt in loop_stmts {
             let _ = writeln!(block, "{stmt}");
         }
@@ -3964,8 +3994,9 @@ impl Emitter<'_> {
             format!("{pad}if let ::core::option::Option::Some({item_var}) = {scrutinee} {{");
         if scrutinee.contains('\n') || header.len() > rustfmt::MAX_WIDTH {
             let tmp = temps.fresh();
-            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &scrutinee));
-            header = format!("{pad}if let ::core::option::Option::Some({item_var}) = {tmp} {{");
+            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &format!("&{borrowed}")));
+            header =
+                format!("{pad}if let ::core::option::Option::Some({item_var}) = {tmp}.as_ref() {{");
         }
         let mut block = format!("{header}\n");
         for stmt in if_stmts {

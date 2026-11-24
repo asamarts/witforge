@@ -954,6 +954,49 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
         }),
       /witforge check terminated by signal SIGKILL/,
     );
+
+    // Spawn errors set `failed-command`, flush prior SARIF runs, and buffered spawns set maxBuffer.
+    const spawnErrOut = path.join(tmp, 'spawn-err-output');
+    const spawnErrSarif = path.join(tmp, 'spawn-err.sarif');
+    let callIdx = 0;
+    let observedMaxBuffer = null;
+    assert.throws(
+      () =>
+        runCommands(
+          [
+            ['witforge', 'check', 'wit'],
+            ['witforge', 'freeze', 'wit'],
+          ],
+          {
+            format: 'sarif',
+            sarifFile: spawnErrSarif,
+            env: { GITHUB_OUTPUT: spawnErrOut },
+            log: () => {},
+            spawnSync: (_cmd, _args, opts) => {
+              observedMaxBuffer = opts.maxBuffer;
+              callIdx += 1;
+              if (callIdx === 1) {
+                return {
+                  status: 0,
+                  stdout: JSON.stringify({
+                    version: '2.1.0',
+                    runs: [{ tool: { driver: { name: 'witforge' } }, results: [] }],
+                  }),
+                  stderr: '',
+                };
+              }
+              return { error: new Error('spawn EACCES') };
+            },
+          },
+        ),
+      /spawn EACCES/,
+    );
+    assert.ok(observedMaxBuffer >= 64 * 1024 * 1024, `expected >= 64 MiB maxBuffer, got ${observedMaxBuffer}`);
+    const spawnOutputs = fs.readFileSync(spawnErrOut, 'utf8');
+    assert.match(spawnOutputs, /failed-command=witforge freeze/);
+    assert.match(spawnOutputs, new RegExp(`sarif-file=${spawnErrSarif.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    const flushedSarif = JSON.parse(fs.readFileSync(spawnErrSarif, 'utf8'));
+    assert.equal(flushedSarif.runs.length, 1);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

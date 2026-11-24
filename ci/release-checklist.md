@@ -94,8 +94,9 @@ explicit release-owner action.
 - [ ] Bump `version` under `[workspace.package]` in `Cargo.toml` and `witforge-cli`'s
       requirement on `witforge` in `crates/witforge-cli/Cargo.toml` to the new version (all three
       workspace crates — `witforge`, `witforge-build`, and `witforge-cli` — share the workspace
-      version; `ci/check-release.sh` refuses a mismatch), and refresh `Cargo.lock` with
-      `cargo update -w`, since CI builds with `--locked`.
+      version; `ci/check-release.sh` refuses a mismatch), and refresh both lockfiles with
+      `cargo update -w` and `cargo update --manifest-path fuzz/Cargo.toml -p witforge`, since CI
+      builds both workspaces with `--locked`.
 - [ ] Turn `## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - YYYY-MM-DD` (the tag date) and
       update the README's status line. Say in the section's intro whether generated output
       changes for a contract the previous release accepts (`git diff vPREV -- crates/*/tests`

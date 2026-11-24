@@ -36,6 +36,15 @@ requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependenc
 [[ "${requirement}" == "^${version}" || "${requirement}" == "=${version}" ]] \
     || fail "witforge-cli requires witforge ${requirement}; require the released version ${version}"
 
+# Keep the standalone fuzz workspace lockfile aligned with the workspace crate version; CI runs
+# `cargo check --manifest-path fuzz/Cargo.toml --locked`.
+if [[ -f "${ROOT}/fuzz/Cargo.toml" ]]; then
+    fuzz_version="$(cargo metadata --manifest-path "${ROOT}/fuzz/Cargo.toml" --format-version 1 --locked \
+        | jq -r '.packages[] | select(.name == "witforge") | .version' | sort -u)"
+    [[ "${fuzz_version}" == "${version}" ]] \
+        || fail "fuzz/Cargo.lock pins witforge ${fuzz_version:-<missing>}, expected ${version}; run 'cargo update --manifest-path fuzz/Cargo.toml -p witforge'"
+fi
+
 escaped="${version//./\\.}"
 heading="$(grep -E "^## \[${escaped}\]" CHANGELOG.md || true)"
 [[ -n "${heading}" ]] || fail "CHANGELOG.md has no section for ${version}"

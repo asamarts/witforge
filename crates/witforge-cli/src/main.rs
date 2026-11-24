@@ -363,6 +363,9 @@ struct NewVersionOptions {
     /// Source version directory to clone (for example `v0.2`), instead of the globally latest version.
     #[arg(long, value_name = "VERSION")]
     from: Option<String>,
+    /// Path to the released-version manifest (defaults to `<WIT_ROOT>/released`).
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
     /// Configuration file; discovered upwards from the working directory when omitted.
     #[command(flatten)]
     config: ConfigArgs,
@@ -2433,7 +2436,7 @@ fn init_command(options: &InitOptions, reporter: &mut Reporter) -> Result<ExitCo
 }
 
 fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> Result<ExitCode> {
-    let wit_root = if let Some(root) = &options.root {
+    let (wit_root, configured_released) = if let Some(root) = &options.root {
         if options.config.config.is_some() || options.config.project.is_some() {
             return Err(op_error(
                 codes::CLI_USAGE,
@@ -2441,7 +2444,7 @@ fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> 
                 None,
             ));
         }
-        root.clone()
+        (root.clone(), None)
     } else {
         let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
             return Err(op_error(
@@ -2477,11 +2480,28 @@ fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> 
                 Some(config_path.display().to_string()),
             ));
         };
-        resolve_config_path(&base, &project.root)
+        let root = resolve_config_path(&base, &project.root);
+        let released = project
+            .released
+            .as_deref()
+            .map(|p| resolve_config_path(&base, p));
+        (root, released)
     };
 
-    let (latest_dir, target_dir, copied_lock) =
-        workflow::create_new_version(&wit_root, options.major, options.from.as_deref())?;
+    let released_override = if let Some(explicit) = options.released.as_deref() {
+        Some((explicit, true))
+    } else {
+        configured_released
+            .as_deref()
+            .map(|configured| (configured, false))
+    };
+
+    let (latest_dir, target_dir, copied_lock) = workflow::create_new_version(
+        &wit_root,
+        options.major,
+        options.from.as_deref(),
+        released_override,
+    )?;
     if reporter.human() && !reporter.is_quiet() {
         let next_cmd = if copied_lock {
             format!(
@@ -2558,6 +2578,36 @@ fn resolve_manifest_for_version_dir(
     Ok((default_released_manifest(dir), false))
 }
 
+fn ensure_manifest_belongs_to_wit_root(manifest_path: &Path, wit_root: &Path) -> Result<()> {
+    let manifest_file = manifest_path.display().to_string();
+    let parent = manifest_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canon_parent = fs::canonicalize(parent).map_err(|err| {
+        op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{manifest_file}` parent `{}` cannot be resolved: {err}",
+                parent.display()
+            ),
+            Some(manifest_file.clone()),
+        )
+    })?;
+    if canon_parent != wit_root {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{manifest_file}` belongs to `{}`, not `{}`",
+                canon_parent.display(),
+                wit_root.display()
+            ),
+            Some(manifest_file),
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_version_directory(&options.dir)?;
@@ -2582,6 +2632,16 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
                 Some(options.dir.display().to_string()),
             )
         })?;
+    let wit_root = canonical_dir.parent().ok_or_else(|| {
+        op_error(
+            codes::IO_ERROR,
+            format!(
+                "version directory `{}` has no parent WIT root",
+                options.dir.display()
+            ),
+            Some(options.dir.display().to_string()),
+        )
+    })?;
 
     let (manifest_path, _) = resolve_manifest_for_version_dir(
         &options.dir,
@@ -2599,6 +2659,7 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
             Some(manifest_path.display().to_string()),
         ));
     }
+    ensure_manifest_belongs_to_wit_root(&manifest_path, wit_root)?;
 
     let manifest = if manifest_path.exists() {
         ReleasedManifest::load(&manifest_path)?
@@ -2744,20 +2805,7 @@ fn retire_command(options: &RetireOptions, reporter: &mut Reporter) -> Result<Ex
             LocatedDiagnostic::from_diagnostic(diag).with_file(manifest_file)
         ));
     }
-    if let Some(manifest_parent) = manifest_path.parent()
-        && let Ok(canon_parent) = fs::canonicalize(manifest_parent)
-        && canon_parent != wit_root
-    {
-        return Err(op_error(
-            codes::GUARD_REFUSED,
-            format!(
-                "released manifest `{manifest_file}` belongs to `{}`, not `{}`",
-                canon_parent.display(),
-                wit_root.display()
-            ),
-            Some(manifest_file),
-        ));
-    }
+    ensure_manifest_belongs_to_wit_root(&manifest_path, wit_root)?;
 
     let manifest = ReleasedManifest::load(&manifest_path)?;
     if !manifest.contains(&entry_name) {

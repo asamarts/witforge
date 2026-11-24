@@ -1620,17 +1620,32 @@ fn emit_convert_value(
             let inner_prefix = " ".repeat(inner_indent);
             let out_var = fresh(next_id);
             let item_var = fresh(next_id);
+            let mut iter_expr = expression.to_string();
             let iter_src = expression.strip_prefix('&').unwrap_or(expression);
             let vec_ty = if no_std {
                 "::alloc::vec::Vec"
             } else {
                 "::std::vec::Vec"
             };
-            stmts.push(rustfmt::fmt_let_stmt(
+            let cap_stmt = rustfmt::fmt_let_stmt(
                 indent,
                 &format!("mut {out_var}"),
                 &format!("{vec_ty}::with_capacity({iter_src}.len())"),
-            ));
+            );
+            let mut for_header = format!("{prefix}for {item_var} in {iter_expr} {{");
+            if for_header.len() > rustfmt::MAX_WIDTH || cap_stmt.contains('\n') {
+                let list_tmp = fresh(next_id);
+                stmts.push(rustfmt::fmt_let_stmt(indent, &list_tmp, &iter_expr));
+                iter_expr = list_tmp;
+                for_header = format!("{prefix}for {item_var} in {iter_expr} {{");
+                stmts.push(rustfmt::fmt_let_stmt(
+                    indent,
+                    &format!("mut {out_var}"),
+                    &format!("{vec_ty}::with_capacity({iter_expr}.len())"),
+                ));
+            } else {
+                stmts.push(cap_stmt);
+            }
             let mut body_stmts = Vec::new();
             let elem = emit_convert_value(
                 &mut body_stmts,
@@ -1647,7 +1662,7 @@ fn emit_convert_value(
                 false,
                 no_std,
             )?;
-            let mut loop_code = format!("{prefix}for {item_var} in {expression} {{\n");
+            let mut loop_code = format!("{for_header}\n");
             for s in body_stmts {
                 let _ = writeln!(loop_code, "{s}");
             }
