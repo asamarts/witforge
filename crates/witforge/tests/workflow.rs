@@ -396,3 +396,350 @@ fn check_against_and_check_root_report_dependency_diffs_in_order_and_without_dup
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn workflow_subset_since_history_and_load_sources_audit_regressions() {
+    let root = std::env::temp_dir().join(format!("witforge-workflow-audit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+
+    // 1. Zero-member version directory without `wire.lock` fails `check(--first)`, `check_root`,
+    //    and `check_release` with `WF1100`.
+    let empty_root = root.join("empty-root");
+    let empty_v01 = empty_root.join("v0.1");
+    fs::create_dir_all(&empty_v01).unwrap();
+    fs::write(
+        empty_v01.join("contract.wit"),
+        "package ex:empty@0.1.0;\ninterface api {}\n",
+    )
+    .unwrap();
+    let single_empty =
+        workflow::check(&VersionOptions::new(empty_v01.clone()).with_baseline(Baseline::First))
+            .unwrap();
+    assert!(!single_empty.is_ok(), "{single_empty:?}");
+    assert!(
+        single_empty
+            .findings
+            .iter()
+            .filter_map(|f| f.diagnostic.as_ref())
+            .any(|d| d.diagnostic.code == codes::LOCKFILE_ERROR),
+        "{single_empty:?}"
+    );
+    let root_empty = workflow::check_root(&empty_root, None).unwrap();
+    assert!(!root_empty.is_ok(), "{root_empty:?}");
+    let rel_empty = workflow::check_release(&empty_v01, None).unwrap();
+    assert!(!rel_empty.is_ok(), "{rel_empty:?}");
+
+    // 2. `check_root` with explicit `--released custom` ignores default `wit/released`, and
+    //    collects retirement-order violations into `Report` with the custom manifest path.
+    let custom_root = root.join("custom-root");
+    let cv01 = custom_root.join("v0.1");
+    let cv02 = custom_root.join("v0.2");
+    fs::create_dir_all(&cv01).unwrap();
+    fs::create_dir_all(&cv02).unwrap();
+    fs::write(
+        cv01.join("contract.wit"),
+        "package ex:cust@0.1.0;\ninterface api { record r { a: u32 } }\n",
+    )
+    .unwrap();
+    workflow::lock(&VersionOptions::new(cv01.clone()).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+    fs::write(
+        cv02.join("contract.wit"),
+        "package ex:cust@0.2.0;\ninterface api { record r { a: u32, b: option<u32> } }\n",
+    )
+    .unwrap();
+    fs::copy(cv01.join("wire.lock"), cv02.join("wire.lock")).unwrap();
+    workflow::lock(
+        &VersionOptions::new(cv02.clone()).with_baseline(Baseline::Against(cv01.join("wire.lock"))),
+    )
+    .unwrap()
+    .write()
+    .unwrap();
+    // Corrupt default `released` (invalid syntax) — explicit custom manifest must NOT read it!
+    fs::write(custom_root.join("released"), "not a valid entry !!!\n").unwrap();
+    let custom_manifest = custom_root.join("custom-released");
+    fs::write(&custom_manifest, "v0.1\nv0.2 retired\n").unwrap();
+    let bad_retire = workflow::check_root(&custom_root, Some(&custom_manifest)).unwrap();
+    assert!(!bad_retire.is_ok(), "{bad_retire:?}");
+    let retire_diag = bad_retire
+        .findings
+        .iter()
+        .filter_map(|f| f.diagnostic.as_ref())
+        .find(|d| d.diagnostic.code == codes::LOCKFILE_ERROR)
+        .expect("retirement order error");
+    assert!(
+        retire_diag
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("custom-released")),
+        "{retire_diag:?}"
+    );
+
+    // 3. `check_release` reports missing predecessor lockfile as `WF1100` in `Report`, validates
+    //    earlier directory version mismatches, and checks `check_append_only` when already listed.
+    let cr_root = root.join("check-release");
+    let cr1 = cr_root.join("v0.1");
+    let cr2 = cr_root.join("v0.2");
+    fs::create_dir_all(&cr1).unwrap();
+    fs::create_dir_all(&cr2).unwrap();
+    fs::write(
+        cr1.join("contract.wit"),
+        "package ex:cr@0.1.0;\ninterface api { record r { a: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        cr2.join("contract.wit"),
+        "package ex:cr@0.2.0;\ninterface api { record r { a: u32 } }\n",
+    )
+    .unwrap();
+    // Missing predecessor `v0.1/wire.lock` is reported in `Report` (not operational Err).
+    let missing_pred = workflow::check_release(&cr2, None).unwrap();
+    assert!(!missing_pred.is_ok(), "{missing_pred:?}");
+    assert!(
+        missing_pred
+            .findings
+            .iter()
+            .filter_map(|f| f.diagnostic.as_ref())
+            .any(|d| d.diagnostic.code == codes::LOCKFILE_ERROR),
+        "{missing_pred:?}"
+    );
+    // Write incompatible locks for v0.1 and already-listed v0.2 (`r.a = 1` vs `r.a = 2`).
+    workflow::lock(&VersionOptions::new(cr1.clone()).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+    fs::write(
+        cr2.join("wire.lock"),
+        format!("{}\nex:cr/api/r.a = 2 field u32\n", witforge::lock::HEADER),
+    )
+    .unwrap();
+    let cr_rel = cr_root.join("released");
+    fs::write(&cr_rel, "v0.1\nv0.2\n").unwrap();
+    let bad_append = workflow::check_release(&cr2, Some(&cr_rel)).unwrap();
+    assert!(!bad_append.is_ok(), "{bad_append:?}");
+    assert!(
+        bad_append
+            .findings
+            .iter()
+            .filter_map(|f| f.diagnostic.as_ref())
+            .any(|d| d.diagnostic.message.contains("does not continue")),
+        "{bad_append:?}"
+    );
+
+    // 4. `subset` rejects invalid stability annotations on world-owned `use` type items.
+    let world_use = witforge::load_sources(vec![witforge::SourceFile::new(
+        "contract.wit".to_string(),
+        "package ex:wuse@0.2.0;\n\
+         interface api { record r { a: u32 } }\n\
+         world svc {\n\
+             @since(version = 0.1.1)\n\
+             use api.{r};\n\
+             export api;\n\
+         }\n"
+        .to_string(),
+    )])
+    .unwrap();
+    let world_diags = witforge::subset::check_located_diagnostics(&world_use);
+    assert!(
+        world_diags
+            .iter()
+            .any(|d| d.diagnostic.code == codes::SUBSET_ANNOTATION
+                && d.diagnostic.message.contains("0.1.1")),
+        "{world_diags:?}"
+    );
+    let world_use_pre = witforge::load_sources(vec![witforge::SourceFile::new(
+        "contract.wit".to_string(),
+        "package ex:wuse@0.2.0;\n\
+         interface api { record r { a: u32 } }\n\
+         world svc {\n\
+             @since(version = 0.1.0-alpha)\n\
+             use api.{r};\n\
+             export api;\n\
+         }\n"
+        .to_string(),
+    )])
+    .unwrap();
+    let world_pre_diags = witforge::subset::check_located_diagnostics(&world_use_pre);
+    assert!(
+        world_pre_diags
+            .iter()
+            .any(|d| d.diagnostic.code == codes::SUBSET_ANNOTATION
+                && d.diagnostic.message.contains("0.1.0-alpha")),
+        "{world_pre_diags:?}"
+    );
+
+    // 5. `SinceHistory` regressions:
+    //    (a) Failed `v0.1` does NOT cause cascading WF1014 on `v0.2` declaring `@since(0.1.0)`.
+    let sh_fail = root.join("sh-fail");
+    fs::create_dir_all(sh_fail.join("v0.1")).unwrap();
+    fs::create_dir_all(sh_fail.join("v0.2")).unwrap();
+    fs::write(
+        sh_fail.join("v0.1/contract.wit"),
+        "package ex:shf@0.1.0;\ninterface api { record ok { id: u32 } }\n",
+    )
+    .unwrap();
+    workflow::lock(&VersionOptions::new(sh_fail.join("v0.1")).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+    fs::write(
+        sh_fail.join("v0.2/contract.wit"),
+        "package ex:shf@0.2.0;\n@since(version = 0.1.0)\ninterface api { record ok { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::copy(
+        sh_fail.join("v0.1/wire.lock"),
+        sh_fail.join("v0.2/wire.lock"),
+    )
+    .unwrap();
+    // Now introduce a subset violation in `v0.1`: `check_root` must report `v0.1`'s subset error
+    // without cascading a bogus WF1014 on `v0.2`!
+    fs::write(
+        sh_fail.join("v0.1/contract.wit"),
+        "package ex:shf@0.1.0;\ninterface api { record bad { c: char } }\n",
+    )
+    .unwrap();
+    let sh_fail_rep = workflow::check_root(&sh_fail, None).unwrap();
+    assert!(
+        !sh_fail_rep
+            .findings
+            .iter()
+            .filter_map(|f| f.diagnostic.as_ref())
+            .any(|d| d.diagnostic.code == codes::SUBSET_ANNOTATION),
+        "failed v0.1 must not trigger cascading WF1014 on v0.2: {sh_fail_rep:?}"
+    );
+
+    //    (b) Gap root (`v0.1`, `v0.3`) catches `first (0.1.0) < since (0.2.0)` even when v0.2 is absent.
+    let sh_gap = root.join("sh-gap");
+    fs::create_dir_all(sh_gap.join("v0.1")).unwrap();
+    fs::create_dir_all(sh_gap.join("v0.3")).unwrap();
+    fs::write(
+        sh_gap.join("v0.1/contract.wit"),
+        "package ex:shg@0.1.0;\ninterface api { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    workflow::lock(&VersionOptions::new(sh_gap.join("v0.1")).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+    fs::write(
+        sh_gap.join("v0.3/contract.wit"),
+        "package ex:shg@0.3.0;\n@since(version = 0.2.0)\ninterface api { record r { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::copy(sh_gap.join("v0.1/wire.lock"), sh_gap.join("v0.3/wire.lock")).unwrap();
+    let sh_gap_rep = workflow::check_root(&sh_gap, None).unwrap();
+    assert!(
+        sh_gap_rep
+            .findings
+            .iter()
+            .filter_map(|f| f.diagnostic.as_ref())
+            .any(|d| d.diagnostic.code == codes::SUBSET_ANNOTATION
+                && d.diagnostic.message.contains("0.2.0")
+                && d.diagnostic.message.contains("0.1.0")),
+        "{sh_gap_rep:?}"
+    );
+
+    //    (c) Demoting a stable item to `@unstable` in v0.2 then claiming `@since(0.3.0)` in v0.3
+    //        preserves `first_seen = 0.1.0` and rejects `@since(0.3.0)`.
+    let sh_demote = root.join("sh-demote");
+    for (dir, body) in [
+        (
+            "v0.1",
+            "package ex:shd@0.1.0;\ninterface api { record r { id: u32 } }\n",
+        ),
+        (
+            "v0.2",
+            "package ex:shd@0.2.0;\n@unstable(feature = exp)\ninterface api { record r { id: u32 } }\n",
+        ),
+        (
+            "v0.3",
+            "package ex:shd@0.3.0;\n@since(version = 0.3.0)\ninterface api { record r { id: u32 } }\n",
+        ),
+    ] {
+        let d = sh_demote.join(dir);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("contract.wit"), body).unwrap();
+    }
+    workflow::lock(&VersionOptions::new(sh_demote.join("v0.1")).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+    fs::copy(
+        sh_demote.join("v0.1/wire.lock"),
+        sh_demote.join("v0.2/wire.lock"),
+    )
+    .unwrap();
+    fs::copy(
+        sh_demote.join("v0.1/wire.lock"),
+        sh_demote.join("v0.3/wire.lock"),
+    )
+    .unwrap();
+    let sh_demote_rep = workflow::check_root(&sh_demote, None).unwrap();
+    assert!(
+        sh_demote_rep
+            .findings
+            .iter()
+            .filter_map(|f| f.diagnostic.as_ref())
+            .any(|d| d.diagnostic.code == codes::SUBSET_ANNOTATION
+                && d.diagnostic.message.contains("0.3.0")
+                && d.diagnostic.message.contains("0.1.0")),
+        "{sh_demote_rep:?}"
+    );
+
+    // 6. `ensure_dependency_identity` same-as-root `ContractError` includes the dep entry file.
+    let same_dep_err = witforge::load_sources(vec![
+        witforge::SourceFile::new(
+            "contract.wit".to_string(),
+            "package ex:same@0.1.0;\ninterface api {}\n".to_string(),
+        ),
+        witforge::SourceFile::new(
+            "deps/selfdep.wit".to_string(),
+            "package ex:same@0.1.0;\ninterface other {}\n".to_string(),
+        ),
+    ])
+    .unwrap_err();
+    let located = witforge::error_located_diagnostics(&same_dep_err).expect("located diag");
+    assert_eq!(
+        located[0].diagnostic.code,
+        codes::SUBSET_DEPENDENCY_IDENTITY
+    );
+    assert_eq!(located[0].file.as_deref(), Some("deps/selfdep.wit"));
+
+    // 7. `load_sources` + `member_locations` locates `package` across nested block comments,
+    //    multiline `package\n`, multi-file empty root packages, and empty in-memory `deps/`.
+    let mem_contract = witforge::load_sources(vec![
+        witforge::SourceFile::new(
+            "a.wit".to_string(),
+            "// no package header here\n".to_string(),
+        ),
+        witforge::SourceFile::new(
+            "b.wit".to_string(),
+            "/* outer /* package fake:x@0.1.0; */ still comment */\n\
+             package\n\
+               ex:mem@0.1.0;\n"
+                .to_string(),
+        ),
+        witforge::SourceFile::new(
+            "deps/emptydep/a.wit".to_string(),
+            "// dep comment\n".to_string(),
+        ),
+        witforge::SourceFile::new(
+            "deps/emptydep/b.wit".to_string(),
+            "package ex:emptydep@0.1.0;\n".to_string(),
+        ),
+    ])
+    .unwrap();
+    let locs = mem_contract.member_locations();
+    let (root_file, root_pos) = locs.get("ex:mem").expect("root package location");
+    assert_eq!(root_file, "b.wit");
+    assert_eq!(root_pos.line, 2);
+    let (dep_file, dep_pos) = locs.get("ex:emptydep").expect("dep package location");
+    assert_eq!(dep_file, "deps/emptydep/b.wit");
+    assert_eq!(dep_pos.line, 1);
+
+    fs::remove_dir_all(&root).unwrap();
+}

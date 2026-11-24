@@ -910,7 +910,11 @@ impl Loaded {
         };
         matches!(
             self.entries.get(key),
-            Some(entry) if entry.reserved && entry.number == old_entry.number
+            Some(entry)
+                if entry.reserved
+                    && entry.number == old_entry.number
+                    && entry.kind == old_entry.kind
+                    && entry.ty == old_entry.ty
         )
     }
 
@@ -2036,6 +2040,20 @@ impl Builder<'_> {
                 continue;
             }
             let path = key.strip_prefix(&pkg_prefix).unwrap_or(key).to_string();
+            let reused_by_live = key.rsplit_once('.').is_some_and(|(parent, _)| {
+                let prefix = format!("{parent}.");
+                self.new.entries.iter().any(|(new_key, entry)| {
+                    !entry.reserved
+                        && new_key.starts_with(&prefix)
+                        && !new_key[prefix.len()..].contains('.')
+                        && entry.number == old_entry.number
+                })
+            });
+            let removed_or_renumbered_decode = if reused_by_live {
+                DecodeVerdict::INCOMPATIBLE
+            } else {
+                DecodeVerdict::COMPATIBLE
+            };
             match self.new.entries.get(key) {
                 None => {
                     self.push(
@@ -2044,7 +2062,7 @@ impl Builder<'_> {
                         path,
                         Some(old_entry.number),
                         Breaking::WIRE,
-                        DecodeVerdict::COMPATIBLE,
+                        removed_or_renumbered_decode,
                     );
                 }
                 Some(new_entry) if !new_entry.reserved => {
@@ -2054,7 +2072,7 @@ impl Builder<'_> {
                         path,
                         Some(old_entry.number),
                         Breaking::WIRE,
-                        DecodeVerdict::COMPATIBLE,
+                        removed_or_renumbered_decode,
                     );
                 }
                 Some(new_entry) => {
@@ -2068,7 +2086,7 @@ impl Builder<'_> {
                             path.clone(),
                             Some(new_entry.number),
                             Breaking::WIRE,
-                            DecodeVerdict::COMPATIBLE,
+                            removed_or_renumbered_decode,
                         );
                     }
                     if new_entry.kind != old_entry.kind || new_entry.ty != old_entry.ty {

@@ -186,8 +186,10 @@ fn resolve_cwd_relative(raw: &str) -> NormalizedPath {
     let cwd = std::env::current_dir().ok();
     let cwd_canon = cwd.as_deref().and_then(|dir| fs::canonicalize(dir).ok());
 
-    // Fast path for a relative path that lexically stays inside cwd without `..`.
-    if !input.is_absolute() {
+    // Fast path for a relative path that lexically stays inside cwd without `..` (excluding
+    // Windows root-relative `\foo` and drive-relative `C:foo` paths).
+    let has_windows_prefix = matches!(input.components().next(), Some(Component::Prefix(_)));
+    if !input.is_absolute() && !input.has_root() && !has_windows_prefix {
         let cleaned = clean_lexical(input);
         if !cleaned
             .components()
@@ -216,6 +218,10 @@ fn resolve_cwd_relative(raw: &str) -> NormalizedPath {
         && let Ok(rel) = abs_canon.strip_prefix(cwd_canon)
     {
         return NormalizedPath::Relative(path_to_forward_slashes(rel));
+    }
+
+    if !abs_canon.is_absolute() {
+        return NormalizedPath::Relative(path_to_forward_slashes(&abs_canon));
     }
 
     NormalizedPath::Absolute(strip_verbatim_and_slashes(&abs_canon))
@@ -279,7 +285,11 @@ fn strip_verbatim_and_slashes(path: &Path) -> String {
     } else {
         text.into_owned()
     };
-    stripped.replace('\\', "/")
+    if cfg!(windows) {
+        stripped.replace('\\', "/")
+    } else {
+        stripped
+    }
 }
 
 fn absolute_path_to_file_uri(abs_forward: &str) -> String {
@@ -495,4 +505,19 @@ pub(crate) fn located_note(
         ));
     }
     located
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sarif_uri_preserves_posix_backslashes_and_encodes_them() {
+        let uri = sarif_artifact_uri(r"dir\with\backslash.wit");
+        if cfg!(windows) {
+            assert_eq!(uri, "dir/with/backslash.wit");
+        } else {
+            assert_eq!(uri, "dir%5Cwith%5Cbackslash.wit");
+        }
+    }
 }

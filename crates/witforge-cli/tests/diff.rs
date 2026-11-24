@@ -1967,5 +1967,43 @@ fn diff_decode_view_gates_only_when_selected_and_preserves_json_fields() {
     assert_eq!(res_json["changes"][0]["kind"], "removed");
     assert_eq!(res_json["changes"][0]["wire_breaking"], true);
 
+    // Case 5: Human `result:` line matches the selected `--check` axes (prints `result: BREAKING`
+    // for decode-only breaking changes under `--check=decode`, and `result: COMPATIBLE` when
+    // gated only on `--check=wire`).
+    contract(
+        &root,
+        "gate-old/v0.1",
+        "package example:gate@0.1.0;\ninterface a { record r { id: u32 } }\n",
+    );
+    contract(
+        &root,
+        "gate-new/v0.2",
+        "package example:gate@0.2.0;\n\
+         interface a { record r { id: u32 } }\n\
+         interface b { ping: func(); }\n",
+    );
+    let g_old = root.join("gate-old/v0.1");
+    let g_new = root.join("gate-new/v0.2");
+    lock(&root, "gate-old/v0.1");
+    fs::copy(g_old.join("wire.lock"), g_new.join("wire.lock")).unwrap();
+    let lock_g = witforge()
+        .args(["lock"])
+        .arg(&g_new)
+        .args(["--against"])
+        .arg(g_old.join("wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_g.status.success(), "{lock_g:?}");
+
+    let decode_gate = diff(&g_old, &g_new, &["--check=decode"]);
+    assert_eq!(decode_gate.status.code(), Some(1), "{decode_gate:?}");
+    let decode_out = String::from_utf8_lossy(&decode_gate.stdout);
+    assert!(decode_out.contains("result: BREAKING"), "{decode_out}");
+
+    let wire_gate = diff(&g_old, &g_new, &["--check=wire"]);
+    assert!(wire_gate.status.success(), "{wire_gate:?}");
+    let wire_out = String::from_utf8_lossy(&wire_gate.stdout);
+    assert!(wire_out.contains("result: COMPATIBLE"), "{wire_out}");
+
     fs::remove_dir_all(&root).unwrap();
 }

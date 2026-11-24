@@ -963,3 +963,144 @@ no-std = true
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn freeze_audit_regressions() {
+    let base = std::env::temp_dir().join(format!("witforge-freeze-audit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    assert!(
+        witforge()
+            .args(["init"])
+            .arg(&base)
+            .args(["--package", "acme:freezeaudit"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let wit_root = base.join("wit");
+    let manifest_dir = base.join("manifests");
+    fs::create_dir_all(&manifest_dir).unwrap();
+    let custom_manifest = manifest_dir.join("released");
+
+    assert!(
+        witforge()
+            .args(["new-version"])
+            .arg(&wit_root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_root.join("v0.2"))
+            .args(["--against"])
+            .arg(wit_root.join("v0.1/wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(&custom_manifest, "v0.1 retired\nv0.2\n").unwrap();
+
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&base)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.name", "test"]);
+    run_git(&["config", "user.email", "test@example.invalid"]);
+    run_git(&["add", "."]);
+    run_git(&["commit", "-q", "-m", "init"]);
+
+    // 1. Staged-only index tampering (working tree restored back to HEAD) must be caught.
+    let original_v01 = fs::read_to_string(wit_root.join("v0.1/contract.wit")).unwrap();
+    fs::write(
+        wit_root.join("v0.1/contract.wit"),
+        format!("{original_v01}// staged tamper\n"),
+    )
+    .unwrap();
+    run_git(&["add", "wit/v0.1/contract.wit"]);
+    fs::write(wit_root.join("v0.1/contract.wit"), &original_v01).unwrap();
+    let staged_out = witforge()
+        .current_dir(&base)
+        .args(["freeze", "wit", "--released", "manifests/released"])
+        .output()
+        .unwrap();
+    assert_eq!(staged_out.status.code(), Some(1), "{staged_out:?}");
+    assert!(
+        String::from_utf8_lossy(&staged_out.stderr).contains("v0.1/contract.wit"),
+        "{staged_out:?}"
+    );
+    run_git(&["reset", "-q", "HEAD", "--", "wit/v0.1/contract.wit"]);
+
+    // 2. Un-retiring a previously retired entry reports a line position in JSON diagnostics.
+    fs::write(&custom_manifest, "v0.1\nv0.2\n").unwrap();
+    let unretire_out = witforge()
+        .current_dir(&base)
+        .args([
+            "freeze",
+            "wit",
+            "--released",
+            "manifests/released",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(unretire_out.status.code(), Some(1), "{unretire_out:?}");
+    let unretire_json: serde_json::Value = serde_json::from_slice(&unretire_out.stdout).unwrap();
+    assert_eq!(unretire_json["diagnostics"][0]["code"], "WF1109");
+    assert_eq!(
+        unretire_json["diagnostics"][0]["line"], 1,
+        "{unretire_json}"
+    );
+
+    // 3. A malformed version entry (`v00.3`) does NOT silence non-prefix retirement violations.
+    fs::write(&custom_manifest, "v0.1\nv0.2 retired\n").unwrap();
+    fs::create_dir_all(wit_root.join("v00.3")).unwrap();
+    let combined = witforge()
+        .current_dir(&base)
+        .args(["freeze", "wit", "--released", "manifests/released"])
+        .output()
+        .unwrap();
+    assert_eq!(combined.status.code(), Some(1), "{combined:?}");
+    let combined_stderr = String::from_utf8_lossy(&combined.stderr);
+    assert!(combined_stderr.contains("v00.3"), "{combined_stderr}");
+    assert!(
+        combined_stderr.contains("cannot retire `v0.2`"),
+        "{combined_stderr}"
+    );
+    fs::remove_dir_all(wit_root.join("v00.3")).unwrap();
+
+    // 4. Deleting the explicit manifest's entire parent directory reports `WF1109` (exit 1),
+    //    not `IO_ERROR` (exit 2).
+    run_git(&["checkout", "-q", "--", "manifests/released"]);
+    fs::remove_dir_all(&manifest_dir).unwrap();
+    let deleted_parent = witforge()
+        .current_dir(&base)
+        .args([
+            "freeze",
+            "wit",
+            "--released",
+            "manifests/released",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(deleted_parent.status.code(), Some(1), "{deleted_parent:?}");
+    let deleted_json: serde_json::Value = serde_json::from_slice(&deleted_parent.stdout).unwrap();
+    assert_eq!(
+        deleted_json["diagnostics"][0]["code"], "WF1109",
+        "{deleted_json}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

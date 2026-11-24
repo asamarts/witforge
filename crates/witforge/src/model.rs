@@ -134,6 +134,10 @@ impl SinceHistory {
         }
     }
 
+    pub(crate) fn exclude(&mut self, version: Version) {
+        self.available.remove(&version);
+    }
+
     pub(crate) fn check(&mut self, model: &Model) -> Vec<(String, String)> {
         let mut errors = Vec::new();
         let mut present = BTreeSet::new();
@@ -207,6 +211,9 @@ impl SinceHistory {
                     ..
                 }
         ) {
+            if self.first_seen.contains_key(path) {
+                present.insert(path.to_string());
+            }
             return;
         }
         present.insert(path.to_string());
@@ -214,7 +221,7 @@ impl SinceHistory {
         let Some(since) = stability.since() else {
             return;
         };
-        if self.available.contains(&since)
+        if (self.available.contains(&since) || first < since)
             && first != since
             && self.reported.insert((path.to_string(), since))
         {
@@ -994,16 +1001,18 @@ pub(crate) fn ensure_dependency_identity(
     for (package, entry) in dependencies {
         if package.namespace == root.namespace && package.name == root.name {
             let pkg_id = format!("{}:{}", package.namespace, package.name);
-            bail!(crate::ContractError::with_diagnostic(
-                crate::diagnostic::Diagnostic::error(
-                    crate::diagnostic::codes::SUBSET_DEPENDENCY_IDENTITY,
-                    format!(
-                        "dependency package `{pkg_id}` has the root package's namespace:name; the \
-                         root and a dependency cannot share a package identity"
-                    ),
-                )
-                .with_path(pkg_id)
-            ));
+            let diag = crate::diagnostic::Diagnostic::error(
+                crate::diagnostic::codes::SUBSET_DEPENDENCY_IDENTITY,
+                format!(
+                    "dependency package `{pkg_id}` has the root package's namespace:name; the \
+                     root and a dependency cannot share a package identity"
+                ),
+            )
+            .with_path(pkg_id.clone());
+            let located = crate::diagnostic::LocatedDiagnostic::from_diagnostic(diag)
+                .with_logical(pkg_id)
+                .with_file(entry.display().to_string());
+            bail!(crate::ContractError::with_located_diagnostic(located));
         }
         let version = package
             .version
@@ -1944,7 +1953,7 @@ fn docs(docs: &WitDocs) -> String {
     docs.contents.clone().unwrap_or_default()
 }
 
-fn stability(stability: &WitStability) -> Stability {
+pub(crate) fn stability(stability: &WitStability) -> Stability {
     match stability {
         WitStability::Unknown => Stability::Unknown,
         WitStability::Unstable {

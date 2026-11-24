@@ -1756,7 +1756,21 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
             .context("failed to render the diff as JSON")?;
         reporter.write_stdout_line(&rendered);
     } else if reporter.human() {
-        let rendered = render_diff(report, decode_verdicts, decode_summary, reporter.is_quiet());
+        let gated_breaking = check_views.map(|views| {
+            report
+                .changes
+                .iter()
+                .zip(decode_verdicts.iter())
+                .filter(|(change, verdict)| views.matches(change, **verdict))
+                .count()
+        });
+        let rendered = render_diff(
+            report,
+            decode_verdicts,
+            decode_summary,
+            gated_breaking,
+            reporter.is_quiet(),
+        );
         if !rendered.is_empty() {
             reporter.write_stdout_line(rendered.trim_end_matches('\n'));
         }
@@ -2485,11 +2499,8 @@ fn resolve_manifest_for_version_dir(
     dir: &Path,
     explicit_released: Option<&Path>,
     config_args: &ConfigArgs,
-) -> Result<PathBuf> {
-    if let Some(explicit) = explicit_released {
-        return Ok(explicit.to_path_buf());
-    }
-    if config_args.config.is_some() || config_args.project.is_some() {
+) -> Result<(PathBuf, bool)> {
+    let configured_released = if config_args.config.is_some() || config_args.project.is_some() {
         let Some(config_path) = resolve_config_path_opt(config_args, true)? else {
             return Err(op_error(
                 codes::CLI_USAGE,
@@ -2524,12 +2535,21 @@ fn resolve_manifest_for_version_dir(
                 Some(config_path.display().to_string()),
             ));
         };
-        return Ok(project.released.as_deref().map_or_else(
-            || default_released_manifest(dir),
-            |p| resolve_config_path(&base, p),
-        ));
+        project
+            .released
+            .as_deref()
+            .map(|p| resolve_config_path(&base, p))
+    } else {
+        None
+    };
+
+    if let Some(explicit) = explicit_released {
+        return Ok((explicit.to_path_buf(), true));
     }
-    Ok(default_released_manifest(dir))
+    if let Some(configured) = configured_released {
+        return Ok((configured, true));
+    }
+    Ok((default_released_manifest(dir), false))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2557,7 +2577,7 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
             )
         })?;
 
-    let manifest_path = resolve_manifest_for_version_dir(
+    let (manifest_path, _) = resolve_manifest_for_version_dir(
         &options.dir,
         options.released.as_deref(),
         &options.config,
@@ -2590,16 +2610,18 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
             .and_then(std::ffi::OsStr::to_str)
             .unwrap_or_default();
         if !manifest.contains(pred_name) {
-            bail!(ContractError::with_diagnostic(
-                Diagnostic::error(
-                    codes::LOCKFILE_ERROR,
-                    format!(
-                        "cannot release `{entry_name}`: predecessor `{pred_name}` is not listed \
-                         in {}; release `{pred_name}` first",
-                        manifest_path.display()
-                    ),
-                )
-                .with_path(options.dir.display().to_string())
+            let diag = Diagnostic::error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "cannot release `{entry_name}`: predecessor `{pred_name}` is not listed \
+                     in {}; release `{pred_name}` first",
+                    manifest_path.display()
+                ),
+            )
+            .with_path(options.dir.display().to_string());
+            bail!(ContractError::with_located_diagnostic(
+                LocatedDiagnostic::from_diagnostic(diag)
+                    .with_file(manifest_path.display().to_string())
             ));
         }
     }
@@ -2682,60 +2704,72 @@ fn retire_command(options: &RetireOptions, reporter: &mut Reporter) -> Result<Ex
         )
     })?;
 
-    let manifest_path = resolve_manifest_for_version_dir(
+    let (manifest_path, explicit_manifest) = resolve_manifest_for_version_dir(
         &options.dir,
         options.released.as_deref(),
         &options.config,
     )?;
+    let manifest_file = manifest_path.display().to_string();
 
     if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(op_error(
             codes::GUARD_REFUSED,
-            format!(
-                "released manifest `{}` is a symlink; commit a regular file",
-                manifest_path.display()
-            ),
-            Some(manifest_path.display().to_string()),
+            format!("released manifest `{manifest_file}` is a symlink; commit a regular file"),
+            Some(manifest_file),
         ));
     }
     if !manifest_path.exists() {
-        bail!(ContractError::with_diagnostic(
-            Diagnostic::error(
-                codes::LOCKFILE_ERROR,
-                format!(
-                    "cannot retire `{entry_name}`: released manifest {} does not exist; release \
-                     `{entry_name}` first",
-                    manifest_path.display()
-                ),
-            )
-            .with_path(manifest_path.display().to_string())
+        if explicit_manifest {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!("released manifest `{manifest_file}` does not exist"),
+                Some(manifest_file),
+            ));
+        }
+        let diag = Diagnostic::error(
+            codes::LOCKFILE_ERROR,
+            format!(
+                "cannot retire `{entry_name}`: released manifest {manifest_file} does not exist; \
+                 release `{entry_name}` first"
+            ),
+        )
+        .with_path(manifest_file.clone());
+        bail!(ContractError::with_located_diagnostic(
+            LocatedDiagnostic::from_diagnostic(diag).with_file(manifest_file)
+        ));
+    }
+    if let Some(manifest_parent) = manifest_path.parent()
+        && let Ok(canon_parent) = fs::canonicalize(manifest_parent)
+        && canon_parent != wit_root
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{manifest_file}` belongs to `{}`, not `{}`",
+                canon_parent.display(),
+                wit_root.display()
+            ),
+            Some(manifest_file),
         ));
     }
 
     let manifest = ReleasedManifest::load(&manifest_path)?;
     if !manifest.contains(&entry_name) {
-        bail!(ContractError::with_diagnostic(
-            Diagnostic::error(
-                codes::LOCKFILE_ERROR,
-                format!(
-                    "cannot retire `{entry_name}`: it is not listed in {}; release `{entry_name}` \
-                     first",
-                    manifest_path.display()
-                ),
-            )
-            .with_path(manifest_path.display().to_string())
+        let diag = Diagnostic::error(
+            codes::LOCKFILE_ERROR,
+            format!(
+                "cannot retire `{entry_name}`: it is not listed in {manifest_file}; release \
+                 `{entry_name}` first"
+            ),
+        )
+        .with_path(manifest_file.clone());
+        bail!(ContractError::with_located_diagnostic(
+            LocatedDiagnostic::from_diagnostic(diag).with_file(manifest_file)
         ));
     }
-    if manifest.is_retired(&entry_name) {
-        if reporter.human() && !reporter.is_quiet() {
-            reporter.write_stdout_line(&format!(
-                "`{entry_name}` is already retired in {}",
-                manifest_path.display()
-            ));
-        }
-        return Ok(ExitCode::SUCCESS);
-    }
 
+    // Validate retirement order BEFORE the idempotent already-retired return so a corrupt manifest
+    // never silently exits 0.
     let versions = discover_version_directories(wit_root)?;
     let mut first_live: Option<String> = None;
     for (_, _, dir) in &versions {
@@ -2745,15 +2779,16 @@ fn retire_command(options: &RetireOptions, reporter: &mut Reporter) -> Result<Ex
             .unwrap_or_default();
         if manifest.is_retired(name) || name == entry_name {
             if let Some(ref older_live) = first_live {
-                bail!(ContractError::with_diagnostic(
-                    Diagnostic::error(
-                        codes::LOCKFILE_ERROR,
-                        format!(
-                            "cannot retire `{name}` while older version `{older_live}` is still \
-                             live; only the oldest versions of a WIT root may be retired"
-                        ),
-                    )
-                    .with_path(manifest_path.display().to_string())
+                let diag = Diagnostic::error(
+                    codes::LOCKFILE_ERROR,
+                    format!(
+                        "cannot retire `{name}` while older version `{older_live}` is still live; \
+                         only the oldest versions of a WIT root may be retired"
+                    ),
+                )
+                .with_path(manifest_file.clone());
+                bail!(ContractError::with_located_diagnostic(
+                    LocatedDiagnostic::from_diagnostic(diag).with_file(manifest_file)
                 ));
             }
         } else if first_live.is_none() {
@@ -2761,17 +2796,27 @@ fn retire_command(options: &RetireOptions, reporter: &mut Reporter) -> Result<Ex
         }
     }
     if first_live.is_none() {
-        bail!(ContractError::with_diagnostic(
-            Diagnostic::error(
-                codes::LOCKFILE_ERROR,
-                format!(
-                    "cannot retire `{entry_name}`: every version directory under {} would be \
-                     retired; at least one live version is required",
-                    wit_root.display()
-                ),
-            )
-            .with_path(manifest_path.display().to_string())
+        let diag = Diagnostic::error(
+            codes::LOCKFILE_ERROR,
+            format!(
+                "cannot retire `{entry_name}`: every version directory under {} would be retired; \
+                 at least one live version is required",
+                wit_root.display()
+            ),
+        )
+        .with_path(manifest_file.clone());
+        bail!(ContractError::with_located_diagnostic(
+            LocatedDiagnostic::from_diagnostic(diag).with_file(manifest_file)
         ));
+    }
+
+    if manifest.is_retired(&entry_name) {
+        if reporter.human() && !reporter.is_quiet() {
+            reporter.write_stdout_line(&format!(
+                "`{entry_name}` is already retired in {manifest_file}"
+            ));
+        }
+        return Ok(ExitCode::SUCCESS);
     }
 
     let raw = fs::read_to_string(&manifest_path)
@@ -2946,6 +2991,7 @@ fn render_diff(
     report: &DiffReport,
     decode_verdicts: &[diff::DecodeVerdict],
     decode_summary: diff::DecodeSummary,
+    gated_breaking: Option<usize>,
     quiet: bool,
 ) -> String {
     use std::fmt::Write as _;
@@ -3000,7 +3046,8 @@ fn render_diff(
             decode_summary.new_reads_old_breaking,
             decode_summary.old_reads_new_breaking,
         );
-        if report.summary.breaking > 0 {
+        let is_breaking = gated_breaking.map_or(report.summary.breaking > 0, |count| count > 0);
+        if is_breaking {
             let _ = writeln!(out, "result: BREAKING");
         } else {
             let _ = writeln!(out, "result: COMPATIBLE");

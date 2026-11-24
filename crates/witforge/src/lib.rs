@@ -533,24 +533,29 @@ fn resolve_span_location_with_sources(
     resolve_span_cached_with_sources(source_map, span, &mut cache, virtual_sources)
 }
 
-/// Locate the `package ...;` declaration line inside `file`, skipping comments and falling back
-/// to line 1.
-pub(crate) fn find_package_header_position(
+/// Locate an explicit `package ...` header line inside `file`, skipping line and nested block
+/// comments, returning `None` if `file` has no `package` declaration.
+fn find_explicit_package_header_position(
     file: &str,
     cache: &mut BTreeMap<String, LineIndex>,
     virtual_sources: Option<&BTreeMap<String, String>>,
-) -> Option<(String, diagnostic::Position)> {
+) -> Option<diagnostic::Position> {
     let index = load_line_index(file, cache, virtual_sources)?;
-    let mut in_block_comment = false;
+    let mut block_comment_depth = 0usize;
     for (line_idx, raw) in index.body.lines().enumerate() {
         let line_no = line_idx + 1;
         let bytes = raw.as_bytes();
         let mut i = 0usize;
         let mut code_start = None;
         while i < bytes.len() {
-            if in_block_comment {
+            if block_comment_depth > 0 {
+                if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                    block_comment_depth += 1;
+                    i += 2;
+                    continue;
+                }
                 if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    in_block_comment = false;
+                    block_comment_depth -= 1;
                     i += 2;
                     continue;
                 }
@@ -560,7 +565,7 @@ pub(crate) fn find_package_header_position(
             } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
                 break;
             } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true;
+                block_comment_depth = 1;
                 i += 2;
             } else {
                 code_start = Some(i);
@@ -569,21 +574,28 @@ pub(crate) fn find_package_header_position(
         }
         if let Some(start) = code_start {
             let rest = &raw[start..];
-            if rest.starts_with("package ") || rest.starts_with("package\t") {
-                return Some((file.to_string(), line_position(line_no, raw)));
+            if rest.strip_prefix("package").is_some_and(|after| {
+                after.is_empty() || matches!(after.as_bytes()[0], b' ' | b'\t' | b'\r' | b'/')
+            }) {
+                return Some(line_position(line_no, raw));
             }
-            // Still advance block-comment state across the rest of the line.
+            // Still advance nested block-comment state across the rest of the line.
             while i + 1 < bytes.len() {
-                if in_block_comment {
+                if block_comment_depth > 0 {
+                    if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                        block_comment_depth += 1;
+                        i += 2;
+                        continue;
+                    }
                     if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                        in_block_comment = false;
+                        block_comment_depth -= 1;
                         i += 2;
                         continue;
                     }
                 } else if bytes[i] == b'/' && bytes[i + 1] == b'/' {
                     break;
                 } else if bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    in_block_comment = true;
+                    block_comment_depth = 1;
                     i += 2;
                     continue;
                 }
@@ -591,8 +603,37 @@ pub(crate) fn find_package_header_position(
             }
         }
     }
+    None
+}
+
+/// Locate the `package ...;` declaration line inside `file`, skipping comments and falling back
+/// to line 1.
+pub(crate) fn find_package_header_position(
+    file: &str,
+    cache: &mut BTreeMap<String, LineIndex>,
+    virtual_sources: Option<&BTreeMap<String, String>>,
+) -> Option<(String, diagnostic::Position)> {
+    if let Some(pos) = find_explicit_package_header_position(file, cache, virtual_sources) {
+        return Some((file.to_string(), pos));
+    }
+    let index = load_line_index(file, cache, virtual_sources)?;
     let first_line = index.body.lines().next().unwrap_or("");
     Some((file.to_string(), line_position(1, first_line)))
+}
+
+fn pick_package_header_file(
+    candidates: &[String],
+    cache: &mut BTreeMap<String, LineIndex>,
+    virtual_sources: Option<&BTreeMap<String, String>>,
+) -> Option<(String, diagnostic::Position)> {
+    for candidate in candidates {
+        if let Some(pos) = find_explicit_package_header_position(candidate, cache, virtual_sources)
+        {
+            return Some((candidate.clone(), pos));
+        }
+    }
+    let first = candidates.first()?;
+    find_package_header_position(first, cache, virtual_sources)
 }
 
 /// Find the declaring file and `package` header position for `package_id` in `contract`.
@@ -603,6 +644,7 @@ pub(crate) fn package_location(
 ) -> Option<(String, diagnostic::Position)> {
     let resolve = &contract.resolve;
     let package = &resolve.packages[package_id];
+    let virtual_sources = contract.source_contents.as_ref();
     let mut file: Option<String> = None;
     for &iface_id in package.interfaces.values() {
         if let Some(loc) = resolve
@@ -624,27 +666,53 @@ pub(crate) fn package_location(
             }
         }
     }
-    if file.is_none()
-        && let Some(entry) = contract.dependency_entry(package_id)
-    {
+    if let Some(file) = file {
+        return find_package_header_position(&file, cache, virtual_sources);
+    }
+    if let Some(entry) = contract.dependency_entry(package_id) {
+        if let Some(sources) = virtual_sources {
+            let entry_key = entry.to_string_lossy();
+            if sources.contains_key(entry_key.as_ref()) {
+                return find_package_header_position(&entry_key, cache, Some(sources));
+            }
+            let prefix = format!("{entry_key}/");
+            let candidates: Vec<String> = sources
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            return pick_package_header_file(&candidates, cache, Some(sources));
+        }
         if entry.is_file() {
-            file = Some(entry.display().to_string());
-        } else if entry.is_dir()
+            return find_package_header_position(&entry.display().to_string(), cache, None);
+        }
+        if entry.is_dir()
             && let Ok(wit_files) = sorted_wit_files(entry)
-            && let Some(first) = wit_files.first()
         {
-            file = Some(first.display().to_string());
+            let candidates: Vec<String> = wit_files
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            return pick_package_header_file(&candidates, cache, None);
         }
     }
-    if file.is_none() && package_id == contract.package {
-        file = resolve
-            .source_map
-            .source_files()
-            .next()
-            .map(|p| p.display().to_string());
+    if package_id == contract.package {
+        let candidates: Vec<String> = if let Some(sources) = virtual_sources {
+            sources
+                .keys()
+                .filter(|key| !key.starts_with("deps/"))
+                .cloned()
+                .collect()
+        } else {
+            resolve
+                .source_map
+                .source_files()
+                .map(|p| p.display().to_string())
+                .collect()
+        };
+        return pick_package_header_file(&candidates, cache, virtual_sources);
     }
-    let file = file?;
-    find_package_header_position(&file, cache, contract.source_contents.as_ref())
+    None
 }
 
 /// An interface explicitly imported by a root world: `(Option<(namespace, package)>, interface)`.
@@ -1710,6 +1778,21 @@ pub fn validate_retirement_order(
     manifest: &ReleasedManifest,
     wit_root: &Path,
 ) -> Result<()> {
+    validate_retirement_order_with_manifest(
+        versions,
+        manifest,
+        wit_root,
+        &wit_root.join(RELEASED_MANIFEST),
+    )
+}
+
+pub(crate) fn validate_retirement_order_with_manifest(
+    versions: &[(u64, u64, PathBuf)],
+    manifest: &ReleasedManifest,
+    wit_root: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    let manifest_file = manifest_path.display().to_string();
     let mut first_live: Option<String> = None;
     for (_, _, dir) in versions {
         let name = dir
@@ -1718,15 +1801,16 @@ pub fn validate_retirement_order(
             .unwrap_or_default();
         if manifest.is_retired(name) {
             if let Some(ref older_live) = first_live {
-                bail!(ContractError::with_diagnostic(
-                    diagnostic::Diagnostic::error(
-                        diagnostic::codes::LOCKFILE_ERROR,
-                        format!(
-                            "cannot retire `{name}` while older version `{older_live}` is still \
-                             live; only the oldest versions of a WIT root may be retired"
-                        ),
-                    )
-                    .with_path(wit_root.join(RELEASED_MANIFEST).display().to_string())
+                let diag = diagnostic::Diagnostic::error(
+                    diagnostic::codes::LOCKFILE_ERROR,
+                    format!(
+                        "cannot retire `{name}` while older version `{older_live}` is still \
+                         live; only the oldest versions of a WIT root may be retired"
+                    ),
+                )
+                .with_path(manifest_file.clone());
+                bail!(ContractError::with_located_diagnostic(
+                    diagnostic::LocatedDiagnostic::from_diagnostic(diag).with_file(manifest_file)
                 ));
             }
         } else if first_live.is_none() {
@@ -1734,16 +1818,17 @@ pub fn validate_retirement_order(
         }
     }
     if first_live.is_none() && !versions.is_empty() {
-        bail!(ContractError::with_diagnostic(
-            diagnostic::Diagnostic::error(
-                diagnostic::codes::LOCKFILE_ERROR,
-                format!(
-                    "every version directory under {} is retired; at least one live version is \
-                     required",
-                    wit_root.display()
-                ),
-            )
-            .with_path(wit_root.join(RELEASED_MANIFEST).display().to_string())
+        let diag = diagnostic::Diagnostic::error(
+            diagnostic::codes::LOCKFILE_ERROR,
+            format!(
+                "every version directory under {} is retired; at least one live version is \
+                 required",
+                wit_root.display()
+            ),
+        )
+        .with_path(manifest_file.clone());
+        bail!(ContractError::with_located_diagnostic(
+            diagnostic::LocatedDiagnostic::from_diagnostic(diag).with_file(manifest_file)
         ));
     }
     Ok(())

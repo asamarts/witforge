@@ -13,6 +13,59 @@ use crate::op_error;
 /// Default configuration file name searched upwards from the current working directory.
 pub(crate) const CONFIG_FILE_NAME: &str = "witforge.toml";
 
+/// Reserved WIT keywords (`wit-parser` 0.263.0) that cannot appear unescaped as a package
+/// namespace or name in `package <namespace>:<name>@0.1.0;`.
+const WIT_KEYWORDS: &[&str] = &[
+    "_",
+    "as",
+    "async",
+    "bool",
+    "borrow",
+    "char",
+    "constructor",
+    "enum",
+    "error-context",
+    "export",
+    "f32",
+    "f64",
+    "flags",
+    "from",
+    "func",
+    "future",
+    "import",
+    "include",
+    "interface",
+    "list",
+    "map",
+    "option",
+    "own",
+    "package",
+    "record",
+    "resource",
+    "result",
+    "s16",
+    "s32",
+    "s64",
+    "s8",
+    "static",
+    "stream",
+    "string",
+    "tuple",
+    "type",
+    "u16",
+    "u32",
+    "u64",
+    "u8",
+    "use",
+    "variant",
+    "with",
+    "world",
+];
+
+fn is_wit_keyword(ident: &str) -> bool {
+    WIT_KEYWORDS.binary_search(&ident).is_ok()
+}
+
 /// Validate a WIT package name `<namespace>:<name>` (kebab-case ASCII identifiers).
 fn parse_package_id(raw: &str) -> Result<(String, String)> {
     let Some((namespace, name)) = raw.split_once(':') else {
@@ -35,6 +88,20 @@ fn parse_package_id(raw: &str) -> Result<(String, String)> {
             None,
         ));
     }
+    if is_wit_keyword(namespace) || is_wit_keyword(name) {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!(
+                "invalid `--package` value `{raw}`; `{}` is a reserved WIT keyword",
+                if is_wit_keyword(namespace) {
+                    namespace
+                } else {
+                    name
+                }
+            ),
+            None,
+        ));
+    }
     Ok((namespace.to_string(), name.to_string()))
 }
 
@@ -51,23 +118,32 @@ fn is_wit_kebab_ident(text: &str) -> bool {
     })
 }
 
+fn clean_lexical_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut parts: Vec<Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match parts.last() {
+                Some(Component::Normal(_)) => {
+                    parts.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => parts.push(component),
+            },
+            _ => parts.push(component),
+        }
+    }
+    parts.into_iter().collect()
+}
+
 fn derive_package_name(dir: &Path) -> String {
-    let raw = dir
+    let cleaned = clean_lexical_path(dir);
+    let candidate = if let Some(name) = cleaned
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .filter(|name| !name.is_empty() && *name != "." && *name != "..")
-        .or_else(|| {
-            fs::canonicalize(dir)
-                .ok()
-                .and_then(|p| {
-                    p.file_name()
-                        .and_then(std::ffi::OsStr::to_str)
-                        .map(str::to_string)
-                })
-                .as_deref()
-                .map(|_| "")
-        });
-    let candidate = if let Some(name) = raw.filter(|s| !s.is_empty()) {
+    {
         name.to_string()
     } else if let Ok(canon) = fs::canonicalize(dir)
         && let Some(name) = canon.file_name().and_then(std::ffi::OsStr::to_str)
@@ -100,7 +176,12 @@ fn derive_package_name(dir: &Path) -> String {
     if valid_segments.is_empty() {
         "contract".to_string()
     } else {
-        valid_segments.join("-")
+        let joined = valid_segments.join("-");
+        if is_wit_keyword(&joined) {
+            format!("{joined}-contract")
+        } else {
+            joined
+        }
     }
 }
 
@@ -118,24 +199,38 @@ pub(crate) fn init_project(
     };
     let package_id = format!("{namespace}:{name}");
 
-    if let Ok(meta) = fs::symlink_metadata(dir)
-        && !meta.is_dir()
+    // Strip trailing slashes so `symlink_metadata` does not follow a symlinked target directory.
+    let norm_dir: PathBuf = dir.components().collect();
+    if let Ok(meta) = fs::symlink_metadata(&norm_dir)
+        && (meta.file_type().is_symlink() || !meta.is_dir())
     {
         return Err(op_error(
             codes::GUARD_REFUSED,
             format!(
-                "target path `{}` exists and is not a directory",
+                "target path `{}` is a symlink or not a directory",
                 dir.display()
             ),
             Some(dir.display().to_string()),
         ));
     }
 
-    let wit_dir = dir.join("wit");
+    let wit_dir = norm_dir.join("wit");
     let v01_dir = wit_dir.join("v0.1");
     let contract_path = v01_dir.join("contract.wit");
     let lock_path = v01_dir.join("wire.lock");
-    let config_path = dir.join(CONFIG_FILE_NAME);
+    let config_path = norm_dir.join(CONFIG_FILE_NAME);
+
+    for check_dir in [&wit_dir, &v01_dir] {
+        if let Ok(meta) = fs::symlink_metadata(check_dir)
+            && (meta.file_type().is_symlink() || !meta.is_dir())
+        {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!("`{}` is a symlink or not a directory", check_dir.display()),
+                Some(check_dir.display().to_string()),
+            ));
+        }
+    }
 
     for target in [&contract_path, &lock_path, &config_path] {
         if fs::symlink_metadata(target).is_ok() {
@@ -149,19 +244,44 @@ pub(crate) fn init_project(
             ));
         }
     }
-    if let Ok(meta) = fs::symlink_metadata(&v01_dir)
-        && !meta.is_dir()
+
+    // Refuse initializing into a non-empty `wit/` or `wit/v0.1/` directory.
+    if let Ok(mut entries) = fs::read_dir(&v01_dir)
+        && entries.next().transpose()?.is_some()
     {
         return Err(op_error(
             codes::GUARD_REFUSED,
-            format!("`{}` exists and is not a directory", v01_dir.display()),
+            format!(
+                "refusing to initialize into non-empty `{}`; choose an empty directory",
+                v01_dir.display()
+            ),
             Some(v01_dir.display().to_string()),
         ));
     }
+    if let Ok(mut entries) = fs::read_dir(&wit_dir)
+        && let Some(first) = entries.next().transpose()?
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "refusing to initialize into non-empty `{}` (`{}` already exists)",
+                wit_dir.display(),
+                first.path().display()
+            ),
+            Some(first.path().display().to_string()),
+        ));
+    }
 
-    let created_dir = !dir.exists();
-    let created_wit = !wit_dir.exists();
-    let created_v01 = !v01_dir.exists();
+    // Record every missing directory from `v01_dir` upwards so rollback leaves no stray ancestors.
+    let mut dirs_to_create = Vec::new();
+    let mut cursor = Some(v01_dir.as_path());
+    while let Some(path) = cursor {
+        if path.as_os_str().is_empty() || fs::symlink_metadata(path).is_ok() {
+            break;
+        }
+        dirs_to_create.push(path.to_path_buf());
+        cursor = path.parent();
+    }
 
     let starter_wit = format!(
         "/// Starter contract for `{package_id}`.\n\
@@ -217,8 +337,7 @@ pub(crate) fn init_project(
     let populate = (|| -> Result<()> {
         fs::create_dir_all(&v01_dir)
             .with_context(|| format!("failed to create {}", v01_dir.display()))?;
-        fs::write(&contract_path, &starter_wit)
-            .with_context(|| format!("failed to write {}", contract_path.display()))?;
+        write_atomic_manifest(&contract_path, &starter_wit)?;
         let lock_options = contract_workflow::VersionOptions::new(v01_dir.clone())
             .with_baseline(contract_workflow::Baseline::First);
         let outcome = contract_workflow::lock(&lock_options)?;
@@ -237,8 +356,7 @@ pub(crate) fn init_project(
             ));
         }
         outcome.write()?;
-        fs::write(&config_path, &starter_toml)
-            .with_context(|| format!("failed to write {}", config_path.display()))?;
+        write_atomic_manifest(&config_path, &starter_toml)?;
         Ok(())
     })();
 
@@ -246,14 +364,8 @@ pub(crate) fn init_project(
         let _ = fs::remove_file(&config_path);
         let _ = fs::remove_file(&lock_path);
         let _ = fs::remove_file(&contract_path);
-        if created_v01 {
-            let _ = fs::remove_dir(&v01_dir);
-        }
-        if created_wit {
-            let _ = fs::remove_dir(&wit_dir);
-        }
-        if created_dir {
-            let _ = fs::remove_dir(dir);
+        for created in &dirs_to_create {
+            let _ = fs::remove_dir(created);
         }
         return Err(err);
     }
@@ -351,10 +463,71 @@ pub(crate) fn create_new_version(
     };
     witforge::ensure_version_directory(&latest_dir)?;
 
+    let max_major = versions
+        .iter()
+        .map(|(major, _, _)| *major)
+        .max()
+        .expect("discover_version_directories never returns empty");
+
+    if !major_bump {
+        let highest_in_major = versions
+            .iter()
+            .filter(|(major, _, _)| *major == latest_major)
+            .map(|(_, minor, _)| *minor)
+            .max()
+            .expect("source major exists in versions");
+        if latest_minor < highest_in_major {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "cannot create a minor bump from `v{latest_major}.{latest_minor}` because \
+                     `v{latest_major}.{highest_in_major}` already exists; use `--from \
+                     v{latest_major}.{highest_in_major}` (or pass `--major`)"
+                ),
+                Some(latest_dir.display().to_string()),
+            ));
+        }
+        // Refuse resurrecting a completely retired major line.
+        let default_manifest = wit_root.join("released");
+        if default_manifest.is_file()
+            && let Ok(manifest) = witforge::ReleasedManifest::load(&default_manifest)
+        {
+            let all_major_retired = versions
+                .iter()
+                .filter(|(major, _, _)| *major == latest_major)
+                .all(|(major, minor, _)| manifest.is_retired(&format!("v{major}.{minor}")));
+            if all_major_retired {
+                return Err(op_error(
+                    codes::GUARD_REFUSED,
+                    format!(
+                        "cannot create a new minor on major {latest_major}: every version of \
+                         major {latest_major} is retired in {}",
+                        default_manifest.display()
+                    ),
+                    Some(default_manifest.display().to_string()),
+                ));
+            }
+        }
+    }
+
     let (target_major, target_minor) = if major_bump {
-        (latest_major + 1, 0)
+        let next_major = max_major.checked_add(1).ok_or_else(|| {
+            op_error(
+                codes::CLI_USAGE,
+                format!("major version `{max_major}` overflows u64"),
+                None,
+            )
+        })?;
+        (next_major, 0)
     } else {
-        (latest_major, latest_minor + 1)
+        let next_minor = latest_minor.checked_add(1).ok_or_else(|| {
+            op_error(
+                codes::CLI_USAGE,
+                format!("minor version `{latest_minor}` overflows u64"),
+                None,
+            )
+        })?;
+        (latest_major, next_minor)
     };
     let target_name = format!("v{target_major}.{target_minor}");
     let target_dir = wit_root.join(&target_name);
@@ -472,6 +645,7 @@ pub(crate) fn rewrite_package_version(text: &str, old_ver: &str, new_ver: &str) 
     rewrite_package_version_with_count(text, old_ver, new_ver).0
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn rewrite_package_version_with_count(
     text: &str,
     old_ver: &str,
@@ -479,6 +653,7 @@ pub(crate) fn rewrite_package_version_with_count(
 ) -> (String, usize) {
     let old_suffix = format!("@{old_ver}");
     let new_suffix = format!("@{new_ver}");
+    let old_bytes = old_suffix.as_bytes();
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len() + 8);
     let mut last_copied = 0usize;
@@ -489,8 +664,10 @@ pub(crate) fn rewrite_package_version_with_count(
     };
     let mut comment_depth = 0usize;
     let mut in_line_comment = false;
+    let mut in_string = false;
     let mut brace_depth = 0usize;
     let mut in_package_header = false;
+    let mut pending_replace: Option<(usize, usize)> = None;
     let mut count = 0usize;
 
     let is_ident_byte = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'%');
@@ -515,6 +692,17 @@ pub(crate) fn rewrite_package_version_with_count(
             }
             continue;
         }
+        if in_string {
+            if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
             in_line_comment = true;
             i += 2;
@@ -525,36 +713,46 @@ pub(crate) fn rewrite_package_version_with_count(
             i += 2;
             continue;
         }
+        if bytes[i] == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
         if bytes[i] == b'{' {
+            // Nested `package other:dep@0.1.0 { ... }` block: do not rewrite.
             in_package_header = false;
+            pending_replace = None;
             brace_depth += 1;
             i += 1;
             continue;
         }
         if bytes[i] == b'}' {
             in_package_header = false;
+            pending_replace = None;
             brace_depth = brace_depth.saturating_sub(1);
             i += 1;
             continue;
         }
         if in_package_header {
             if bytes[i] == b';' {
+                if let Some((start, end)) = pending_replace.take() {
+                    out.push_str(&text[last_copied..start]);
+                    out.push_str(&new_suffix);
+                    last_copied = end;
+                    count += 1;
+                }
                 in_package_header = false;
                 i += 1;
                 continue;
             }
-            if text[i..].starts_with(&old_suffix) {
-                let end = i + old_suffix.len();
-                let boundary_ok = text[end..]
-                    .chars()
-                    .next()
-                    .is_none_or(|ch| matches!(ch, ';' | '{' | ' ' | '\t' | '\r' | '\n' | '/'));
+            if pending_replace.is_none() && bytes[i..].starts_with(old_bytes) {
+                let end = i + old_bytes.len();
+                let boundary_ok = bytes
+                    .get(end)
+                    .is_none_or(|&b| matches!(b, b';' | b' ' | b'\t' | b'\r' | b'\n' | b'/'));
                 if boundary_ok {
-                    out.push_str(&text[last_copied..i]);
-                    out.push_str(&new_suffix);
-                    last_copied = end;
+                    pending_replace = Some((i, end));
                     i = end;
-                    count += 1;
                     continue;
                 }
             }
@@ -562,15 +760,16 @@ pub(crate) fn rewrite_package_version_with_count(
             continue;
         }
         if brace_depth == 0
-            && text[i..].starts_with("package")
+            && bytes[i..].starts_with(b"package")
             && (i == 0 || !is_ident_byte(bytes[i - 1]))
         {
-            let after_kw = i + "package".len();
+            let after_kw = i + b"package".len();
             let kw_end_ok = bytes
                 .get(after_kw)
                 .is_none_or(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'/'));
             if kw_end_ok {
                 in_package_header = true;
+                pending_replace = None;
                 i = after_kw;
                 continue;
             }
@@ -611,7 +810,7 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
         );
         if meta.is_dir() {
             copy_dir_no_symlinks(&entry_path, &target)?;
-        } else {
+        } else if meta.is_file() {
             fs::copy(&entry_path, &target).with_context(|| {
                 format!(
                     "failed to copy {} to {}",
@@ -619,6 +818,15 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
                     target.display()
                 )
             })?;
+        } else {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "dependency tree contains non-regular file `{}`; new-version refuses to copy special files",
+                    entry_path.display()
+                ),
+                Some(entry_path.display().to_string()),
+            ));
         }
     }
     Ok(())
@@ -627,6 +835,7 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
 /// Rewrite an active `<entry>` line in a `released` manifest to `<entry> retired`, preserving
 /// comments, blank lines, ordering, and LF line endings.
 pub(crate) fn retire_released_entry_text(raw: &str, entry: &str) -> Result<String> {
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
     let normalized = raw.replace("\r\n", "\n");
     let mut lines: Vec<String> = Vec::new();
     let mut updated = false;
@@ -802,5 +1011,57 @@ mod tests {
             "{got3}"
         );
         assert!(got3.contains("use ex:dep/t@0.1.0.{x};"), "{got3}");
+
+        // Multi-byte UTF-8 before `package`, string literals, and nested `package { ... }` blocks.
+        let tricky = "// café 🚀\n\
+                      package acme:demo@0.1.0;\n\
+                      interface api {\n\
+                          @external-id(\"package acme:demo@0.1.0;\")\n\
+                          record r { id: u32 }\n\
+                      }\n\
+                      package nested:dep@0.1.0 {\n\
+                          interface x {}\n\
+                      }\n";
+        let (got4, count4) = rewrite_package_version_with_count(tricky, "0.1.0", "0.2.0");
+        assert_eq!(count4, 1, "{got4}");
+        assert!(got4.contains("package acme:demo@0.2.0;"), "{got4}");
+        assert!(
+            got4.contains("@external-id(\"package acme:demo@0.1.0;\")"),
+            "{got4}"
+        );
+        assert!(got4.contains("package nested:dep@0.1.0 {"), "{got4}");
+    }
+
+    #[test]
+    fn parse_package_id_and_derive_package_name_reject_keywords_and_handle_trailing_slash() {
+        for kw in [
+            "record",
+            "future",
+            "stream",
+            "error-context",
+            "from",
+            "with",
+            "async",
+        ] {
+            assert!(parse_package_id(&format!("acme:{kw}")).is_err(), "{kw}");
+            assert!(parse_package_id(&format!("{kw}:demo")).is_err(), "{kw}");
+        }
+        assert!(parse_package_id("acme:1bad").is_err());
+        assert!(parse_package_id("acme:demo-2").is_err());
+        assert!(parse_package_id("Acme:demo").is_err());
+        assert_eq!(
+            parse_package_id("acme:demo-v2").unwrap(),
+            ("acme".to_string(), "demo-v2".to_string())
+        );
+        assert_eq!(
+            parse_package_id("acme:demo2").unwrap(),
+            ("acme".to_string(), "demo2".to_string())
+        );
+        assert_eq!(derive_package_name(Path::new("foo/bar/")), "bar");
+        assert_eq!(derive_package_name(Path::new("future")), "future-contract");
+        assert_eq!(
+            retire_released_entry_text("\u{feff}v0.1\nv0.2\n", "v0.1").unwrap(),
+            "v0.1 retired\nv0.2\n"
+        );
     }
 }

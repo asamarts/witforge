@@ -970,15 +970,35 @@ fn check_world(
                     );
                 }
                 (_, WorldItem::Type { id, .. }) => {
-                    let type_name = resolve.types[*id].name.as_deref().unwrap_or_default();
-                    let type_span = pick_span(resolve.types[*id].span, item_span);
+                    let type_def = &resolve.types[*id];
+                    let type_name = type_def.name.as_deref().unwrap_or_default();
+                    let type_span = pick_span(type_def.span, item_span);
+                    let item_at = format!("{at}/{type_name}");
                     check_external_id(
-                        resolve.types[*id].external_id.as_deref(),
-                        &format!("{at}/{type_name}"),
+                        type_def.external_id.as_deref(),
+                        &item_at,
                         None,
                         type_span,
                         sink,
                     );
+                    if type_def.owner == TypeOwner::World(world_id) {
+                        check_wit_stability(&type_def.stability, &item_at, None, type_span, sink);
+                        if let Some(pkg_ver) =
+                            resolve.packages[contract.package].name.version.as_ref()
+                        {
+                            let pkg_ver = crate::model::Version::new(
+                                pkg_ver.major,
+                                pkg_ver.minor,
+                                pkg_ver.patch,
+                            );
+                            let stability = crate::model::stability(&type_def.stability);
+                            let mut errors = Vec::new();
+                            collect_stability_errors(&item_at, pkg_ver, &stability, &mut errors);
+                            for (location, message) in errors {
+                                sink.refuse(codes::SUBSET_ANNOTATION, location, message, type_span);
+                            }
+                        }
+                    }
                     check_world_type(contract, world_id, *id, at, type_span, sink);
                     check_dependency_def(contract, *id, at, required_dependency_types, None, sink);
                 }

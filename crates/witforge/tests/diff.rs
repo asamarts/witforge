@@ -585,5 +585,65 @@ fn live_number_reuse_and_reserved_entry_regressions_are_detected_within_major() 
     let cross = witforge::diff::compare(&old_res, &v10).unwrap();
     assert_eq!(cross.summary.changes, 0, "{cross:#?}");
 
+    // 4. `preserves` checks `kind` and `ty` on reserved entries, and dropping a reserved entry
+    //    whose number is reused by a live member reports `DecodeVerdict::INCOMPATIBLE`.
+    let old_p = write_contract(
+        &root,
+        "pres/v0.1",
+        "package ex:pres@0.1.0;\ninterface types { record r { keep: u32, dropme: option<u32> } }\n",
+    );
+    fs::write(old_p.join("wire.lock"), generated_lock(&old_p)).unwrap();
+    let new_p = write_contract(
+        &root,
+        "pres/v0.2",
+        "package ex:pres@0.2.0;\ninterface types { record r { keep: u32 } }\n",
+    );
+    let mut new_p_lock = generated_lock(&new_p);
+    // Tamper the preserved reserved entry's type (`option<u32>` -> `string`).
+    new_p_lock.push_str("ex:pres/types/r.dropme = 2 field string reserved\n");
+    fs::write(new_p.join("wire.lock"), new_p_lock).unwrap();
+    let tampered = witforge::diff::compare(&old_p, &new_p).unwrap();
+    let removed_field = tampered
+        .changes
+        .iter()
+        .find(|c| c.path == "types/r.dropme")
+        .expect("removed field");
+    assert!(
+        removed_field.wire_breaking,
+        "tampered reserved type must fail preserves(): {removed_field:?}"
+    );
+
+    let old_hijack = write_contract(
+        &root,
+        "hijack/v0.1",
+        "package ex:hijack@0.1.0;\ninterface types { record r { keep: u32 } }\n",
+    );
+    let mut old_hijack_lock = generated_lock(&old_hijack);
+    old_hijack_lock.push_str("ex:hijack/types/r.gone = 2 field u32 reserved\n");
+    fs::write(old_hijack.join("wire.lock"), old_hijack_lock).unwrap();
+    let new_hijack = write_contract(
+        &root,
+        "hijack/v0.2",
+        "package ex:hijack@0.2.0;\ninterface types { record r { keep: u32, hijack: option<string> } }\n",
+    );
+    // Fresh lock assigns `hijack = 2`, reusing the dropped reserved number 2.
+    fs::write(new_hijack.join("wire.lock"), generated_lock(&new_hijack)).unwrap();
+    let hijack_full = witforge::diff::compare_full(&old_hijack, &new_hijack).unwrap();
+    let (res_change, res_decode) = hijack_full
+        .analysis
+        .report
+        .changes
+        .iter()
+        .zip(hijack_full.decode_verdicts.iter())
+        .find(|(c, _)| c.element == ChangeElement::ReservedEntry && c.path == "types/r.gone")
+        .expect("removed reserved entry");
+    assert!(res_change.wire_breaking, "{res_change:?}");
+    assert_eq!(
+        *res_decode,
+        DecodeVerdict::INCOMPATIBLE,
+        "reusing a dropped reserved wire number must break decode: {hijack_full:#?}"
+    );
+    assert!(hijack_full.decode_summary.breaking > 0);
+
     fs::remove_dir_all(&root).unwrap();
 }

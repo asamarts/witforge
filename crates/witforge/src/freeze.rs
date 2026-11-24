@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -370,23 +370,91 @@ pub fn check_root_with_manifest(
     }
 
     // 1b. Enforce retirement order: retired versions must form a contiguous oldest prefix of
-    // version directories under `wit_root` and leave at least one live version.
-    if current_entries_map.values().any(|&retired| retired)
-        && let Ok(versions) = crate::discover_version_directories(&abs_root)
-    {
+    // version directories under `wit_root` and leave at least one live version. Scan the root
+    // directly so a malformed, duplicate, non-directory, or symlinked version entry is reported
+    // as a freeze violation rather than silently disabling retirement-order checks.
+    if current_entries_map.values().any(|&retired| retired) {
+        let mut dir_entries = Vec::new();
+        for entry in fs::read_dir(&abs_root)
+            .with_context(|| format!("failed to read WIT root {}", abs_root.display()))?
+        {
+            dir_entries.push(entry?);
+        }
+        dir_entries.sort_by(|left, right| {
+            left.file_name()
+                .as_encoded_bytes()
+                .cmp(right.file_name().as_encoded_bytes())
+        });
+        let mut valid_versions: Vec<(u64, u64, String)> = Vec::new();
+        let mut seen_versions: BTreeMap<(u64, u64), String> = BTreeMap::new();
+        for entry in dir_entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let entry_rel = format!("{prefix}{name}");
+            let (major, minor) = match crate::parse_version_directory(&name) {
+                Ok(Some(version)) => version,
+                Ok(None) => continue,
+                Err(error) => {
+                    push_violation(
+                        &mut violations,
+                        &repo,
+                        &entry_rel,
+                        None,
+                        format!("{error:#}"),
+                    );
+                    continue;
+                }
+            };
+            let file_type = entry.file_type().with_context(|| {
+                format!("failed to read version entry {}", entry.path().display())
+            })?;
+            if file_type.is_symlink() {
+                push_violation(
+                    &mut violations,
+                    &repo,
+                    &entry_rel,
+                    None,
+                    format!(
+                        "version directory `{entry_rel}` is a symlink; witforge refuses \
+                         symlinked version directories"
+                    ),
+                );
+                continue;
+            }
+            if !file_type.is_dir() {
+                push_violation(
+                    &mut violations,
+                    &repo,
+                    &entry_rel,
+                    None,
+                    format!(
+                        "version entry `{entry_rel}` is not a directory; expected a \
+                         `v<major>.<minor>` directory"
+                    ),
+                );
+                continue;
+            }
+            if let Some(prev) = seen_versions.insert((major, minor), name.clone()) {
+                push_violation(
+                    &mut violations,
+                    &repo,
+                    &entry_rel,
+                    None,
+                    format!("duplicate version directories `{prefix}{prev}` and `{entry_rel}`"),
+                );
+                continue;
+            }
+            valid_versions.push((major, minor, name));
+        }
+        valid_versions.sort_by_key(|(major, minor, _)| (*major, *minor));
         let mut first_live: Option<String> = None;
-        for (_, _, dir) in &versions {
-            let name = dir
-                .file_name()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or_default();
-            if current_entries_map.get(name) == Some(&true) {
+        for (_, _, name) in &valid_versions {
+            if current_entries_map.get(name.as_str()) == Some(&true) {
                 if let Some(ref older_live) = first_live {
                     push_violation(
                         &mut violations,
                         &repo,
                         &manifest,
-                        entry_positions.get(name).copied().flatten(),
+                        entry_positions.get(name.as_str()).copied().flatten(),
                         format!(
                             "cannot retire `{name}` while older version `{older_live}` is still \
                              live; only the oldest versions of a WIT root may be retired"
@@ -394,10 +462,10 @@ pub fn check_root_with_manifest(
                     );
                 }
             } else if first_live.is_none() {
-                first_live = Some(name.to_string());
+                first_live = Some(name.clone());
             }
         }
-        if first_live.is_none() && !versions.is_empty() {
+        if first_live.is_none() && !valid_versions.is_empty() {
             push_violation(
                 &mut violations,
                 &repo,
@@ -446,7 +514,7 @@ pub fn check_root_with_manifest(
                     &mut violations,
                     &repo,
                     &manifest,
-                    None,
+                    entry_positions.get(&entry).copied().flatten(),
                     format!(
                         "released entry `{entry}` (retired in {short}) was un-retired in \
                          {manifest}; retirement is permanent"
@@ -517,7 +585,7 @@ pub fn check_root_with_manifest(
                             &mut violations,
                             &repo,
                             &manifest,
-                            None,
+                            entry_positions.get(&entry).copied().flatten(),
                             format!(
                                 "released entry `{entry}` (retired in {short} at \
                                  {old_manifest}) was un-retired in {manifest}; retirement is \
@@ -589,8 +657,63 @@ pub fn check_root_with_manifest(
     })
 }
 
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push(component);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn canonicalize_best_effort(path: &Path) -> Result<PathBuf> {
+    let abs = if path.is_absolute() {
+        normalize_lexical(path)
+    } else {
+        let cwd = std::env::current_dir().context("failed to read current directory")?;
+        normalize_lexical(&cwd.join(path))
+    };
+    if let Ok(meta) = fs::symlink_metadata(&abs)
+        && !meta.file_type().is_symlink()
+    {
+        return fs::canonicalize(&abs).map_err(Into::into);
+    }
+    let mut missing = Vec::new();
+    let mut cursor = abs.as_path();
+    loop {
+        if let Ok(canon) = fs::canonicalize(cursor) {
+            let mut resolved = canon;
+            for part in missing.into_iter().rev() {
+                resolved.push(part);
+            }
+            return Ok(resolved);
+        }
+        let Some(name) = cursor.file_name() else {
+            return Err(anyhow::anyhow!(
+                "cannot resolve ancestor of {}",
+                path.display()
+            ));
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            return Err(anyhow::anyhow!(
+                "cannot resolve ancestor of {}",
+                path.display()
+            ));
+        };
+        cursor = parent;
+    }
+}
+
 fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
-    let Some(file_name) = explicit.file_name() else {
+    if explicit.file_name().is_none() {
         return Err(operational_error(
             codes::IO_ERROR,
             format!(
@@ -599,12 +722,8 @@ fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
             ),
             Some(explicit.display().to_string()),
         ));
-    };
-    let parent = explicit
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let abs_parent = fs::canonicalize(parent).map_err(|err| {
+    }
+    let abs_manifest = canonicalize_best_effort(explicit).map_err(|err| {
         operational_error(
             codes::IO_ERROR,
             format!(
@@ -614,7 +733,6 @@ fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
             Some(explicit.display().to_string()),
         )
     })?;
-    let abs_manifest = abs_parent.join(file_name);
     let rel_manifest = abs_manifest.strip_prefix(repo).map_err(|_| {
         operational_error(
             codes::GUARD_REFUSED,
@@ -626,7 +744,16 @@ fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
             Some(explicit.display().to_string()),
         )
     })?;
-    Ok(to_git_path(rel_manifest))
+    let mut rel_git = to_git_path(rel_manifest);
+    // Reconcile against git's exact tracked spelling so a case-insensitive filesystem cannot
+    // bypass manifest history checks via alternate casing.
+    if let Ok(tracked) = git_nul_paths(repo, &["ls-files", "-z", "--", &rel_git])
+        && tracked.len() == 1
+        && tracked[0].eq_ignore_ascii_case(&rel_git)
+    {
+        rel_git = tracked.into_iter().next().unwrap_or(rel_git);
+    }
+    Ok(rel_git)
 }
 
 fn push_violation(
@@ -804,9 +931,9 @@ fn git_tree_oid(repo: &Path, spec: &str) -> Result<Option<String>> {
 }
 
 fn git_diff_paths(repo: &Path, commit: &str, dir_rel: &str) -> Result<Vec<String>> {
-    let output = run_git(
-        repo,
-        &[
+    let mut changed = BTreeSet::new();
+    for args in [
+        vec![
             "diff",
             "--no-renames",
             "--name-status",
@@ -815,19 +942,33 @@ fn git_diff_paths(repo: &Path, commit: &str, dir_rel: &str) -> Result<Vec<String
             "--",
             dir_rel,
         ],
-    )?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(operational_error(
-            codes::IO_ERROR,
-            format!(
-                "release freeze: `git diff {commit} -- {dir_rel}` failed: {}",
-                stderr.trim()
-            ),
-            None,
-        ));
+        vec![
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-status",
+            "-z",
+            commit,
+            "--",
+            dir_rel,
+        ],
+    ] {
+        let output = run_git(repo, &args)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(operational_error(
+                codes::IO_ERROR,
+                format!(
+                    "release freeze: `git {}` failed: {}",
+                    args.join(" "),
+                    stderr.trim()
+                ),
+                None,
+            ));
+        }
+        changed.extend(parse_no_rename_name_status_z(&output.stdout));
     }
-    Ok(parse_no_rename_name_status_z(&output.stdout))
+    Ok(changed.into_iter().collect())
 }
 
 fn git_diff_tree_paths(repo: &Path, old_tree: &str, new_tree: &str) -> Result<Vec<String>> {

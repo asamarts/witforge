@@ -3443,7 +3443,8 @@ fn check_reports_generator_refusals_and_accepts_proto_keyword_packages() {
     assert!(stdout.contains("TypesGetRequest"), "{stdout}");
 
     // 3. A live type colliding with a removed interface's preserved `Method` enum in `wire.lock`
-    // is caught by `witforge check` with `WF1003` and exit 1.
+    // is caught immediately by `witforge lock` (`WF1003`, exit 1, without writing) AND by
+    // `witforge check` (`WF1003`, exit 1) if the lockfile already holds those entries.
     let reserved_root = base.join("reserved-method/wit");
     let reserved_v01 = reserved_root.join("v0.1");
     let reserved_v02 = reserved_root.join("v0.2");
@@ -3470,13 +3471,33 @@ fn check_reports_generator_refusals_and_accepts_proto_keyword_packages() {
         reserved_v02.join("wire.lock"),
     )
     .unwrap();
+    let before_v02_lock = fs::read_to_string(reserved_v02.join("wire.lock")).unwrap();
     let out = witforge()
-        .args(["lock", "--against"])
+        .args(["--format", "json", "lock", "--against"])
         .arg(reserved_v01.join("wire.lock"))
         .arg(&reserved_v02)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let lock_stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(lock_stdout.contains("\"WF1003\""), "{lock_stdout}");
+    assert!(lock_stdout.contains("ApiXMethod"), "{lock_stdout}");
+    assert_eq!(
+        fs::read_to_string(reserved_v02.join("wire.lock")).unwrap(),
+        before_v02_lock,
+        "witforge lock must not overwrite wire.lock when proto validation fails"
+    );
+
+    // Populate the reconciled lockfile directly to verify `witforge check` also catches `WF1003`.
+    let mut reconciled = witforge::lock::WireLock::parse(&before_v02_lock).unwrap();
+    let v02_contract = witforge::load(&reserved_v02).unwrap();
+    let v02_model = witforge::model::build(&v02_contract).unwrap();
+    let v02_members = v02_model.members().unwrap();
+    let v01_lock = witforge::lock::WireLock::parse(&before_v02_lock).unwrap();
+    reconciled
+        .reconcile_with(&v02_members, witforge::lock::LockMode::Against(&v01_lock))
+        .unwrap();
+    fs::write(reserved_v02.join("wire.lock"), reconciled.render()).unwrap();
     let output = witforge()
         .args(["--format", "json", "check"])
         .arg(&reserved_v02)
@@ -5000,6 +5021,292 @@ fn inspect_command_emits_versioned_json_ir_and_human_summary_for_version_root_an
     assert_eq!(bad_dir_out.status.code(), Some(2));
     let bad_dir_json: serde_json::Value = serde_json::from_slice(&bad_dir_out.stdout).unwrap();
     assert_eq!(bad_dir_json["diagnostics"][0]["code"], "WF9004");
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn lifecycle_cli_audit_regressions() {
+    let base =
+        std::env::temp_dir().join(format!("witforge-lifecycle-audit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. `init` rejects WIT keywords and invalid package identifiers.
+    for bad_pkg in [
+        "acme:record",
+        "acme:future",
+        "acme:error-context",
+        "acme:from",
+        "acme:1bad",
+        "Acme:foo",
+    ] {
+        let out = witforge()
+            .args(["init"])
+            .arg(base.join("bad-pkg"))
+            .args(["--package", bad_pkg, "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad_pkg}: {out:?}");
+        let val: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(val["diagnostics"][0]["code"], "WF9001", "{bad_pkg}: {val}");
+    }
+
+    // 2. `init` normalizes trailing slashes and refuses non-empty `wit/` directories.
+    let trailing_dir = base.join("trailing-demo");
+    let trailing_arg = format!("{}/", trailing_dir.display());
+    let init_ok = witforge().args(["init", &trailing_arg]).output().unwrap();
+    assert!(init_ok.status.success(), "{init_ok:?}");
+    let trailing_wit = fs::read_to_string(trailing_dir.join("wit/v0.1/contract.wit")).unwrap();
+    assert!(
+        trailing_wit.contains("package example:trailing-demo@0.1.0;"),
+        "{trailing_wit}"
+    );
+
+    let nonempty = base.join("nonempty-wit");
+    fs::create_dir_all(nonempty.join("wit")).unwrap();
+    fs::write(nonempty.join("wit/existing.txt"), "keep\n").unwrap();
+    let refuse_nonempty = witforge().args(["init"]).arg(&nonempty).output().unwrap();
+    assert_eq!(
+        refuse_nonempty.status.code(),
+        Some(2),
+        "{refuse_nonempty:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(nonempty.join("wit/existing.txt")).unwrap(),
+        "keep\n"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let sym_proj = base.join("symlink-wit");
+        let target_dir = base.join("outside-wit");
+        fs::create_dir_all(&sym_proj).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
+        symlink(&target_dir, sym_proj.join("wit")).unwrap();
+        let sym_out = witforge()
+            .args(["init"])
+            .arg(&sym_proj)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(sym_out.status.code(), Some(2), "{sym_out:?}");
+        let val: serde_json::Value = serde_json::from_slice(&sym_out.stdout).unwrap();
+        assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+    }
+
+    // 3. `new-version` handles multi-byte UTF-8 before `package`, refuses `--from` gap insertion
+    //    and resurrecting a retired major, and creates `max_major + 1` for `--major --from`.
+    let utf8_proj = base.join("utf8-proj");
+    assert!(
+        witforge()
+            .args(["init"])
+            .arg(&utf8_proj)
+            .args(["--package", "acme:utf8"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let wit_root = utf8_proj.join("wit");
+    fs::write(
+        wit_root.join("v0.1/contract.wit"),
+        "// café 🚀 multi-byte comment\n\
+         package acme:utf8@0.1.0;\n\
+         interface api {\n\
+             record msg { id: u32 }\n\
+         }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock", "--first"])
+            .arg(wit_root.join("v0.1"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let nv_02 = witforge()
+        .args(["new-version"])
+        .arg(&wit_root)
+        .output()
+        .unwrap();
+    assert!(nv_02.status.success(), "{nv_02:?}");
+    let v02_wit = fs::read_to_string(wit_root.join("v0.2/contract.wit")).unwrap();
+    assert!(v02_wit.contains("package acme:utf8@0.2.0;"), "{v02_wit}");
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_root.join("v0.2"))
+            .args(["--against"])
+            .arg(wit_root.join("v0.1/wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["new-version", "--major"])
+            .arg(&wit_root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["lock", "--first"])
+            .arg(wit_root.join("v1.0"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // `--from v0.1` when `v0.2` already exists is refused (must branch from highest minor `v0.2`).
+    let gap_from = witforge()
+        .args(["new-version"])
+        .arg(&wit_root)
+        .args(["--from", "v0.1"])
+        .output()
+        .unwrap();
+    assert_eq!(gap_from.status.code(), Some(2), "{gap_from:?}");
+    assert!(
+        String::from_utf8_lossy(&gap_from.stderr).contains("v0.2"),
+        "{gap_from:?}"
+    );
+
+    // `--major --from v0.2` when `v1.0` already exists creates `v2.0` (max_major + 1).
+    let major_from = witforge()
+        .args(["new-version", "--major"])
+        .arg(&wit_root)
+        .args(["--from", "v0.2"])
+        .output()
+        .unwrap();
+    assert!(major_from.status.success(), "{major_from:?}");
+    assert!(wit_root.join("v2.0/contract.wit").is_file());
+    assert!(
+        fs::read_to_string(wit_root.join("v2.0/contract.wit"))
+            .unwrap()
+            .contains("package acme:utf8@2.0.0;")
+    );
+    assert!(
+        witforge()
+            .args(["lock", "--first"])
+            .arg(wit_root.join("v2.0"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // Release v0.1 and v0.2, then retire both so major 0 is completely retired.
+    for v in ["v0.1", "v0.2"] {
+        assert!(
+            witforge()
+                .args(["release"])
+                .arg(wit_root.join(v))
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    // 4. `retire` strips UTF-8 BOM, exits 2 for missing explicit `--released`, refuses non-sibling
+    //    `--released`, validates `--config` even with `--released`, and validates retirement order
+    //    even if the target entry is already marked `retired`.
+    fs::write(wit_root.join("released"), "\u{feff}v0.1\nv0.2\n").unwrap();
+    let retire_bom = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.1"))
+        .output()
+        .unwrap();
+    assert!(retire_bom.status.success(), "{retire_bom:?}");
+    assert_eq!(
+        fs::read_to_string(wit_root.join("released")).unwrap(),
+        "v0.1 retired\nv0.2\n"
+    );
+    assert!(
+        witforge()
+            .args(["retire"])
+            .arg(wit_root.join("v0.2"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // Refuses resurrecting retired major 0 via `new-version --from v0.2`.
+    let resurrect = witforge()
+        .args(["new-version"])
+        .arg(&wit_root)
+        .args(["--from", "v0.2"])
+        .output()
+        .unwrap();
+    assert_eq!(resurrect.status.code(), Some(2), "{resurrect:?}");
+    assert!(
+        String::from_utf8_lossy(&resurrect.stderr).contains("retired"),
+        "{resurrect:?}"
+    );
+
+    // Missing explicit `--released` exits 2 (`WF9002`).
+    let missing_rel = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.1"))
+        .args(["--released"])
+        .arg(wit_root.join("no-such-manifest"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(missing_rel.status.code(), Some(2), "{missing_rel:?}");
+    let val: serde_json::Value = serde_json::from_slice(&missing_rel.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9002", "{val}");
+
+    // Non-sibling `--released` exits 2 (`WF9004`).
+    let outside_manifest = base.join("outside-released");
+    fs::write(&outside_manifest, "v0.1\n").unwrap();
+    let non_sibling = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.1"))
+        .args(["--released"])
+        .arg(&outside_manifest)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(non_sibling.status.code(), Some(2), "{non_sibling:?}");
+    let val: serde_json::Value = serde_json::from_slice(&non_sibling.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+    // Invalid `--project` is validated even when `--released` is passed.
+    let bad_proj = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.1"))
+        .args(["--config"])
+        .arg(utf8_proj.join("witforge.toml"))
+        .args(["--project", "does-not-exist", "--released"])
+        .arg(wit_root.join("released"))
+        .output()
+        .unwrap();
+    assert_eq!(bad_proj.status.code(), Some(2), "{bad_proj:?}");
+
+    // Already-retired entry in an invalid manifest (`v0.1` live, `v0.2 retired`) still fails
+    // retirement-order validation with exit 1 and carries `file` in JSON output.
+    fs::write(wit_root.join("released"), "v0.1\nv0.2 retired\n").unwrap();
+    let bad_order_idempotent = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.2"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        bad_order_idempotent.status.code(),
+        Some(1),
+        "{bad_order_idempotent:?}"
+    );
+    let val: serde_json::Value = serde_json::from_slice(&bad_order_idempotent.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF1100", "{val}");
+    assert!(
+        val["diagnostics"][0]["file"]
+            .as_str()
+            .is_some_and(|f| f.ends_with("released")),
+        "expected manifest file on retire diagnostic: {val}"
+    );
 
     fs::remove_dir_all(&base).unwrap();
 }

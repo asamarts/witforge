@@ -34,7 +34,8 @@ use crate::{
     ensure_lockfile_not_released, ensure_not_released, ensure_same_dependency_graph,
     ensure_version_directory, error_diagnostics, error_located_diagnostics, is_contract_error,
     is_released, load, load_released_manifest, load_root_released_manifest, operational_error,
-    operational_error_at, shell_quote, sibling_predecessor, subset, validate_retirement_order,
+    operational_error_at, shell_quote, sibling_predecessor, subset,
+    validate_retirement_order_with_manifest,
 };
 
 /// Whether a path is one contract version, a version root, both, or neither.
@@ -414,6 +415,18 @@ fn check_with_loaded(
             return Ok((result, Some((contract, model))));
         }
     };
+    if text.is_none() && reconciliation.is_empty() {
+        result.error(
+            codes::LOCKFILE_ERROR,
+            format!(
+                "lockfile {} does not exist; {}",
+                lock_path.display(),
+                remedy.advice(" to create it")
+            ),
+            Some(lock_path.display().to_string()),
+        );
+        return Ok((result, Some((contract, model))));
+    }
     let canonical = released
         || text
             .as_deref()
@@ -479,9 +492,22 @@ fn check_with_loaded(
 /// Returns operational errors immediately and collects contract violations across versions.
 #[allow(clippy::too_many_lines)]
 pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<Report> {
+    let manifest_path = explicit_released.map_or_else(
+        || wit_root.join(crate::RELEASED_MANIFEST),
+        Path::to_path_buf,
+    );
     let manifest = load_root_released_manifest(wit_root, explicit_released)?;
     let versions = discover_version_directories(wit_root)?;
-    validate_retirement_order(&versions, &manifest, wit_root)?;
+    let mut result = Report::default();
+    if let Err(error) =
+        validate_retirement_order_with_manifest(&versions, &manifest, wit_root, &manifest_path)
+    {
+        if is_contract_error(&error) {
+            append_contract_error(&mut result, &error, Some(&manifest_path));
+        } else {
+            return Err(error);
+        }
+    }
     let mut since_history = model::SinceHistory::new(
         versions
             .iter()
@@ -490,13 +516,12 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
     let mut previous_by_major: BTreeMap<u64, PathBuf> = BTreeMap::new();
     let mut first_model: Option<Model> = None;
     let mut first_model_by_major: BTreeMap<u64, Model> = BTreeMap::new();
-    let mut result = Report::default();
-    for (major, _minor, directory) in versions {
+    for (major, minor, directory) in versions {
         let name = directory
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
             .unwrap_or_default();
-        let released = manifest.contains(name) || is_released(&directory, explicit_released)?;
+        let released = manifest.contains(name);
         let predecessor = previous_by_major.get(&major).cloned();
         let baseline = if released {
             Baseline::Default
@@ -513,6 +538,7 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
                     ),
                     Some(predecessor_lock.display().to_string()),
                 );
+                since_history.exclude(model::Version::new(major, minor, 0));
                 previous_by_major.insert(major, directory);
                 continue;
             }
@@ -611,6 +637,8 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
                     Some(directory.join("wire.lock").display().to_string()),
                 );
             }
+        } else {
+            since_history.exclude(model::Version::new(major, minor, 0));
         }
         previous_by_major.insert(major, directory);
     }
@@ -685,7 +713,16 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
         )
     })?;
     let versions = discover_version_directories(wit_root)?;
-    validate_retirement_order(&versions, &manifest, wit_root)?;
+    let mut result = Report::default();
+    if let Err(error) =
+        validate_retirement_order_with_manifest(&versions, &manifest, wit_root, &manifest_path)
+    {
+        if is_contract_error(&error) {
+            append_contract_error(&mut result, &error, Some(&manifest_path));
+        } else {
+            return Err(error);
+        }
+    }
 
     let predecessor = versions
         .iter()
@@ -695,7 +732,21 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
     let baseline = if already_listed {
         Baseline::Default
     } else if let Some(pred) = &predecessor {
-        Baseline::Against(pred.join("wire.lock"))
+        let predecessor_lock = pred.join("wire.lock");
+        if !predecessor_lock.is_file() {
+            result.error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "cannot check {} against predecessor {}: missing lockfile {}",
+                    version_dir.display(),
+                    pred.display(),
+                    predecessor_lock.display()
+                ),
+                Some(predecessor_lock.display().to_string()),
+            );
+            return Ok(result);
+        }
+        Baseline::Against(predecessor_lock)
     } else {
         Baseline::First
     };
@@ -703,9 +754,35 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
     if manifest_path.exists() {
         options = options.with_released(manifest_path);
     }
-    let (mut result, target_loaded) = check_with_loaded(&options, Some(already_listed), true)?;
+    let mut target_loaded = match check_with_loaded(&options, Some(already_listed), true) {
+        Ok((report, loaded)) => {
+            result.merge(report);
+            loaded
+        }
+        Err(error) if is_contract_error(&error) => {
+            append_contract_error(&mut result, &error, None);
+            None
+        }
+        Err(error) => return Err(error),
+    };
     if !result.is_ok() {
         return Ok(result);
+    }
+    if already_listed
+        && let Some(pred) = &predecessor
+        && let Ok((current_lock, _)) = read_required_lock(&version_dir.join("wire.lock"))
+        && let Ok((predecessor_lock, _)) = read_required_lock(&pred.join("wire.lock"))
+        && let Err(error) = current_lock.check_append_only(&predecessor_lock)
+    {
+        result.error(
+            codes::LOCKFILE_ERROR,
+            format!(
+                "{} does not continue {}: {error:#}",
+                version_dir.join("wire.lock").display(),
+                pred.join("wire.lock").display()
+            ),
+            Some(version_dir.join("wire.lock").display().to_string()),
+        );
     }
 
     let mut since_history = model::SinceHistory::new(
@@ -716,7 +793,6 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
     );
     let mut first_model: Option<Model> = None;
     let mut first_model_by_major: BTreeMap<u64, Model> = BTreeMap::new();
-    let mut target_loaded = target_loaded;
 
     for (major, minor, directory) in versions {
         if (major, minor) > (target_major, target_minor) {
@@ -726,15 +802,40 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
         let (contract, current_model) = if is_target && let Some(loaded) = target_loaded.take() {
             loaded
         } else {
-            let contract = load(&directory)?;
+            let contract = match load(&directory) {
+                Ok(contract) => contract,
+                Err(error) if is_contract_error(&error) => {
+                    append_contract_error(&mut result, &error, Some(&directory));
+                    since_history.exclude(model::Version::new(major, minor, 0));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let violations = subset::check_located_diagnostics(&contract);
             if !violations.is_empty() {
                 for violation in violations {
                     result.findings.push(Finding::subset(violation));
                 }
+                since_history.exclude(model::Version::new(major, minor, 0));
                 continue;
             }
-            let model = model::build(&contract)?;
+            let model = match model::build(&contract) {
+                Ok(model) => model,
+                Err(error) if is_contract_error(&error) => {
+                    append_contract_error(&mut result, &error, Some(&directory));
+                    since_history.exclude(model::Version::new(major, minor, 0));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if let Err(error) = ensure_directory_version(&directory, &model) {
+                if is_contract_error(&error) {
+                    append_contract_error(&mut result, &error, Some(&directory));
+                    since_history.exclude(model::Version::new(major, minor, 0));
+                    continue;
+                }
+                return Err(error);
+            }
             (contract, model)
         };
 
@@ -785,9 +886,7 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
             }
         }
         if let Some(baseline) = first_model_by_major.get(&major) {
-            if (!is_target || already_listed)
-                && let Err(error) = ensure_same_dependency_graph(baseline, &current_model)
-            {
+            if let Err(error) = ensure_same_dependency_graph(baseline, &current_model) {
                 result.error(
                     codes::DEPENDENCY_GRAPH_MISMATCH,
                     format!("{error:#}"),
@@ -926,6 +1025,17 @@ pub fn lock(options: &VersionOptions) -> Result<LockReport> {
             lockfile: lock_path,
             rendered: None,
         });
+    }
+    if let Err(error) = emit::proto::emit_major(&model, &wire_lock) {
+        if is_contract_error(&error) {
+            append_contract_error(&mut report, &error, Some(&lock_path));
+            return Ok(LockReport {
+                report,
+                lockfile: lock_path,
+                rendered: None,
+            });
+        }
+        return Err(error);
     }
 
     let rendered = wire_lock.render();
