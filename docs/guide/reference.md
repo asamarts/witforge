@@ -201,6 +201,20 @@ decode compatibility.
 | `--json` | Emit the full diff report as JSON on stdout (takes precedence over `--format`). |
 | `--check[=VIEWS]` | Exit `1` when any breaking change hits the selected views: comma-separated subset of `wire`, `source`, `api`, `decode` (bare `--check` defaults to `wire,source,api`, excluding `decode`). |
 
+### `witforge inspect`
+
+Inspect a single version directory or WIT root, printing a concise human summary or exporting the
+deterministic, schema-versioned (`version: 1`) JSON contract IR with `--json`.
+
+| Option / Argument | Description |
+|---|---|
+| `[PATH]` | Version directory or WIT root; omit to inspect the configured project root via `witforge.toml`. |
+| `--json` | Emit the versioned JSON contract IR (`version: 1`) on stdout (takes precedence over `--format`). |
+| `--released <PATH>` | Released-version manifest path when inspecting a WIT root (defaults to `<WIT_ROOT>/released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Select a single project from `witforge.toml`. |
+
 ### `witforge freeze`
 
 Verify that every directory listed in `wit/released` has remained immutable in Git history

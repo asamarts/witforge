@@ -533,6 +533,13 @@ impl WireLock {
         self.entries.iter()
     }
 
+    /// Iterate declaration-order entries in sorted parent order as `(parent, fingerprint, members)`.
+    pub(crate) fn order_fingerprints(&self) -> impl Iterator<Item = (&str, u64, &[String])> {
+        self.orders
+            .iter()
+            .map(|(parent, order)| (parent.as_str(), order.fingerprint, order.members.as_slice()))
+    }
+
     /// The entry for a member key, if any.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<Entry> {

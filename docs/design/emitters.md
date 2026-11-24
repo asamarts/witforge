@@ -1707,6 +1707,7 @@ witforge freeze   [<wit-root>] [--config witforge.toml | --no-config] [--project
 witforge new-version [<wit-root>] [--major] [--from VERSION] [--config witforge.toml | --no-config] [--project NAME]
 witforge release  <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge retire   <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
+witforge inspect  [<path>] [--json] [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge rust     [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
 witforge proto    [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
 witforge schema   [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
@@ -1796,3 +1797,20 @@ proto-root = "crate::proto"
 - Unknown keys, missing projects, missing config for `--project`, and missing output values are
   errors.
 - The existing CLI-only form continues to work.
+
+## 12. Versioned Contract IR (`witforge inspect`)
+
+`witforge inspect [<path>] [--json] [--released <path>] [--config witforge.toml | --no-config] [--project NAME]`
+prints a concise human summary of a single version directory or WIT root, or exports the
+deterministic, schema-versioned (`"version": 1`) JSON intermediate representation with `--json`
+(via `witforge::inspect`).
+
+- Single version directory (`"kind": "version"`): emits `contract` with `package`, `interfaces`
+  (every type kind, members, normalized `docs`, `stability`, `canonical_type`, and `wire_number`),
+  `worlds`, resolved `dependencies`, and `lockfile` (`reserved` entries and declaration-order
+  `order` fingerprints, or `null` when unlocked).
+- WIT root (`"kind": "root"`): validates all live versions and emits `retired` (retired directory
+  names) and `versions` (sorted ascending `(major, minor)` entries, each with `directory`, `major`,
+  `minor`, `released`, and `contract`).
+- Output is 2-space indented, LF-only, deterministic, and adds no runtime dependencies to the
+  `witforge` library crate.

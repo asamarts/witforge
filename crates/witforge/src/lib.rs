@@ -30,6 +30,7 @@ pub mod diagnostic;
 pub mod diff;
 pub mod emit;
 pub mod freeze;
+pub mod inspect;
 pub mod lock;
 pub mod model;
 pub mod subset;

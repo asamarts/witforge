@@ -4904,3 +4904,78 @@ fn init_retire_and_new_version_from_complete_the_lifecycle_cli() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn inspect_command_emits_versioned_json_ir_and_human_summary_for_version_root_and_config() {
+    let base = std::env::temp_dir().join(format!("witforge-inspect-cli-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let proj = base.join("demo");
+
+    assert!(
+        witforge()
+            .args(["init"])
+            .arg(&proj)
+            .args(["--package", "acme:inspect"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // 1. Single version directory (`--json` and human summary).
+    let single_json_out = witforge()
+        .args(["inspect"])
+        .arg(proj.join("wit/v0.1"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(single_json_out.status.success(), "{single_json_out:?}");
+    let single_ir: serde_json::Value = serde_json::from_slice(&single_json_out.stdout).unwrap();
+    assert_eq!(single_ir["version"], 1);
+    assert_eq!(single_ir["kind"], "version");
+    assert_eq!(single_ir["contract"]["package"]["namespace"], "acme");
+    assert_eq!(single_ir["contract"]["package"]["name"], "inspect");
+    assert_eq!(
+        single_ir["contract"]["interfaces"][0]["types"][0]["fields"][0]["wire_number"],
+        1
+    );
+
+    let single_human = witforge()
+        .args(["inspect"])
+        .arg(proj.join("wit/v0.1"))
+        .output()
+        .unwrap();
+    assert!(single_human.status.success(), "{single_human:?}");
+    let human_stdout = String::from_utf8_lossy(&single_human.stdout);
+    assert!(
+        human_stdout.contains("acme:inspect@0.1.0"),
+        "{human_stdout}"
+    );
+    assert!(human_stdout.contains("interface api:"), "{human_stdout}");
+
+    // 2. WIT root via `--config` (`--json` and human summary).
+    let root_json_out = witforge()
+        .args(["inspect", "--json", "--config"])
+        .arg(proj.join("witforge.toml"))
+        .output()
+        .unwrap();
+    assert!(root_json_out.status.success(), "{root_json_out:?}");
+    let root_ir: serde_json::Value = serde_json::from_slice(&root_json_out.stdout).unwrap();
+    assert_eq!(root_ir["version"], 1);
+    assert_eq!(root_ir["kind"], "root");
+    assert_eq!(root_ir["versions"][0]["directory"], "v0.1");
+    assert_eq!(root_ir["versions"][0]["released"], false);
+
+    // 3. `--json` takes precedence over `--format sarif`.
+    let precedence = witforge()
+        .args(["inspect"])
+        .arg(proj.join("wit"))
+        .args(["--json", "--format", "sarif"])
+        .output()
+        .unwrap();
+    assert!(precedence.status.success(), "{precedence:?}");
+    let prec_ir: serde_json::Value = serde_json::from_slice(&precedence.stdout).unwrap();
+    assert_eq!(prec_ir["version"], 1);
+    assert_eq!(prec_ir["kind"], "root");
+
+    fs::remove_dir_all(&base).unwrap();
+}

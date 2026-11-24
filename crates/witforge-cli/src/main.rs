@@ -20,6 +20,7 @@
 //! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge retire  <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge diff  <old> <new> [--json] [--check[=VIEWS]]
+//! witforge inspect [<path>] [--json] [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge freeze [<wit-root>] [--released PATH] [--config PATH | --no-config] [--project NAME] [--base REV]
 //! witforge completions <bash|zsh|fish>
 //! witforge explain <code-id>
@@ -109,6 +110,8 @@ enum Command {
     Retire(RetireOptions),
     /// Compare two contract versions and classify breaking changes.
     Diff(DiffOptions),
+    /// Inspect a contract version directory or WIT root (human summary or versioned JSON IR).
+    Inspect(InspectOptions),
     /// Verify that released version directories have not changed in Git history.
     Freeze(FreezeOptions),
     /// Generate shell completion scripts for bash, zsh, or fish.
@@ -256,6 +259,22 @@ struct ExplainOptions {
     /// Diagnostic code to explain (for example `WF1015`).
     #[arg(value_name = "CODE")]
     code: String,
+}
+
+#[derive(Debug, Args)]
+struct InspectOptions {
+    /// WIT version directory or WIT root; omit to use the configured project root.
+    #[arg(value_name = "PATH")]
+    path: Option<PathBuf>,
+    /// Emit the versioned JSON contract IR (`version: 1`) on stdout.
+    #[arg(long)]
+    json: bool,
+    /// Released-version manifest path (WIT root only; defaults to `<WIT_ROOT>/released`).
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file; used when PATH is omitted or `--config`/`--project` is passed.
+    #[command(flatten)]
+    config: ConfigArgs,
 }
 
 #[derive(Debug, Args)]
@@ -1024,6 +1043,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Release(options) => release_command(&options, &mut reporter),
         Command::Retire(options) => retire_command(&options, &mut reporter),
         Command::Diff(options) => diff_command(&options, &mut reporter),
+        Command::Inspect(options) => inspect_command(&options, &mut reporter),
         Command::Freeze(options) => freeze_command(&options, &mut reporter),
         Command::Completions(options) => Ok(completions_command(&options, &mut reporter)),
         Command::Explain(options) => explain_command(&options, &mut reporter),
@@ -1844,6 +1864,132 @@ fn explain_command(options: &ExplainOptions, reporter: &mut Reporter) -> Result<
     let _ = write!(out, "\nDocs: {}", witforge::diagnostic::help_uri(info.code));
     reporter.suppress();
     reporter.write_stdout_line(&out);
+    Ok(ExitCode::SUCCESS)
+}
+
+#[allow(clippy::too_many_lines)]
+fn inspect_command(options: &InspectOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    if options.json {
+        reporter.suppress();
+    }
+    let (target, released) = if let Some(path) = &options.path {
+        if options.config.config.is_some() || options.config.project.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--config` and `--project` cannot be combined with a positional PATH on `inspect`",
+                None,
+            ));
+        }
+        (path.clone(), options.released.clone())
+    } else {
+        let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing PATH (pass a version directory, a WIT root, or use `witforge.toml`)",
+                None,
+            ));
+        };
+        let (config, base) = load_config_file(&config_path)?;
+        let name = match &options.config.project {
+            Some(name) => name.clone(),
+            None if config.project.len() == 1 => config
+                .project
+                .keys()
+                .next()
+                .expect("checked one project")
+                .clone(),
+            None => {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "configuration {} has multiple projects; pass --project",
+                        config_path.display()
+                    ),
+                    Some(config_path.display().to_string()),
+                ));
+            }
+        };
+        let Some(project) = config.project.get(&name) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("configuration has no project `{name}`"),
+                Some(config_path.display().to_string()),
+            ));
+        };
+        let root = resolve_config_path(&base, &project.root);
+        let released = options.released.clone().or_else(|| {
+            project
+                .released
+                .as_deref()
+                .map(|p| resolve_config_path(&base, p))
+        });
+        (root, released)
+    };
+
+    let link_meta = fs::symlink_metadata(&target)
+        .with_context(|| format!("failed to read {}", target.display()))?;
+    if link_meta.file_type().is_symlink() {
+        let is_wit_root = fs::metadata(&target)
+            .ok()
+            .filter(fs::Metadata::is_dir)
+            .and_then(|_| contract_workflow::classify_check_target(&target).ok())
+            == Some(contract_workflow::CheckTargetKind::WitRoot);
+        if !is_wit_root {
+            ensure_version_directory(&target)?;
+        }
+    } else if !link_meta.is_dir() {
+        ensure_version_directory(&target)?;
+    }
+
+    let rendered = match contract_workflow::classify_check_target(&target)? {
+        contract_workflow::CheckTargetKind::VersionDirectory => {
+            if options.json {
+                witforge::inspect::inspect_version_json(&target)?
+            } else {
+                witforge::inspect::summarize_version(&target)?
+            }
+        }
+        contract_workflow::CheckTargetKind::WitRoot => {
+            if options.json {
+                witforge::inspect::inspect_root_json(&target, released.as_deref())?
+            } else {
+                witforge::inspect::summarize_root(&target, released.as_deref())?
+            }
+        }
+        contract_workflow::CheckTargetKind::Both => {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "`{}` contains both WIT source/lockfile and `v<major>.<minor>` version \
+                     directories; expected either a single version directory or a WIT root",
+                    target.display()
+                ),
+                Some(target.display().to_string()),
+            ));
+        }
+        contract_workflow::CheckTargetKind::Neither => {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "`{}` contains neither `.wit` files nor `v<major>.<minor>` version \
+                     directories; expected a version directory or a WIT root",
+                    target.display()
+                ),
+                Some(target.display().to_string()),
+            ));
+        }
+        _ => {
+            return Err(op_error(
+                codes::INTERNAL_ERROR,
+                "unrecognized inspect target classification",
+                Some(target.display().to_string()),
+            ));
+        }
+    };
+
+    if options.json || (reporter.human() && !reporter.is_quiet()) {
+        reporter.write_stdout_line(rendered.trim_end_matches('\n'));
+    }
     Ok(ExitCode::SUCCESS)
 }
 
