@@ -5,15 +5,16 @@
 //!                [--config PATH | --no-config] [--project NAME]
 //! witforge lock  <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
 //! witforge rust  [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
-//!                [--serde | --no-serde] [--check] [--diff] [--released PATH]
+//!                [--serde | --no-serde] [--no-std | --std] [--check] [--diff] [--released PATH]
 //! witforge proto [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
 //! witforge schema [<wit-root>] [--out DIR] [--draft 7|2020-12] [--config PATH | --no-config]
 //!                [--project NAME] [--check] [--diff] [--released PATH]
 //! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
-//!                [--config PATH | --no-config] [--project NAME] [--check] [--diff] [--released PATH]
+//!                [--no-std | --std] [--config PATH | --no-config] [--project NAME] [--check]
+//!                [--diff] [--released PATH]
 //! witforge generate [--config PATH | --no-config] [--project NAME] [--check] [--diff]
-//!                   [--serde | --no-serde] [--released PATH]
+//!                   [--serde | --no-serde] [--no-std | --std] [--released PATH]
 //! witforge init  [DIR] [--package NS:NAME] [--serde]
 //! witforge new-version [<wit-root>] [--major] [--from VERSION] [--config PATH | --no-config]
 //!                      [--project NAME]
@@ -141,6 +142,12 @@ struct RustOptions {
     /// Do not add serde derives, overriding a configuration-file setting.
     #[arg(long = "no-serde", conflicts_with = "serde")]
     no_serde: bool,
+    /// Emit `#![no_std]` + `alloc` compatible Rust paths (`::alloc::*`, `::core::*`).
+    #[arg(long = "no-std", conflicts_with = "std_mode")]
+    no_std: bool,
+    /// Emit default `std` Rust paths, overriding a configuration-file `no-std = true` setting.
+    #[arg(long = "std", conflicts_with = "no_std")]
+    std_mode: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -196,6 +203,7 @@ struct SchemaOptions {
     config: ConfigArgs,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 struct GlueOptions {
     /// WIT root containing version directories.
@@ -210,6 +218,12 @@ struct GlueOptions {
     /// Rust module containing the generated proto version modules.
     #[arg(long, value_name = "PATH")]
     proto_root: Option<String>,
+    /// Emit `#![no_std]` + `alloc` compatible Rust paths (`::alloc::*`, `::core::*`).
+    #[arg(long = "no-std", conflicts_with = "std_mode")]
+    no_std: bool,
+    /// Emit default `std` Rust paths, overriding a configuration-file `no-std = true` setting.
+    #[arg(long = "std", conflicts_with = "no_std")]
+    std_mode: bool,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -308,6 +322,12 @@ struct GenerateOptions {
     /// Do not add serde derives, overriding a configuration-file setting.
     #[arg(long = "no-serde", conflicts_with = "serde")]
     no_serde: bool,
+    /// Emit `#![no_std]` + `alloc` compatible paths across configured Rust and glue outputs.
+    #[arg(long = "no-std", conflicts_with = "std_mode")]
+    no_std: bool,
+    /// Emit default `std` paths across configured Rust and glue outputs, overriding config.
+    #[arg(long = "std", conflicts_with = "no_std")]
+    std_mode: bool,
     /// Released-version manifest to validate; overrides a project's `released` setting.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -463,6 +483,9 @@ struct RustConfig {
     out: PathBuf,
     /// Add serde derives to generated records, enums, variants, and flags.
     serde: Option<bool>,
+    /// Emit `#![no_std]` + `alloc` compatible paths instead of `::std::*`.
+    #[serde(rename = "no-std")]
+    no_std: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -481,6 +504,9 @@ struct GlueConfig {
     plain_root: Option<String>,
     #[serde(rename = "proto-root")]
     proto_root: Option<String>,
+    /// Emit `#![no_std]` + `alloc` compatible paths instead of `::std::*`.
+    #[serde(rename = "no-std")]
+    no_std: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -498,6 +524,7 @@ struct PathOverrides {
     plain_root: Option<String>,
     proto_root: Option<String>,
     serde: Option<bool>,
+    no_std: Option<bool>,
     schema_draft: Option<emit::json_schema::JsonSchemaDraft>,
 }
 
@@ -508,6 +535,7 @@ struct ResolvedPaths {
     plain_root: Option<String>,
     proto_root: Option<String>,
     serde: bool,
+    no_std: bool,
     schema_draft: emit::json_schema::JsonSchemaDraft,
 }
 
@@ -613,6 +641,7 @@ fn resolve_paths(
         plain_root,
         proto_root,
         serde,
+        no_std,
         schema_draft,
     } = overrides;
     let cli_complete = root.is_some()
@@ -655,6 +684,7 @@ fn resolve_paths(
             plain_root,
             proto_root,
             serde: serde.unwrap_or(false),
+            no_std: no_std.unwrap_or(false),
             schema_draft: schema_draft.unwrap_or_default(),
         });
     };
@@ -729,6 +759,13 @@ fn resolve_paths(
     let serde = serde
         .or_else(|| project.rust.as_ref().and_then(|config| config.serde))
         .unwrap_or(false);
+    let no_std = no_std
+        .or_else(|| match emitter {
+            Emitter::Rust => project.rust.as_ref().and_then(|config| config.no_std),
+            Emitter::Glue => project.glue.as_ref().and_then(|config| config.no_std),
+            Emitter::Proto | Emitter::Schema => None,
+        })
+        .unwrap_or(false);
     let config_schema_draft = match project
         .schema
         .as_ref()
@@ -749,6 +786,7 @@ fn resolve_paths(
         plain_root,
         proto_root,
         serde,
+        no_std,
         schema_draft,
     })
 }
@@ -1351,6 +1389,7 @@ fn regenerate_command(
     plain_root: Option<&str>,
     proto_root: Option<&str>,
     serde_flag: Option<bool>,
+    no_std_flag: Option<bool>,
     schema_draft: Option<&str>,
 ) -> String {
     let mut command = format!("witforge {verb}");
@@ -1379,6 +1418,11 @@ fn regenerate_command(
         Some(false) => command.push_str(" --no-serde"),
         None => {}
     }
+    match no_std_flag {
+        Some(true) => command.push_str(" --no-std"),
+        Some(false) => command.push_str(" --std"),
+        None => {}
+    }
     if let Some(draft) = schema_draft {
         let _ = write!(command, " --draft {}", shell_quote(Path::new(draft)));
     }
@@ -1402,6 +1446,13 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     } else {
         None
     };
+    let no_std_override = if options.no_std {
+        Some(true)
+    } else if options.std_mode {
+        Some(false)
+    } else {
+        None
+    };
     let paths = resolve_paths(
         Emitter::Rust,
         &options.config,
@@ -1412,12 +1463,15 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             plain_root: None,
             proto_root: None,
             serde: serde_override,
+            no_std: no_std_override,
             schema_draft: None,
         },
     )?;
     guard_output_root(&paths)?;
-    let files =
-        emit::rust::plan_with_released(&paths.root, paths.serde, paths.released.as_deref())?;
+    let rust_opts = emit::rust::RustOptions::new()
+        .with_serde(paths.serde)
+        .with_no_std(paths.no_std);
+    let files = emit::rust::plan_with_options(&paths.root, paths.released.as_deref(), &rust_opts)?;
     let regen = regenerate_command(
         "rust",
         &options.config,
@@ -1427,6 +1481,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         None,
         None,
         serde_override,
+        no_std_override,
         None,
     );
     run_generator(
@@ -1450,6 +1505,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             plain_root: None,
             proto_root: None,
             serde: None,
+            no_std: None,
             schema_draft: None,
         },
     )?;
@@ -1461,6 +1517,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         None,
         None,
         None,
@@ -1492,6 +1549,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             plain_root: None,
             proto_root: None,
             serde: None,
+            no_std: None,
             schema_draft: draft_override,
         },
     )?;
@@ -1511,6 +1569,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         None,
         None,
         None,
+        None,
         options.draft.as_deref(),
     );
     run_generator(
@@ -1524,6 +1583,13 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
 }
 
 fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let no_std_override = if options.no_std {
+        Some(true)
+    } else if options.std_mode {
+        Some(false)
+    } else {
+        None
+    };
     let paths = resolve_paths(
         Emitter::Glue,
         &options.config,
@@ -1534,6 +1600,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             plain_root: options.plain_root.clone(),
             proto_root: options.proto_root.clone(),
             serde: None,
+            no_std: no_std_override,
             schema_draft: None,
         },
     )?;
@@ -1549,11 +1616,13 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     // stay frozen. As for the other generators, the manifest is validated and any `retired`
     // entries are excluded from output.
     guard_output_root(&paths)?;
-    let files = emit::glue::plan_with_released(
+    let glue_opts = emit::glue::GlueOptions::new().with_no_std(paths.no_std);
+    let files = emit::glue::plan_with_options(
         &paths.root,
         plain_root,
         proto_root,
         paths.released.as_deref(),
+        &glue_opts,
     )?;
     let regen = regenerate_command(
         "glue",
@@ -1564,6 +1633,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.plain_root.as_deref(),
         options.proto_root.as_deref(),
         None,
+        no_std_override,
         None,
     );
     run_generator(
@@ -2157,6 +2227,13 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
     } else {
         None
     };
+    let no_std_override = if options.no_std {
+        Some(true)
+    } else if options.std_mode {
+        Some(false)
+    } else {
+        None
+    };
 
     let mut planned: Vec<(String, Vec<Emitter>)> = Vec::with_capacity(selected.len());
     for (proj_name, proj) in &selected {
@@ -2213,6 +2290,8 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                         diff: options.diff,
                         serde: serde_override == Some(true),
                         no_serde: serde_override == Some(false),
+                        no_std: no_std_override == Some(true),
+                        std_mode: no_std_override == Some(false),
                         released: options.released.clone(),
                         config: ConfigArgs {
                             config: cfg_args.config.clone(),
@@ -2259,6 +2338,8 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                         out: None,
                         plain_root: None,
                         proto_root: None,
+                        no_std: no_std_override == Some(true),
+                        std_mode: no_std_override == Some(false),
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),
@@ -3073,6 +3154,7 @@ mod reference_doc_tests {
             "`[project.<name>.rust]`",
             "`project.<name>.rust.out`",
             "`project.<name>.rust.serde`",
+            "`project.<name>.rust.no-std`",
             "`[project.<name>.proto]`",
             "`project.<name>.proto.out`",
             "`[project.<name>.schema]`",
@@ -3082,6 +3164,7 @@ mod reference_doc_tests {
             "`project.<name>.glue.out`",
             "`project.<name>.glue.plain-root`",
             "`project.<name>.glue.proto-root`",
+            "`project.<name>.glue.no-std`",
         ] {
             assert!(
                 doc.contains(key),

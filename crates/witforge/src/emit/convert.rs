@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result, bail};
 
 use crate::diff::ConversionOmission;
-use crate::emit::defaults::default_expr;
+use crate::emit::defaults::{default_expr, default_expr_with_no_std};
 use crate::emit::rust::{header_for, version_module_name};
 use crate::emit::versions::{Version, same_effective_dependency};
 use crate::emit::{
@@ -45,7 +45,13 @@ macro_rules! convert_bail {
 const ERROR: &str = "ConversionError";
 
 /// Plan the `convert.rs` file for `versions`, or `None` when there are fewer than two versions.
+#[allow(dead_code)]
 pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
+    plan_with_no_std(versions, false)
+}
+
+/// Plan `convert.rs` for `versions`, optionally emitting `#![no_std]` + `alloc` paths.
+pub(crate) fn plan_with_no_std(versions: &[Version], no_std: bool) -> Result<Option<String>> {
     let pairs: Vec<(&Version, &Version)> = versions
         .windows(2)
         .map(|pair| (&pair[0], &pair[1]))
@@ -85,6 +91,12 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
     let mut out = String::new();
     writeln!(out, "{}", header_for(&package.namespace, &package.name))?;
     writeln!(out, "// source: {}:{}", package.namespace, package.name)?;
+    if no_std {
+        writeln!(
+            out,
+            "// no_std output requires `extern crate alloc;` in the consuming crate."
+        )?;
+    }
     if versions
         .iter()
         .any(|version| model_has_deprecation(&version.model))
@@ -106,7 +118,7 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
         }
     }
     writeln!(out)?;
-    write_error(&mut out)?;
+    write_error(&mut out, no_std)?;
     let empty_omitted = BTreeSet::new();
     for &(old, new) in &pairs {
         let fwd_omitted = omitted_by_dir
@@ -116,10 +128,10 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
             .get(&(new.model.package.version, old.model.package.version))
             .unwrap_or(&empty_omitted);
         writeln!(out)?;
-        emit_pair(&mut out, old, new, Direction::Forward, fwd_omitted)
+        emit_pair(&mut out, old, new, Direction::Forward, fwd_omitted, no_std)
             .map_err(|err| attach_pair_locations(err, new, old))?;
         writeln!(out)?;
-        emit_pair(&mut out, new, old, Direction::Reverse, rev_omitted)
+        emit_pair(&mut out, new, old, Direction::Reverse, rev_omitted, no_std)
             .map_err(|err| attach_pair_locations(err, old, new))?;
     }
     Ok(Some(out))
@@ -460,7 +472,7 @@ fn attach_pair_locations(
 }
 
 #[allow(clippy::too_many_lines)]
-fn write_error(out: &mut String) -> Result<()> {
+fn write_error(out: &mut String, no_std: bool) -> Result<()> {
     writeln!(
         out,
         "/// A version-to-version conversion that cannot reconstruct the target value."
@@ -563,7 +575,12 @@ fn write_error(out: &mut String) -> Result<()> {
     writeln!(out, "    }}")?;
     writeln!(out, "}}")?;
     writeln!(out)?;
-    writeln!(out, "impl ::std::error::Error for ConversionError {{}}")?;
+    let error_trait = if no_std {
+        "::core::error::Error"
+    } else {
+        "::std::error::Error"
+    };
+    writeln!(out, "impl {error_trait} for ConversionError {{}}")?;
     Ok(())
 }
 
@@ -573,6 +590,7 @@ fn emit_pair(
     target: &Version,
     direction: Direction,
     omitted: &BTreeSet<String>,
+    no_std: bool,
 ) -> Result<()> {
     let source_module = version_module_name(&source.model);
     let target_module = version_module_name(&target.model);
@@ -642,6 +660,7 @@ fn emit_pair(
                 source_def,
                 target_def,
                 direction,
+                no_std,
             )?;
         }
         writeln!(out, "    }}")?;
@@ -710,6 +729,7 @@ fn emit_function(
     source_def: &TypeDef,
     target_def: &TypeDef,
     direction: Direction,
+    no_std: bool,
 ) -> Result<()> {
     let function = rust_ident(&snake_case(&source_def.name), "conversion function")?;
     let source_type = rust_type(source_interface, &source_def.name, "__witforge_from")?;
@@ -754,6 +774,7 @@ fn emit_function(
         source_def,
         target_def,
         direction,
+        no_std,
     )?;
     out.push_str(&body);
     writeln!(out, "        }}")?;
@@ -772,6 +793,7 @@ fn conversion_body(
     source_def: &TypeDef,
     target_def: &TypeDef,
     direction: Direction,
+    no_std: bool,
 ) -> Result<String> {
     let mut next_id = 0usize;
     match (&source_def.kind, &target_def.kind) {
@@ -786,6 +808,7 @@ fn conversion_body(
             source_fields,
             target_fields,
             direction,
+            no_std,
         ),
         (TypeDefKind::Variant(source_cases), TypeDefKind::Variant(target_cases)) => variant_body(
             indent,
@@ -797,6 +820,7 @@ fn conversion_body(
             source_def,
             source_cases,
             target_cases,
+            no_std,
         ),
         (TypeDefKind::Enum(source_cases), TypeDefKind::Enum(target_cases)) => enum_body(
             indent,
@@ -826,6 +850,7 @@ fn conversion_body(
                 source_target,
                 target_target,
                 &format!("{}/{}", source_interface.name, source_def.name),
+                no_std,
             )
         }
         (TypeDefKind::List(source_target), TypeDefKind::List(target_target)) => {
@@ -839,6 +864,7 @@ fn conversion_body(
                 &TypeExpr::List(Box::new(source_target.clone())),
                 &TypeExpr::List(Box::new(target_target.clone())),
                 &format!("{}/{}", source_interface.name, source_def.name),
+                no_std,
             )
         }
         (TypeDefKind::Option(source_target), TypeDefKind::Option(target_target)) => {
@@ -852,6 +878,7 @@ fn conversion_body(
                 &TypeExpr::Option(Box::new(source_target.clone())),
                 &TypeExpr::Option(Box::new(target_target.clone())),
                 &format!("{}/{}", source_interface.name, source_def.name),
+                no_std,
             )
         }
         (TypeDefKind::Result(source_result), TypeDefKind::Result(target_result)) => {
@@ -865,6 +892,7 @@ fn conversion_body(
                 &TypeExpr::Result(source_result.clone()),
                 &TypeExpr::Result(target_result.clone()),
                 &format!("{}/{}", source_interface.name, source_def.name),
+                no_std,
             )
         }
         _ => convert_bail!(
@@ -891,6 +919,7 @@ fn emit_direct_conversion(
     source_type: &TypeExpr,
     target_type: &TypeExpr,
     path: &str,
+    no_std: bool,
 ) -> Result<String> {
     let prefix = " ".repeat(indent);
     let mut stmts = Vec::new();
@@ -907,6 +936,7 @@ fn emit_direct_conversion(
         "value",
         path,
         true,
+        no_std,
     )?;
     let mut out = String::new();
     for stmt in stmts {
@@ -934,6 +964,7 @@ fn record_body(
     source_fields: &[Field],
     target_fields: &[Field],
     direction: Direction,
+    no_std: bool,
 ) -> Result<String> {
     let prefix = " ".repeat(indent);
     let target_interface_module =
@@ -967,6 +998,7 @@ fn record_body(
                 &format!("&value.{source_name}"),
                 &format!("{type_path}.{}", source_field.name),
                 false,
+                no_std,
             )?;
         }
     }
@@ -979,7 +1011,7 @@ fn record_body(
         {
             continue;
         }
-        if default_expr(&target.model, &target_field.ty)?.is_none() {
+        if default_expr_with_no_std(&target.model, &target_field.ty, no_std)?.is_none() {
             missing = Some(target_field);
             break;
         }
@@ -1039,6 +1071,7 @@ fn record_body(
                 &format!("&value.{source_name}"),
                 &format!("{type_path}.{}", source_field.name),
                 false,
+                no_std,
             )?;
             let mut field_expr = val.expr;
             if indent + 4 + target_name.len() + 2 + field_expr.len() + 1 > rustfmt::MAX_WIDTH {
@@ -1048,7 +1081,8 @@ fn record_body(
             }
             fields.push((target_name, field_expr));
         } else {
-            let Some(default) = default_expr(&target.model, &target_field.ty)? else {
+            let Some(default) = default_expr_with_no_std(&target.model, &target_field.ty, no_std)?
+            else {
                 bail!(
                     "no default for target field `{}` in {type_path}",
                     target_field.name
@@ -1087,6 +1121,7 @@ fn variant_body(
     source_def: &TypeDef,
     source_cases: &[Case],
     target_cases: &[Case],
+    no_std: bool,
 ) -> Result<String> {
     let prefix = " ".repeat(indent);
     let arm_indent = indent + 4;
@@ -1167,6 +1202,7 @@ fn variant_body(
                     "payload",
                     &format!("{type_path}.{}", source_case.name),
                     false,
+                    no_std,
                 )?;
                 let mut inner = val.expr;
                 let ctor = format!("{target_path}::{target_case_name}");
@@ -1473,6 +1509,7 @@ fn emit_convert_value(
     expression: &str,
     path: &str,
     tail_result: bool,
+    no_std: bool,
 ) -> Result<ValueExpr> {
     let from_ver = source.model.package.version;
     let to_ver = target.model.package.version;
@@ -1578,10 +1615,15 @@ fn emit_convert_value(
             let out_var = fresh(next_id);
             let item_var = fresh(next_id);
             let iter_src = expression.strip_prefix('&').unwrap_or(expression);
+            let vec_ty = if no_std {
+                "::alloc::vec::Vec"
+            } else {
+                "::std::vec::Vec"
+            };
             stmts.push(rustfmt::fmt_let_stmt(
                 indent,
                 &format!("mut {out_var}"),
-                &format!("::std::vec::Vec::with_capacity({iter_src}.len())"),
+                &format!("{vec_ty}::with_capacity({iter_src}.len())"),
             ));
             let mut body_stmts = Vec::new();
             let elem = emit_convert_value(
@@ -1597,6 +1639,7 @@ fn emit_convert_value(
                 &item_var,
                 path,
                 false,
+                no_std,
             )?;
             let mut loop_code = format!("{prefix}for {item_var} in {expression} {{\n");
             for s in body_stmts {
@@ -1646,6 +1689,7 @@ fn emit_convert_value(
                 &item_var,
                 path,
                 false,
+                no_std,
             )?;
             let mut if_code = format!(
                 "{prefix}if let ::core::option::Option::Some({item_var}) = {expression} {{\n"
@@ -1680,6 +1724,7 @@ fn emit_convert_value(
             target_result,
             expression,
             path,
+            no_std,
         ),
         _ => convert_bail!(
             path,
@@ -1706,6 +1751,7 @@ fn emit_result_value(
     target_result: &ResultExpr,
     expression: &str,
     path: &str,
+    no_std: bool,
 ) -> Result<ValueExpr> {
     let from_ver = source.model.package.version;
     let to_ver = target.model.package.version;
@@ -1731,6 +1777,7 @@ fn emit_result_value(
                 "ok",
                 path,
                 false,
+                no_std,
             )?;
         }
         (None, None) => {}
@@ -1763,6 +1810,7 @@ fn emit_result_value(
                 "err",
                 path,
                 false,
+                no_std,
             )?;
         }
         (None, None) => {}
@@ -1804,6 +1852,7 @@ fn emit_result_value(
             &ok_var,
             path,
             false,
+            no_std,
         )?;
         rustfmt::fmt_match_arm(
             arm_indent,
@@ -1836,6 +1885,7 @@ fn emit_result_value(
             &err_var,
             path,
             false,
+            no_std,
         )?;
         rustfmt::fmt_match_arm(
             arm_indent,

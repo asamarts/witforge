@@ -253,6 +253,13 @@ cargo run --manifest-path my-contract-crate/Cargo.toml
   (Editions 2021 and 2024), pass default Clippy (`-D warnings`), and document every public item
   (`-D missing_docs`) without needing attributes. If your crate uses a non-default `rustfmt.toml`,
   add `#[rustfmt::skip]` on the `pub mod plain;` and `pub mod glue;` declarations.
+- **`#![no_std]` + `alloc` crates:** Set `no-std = true` under `[project.<name>.rust]` and
+  `[project.<name>.glue]` (or pass `--no-std` on `rust`, `glue`, or `generate`). Generated Rust,
+  `convert.rs`, and glue emit `::alloc::string::String`, `::alloc::vec::Vec`,
+  `::core::option::Option`, `::core::result::Result`, and `::core::error::Error` with no `::std::`
+  references. In your crate, declare `#![no_std]` and `extern crate alloc;`, and depend on `prost`
+  with `default-features = false, features = ["derive"]` (and `serde` with `default-features =
+  false, features = ["alloc", "derive"]` if `serde = true`).
 
 ## Released-directory options (`--lock`, `--released`, and `released`)
 

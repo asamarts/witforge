@@ -12,18 +12,33 @@ use crate::model::{Dependency, Model, TypeDefKind, TypeExpr};
 /// structural type resolves to the same rule. Every other type has no default: a required
 /// member of such a type cannot be reconstructed by a newer-to-older conversion.
 pub(crate) fn default_expr(model: &Model, ty: &TypeExpr) -> Result<Option<&'static str>> {
-    default_expr_inner(model, None, ty, &mut HashSet::new())
+    default_expr_with_no_std(model, ty, false)
+}
+
+/// Like [`default_expr`], selecting `::alloc::vec::Vec::new()` when `no_std` is true.
+pub(crate) fn default_expr_with_no_std(
+    model: &Model,
+    ty: &TypeExpr,
+    no_std: bool,
+) -> Result<Option<&'static str>> {
+    default_expr_inner(model, None, ty, no_std, &mut HashSet::new())
 }
 
 fn default_expr_inner(
     model: &Model,
     context: Option<&Dependency>,
     ty: &TypeExpr,
+    no_std: bool,
     visiting: &mut HashSet<String>,
 ) -> Result<Option<&'static str>> {
+    let empty_vec = if no_std {
+        "::alloc::vec::Vec::new()"
+    } else {
+        "::std::vec::Vec::new()"
+    };
     match ty {
         TypeExpr::Option(_) => Ok(Some("::core::option::Option::None")),
-        TypeExpr::List(_) => Ok(Some("::std::vec::Vec::new()")),
+        TypeExpr::List(_) => Ok(Some(empty_vec)),
         TypeExpr::Named(name) => {
             let Some((resolved, def)) = model.type_def_in(context, name) else {
                 bail!("type `{name}` is not in the model");
@@ -42,8 +57,10 @@ fn default_expr_inner(
             }
             let result = match &def.kind {
                 TypeDefKind::Option(_) => Ok(Some("::core::option::Option::None")),
-                TypeDefKind::List(_) => Ok(Some("::std::vec::Vec::new()")),
-                TypeDefKind::Alias(target) => default_expr_inner(model, resolved, target, visiting),
+                TypeDefKind::List(_) => Ok(Some(empty_vec)),
+                TypeDefKind::Alias(target) => {
+                    default_expr_inner(model, resolved, target, no_std, visiting)
+                }
                 _ => Ok(None),
             };
             visiting.remove(&key);

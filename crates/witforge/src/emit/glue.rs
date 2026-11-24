@@ -26,6 +26,30 @@ use crate::model::{
     TypeDefKind, TypeExpr,
 };
 
+/// Options controlling protobuf glue code generation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GlueOptions {
+    /// Emit `#![no_std]` + `alloc` compatible paths (`::alloc::string::String`,
+    /// `::alloc::vec::Vec`, and `::core::error::Error`) instead of `::std::*` (default `false`).
+    pub no_std: bool,
+}
+
+impl GlueOptions {
+    /// Create default glue emission options (`no_std: false`).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { no_std: false }
+    }
+
+    /// Enable or disable `no_std` + `alloc` code generation.
+    #[must_use]
+    pub const fn with_no_std(mut self, no_std: bool) -> Self {
+        self.no_std = no_std;
+        self
+    }
+}
+
 /// Legacy pre-0.6.0 shared ownership header.
 ///
 /// Current output writes a per-generator, per-contract header
@@ -37,7 +61,7 @@ fn header_for(namespace: &str, name: &str) -> String {
     comment_header("glue", namespace, name)
 }
 
-const GLUE_ERROR: &str = r#"/// An error converting between plain Rust values and protobuf values.
+const GLUE_ERROR_BODY: &str = r#"/// An error converting between plain Rust values and protobuf values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum GlueError {
@@ -90,8 +114,6 @@ impl ::core::fmt::Display for GlueError {
         }
     }
 }
-
-impl ::std::error::Error for GlueError {}
 "#;
 
 /// Plan glue output for a WIT root without writing anything.
@@ -124,12 +146,35 @@ pub fn plan_with_released(
     proto_root: &str,
     released: Option<&Path>,
 ) -> Result<GeneratedFiles> {
+    plan_with_options(
+        wit_root,
+        plain_root,
+        proto_root,
+        released,
+        &GlueOptions::default(),
+    )
+}
+
+/// Plan glue output for `wit_root`, using an optional explicit released-version manifest path
+/// (`--released`) and [`GlueOptions`] (such as `no_std` + `alloc` paths).
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan`].
+pub fn plan_with_options(
+    wit_root: &Path,
+    plain_root: &str,
+    proto_root: &str,
+    released: Option<&Path>,
+    options: &GlueOptions,
+) -> Result<GeneratedFiles> {
     validate_module_root(plain_root)?;
     validate_module_root(proto_root)?;
-    plan_versions(
+    plan_versions_with_options(
         &load_versions_with_released(wit_root, released)?,
         plain_root,
         proto_root,
+        *options,
     )
 }
 
@@ -145,6 +190,15 @@ pub(crate) fn plan_versions(
     versions: &[Version],
     plain_root: &str,
     proto_root: &str,
+) -> Result<GeneratedFiles> {
+    plan_versions_with_options(versions, plain_root, proto_root, GlueOptions::default())
+}
+
+pub(crate) fn plan_versions_with_options(
+    versions: &[Version],
+    plain_root: &str,
+    proto_root: &str,
+    options: GlueOptions,
 ) -> Result<GeneratedFiles> {
     let dep_layout = DepLayout::from_versions(versions)?;
     // Versions are in ascending order, so the last one of each major is its highest minor.
@@ -168,12 +222,19 @@ pub(crate) fn plan_versions(
     if !dep_layout.is_empty() {
         files.insert(
             "witforge_deps.rs",
-            emit_dependency_glue_layout(&header, &dep_layout, plain_root, proto_root)?,
+            emit_dependency_glue_layout(
+                &header,
+                &dep_layout,
+                plain_root,
+                proto_root,
+                options.no_std,
+            )?,
         )?;
     }
     let mut majors = Vec::new();
     for (major, version) in &highest {
         let mut emitter = Emitter::new(&version.model, &version.lock, plain_root, proto_root)?;
+        emitter.no_std = options.no_std;
         emitter.root_major = *major;
         emitter.dep_layout = Some(&dep_layout);
         if !dep_layout.is_empty() {
@@ -197,6 +258,7 @@ pub(crate) fn plan_versions(
             &package.name,
             &majors,
             !dep_layout.is_empty(),
+            options.no_std,
         )?,
     )?;
     Ok(files)
@@ -242,7 +304,7 @@ fn emit_dependency_glue(
             dep.clone(),
         );
     }
-    emit_dependency_glue_layout(header, &layout, plain_root, proto_root)
+    emit_dependency_glue_layout(header, &layout, plain_root, proto_root, false)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -251,10 +313,17 @@ fn emit_dependency_glue_layout(
     layout: &DepLayout,
     plain_root: &str,
     proto_root: &str,
+    no_std: bool,
 ) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{header}")?;
     writeln!(out, "// source: wit/deps")?;
+    if no_std {
+        writeln!(
+            out,
+            "// no_std output requires `extern crate alloc;` in the consuming crate."
+        )?;
+    }
     if layout
         .by_major
         .values()
@@ -278,6 +347,7 @@ fn emit_dependency_glue_layout(
         0,
         layout,
         false,
+        no_std,
     )?;
     for (&major, scoped_deps) in &layout.per_major {
         let major_mod = format!("v{major}");
@@ -303,6 +373,7 @@ fn emit_dependency_glue_layout(
             major,
             layout,
             true,
+            no_std,
         )?;
         writeln!(out, "}}")?;
     }
@@ -321,6 +392,7 @@ fn emit_dep_glue_group(
     root_major: u64,
     layout: &DepLayout,
     scoped: bool,
+    no_std: bool,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     let mut modules = BTreeMap::new();
@@ -364,7 +436,7 @@ fn emit_dep_glue_group(
         let members = model.members()?;
         let mut lock = WireLock::default();
         lock.reconcile(&members)?;
-        let emitter = Emitter::new_dependency(
+        let mut emitter = Emitter::new_dependency(
             &model,
             &lock,
             plain_root,
@@ -375,6 +447,7 @@ fn emit_dep_glue_group(
             Some(layout),
             scoped,
         )?;
+        emitter.no_std = no_std;
         let body = emitter.emit_body()?;
         writeln!(out)?;
         let fallback = format!(
@@ -633,20 +706,53 @@ fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
 ///
 /// Returns an error when a generated module name is invalid.
 pub fn emit_root(model: &Model, majors: &[u64]) -> Result<String> {
+    emit_root_with_options(model, majors, &GlueOptions::default())
+}
+
+/// Emit the glue root module with explicit [`GlueOptions`] (such as `no_std` + `alloc` paths).
+///
+/// # Errors
+///
+/// Returns an error when a generated module name is invalid.
+pub fn emit_root_with_options(
+    model: &Model,
+    majors: &[u64],
+    options: &GlueOptions,
+) -> Result<String> {
     root_source(
         &model.package.namespace,
         &model.package.name,
         majors,
         !model.dependencies.is_empty(),
+        options.no_std,
     )
 }
 
-fn root_source(namespace: &str, name: &str, majors: &[u64], dependencies: bool) -> Result<String> {
+fn root_source(
+    namespace: &str,
+    name: &str,
+    majors: &[u64],
+    dependencies: bool,
+    no_std: bool,
+) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{}", header_for(namespace, name))?;
     writeln!(out, "// source: {namespace}:{name}")?;
+    if no_std {
+        writeln!(
+            out,
+            "// no_std output requires `extern crate alloc;` in the consuming crate."
+        )?;
+    }
     writeln!(out)?;
-    out.push_str(GLUE_ERROR);
+    out.push_str(GLUE_ERROR_BODY);
+    writeln!(out)?;
+    let error_trait = if no_std {
+        "::core::error::Error"
+    } else {
+        "::std::error::Error"
+    };
+    writeln!(out, "impl {error_trait} for GlueError {{}}")?;
     for major in majors {
         writeln!(out)?;
         writeln!(out, "/// Protobuf glue for major version `v{major}`.")?;
@@ -704,7 +810,23 @@ pub fn emit_version(
     plain_root: &str,
     proto_root: &str,
 ) -> Result<String> {
-    let emitter = Emitter::new(model, lock, plain_root, proto_root)?;
+    emit_version_with_options(model, lock, plain_root, proto_root, &GlueOptions::default())
+}
+
+/// Emit one major's glue module with explicit [`GlueOptions`] (such as `no_std` + `alloc` paths).
+///
+/// # Errors
+///
+/// Returns the same errors as [`emit_version`].
+pub fn emit_version_with_options(
+    model: &Model,
+    lock: &WireLock,
+    plain_root: &str,
+    proto_root: &str,
+    options: &GlueOptions,
+) -> Result<String> {
+    let mut emitter = Emitter::new(model, lock, plain_root, proto_root)?;
+    emitter.no_std = options.no_std;
     crate::emit::proto::emit_major(model, lock)?;
     emitter.emit()
 }
@@ -724,9 +846,26 @@ struct Emitter<'a> {
     proto_base_override: Option<String>,
     dependency: bool,
     base_indent: usize,
+    no_std: bool,
 }
 
 impl<'a> Emitter<'a> {
+    const fn string_ty(&self) -> &'static str {
+        if self.no_std {
+            "::alloc::string::String"
+        } else {
+            "::std::string::String"
+        }
+    }
+
+    const fn vec_ty(&self) -> &'static str {
+        if self.no_std {
+            "::alloc::vec::Vec"
+        } else {
+            "::std::vec::Vec"
+        }
+    }
+
     fn new(
         model: &'a Model,
         lock: &'a WireLock,
@@ -762,6 +901,7 @@ impl<'a> Emitter<'a> {
             proto_base_override,
             dependency: false,
             base_indent: 0,
+            no_std: false,
         })
     }
 
@@ -842,6 +982,7 @@ impl<'a> Emitter<'a> {
             proto_base_override: self.proto_base_override.clone(),
             dependency: self.dependency,
             base_indent: self.base_indent,
+            no_std: self.no_std,
         }
     }
 
@@ -857,6 +998,12 @@ impl<'a> Emitter<'a> {
             "// source: {}:{}@{}",
             self.model.package.namespace, self.model.package.name, self.model.package.version
         )?;
+        if self.no_std {
+            writeln!(
+                out,
+                "// no_std output requires `extern crate alloc;` in the consuming crate."
+            )?;
+        }
         if model_has_deprecation(self.model) {
             writeln!(out, "#![allow(deprecated)]")?;
         }
@@ -1003,13 +1150,13 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
-            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::String => Ok(self.string_ty().to_string()),
             TypeExpr::Named(name) => self.plain_named(name),
             TypeExpr::List(element) => {
                 if self.model.resolves_to_u8(element) {
-                    Ok("::std::vec::Vec<u8>".to_string())
+                    Ok(format!("{}<u8>", self.vec_ty()))
                 } else {
-                    Ok(format!("::std::vec::Vec<{}>", self.plain_type(element)?))
+                    Ok(format!("{}<{}>", self.vec_ty(), self.plain_type(element)?))
                 }
             }
             TypeExpr::Option(payload) => Ok(format!(
@@ -1126,9 +1273,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
-            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::String => Ok(self.string_ty().to_string()),
             TypeExpr::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
-                Ok("::std::vec::Vec<u8>".to_string())
+                Ok(format!("{}<u8>", self.vec_ty()))
             }
             TypeExpr::List(element) => {
                 let name = format!(
@@ -1166,7 +1313,7 @@ impl<'a> Emitter<'a> {
                         TypeDefKind::List(element)
                             if self.model.resolves_to_u8_in(Some(owner), element) =>
                         {
-                            Ok("::std::vec::Vec<u8>".to_string())
+                            Ok(format!("{}<u8>", self.vec_ty()))
                         }
                         TypeDefKind::List(element) => {
                             let wrapper = format!(
@@ -1208,7 +1355,7 @@ impl<'a> Emitter<'a> {
                         TypeDefKind::List(element)
                             if self.model.resolves_to_u8_in(Some(other), element) =>
                         {
-                            Ok("::std::vec::Vec<u8>".to_string())
+                            Ok(format!("{}<u8>", self.vec_ty()))
                         }
                         TypeDefKind::List(_) | TypeDefKind::Option(_) => {
                             let shape = self.foreign_shape_name_for_caller(
@@ -1281,10 +1428,11 @@ impl<'a> Emitter<'a> {
             TypeDefKind::Enum(_) => Ok("i32".to_string()),
             TypeDefKind::Alias(target) => self.foreign_proto_type_expr(Some(owner), target),
             TypeDefKind::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
-                Ok("::std::vec::Vec<u8>".to_string())
+                Ok(format!("{}<u8>", self.vec_ty()))
             }
             TypeDefKind::List(element) => Ok(format!(
-                "::std::vec::Vec<{}>",
+                "{}<{}>",
+                self.vec_ty(),
                 self.dependency_defined_proto_singular(owner, element)?
             )),
             TypeDefKind::Option(payload) => {
@@ -1321,10 +1469,11 @@ impl<'a> Emitter<'a> {
                 }
             }
             TypeExpr::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
-                Ok("::std::vec::Vec<u8>".to_string())
+                Ok(format!("{}<u8>", self.vec_ty()))
             }
             TypeExpr::List(element) => Ok(format!(
-                "::std::vec::Vec<{}>",
+                "{}<{}>",
+                self.vec_ty(),
                 self.dependency_defined_proto_singular(owner, element)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
@@ -1338,7 +1487,7 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
-            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::String => Ok(self.string_ty().to_string()),
             TypeExpr::Result(result) => {
                 let name = format!(
                     "Witforge{}",
@@ -1370,7 +1519,7 @@ impl<'a> Emitter<'a> {
                 self.proto_singular_type(&qualified)
             }
             TypeDefKind::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
-                Ok("::std::vec::Vec<u8>".to_string())
+                Ok(format!("{}<u8>", self.vec_ty()))
             }
             TypeDefKind::List(_) | TypeDefKind::Option(_) => {
                 let shape = self.foreign_shape_name_for_caller(None, owner, name, kind)?;
@@ -1701,12 +1850,13 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
-            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::String => Ok(self.string_ty().to_string()),
             TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
-                Ok("::std::vec::Vec<u8>".to_string())
+                Ok(format!("{}<u8>", self.vec_ty()))
             }
             TypeExpr::List(element) => Ok(format!(
-                "::std::vec::Vec<{}>",
+                "{}<{}>",
+                self.vec_ty(),
                 self.proto_singular_type(element)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
@@ -1729,10 +1879,11 @@ impl<'a> Emitter<'a> {
                     }
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
                     TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
-                        Ok("::std::vec::Vec<u8>".to_string())
+                        Ok(format!("{}<u8>", self.vec_ty()))
                     }
                     TypeDefKind::List(element) => Ok(format!(
-                        "::std::vec::Vec<{}>",
+                        "{}<{}>",
+                        self.vec_ty(),
                         self.proto_singular_type(element)?
                     )),
                     TypeDefKind::Option(payload) => {
@@ -1757,9 +1908,9 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
-            TypeExpr::String => Ok("::std::string::String".to_string()),
+            TypeExpr::String => Ok(self.string_ty().to_string()),
             TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
-                Ok("::std::vec::Vec<u8>".to_string())
+                Ok(format!("{}<u8>", self.vec_ty()))
             }
             TypeExpr::List(element) => {
                 let name = format!("WitforgeListOf{}", self.shape_name(element)?);
@@ -1785,7 +1936,7 @@ impl<'a> Emitter<'a> {
                     }
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
                     TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
-                        Ok("::std::vec::Vec<u8>".to_string())
+                        Ok(format!("{}<u8>", self.vec_ty()))
                     }
                     TypeDefKind::List(element) => {
                         let name = format!("WitforgeListOf{}", self.shape_name(element)?);
@@ -3713,7 +3864,7 @@ impl Emitter<'_> {
         stmts.push(rustfmt::fmt_let_stmt(
             indent,
             &format!("mut {out_var}"),
-            &format!("::std::vec::Vec::with_capacity({borrowed}.len())"),
+            &format!("{}::with_capacity({borrowed}.len())", self.vec_ty()),
         ));
         let mut loop_stmts = Vec::new();
         let encoded =
@@ -3752,7 +3903,7 @@ impl Emitter<'_> {
         stmts.push(rustfmt::fmt_let_stmt(
             indent,
             &format!("mut {out_var}"),
-            &format!("::std::vec::Vec::with_capacity({list_expr}.len())"),
+            &format!("{}::with_capacity({list_expr}.len())", self.vec_ty()),
         ));
         let mut loop_stmts = Vec::new();
         let decoded = self.emit_decode_singular(

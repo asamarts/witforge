@@ -1748,9 +1748,13 @@ proto-root = "crate::proto"
 - `root` is required for each project.
 - `released` is optional; when absent the generator's normal default applies.
 - `rust`, `proto`, `schema`, and `glue` sections are optional. Each output section has an `out`
-  path; `rust` also has optional `serde = true|false`; `schema` also has optional
-  `draft = "7" | "2020-12"` (default `"7"`); `glue` also has optional `plain-root` and `proto-root`
-  strings.
+  path; `rust` also has optional `serde = true|false` and `no-std = true|false`; `schema` also has
+  optional `draft = "7" | "2020-12"` (default `"7"`); `glue` also has optional `plain-root`,
+  `proto-root` strings, and `no-std = true|false`. When `no-std = true` (or `--no-std` on the CLI,
+  overridden by `--std`), generated Rust, `convert.rs`, and glue emit `::alloc::string::String`,
+  `::alloc::vec::Vec`, `::core::option::Option`, `::core::result::Result`, and
+  `::core::error::Error` (requiring `extern crate alloc;` in the consuming `#![no_std]` crate); the
+  default (`no-std = false`) output is unchanged.
 - Unknown keys or sections are errors, as are a missing/unsupported version, an empty project
   table, a missing project selected with `--project`, and a missing output section or CLI path
   needed by the selected command.

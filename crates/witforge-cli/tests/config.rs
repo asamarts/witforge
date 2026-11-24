@@ -872,3 +872,94 @@ draft = "draft-07"
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn no_std_option_works_via_cli_and_config_and_overrides_cleanly() {
+    let root = project("no-std");
+    let config = write_config(
+        &root,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.rust]
+out = "generated/rust"
+no-std = true
+[project.demo.glue]
+out = "generated/glue"
+plain-root = "crate::plain"
+proto-root = "crate::proto"
+no-std = true
+"#,
+    );
+
+    // 1. `witforge generate` honors `no-std = true` for both rust (including convert.rs) and glue.
+    let gen_out = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(gen_out.status.success(), "{gen_out:?}");
+    for rel in [
+        "generated/rust/v0_1.rs",
+        "generated/rust/v0_2.rs",
+        "generated/rust/convert.rs",
+        "generated/glue/mod.rs",
+        "generated/glue/v0.rs",
+    ] {
+        let text = fs::read_to_string(root.join(rel)).unwrap();
+        assert!(!text.contains("::std::"), "{rel} leaked ::std:::\n{text}");
+    }
+    let rust_v01 = fs::read_to_string(root.join("generated/rust/v0_1.rs")).unwrap();
+    assert!(rust_v01.contains("::alloc::string::String"), "{rust_v01}");
+    let convert_rs = fs::read_to_string(root.join("generated/rust/convert.rs")).unwrap();
+    assert!(
+        convert_rs.contains("impl ::core::error::Error for ConversionError"),
+        "{convert_rs}"
+    );
+    let glue_mod = fs::read_to_string(root.join("generated/glue/mod.rs")).unwrap();
+    assert!(
+        glue_mod.contains("impl ::core::error::Error for GlueError"),
+        "{glue_mod}"
+    );
+
+    // 2. `--std` overrides config `no-std = true` on both `rust` and `glue`.
+    let std_rust = witforge()
+        .current_dir(&root)
+        .args(["rust", "--config"])
+        .arg(&config)
+        .args(["--std", "--out", "generated/rust-std"])
+        .output()
+        .unwrap();
+    assert!(std_rust.status.success(), "{std_rust:?}");
+    let std_v01 = fs::read_to_string(root.join("generated/rust-std/v0_1.rs")).unwrap();
+    assert!(std_v01.contains("::std::string::String"), "{std_v01}");
+    assert!(!std_v01.contains("::alloc::"), "{std_v01}");
+
+    let std_glue = witforge()
+        .current_dir(&root)
+        .args(["glue", "--config"])
+        .arg(&config)
+        .args(["--std", "--out", "generated/glue-std"])
+        .output()
+        .unwrap();
+    assert!(std_glue.status.success(), "{std_glue:?}");
+    let std_glue_mod = fs::read_to_string(root.join("generated/glue-std/mod.rs")).unwrap();
+    assert!(
+        std_glue_mod.contains("impl ::std::error::Error for GlueError"),
+        "{std_glue_mod}"
+    );
+
+    // 3. `--no-std` works directly on CLI without config.
+    let cli_nostd = witforge()
+        .current_dir(&root)
+        .args(["rust", "wit", "--out", "generated/cli-nostd", "--no-std"])
+        .output()
+        .unwrap();
+    assert!(cli_nostd.status.success(), "{cli_nostd:?}");
+    let cli_v01 = fs::read_to_string(root.join("generated/cli-nostd/v0_1.rs")).unwrap();
+    assert!(cli_v01.contains("::alloc::string::String"), "{cli_v01}");
+
+    fs::remove_dir_all(&root).unwrap();
+}

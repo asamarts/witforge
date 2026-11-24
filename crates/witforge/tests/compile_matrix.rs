@@ -1448,3 +1448,355 @@ interface api {
     ];
     run_matrix("w10-107-quality", &entries);
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn no_std_generated_rust_convert_worlds_deps_and_glue_compile_cleanly() {
+    use std::process::Command;
+
+    let stage = ScratchDir::new("w10-111-nostd");
+    let wit_root = stage.path().join("wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(v01.join("deps/shared")).unwrap();
+    fs::create_dir_all(v02.join("deps/shared")).unwrap();
+
+    let dep_wit = "\
+/// Shared dependency package.
+package ex:shared@0.1.0;
+
+/// Shared types.
+interface types {
+    /// A tagged blob.
+    record dep-item {
+        /// Item tag.
+        tag: string,
+        /// Item bytes.
+        bytes: list<u8>,
+    }
+}
+";
+    let v01_wit = "\
+/// no_std v0.1 contract.
+package ex:nostd@0.1.0;
+
+/// Core API.
+interface api {
+    use ex:shared/types@0.1.0.{dep-item};
+
+    /// One nested item.
+    record item {
+        /// Identifier.
+        id: u32,
+        /// Dependency payload.
+        dep: dep-item,
+    }
+
+    /// Top-level envelope.
+    record envelope {
+        /// Name.
+        name: string,
+        /// Raw bytes.
+        raw: list<u8>,
+        /// Items list.
+        items: list<item>,
+    }
+
+    /// Simple variant.
+    variant event {
+        /// Empty event.
+        empty,
+        /// Message event.
+        msg(string),
+    }
+
+    /// Flags type.
+    flags opts {
+        /// Fast mode.
+        fast,
+    }
+
+    /// Echo function.
+    echo: func(input: envelope) -> result<envelope, string>;
+}
+
+/// Service world.
+world svc {
+    export api;
+}
+";
+    let v02_wit = "\
+/// no_std v0.2 contract.
+package ex:nostd@0.2.0;
+
+/// Core API.
+interface api {
+    use ex:shared/types@0.1.0.{dep-item};
+
+    /// One nested item.
+    record item {
+        /// Identifier.
+        id: u32,
+        /// Dependency payload.
+        dep: dep-item,
+        /// Optional note defaulted from v0.1.
+        note: option<string>,
+    }
+
+    /// Top-level envelope.
+    record envelope {
+        /// Name.
+        name: string,
+        /// Raw bytes.
+        raw: list<u8>,
+        /// Items list.
+        items: list<item>,
+        /// Extra tags defaulted to empty Vec from v0.1.
+        tags: list<string>,
+    }
+
+    /// Simple variant.
+    variant event {
+        /// Empty event.
+        empty,
+        /// Message event.
+        msg(string),
+    }
+
+    /// Flags type.
+    flags opts {
+        /// Fast mode.
+        fast,
+        /// Extra mode.
+        strict,
+    }
+
+    /// Echo function.
+    echo: func(input: envelope) -> result<envelope, string>;
+}
+
+/// Service world.
+world svc {
+    export api;
+}
+";
+    fs::write(v01.join("deps/shared/contract.wit"), dep_wit).unwrap();
+    fs::write(v02.join("deps/shared/contract.wit"), dep_wit).unwrap();
+    fs::write(v01.join("contract.wit"), v01_wit).unwrap();
+    fs::write(v02.join("contract.wit"), v02_wit).unwrap();
+    ensure_lock(&v01);
+    let mut v02_lock =
+        witforge::lock::WireLock::parse(&fs::read_to_string(v01.join("wire.lock")).unwrap())
+            .unwrap();
+    let v02_model = witforge::model::build(&load(&v02).unwrap()).unwrap();
+    v02_lock.reconcile(&v02_model.members().unwrap()).unwrap();
+    v02_lock.write_atomic(&v02.join("wire.lock")).unwrap();
+
+    // 1. Default (`no_std = false`) output MUST be byte-for-byte identical to `plan()`.
+    assert_eq!(
+        rust::plan_with_options(&wit_root, None, &rust::RustOptions::default())
+            .unwrap()
+            .files(),
+        rust::plan(&wit_root).unwrap().files()
+    );
+    assert_eq!(
+        glue::plan_with_options(
+            &wit_root,
+            "crate::plain",
+            "crate::proto",
+            None,
+            &glue::GlueOptions::default(),
+        )
+        .unwrap()
+        .files(),
+        glue::plan(&wit_root, "crate::plain", "crate::proto")
+            .unwrap()
+            .files()
+    );
+
+    // 2. Generate `no_std = true` outputs and assert zero `::std::` references.
+    let rust_files =
+        rust::plan_with_options(&wit_root, None, &rust::RustOptions::new().with_no_std(true))
+            .unwrap();
+    let proto_files = proto::plan(&wit_root).unwrap();
+    let glue_files = glue::plan_with_options(
+        &wit_root,
+        "crate::plain",
+        "crate::proto",
+        None,
+        &glue::GlueOptions::new().with_no_std(true),
+    )
+    .unwrap();
+    for (name, content) in rust_files.files().iter().chain(glue_files.files().iter()) {
+        assert!(
+            !content.contains("::std::"),
+            "no_std output `{name}` unexpectedly contained `::std::`:\n{content}"
+        );
+    }
+
+    // 3. Build a real `#![no_std]` + `extern crate alloc;` crate and verify rustfmt (2021+2024),
+    //    `cargo clippy --lib -- -D warnings` (strict `#![no_std]`, `-D missing_docs`), and
+    //    runtime roundtrip tests.
+    let krate = stage.path().join("nostd-crate");
+    fs::create_dir_all(krate.join("src")).unwrap();
+    rust_files.write(&krate.join("src/plain")).unwrap();
+    proto_files.write(&krate.join("proto")).unwrap();
+    glue_files.write(&krate.join("src/glue")).unwrap();
+
+    for edition in ["2021", "2024"] {
+        for dir in [krate.join("src/plain"), krate.join("src/glue")] {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+                    continue;
+                }
+                let fmt = Command::new("rustfmt")
+                    .args(["--edition", edition, "--check"])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    fmt.status.success(),
+                    "rustfmt --edition {edition} failed on {}:\n{}",
+                    path.display(),
+                    String::from_utf8_lossy(&fmt.stderr)
+                );
+            }
+        }
+    }
+
+    fs::copy(
+        workspace_root().join("Cargo.lock"),
+        krate.join("Cargo.lock"),
+    )
+    .unwrap();
+    fs::write(
+        krate.join("Cargo.toml"),
+        "[package]\n\
+         name = \"witforge-nostd-check\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2024\"\n\
+         \n\
+         [dependencies]\n\
+         prost = { version = \"0.14\", default-features = false, features = [\"derive\"] }\n\
+         \n\
+         [build-dependencies]\n\
+         prost-build = \"0.14\"\n\
+         protox = \"0.10\"\n",
+    )
+    .unwrap();
+    fs::write(
+        krate.join("build.rs"),
+        "use std::fs;\n\
+         use std::path::PathBuf;\n\
+         fn main() -> Result<(), Box<dyn std::error::Error>> {\n\
+             let proto_dir = PathBuf::from(\"proto\");\n\
+             let mut protos: Vec<PathBuf> = fs::read_dir(&proto_dir)?\n\
+                 .filter_map(|e| Some(e.ok()?.path()))\n\
+                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some(\"proto\"))\n\
+                 .collect();\n\
+             protos.sort();\n\
+             let fds = protox::compile(protos, [&proto_dir])?;\n\
+             prost_build::Config::new()\n\
+                 .include_file(\"prost_include.rs\")\n\
+                 .compile_fds(fds)?;\n\
+             Ok(())\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        krate.join("src/lib.rs"),
+        "#![no_std]\n\
+         #![deny(missing_docs)]\n\
+         \n\
+         //! `#![no_std]` verification crate.\n\
+         \n\
+         extern crate alloc;\n\
+         \n\
+         /// Generated plain Rust types, traits, conversions, deps, and worlds.\n\
+         #[path = \"plain/mod.rs\"]\n\
+         pub mod plain;\n\
+         \n\
+         /// Prost-generated protobuf types.\n\
+         #[allow(clippy::all, missing_docs)]\n\
+         pub mod proto {\n\
+             include!(concat!(env!(\"OUT_DIR\"), \"/prost_include.rs\"));\n\
+         }\n\
+         \n\
+         /// Generated plain <-> prost glue.\n\
+         #[path = \"glue/mod.rs\"]\n\
+         pub mod glue;\n\
+         \n\
+         /// Exercise `core::error::Error`, version conversion, and protobuf glue under `#![no_std]`.\n\
+         #[must_use]\n\
+         pub fn verify_nostd_roundtrip() -> bool {\n\
+             fn assert_core_error<E: ::core::error::Error>() {}\n\
+             assert_core_error::<plain::convert::ConversionError>();\n\
+             assert_core_error::<glue::GlueError>();\n\
+             let _ = plain::worlds::v0_1::WORLDS;\n\
+             let v1 = plain::v0_1::api::Envelope {\n\
+                 name: ::alloc::string::String::from(\"hi\"),\n\
+                 raw: ::alloc::vec![1, 2, 3],\n\
+                 items: ::alloc::vec![plain::v0_1::api::Item {\n\
+                     id: 7,\n\
+                     dep: plain::witforge_deps::ex_shared::types::DepItem {\n\
+                         tag: ::alloc::string::String::from(\"tag\"),\n\
+                         bytes: ::alloc::vec![9, 10],\n\
+                     },\n\
+                 }],\n\
+             };\n\
+             let v2 = plain::convert::v0_1_to_v0_2::api::envelope(&v1).expect(\"convert\");\n\
+             assert!(v2.tags.is_empty());\n\
+             assert_eq!(v2.items[0].note, None);\n\
+             let wire = glue::v0::api::envelope::to_proto(&v2);\n\
+             let bytes = ::prost::Message::encode_to_vec(&wire);\n\
+             let decoded = <proto::ex::nostd::v0::ApiEnvelope as ::prost::Message>::decode(\n\
+                 bytes.as_slice(),\n\
+             )\n\
+             .expect(\"decode\");\n\
+             let back = glue::v0::api::envelope::from_proto(decoded).expect(\"from_proto\");\n\
+             back == v2\n\
+         }\n\
+         \n\
+         #[cfg(test)]\n\
+         mod tests {\n\
+             #[test]\n\
+             fn nostd_roundtrip_passes() {\n\
+                 assert!(super::verify_nostd_roundtrip());\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let shared_target = std::env::temp_dir().join("wf-nostd-target");
+    let clippy = Command::new(env!("CARGO"))
+        .args(["clippy", "--offline", "--lib", "--manifest-path"])
+        .arg(krate.join("Cargo.toml"))
+        .args(["--", "-D", "warnings"])
+        .env("CARGO_TARGET_DIR", &shared_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        clippy.status.success(),
+        "no_std crate failed clippy:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&clippy.stdout),
+        String::from_utf8_lossy(&clippy.stderr)
+    );
+
+    let test = Command::new(env!("CARGO"))
+        .args(["test", "--offline", "--lib", "--manifest-path"])
+        .arg(krate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &shared_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        test.status.success(),
+        "no_std crate failed tests:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
+    );
+}

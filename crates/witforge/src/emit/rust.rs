@@ -16,6 +16,44 @@ use crate::emit::{
 };
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
+/// Options controlling plain Rust and `convert.rs` code generation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RustOptions {
+    /// Derive `serde::Serialize` and `serde::Deserialize` on generated records, enums, variants,
+    /// and flags (default `false`).
+    pub serde: bool,
+    /// Emit `#![no_std]` + `alloc` compatible paths (`::alloc::string::String`,
+    /// `::alloc::vec::Vec`, `::core::option::Option`, `::core::result::Result`, and
+    /// `::core::error::Error`) instead of `::std::*` (default `false`).
+    pub no_std: bool,
+}
+
+impl RustOptions {
+    /// Create default Rust emission options (`serde: false`, `no_std: false`).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            serde: false,
+            no_std: false,
+        }
+    }
+
+    /// Enable or disable `serde` derives.
+    #[must_use]
+    pub const fn with_serde(mut self, serde: bool) -> Self {
+        self.serde = serde;
+        self
+    }
+
+    /// Enable or disable `no_std` + `alloc` code generation.
+    #[must_use]
+    pub const fn with_no_std(mut self, no_std: bool) -> Self {
+        self.no_std = no_std;
+        self
+    }
+}
+
 /// Legacy pre-0.6.0 shared ownership header.
 ///
 /// Current output writes a per-generator, per-contract header
@@ -65,7 +103,21 @@ pub fn plan_with_released(
     serde: bool,
     released: Option<&Path>,
 ) -> Result<GeneratedFiles> {
-    plan_versions_with_serde(&load_versions_with_released(wit_root, released)?, serde)
+    plan_with_options(wit_root, released, &RustOptions::new().with_serde(serde))
+}
+
+/// Plan the Rust output for `wit_root`, using an optional explicit released-version manifest path
+/// (`--released`) and [`RustOptions`] (such as `serde` derives and `no_std` + `alloc` paths).
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan`].
+pub fn plan_with_options(
+    wit_root: &Path,
+    released: Option<&Path>,
+    options: &RustOptions,
+) -> Result<GeneratedFiles> {
+    plan_versions_with_options(&load_versions_with_released(wit_root, released)?, *options)
 }
 
 /// Plan the Rust output for validated `versions`, which [`load_versions`] returns.
@@ -75,6 +127,13 @@ pub fn plan_with_released(
 pub(crate) fn plan_versions_with_serde(
     versions: &[Version],
     serde: bool,
+) -> Result<GeneratedFiles> {
+    plan_versions_with_options(versions, RustOptions::new().with_serde(serde))
+}
+
+pub(crate) fn plan_versions_with_options(
+    versions: &[Version],
+    options: RustOptions,
 ) -> Result<GeneratedFiles> {
     let dep_layout = DepLayout::from_versions(versions)?;
     let package = &versions
@@ -107,7 +166,7 @@ pub(crate) fn plan_versions_with_serde(
                 Ok(format!("super::super::witforge_deps::{pkg_mod}"))
             }
         };
-        let generated = emit_version_with_resolver(&version.model, serde, &resolver)
+        let generated = emit_version_with_resolver(&version.model, options, &resolver)
             .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("{module}.rs"), generated)?;
         module_entries.push((
@@ -115,7 +174,7 @@ pub(crate) fn plan_versions_with_serde(
             format!("pub mod {module};"),
         ));
     }
-    if let Some(converted) = super::convert::plan(versions)? {
+    if let Some(converted) = super::convert::plan_with_no_std(versions, options.no_std)? {
         files.insert("convert.rs", converted)?;
         module_entries.push((
             "Version-to-version adapters.".to_string(),
@@ -123,7 +182,7 @@ pub(crate) fn plan_versions_with_serde(
         ));
     }
     if !dep_layout.is_empty() {
-        let dependency_source = emit_dependency_bindings_layout(&header, &dep_layout, serde)?;
+        let dependency_source = emit_dependency_bindings_layout(&header, &dep_layout, options)?;
         files.insert("witforge_deps.rs", dependency_source)?;
         module_entries.push((
             "Pinned dependency types.".to_string(),
@@ -243,6 +302,16 @@ pub fn emit_version(model: &Model) -> Result<String> {
 ///
 /// Returns the same errors as [`emit_version`].
 pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
+    emit_version_with_options(model, &RustOptions::new().with_serde(serde))
+}
+
+/// Emit one version module with explicit [`RustOptions`] (such as `serde` derives and `no_std` +
+/// `alloc` paths).
+///
+/// # Errors
+///
+/// Returns the same errors as [`emit_version`].
+pub fn emit_version_with_options(model: &Model, options: &RustOptions) -> Result<String> {
     let resolver = |ns: &str, pkg: &str| -> Result<String> {
         let pkg_mod = rust_ident(
             &format!("{}_{}", snake_case(ns), snake_case(pkg)),
@@ -250,12 +319,12 @@ pub fn emit_version_with_serde(model: &Model, serde: bool) -> Result<String> {
         )?;
         Ok(format!("super::super::witforge_deps::{pkg_mod}"))
     };
-    emit_version_with_resolver(model, serde, &resolver)
+    emit_version_with_resolver(model, *options, &resolver)
 }
 
 fn emit_version_with_resolver(
     model: &Model,
-    serde: bool,
+    options: RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<String> {
     let mut out = String::new();
@@ -269,10 +338,16 @@ fn emit_version_with_resolver(
         "// source: {}:{}@{}",
         model.package.namespace, model.package.name, model.package.version
     )?;
-    if serde {
+    if options.serde {
         writeln!(
             out,
             "// serde derives require the consumer's `serde` crate with `derive`."
+        )?;
+    }
+    if options.no_std {
+        writeln!(
+            out,
+            "// no_std output requires `extern crate alloc;` in the consuming crate."
         )?;
     }
     let has_inner_docs = !docs::sanitize_rust_lines(&model.package.docs).is_empty();
@@ -337,7 +412,7 @@ fn emit_version_with_resolver(
             writeln!(out, "pub mod {module} {{}}")?;
         } else {
             writeln!(out, "pub mod {module} {{")?;
-            emit_interface(&mut out, 4, model, interface, serde, foreign_resolver)?;
+            emit_interface(&mut out, 4, model, interface, options, foreign_resolver)?;
             writeln!(out, "}}")?;
         }
     }
@@ -360,7 +435,7 @@ fn emit_interface(
     indent: usize,
     model: &Model,
     interface: &crate::model::Interface,
-    serde: bool,
+    options: RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let mut type_names: BTreeMap<String, String> = BTreeMap::new();
@@ -387,13 +462,29 @@ fn emit_interface(
             writeln!(out)?;
         }
         first = false;
-        emit_type_def(out, indent, model, interface, def, serde, foreign_resolver)?;
+        emit_type_def(
+            out,
+            indent,
+            model,
+            interface,
+            def,
+            options,
+            foreign_resolver,
+        )?;
     }
     if let Some(trait_name) = trait_name {
         if !first {
             writeln!(out)?;
         }
-        emit_trait(out, indent, model, interface, &trait_name, foreign_resolver)?;
+        emit_trait(
+            out,
+            indent,
+            model,
+            interface,
+            &trait_name,
+            options.no_std,
+            foreign_resolver,
+        )?;
     }
     Ok(())
 }
@@ -410,22 +501,28 @@ fn emit_dependency_bindings(
             dep.clone(),
         );
     }
-    emit_dependency_bindings_layout(header, &layout, serde)
+    emit_dependency_bindings_layout(header, &layout, RustOptions::new().with_serde(serde))
 }
 
 #[allow(clippy::too_many_lines)]
 fn emit_dependency_bindings_layout(
     header: &str,
     layout: &DepLayout,
-    serde: bool,
+    options: RustOptions,
 ) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{header}")?;
     writeln!(out, "// source: wit/deps")?;
-    if serde {
+    if options.serde {
         writeln!(
             out,
             "// serde derives require the consumer's `serde` crate with `derive`."
+        )?;
+    }
+    if options.no_std {
+        writeln!(
+            out,
+            "// no_std output requires `extern crate alloc;` in the consuming crate."
         )?;
     }
     if layout
@@ -451,7 +548,7 @@ fn emit_dependency_bindings_layout(
         "witforge_deps",
         &shared_slice,
         &shared_slice,
-        serde,
+        options,
         &shared_resolver,
         None,
     )?;
@@ -485,7 +582,7 @@ fn emit_dependency_bindings_layout(
             &major_mod,
             scoped_deps,
             major_all,
-            serde,
+            options,
             &major_resolver,
             Some((major, layout)),
         )?;
@@ -501,7 +598,7 @@ fn emit_dep_group(
     parent_mod: &str,
     emitted: &[crate::model::Dependency],
     all_in_scope: &[crate::model::Dependency],
-    serde: bool,
+    options: RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
     scoped_context: Option<(u64, &DepLayout)>,
 ) -> Result<()> {
@@ -585,7 +682,7 @@ fn emit_dep_group(
                     indent + 8,
                     &dep_model,
                     interface,
-                    serde,
+                    options,
                     foreign_resolver,
                 )?;
                 writeln!(out, "{iface_prefix}}}")?;
@@ -637,11 +734,11 @@ fn emit_record(
     def: &TypeDef,
     name: &str,
     fields: &[crate::model::Field],
-    serde: bool,
+    options: RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
-    write_derives(out, indent, serde)?;
+    write_derives(out, indent, options.serde)?;
     if fields.is_empty() {
         writeln!(out, "{prefix}pub struct {name} {{}}")?;
         return Ok(());
@@ -657,7 +754,13 @@ fn emit_record(
             &format!("field {}", field.name),
             &format!("{}/{}", interface.name, def.name),
         )?;
-        let ty = map_type(model, &interface.name, &field.ty, foreign_resolver)?;
+        let ty = map_type(
+            model,
+            &interface.name,
+            &field.ty,
+            options.no_std,
+            foreign_resolver,
+        )?;
         if rustfmt::needs_allow_type_complexity(&ty) {
             complex_type = true;
         }
@@ -691,7 +794,7 @@ fn emit_type_def(
     model: &Model,
     interface: &crate::model::Interface,
     def: &TypeDef,
-    serde: bool,
+    options: RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
@@ -720,12 +823,12 @@ fn emit_type_def(
                 def,
                 &name,
                 fields,
-                serde,
+                options,
                 foreign_resolver,
             )?;
         }
         TypeDefKind::Variant(cases) => {
-            write_derives(out, indent, serde)?;
+            write_derives(out, indent, options.serde)?;
             if has_large_variant_disparity(model, cases) {
                 writeln!(out, "{prefix}#[allow(clippy::large_enum_variant)]")?;
             }
@@ -747,7 +850,15 @@ fn emit_type_def(
                 let payload_ty = case
                     .payload
                     .as_ref()
-                    .map(|payload| map_type(model, &interface.name, payload, foreign_resolver))
+                    .map(|payload| {
+                        map_type(
+                            model,
+                            &interface.name,
+                            payload,
+                            options.no_std,
+                            foreign_resolver,
+                        )
+                    })
                     .transpose()?;
                 if payload_ty
                     .as_deref()
@@ -781,7 +892,7 @@ fn emit_type_def(
             writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Enum(cases) => {
-            write_derives(out, indent, serde)?;
+            write_derives(out, indent, options.serde)?;
             if cases.is_empty() {
                 writeln!(out, "{prefix}pub enum {name} {{}}")?;
                 return Ok(());
@@ -807,7 +918,7 @@ fn emit_type_def(
             writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Flags(flags) => {
-            write_derives(out, indent, serde)?;
+            write_derives(out, indent, options.serde)?;
             if flags.is_empty() {
                 writeln!(out, "{prefix}pub struct {name} {{}}")?;
                 return Ok(());
@@ -833,7 +944,13 @@ fn emit_type_def(
             writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Alias(target) => {
-            let ty = map_type(model, &interface.name, target, foreign_resolver)?;
+            let ty = map_type(
+                model,
+                &interface.name,
+                target,
+                options.no_std,
+                foreign_resolver,
+            )?;
             writeln!(
                 out,
                 "{}",
@@ -841,12 +958,19 @@ fn emit_type_def(
             )?;
         }
         TypeDefKind::List(element) => {
+            let vec_ty = vec_path(options.no_std);
             let ty = if model.resolves_to_u8(element) {
-                "::std::vec::Vec<u8>".to_string()
+                format!("{vec_ty}<u8>")
             } else {
                 format!(
-                    "::std::vec::Vec<{}>",
-                    map_type(model, &interface.name, element, foreign_resolver)?
+                    "{vec_ty}<{}>",
+                    map_type(
+                        model,
+                        &interface.name,
+                        element,
+                        options.no_std,
+                        foreign_resolver
+                    )?
                 )
             };
             writeln!(
@@ -857,8 +981,15 @@ fn emit_type_def(
         }
         TypeDefKind::Option(payload) => {
             let ty = format!(
-                "::std::option::Option<{}>",
-                map_type(model, &interface.name, payload, foreign_resolver)?
+                "{}<{}>",
+                option_path(options.no_std),
+                map_type(
+                    model,
+                    &interface.name,
+                    payload,
+                    options.no_std,
+                    foreign_resolver
+                )?
             );
             writeln!(
                 out,
@@ -869,13 +1000,13 @@ fn emit_type_def(
         TypeDefKind::Result(result) => {
             let ok = result.ok.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, &interface.name, ty, foreign_resolver),
+                |ty| map_type(model, &interface.name, ty, options.no_std, foreign_resolver),
             )?;
             let err = result.err.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, &interface.name, ty, foreign_resolver),
+                |ty| map_type(model, &interface.name, ty, options.no_std, foreign_resolver),
             )?;
-            let ty = format!("::std::result::Result<{ok}, {err}>");
+            let ty = format!("{}<{ok}, {err}>", result_path(options.no_std));
             writeln!(
                 out,
                 "{}",
@@ -892,6 +1023,7 @@ fn emit_trait(
     model: &Model,
     interface: &crate::model::Interface,
     trait_name: &str,
+    no_std: bool,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
@@ -930,7 +1062,7 @@ fn emit_trait(
                 &format!("parameter {}", param.name),
                 &format!("function {}/{}", interface.name, function.name),
             )?;
-            let ty = map_type(model, &interface.name, &param.ty, foreign_resolver)?;
+            let ty = map_type(model, &interface.name, &param.ty, no_std, foreign_resolver)?;
             if rustfmt::needs_allow_type_complexity(&ty) {
                 complex_type = true;
             }
@@ -939,7 +1071,7 @@ fn emit_trait(
         let ret = function
             .result
             .as_ref()
-            .map(|result| map_type(model, &interface.name, result, foreign_resolver))
+            .map(|result| map_type(model, &interface.name, result, no_std, foreign_resolver))
             .transpose()?;
         if ret
             .as_deref()
@@ -1097,10 +1229,43 @@ fn estimate_type_size(
     }
 }
 
+const fn string_path(no_std: bool) -> &'static str {
+    if no_std {
+        "::alloc::string::String"
+    } else {
+        "::std::string::String"
+    }
+}
+
+const fn vec_path(no_std: bool) -> &'static str {
+    if no_std {
+        "::alloc::vec::Vec"
+    } else {
+        "::std::vec::Vec"
+    }
+}
+
+const fn option_path(no_std: bool) -> &'static str {
+    if no_std {
+        "::core::option::Option"
+    } else {
+        "::std::option::Option"
+    }
+}
+
+const fn result_path(no_std: bool) -> &'static str {
+    if no_std {
+        "::core::result::Result"
+    } else {
+        "::std::result::Result"
+    }
+}
+
 fn map_type(
     model: &Model,
     current_interface: &str,
     ty: &TypeExpr,
+    no_std: bool,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<String> {
     match ty {
@@ -1115,7 +1280,7 @@ fn map_type(
         TypeExpr::S64 => Ok("i64".to_string()),
         TypeExpr::F32 => Ok("f32".to_string()),
         TypeExpr::F64 => Ok("f64".to_string()),
-        TypeExpr::String => Ok("::std::string::String".to_string()),
+        TypeExpr::String => Ok(string_path(no_std).to_string()),
         TypeExpr::Named(name) => {
             if let Some((namespace, package)) = name.package() {
                 let package_path = foreign_resolver(namespace, package)?;
@@ -1141,29 +1306,31 @@ fn map_type(
             }
         }
         TypeExpr::List(element) => {
+            let vec_ty = vec_path(no_std);
             if model.resolves_to_u8(element) {
-                Ok("::std::vec::Vec<u8>".to_string())
+                Ok(format!("{vec_ty}<u8>"))
             } else {
                 Ok(format!(
-                    "::std::vec::Vec<{}>",
-                    map_type(model, current_interface, element, foreign_resolver)?
+                    "{vec_ty}<{}>",
+                    map_type(model, current_interface, element, no_std, foreign_resolver)?
                 ))
             }
         }
         TypeExpr::Option(payload) => Ok(format!(
-            "::std::option::Option<{}>",
-            map_type(model, current_interface, payload, foreign_resolver)?
+            "{}<{}>",
+            option_path(no_std),
+            map_type(model, current_interface, payload, no_std, foreign_resolver)?
         )),
         TypeExpr::Result(result) => {
             let ok = result.ok.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, current_interface, ty, foreign_resolver),
+                |ty| map_type(model, current_interface, ty, no_std, foreign_resolver),
             )?;
             let err = result.err.as_ref().map_or_else(
                 || Ok("()".to_string()),
-                |ty| map_type(model, current_interface, ty, foreign_resolver),
+                |ty| map_type(model, current_interface, ty, no_std, foreign_resolver),
             )?;
-            Ok(format!("::std::result::Result<{ok}, {err}>"))
+            Ok(format!("{}<{ok}, {err}>", result_path(no_std)))
         }
     }
 }

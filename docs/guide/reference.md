@@ -70,6 +70,8 @@ Generate or check plain Rust types, interface traits, `worlds.rs`, `witforge_dep
 | `--diff` | Print a unified diff of output changes without changing the exit status. |
 | `--serde` | Enable `serde::Serialize` and `serde::Deserialize` derives (conflicts with `--no-serde`). |
 | `--no-serde` | Disable Serde derives, overriding `witforge.toml` (conflicts with `--serde`). |
+| `--no-std` | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`), overriding `witforge.toml` (conflicts with `--std`). |
+| `--std` | Emit default `std` paths, overriding `no-std = true` in `witforge.toml` (conflicts with `--no-std`). |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
@@ -117,6 +119,8 @@ Generate or check Rust/prost conversion glue (`v<major>.rs`, `mod.rs`, `witforge
 | `--out <DIR>` | Output directory for generated glue files. |
 | `--plain-root <PATH>` | Absolute Rust module path to generated plain modules (for example `crate::plain`). |
 | `--proto-root <PATH>` | Absolute Rust module path to prost modules (for example `crate::proto`). |
+| `--no-std` | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`), overriding `witforge.toml` (conflicts with `--std`). |
+| `--std` | Emit default `std` paths, overriding `no-std = true` in `witforge.toml` (conflicts with `--no-std`). |
 | `--check` | Verify existing files match without writing; exits `1` on drift. |
 | `--diff` | Print a unified diff of output changes without changing the exit status. |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
@@ -134,6 +138,8 @@ Run every generator configured in `witforge.toml` across all projects or `--proj
 | `--diff` | Print unified diffs of output changes without changing the exit status. |
 | `--serde` | Enable Serde derives across configured Rust outputs (conflicts with `--no-serde`). |
 | `--no-serde` | Disable Serde derives across configured Rust outputs (conflicts with `--serde`). |
+| `--no-std` | Emit `#![no_std]` + `alloc` compatible paths across configured Rust and glue outputs (conflicts with `--std`). |
+| `--std` | Emit default `std` paths across configured Rust and glue outputs, overriding config (conflicts with `--no-std`). |
 | `--released <PATH>` | Override the released-version manifest path for the run. |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
@@ -261,6 +267,7 @@ expansion.
 | `[project.<name>.rust]` | no | table | Plain Rust generator configuration. |
 | `project.<name>.rust.out` | yes (if section set) | path | Output directory for generated Rust files. |
 | `project.<name>.rust.serde` | no | boolean | Enable `serde::Serialize`/`Deserialize` derives (default `false`). |
+| `project.<name>.rust.no-std` | no | boolean | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`) (default `false`). |
 | `[project.<name>.proto]` | no | table | Protobuf generator configuration. |
 | `project.<name>.proto.out` | yes (if section set) | path | Output directory for generated `.proto` files. |
 | `[project.<name>.schema]` | no | table | JSON Schema generator configuration. |
@@ -270,3 +277,4 @@ expansion.
 | `project.<name>.glue.out` | yes (if section set) | path | Output directory for generated glue files. |
 | `project.<name>.glue.plain-root` | yes (if section set) | string | Absolute Rust module path to generated plain modules (`crate::...` or `::ext::...`). |
 | `project.<name>.glue.proto-root` | yes (if section set) | string | Absolute Rust module path to prost modules (`crate::...` or `::ext::...`). |
+| `project.<name>.glue.no-std` | no | boolean | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`) (default `false`). |
