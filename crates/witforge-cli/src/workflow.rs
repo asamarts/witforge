@@ -1,4 +1,4 @@
-//! Configuration discovery and workflow helpers (`new-version`, `release`, directory classification).
+//! Configuration discovery and workflow helpers (`init`, `new-version`, `release`, `retire`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,11 +6,260 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use witforge::diagnostic::codes;
+use witforge::workflow as contract_workflow;
 
 use crate::op_error;
 
 /// Default configuration file name searched upwards from the current working directory.
 pub(crate) const CONFIG_FILE_NAME: &str = "witforge.toml";
+
+/// Validate a WIT package name `<namespace>:<name>` (kebab-case ASCII identifiers).
+fn parse_package_id(raw: &str) -> Result<(String, String)> {
+    let Some((namespace, name)) = raw.split_once(':') else {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!(
+                "invalid `--package` value `{raw}`; expected `<namespace>:<name>` (for example \
+                 `example:hello`)"
+            ),
+            None,
+        ));
+    };
+    if name.contains(':') || !is_wit_kebab_ident(namespace) || !is_wit_kebab_ident(name) {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!(
+                "invalid `--package` value `{raw}`; namespace and name must be lowercase ASCII \
+                 kebab-case identifiers (for example `example:hello`)"
+            ),
+            None,
+        ));
+    }
+    Ok((namespace.to_string(), name.to_string()))
+}
+
+fn is_wit_kebab_ident(text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    text.split('-').all(|word| {
+        let mut bytes = word.bytes();
+        let Some(first) = bytes.next() else {
+            return false;
+        };
+        first.is_ascii_lowercase() && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })
+}
+
+fn derive_package_name(dir: &Path) -> String {
+    let raw = dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .or_else(|| {
+            fs::canonicalize(dir)
+                .ok()
+                .and_then(|p| {
+                    p.file_name()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .map(str::to_string)
+                })
+                .as_deref()
+                .map(|_| "")
+        });
+    let candidate = if let Some(name) = raw.filter(|s| !s.is_empty()) {
+        name.to_string()
+    } else if let Ok(canon) = fs::canonicalize(dir)
+        && let Some(name) = canon.file_name().and_then(std::ffi::OsStr::to_str)
+    {
+        name.to_string()
+    } else if let Ok(cwd) = std::env::current_dir()
+        && let Some(name) = cwd.file_name().and_then(std::ffi::OsStr::to_str)
+    {
+        name.to_string()
+    } else {
+        "contract".to_string()
+    };
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for ch in candidate.chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            segments.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    let valid_segments: Vec<String> = segments
+        .into_iter()
+        .filter(|seg| seg.bytes().next().is_some_and(|b| b.is_ascii_lowercase()))
+        .collect();
+    if valid_segments.is_empty() {
+        "contract".to_string()
+    } else {
+        valid_segments.join("-")
+    }
+}
+
+/// Scaffold a new witforge contract project under `dir` with `wit/v0.1/contract.wit`, an initial
+/// `wit/v0.1/wire.lock`, and `witforge.toml`, refusing to overwrite any existing file.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn init_project(
+    dir: &Path,
+    package: Option<&str>,
+    serde: bool,
+) -> Result<(String, PathBuf)> {
+    let (namespace, name) = match package {
+        Some(raw) => parse_package_id(raw)?,
+        None => ("example".to_string(), derive_package_name(dir)),
+    };
+    let package_id = format!("{namespace}:{name}");
+
+    if let Ok(meta) = fs::symlink_metadata(dir)
+        && !meta.is_dir()
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "target path `{}` exists and is not a directory",
+                dir.display()
+            ),
+            Some(dir.display().to_string()),
+        ));
+    }
+
+    let wit_dir = dir.join("wit");
+    let v01_dir = wit_dir.join("v0.1");
+    let contract_path = v01_dir.join("contract.wit");
+    let lock_path = v01_dir.join("wire.lock");
+    let config_path = dir.join(CONFIG_FILE_NAME);
+
+    for target in [&contract_path, &lock_path, &config_path] {
+        if fs::symlink_metadata(target).is_ok() {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "refusing to overwrite existing `{}`; remove it or choose another directory",
+                    target.display()
+                ),
+                Some(target.display().to_string()),
+            ));
+        }
+    }
+    if let Ok(meta) = fs::symlink_metadata(&v01_dir)
+        && !meta.is_dir()
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!("`{}` exists and is not a directory", v01_dir.display()),
+            Some(v01_dir.display().to_string()),
+        ));
+    }
+
+    let created_dir = !dir.exists();
+    let created_wit = !wit_dir.exists();
+    let created_v01 = !v01_dir.exists();
+
+    let starter_wit = format!(
+        "/// Starter contract for `{package_id}`.\n\
+         package {package_id}@0.1.0;\n\
+         \n\
+         /// Core contract types and functions.\n\
+         interface api {{\n\
+             /// One example message.\n\
+             record message {{\n\
+                 /// Stable identifier.\n\
+                 id: u64,\n\
+                 /// Message text.\n\
+                 text: string,\n\
+             }}\n\
+         \n\
+             /// Echo a message.\n\
+             echo: func(input: message) -> message;\n\
+         }}\n\
+         \n\
+         /// Contract world.\n\
+         world service {{\n\
+             export api;\n\
+         }}\n"
+    );
+
+    let serde_line = if serde {
+        "serde = true\n"
+    } else {
+        "# serde = true\n"
+    };
+    let starter_toml = format!(
+        "version = 1\n\
+         \n\
+         [project.{name}]\n\
+         root = \"wit\"\n\
+         \n\
+         [project.{name}.rust]\n\
+         out = \"generated/rust\"\n\
+         {serde_line}\
+         \n\
+         [project.{name}.proto]\n\
+         out = \"generated/proto\"\n\
+         \n\
+         [project.{name}.schema]\n\
+         out = \"generated/schema\"\n\
+         \n\
+         [project.{name}.glue]\n\
+         out = \"generated/glue\"\n\
+         plain-root = \"crate::generated::rust\"\n\
+         proto-root = \"crate::generated::proto\"\n"
+    );
+
+    let populate = (|| -> Result<()> {
+        fs::create_dir_all(&v01_dir)
+            .with_context(|| format!("failed to create {}", v01_dir.display()))?;
+        fs::write(&contract_path, &starter_wit)
+            .with_context(|| format!("failed to write {}", contract_path.display()))?;
+        let lock_options = contract_workflow::VersionOptions::new(v01_dir.clone())
+            .with_baseline(contract_workflow::Baseline::First);
+        let outcome = contract_workflow::lock(&lock_options)?;
+        if !outcome.is_ok() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "failed to initialize starter contract for `{package_id}`: {}",
+                    outcome
+                        .report
+                        .findings
+                        .first()
+                        .map_or("contract check failed", |f| f.human.as_str())
+                ),
+                Some(contract_path.display().to_string()),
+            ));
+        }
+        outcome.write()?;
+        fs::write(&config_path, &starter_toml)
+            .with_context(|| format!("failed to write {}", config_path.display()))?;
+        Ok(())
+    })();
+
+    if let Err(err) = populate {
+        let _ = fs::remove_file(&config_path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&contract_path);
+        if created_v01 {
+            let _ = fs::remove_dir(&v01_dir);
+        }
+        if created_wit {
+            let _ = fs::remove_dir(&wit_dir);
+        }
+        if created_dir {
+            let _ = fs::remove_dir(dir);
+        }
+        return Err(err);
+    }
+
+    Ok((package_id, config_path))
+}
 
 /// Walk upwards from `start_dir` for the nearest `witforge.toml`, stopping after checking the
 /// enclosing Git repository root (a directory containing `.git`) or at the filesystem root.
@@ -35,13 +284,31 @@ pub(crate) fn discover_config() -> Option<PathBuf> {
     discover_config_from(&cwd)
 }
 
+/// Parse a canonical `v<major>.<minor>` version directory name.
+fn parse_version_dir_name(raw: &str) -> Option<(u64, u64)> {
+    let (major, minor) = raw.strip_prefix('v')?.split_once('.')?;
+    let canonical = |digits: &str| {
+        !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && (digits == "0" || !digits.starts_with('0'))
+    };
+    if !canonical(major) || !canonical(minor) {
+        return None;
+    }
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
 /// Create the next minor (`v<major>.<minor+1>`) or next major (`v<major+1>.0`) version directory
 /// under `wit_root` by copying WIT files, `deps/`, and (for a minor only) `wire.lock`, rewriting
 /// the `package ...@<old>;` version header in every root `.wit` file.
+///
+/// When `from_version` is `Some("v<major>.<minor>")`, clones that explicit source version instead
+/// of the globally latest version (allowing maintenance minors on an earlier major line).
 #[allow(clippy::too_many_lines)]
 pub(crate) fn create_new_version(
     wit_root: &Path,
     major_bump: bool,
+    from_version: Option<&str>,
 ) -> Result<(PathBuf, PathBuf, bool)> {
     if !wit_root.is_dir() {
         return Err(op_error(
@@ -51,10 +318,37 @@ pub(crate) fn create_new_version(
         ));
     }
     let versions = witforge::discover_version_directories(wit_root)?;
-    let (latest_major, latest_minor, latest_dir) = versions
-        .last()
-        .expect("discover_version_directories never returns empty")
-        .clone();
+    let (latest_major, latest_minor, latest_dir) = if let Some(raw_from) = from_version {
+        let Some((want_major, want_minor)) = parse_version_dir_name(raw_from) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "invalid `--from` version `{raw_from}`; expected `v<major>.<minor>` (for \
+                     example `v0.2`)"
+                ),
+                None,
+            ));
+        };
+        let Some(found) = versions
+            .iter()
+            .find(|(major, minor, _)| *major == want_major && *minor == want_minor)
+        else {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "source version `{raw_from}` was not found under `{}`",
+                    wit_root.display()
+                ),
+                Some(wit_root.display().to_string()),
+            ));
+        };
+        found.clone()
+    } else {
+        versions
+            .last()
+            .expect("discover_version_directories never returns empty")
+            .clone()
+    };
     witforge::ensure_version_directory(&latest_dir)?;
 
     let (target_major, target_minor) = if major_bump {
@@ -80,7 +374,7 @@ pub(crate) fn create_new_version(
         return Err(op_error(
             codes::IO_ERROR,
             format!(
-                "latest version directory `{}` has no `wire.lock`; lock `{}` before starting a \
+                "source version directory `{}` has no `wire.lock`; lock `{}` before starting a \
                  new minor version",
                 latest_dir.display(),
                 latest_dir.display()
@@ -330,9 +624,75 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Rewrite an active `<entry>` line in a `released` manifest to `<entry> retired`, preserving
+/// comments, blank lines, ordering, and LF line endings.
+pub(crate) fn retire_released_entry_text(raw: &str, entry: &str) -> Result<String> {
+    let normalized = raw.replace("\r\n", "\n");
+    let mut lines: Vec<String> = Vec::new();
+    let mut updated = false;
+    let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
+    for line in body.split('\n') {
+        let trimmed = line.trim_matches([' ', '\t', '\r', '\x0b', '\x0c']);
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            lines.push(line.to_string());
+            continue;
+        }
+        let tokens: Vec<&str> = trimmed
+            .split([' ', '\t'])
+            .filter(|part| !part.is_empty())
+            .collect();
+        if tokens.len() == 1 && tokens[0] == entry {
+            updated = true;
+            lines.push(format!("{entry} retired"));
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !updated {
+        return Err(op_error(
+            codes::IO_ERROR,
+            format!("entry `{entry}` was not found as a live release line"),
+            None,
+        ));
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    Ok(out)
+}
+
 /// Append `entry` to `manifest_path` atomically, refusing symlinks and preserving LF line endings
 /// and a final newline.
 pub(crate) fn append_released_entry(manifest_path: &Path, entry: &str) -> Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(manifest_path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{}` is a symlink; commit a regular file",
+                manifest_path.display()
+            ),
+            Some(manifest_path.display().to_string()),
+        ));
+    }
+    let mut contents = if manifest_path.exists() {
+        fs::read_to_string(manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?
+            .replace("\r\n", "\n")
+    } else {
+        String::new()
+    };
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(entry);
+    contents.push('\n');
+    write_atomic_manifest(manifest_path, &contents)
+}
+
+/// Atomically replace `manifest_path` with `contents`, refusing symlinks and preserving existing
+/// file permissions.
+pub(crate) fn write_atomic_manifest(manifest_path: &Path, contents: &str) -> Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -351,18 +711,6 @@ pub(crate) fn append_released_entry(manifest_path: &Path, entry: &str) -> Result
         ));
     }
     let existing_perms = fs::metadata(manifest_path).ok().map(|m| m.permissions());
-    let mut contents = if manifest_path.exists() {
-        fs::read_to_string(manifest_path)
-            .with_context(|| format!("failed to read {}", manifest_path.display()))?
-            .replace("\r\n", "\n")
-    } else {
-        String::new()
-    };
-    if !contents.is_empty() && !contents.ends_with('\n') {
-        contents.push('\n');
-    }
-    contents.push_str(entry);
-    contents.push('\n');
 
     let parent = manifest_path
         .parent()

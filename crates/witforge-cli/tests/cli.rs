@@ -4671,3 +4671,236 @@ fn release_validates_root_invariants_and_explicit_nonexistent_manifest() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn init_retire_and_new_version_from_complete_the_lifecycle_cli() {
+    let base = std::env::temp_dir().join(format!("witforge-lifecycle-cli-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let proj = base.join("my-service");
+
+    // 1. `witforge init` scaffolds a check-passing, generate-ready project (with `--serde`).
+    let init_out = witforge()
+        .args(["init"])
+        .arg(&proj)
+        .args(["--package", "acme:billing", "--serde"])
+        .output()
+        .unwrap();
+    assert!(init_out.status.success(), "{init_out:?}");
+    assert!(proj.join("wit/v0.1/contract.wit").is_file());
+    assert!(proj.join("wit/v0.1/wire.lock").is_file());
+    assert!(proj.join("witforge.toml").is_file());
+    let toml_text = fs::read_to_string(proj.join("witforge.toml")).unwrap();
+    assert!(toml_text.contains("[project.billing]"), "{toml_text}");
+    assert!(toml_text.contains("serde = true"), "{toml_text}");
+
+    let check_out = witforge()
+        .args(["check", "--config"])
+        .arg(proj.join("witforge.toml"))
+        .output()
+        .unwrap();
+    assert!(check_out.status.success(), "{check_out:?}");
+
+    let gen_out = witforge()
+        .args(["generate", "--config"])
+        .arg(proj.join("witforge.toml"))
+        .output()
+        .unwrap();
+    assert!(gen_out.status.success(), "{gen_out:?}");
+    assert!(proj.join("generated/rust/v0_1.rs").is_file());
+    assert!(proj.join("generated/proto/v0.proto").is_file());
+    assert!(proj.join("generated/schema/v0_1.schema.json").is_file());
+    assert!(proj.join("generated/glue/v0.rs").is_file());
+    let gen_rust = fs::read_to_string(proj.join("generated/rust/v0_1.rs")).unwrap();
+    assert!(gen_rust.contains("::serde::Serialize"), "{gen_rust}");
+
+    // 2. Re-running `witforge init` refuses to overwrite existing files (exit 2 / WF9004).
+    let overwrite = witforge()
+        .args(["init"])
+        .arg(&proj)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(overwrite.status.code(), Some(2), "{overwrite:?}");
+    let ow_json: serde_json::Value = serde_json::from_slice(&overwrite.stdout).unwrap();
+    assert_eq!(ow_json["diagnostics"][0]["code"], "WF9004");
+
+    // Invalid `--package` is refused with WF9001.
+    let bad_pkg = witforge()
+        .args(["init"])
+        .arg(base.join("bad-pkg"))
+        .args(["--package", "NotValid", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad_pkg.status.code(), Some(2), "{bad_pkg:?}");
+    let bp_json: serde_json::Value = serde_json::from_slice(&bad_pkg.stdout).unwrap();
+    assert_eq!(bp_json["diagnostics"][0]["code"], "WF9001");
+
+    // 3. Build v0.1 -> v0.2 -> v1.0, then cut maintenance minor v0.3 using `new-version --from v0.2`.
+    let wit_root = proj.join("wit");
+    assert!(
+        witforge()
+            .args(["release"])
+            .arg(wit_root.join("v0.1"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["new-version"])
+            .arg(&wit_root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_root.join("v0.2"))
+            .args(["--against"])
+            .arg(wit_root.join("v0.1/wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["release"])
+            .arg(wit_root.join("v0.2"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["new-version"])
+            .arg(&wit_root)
+            .arg("--major")
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_root.join("v1.0"))
+            .arg("--first")
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let maint = witforge()
+        .args(["new-version"])
+        .arg(&wit_root)
+        .args(["--from", "v0.2"])
+        .output()
+        .unwrap();
+    assert!(maint.status.success(), "{maint:?}");
+    assert!(wit_root.join("v0.3/contract.wit").is_file());
+    assert!(wit_root.join("v0.3/wire.lock").is_file());
+    let v03_wit = fs::read_to_string(wit_root.join("v0.3/contract.wit")).unwrap();
+    assert!(v03_wit.contains("package acme:billing@0.3.0;"), "{v03_wit}");
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_root.join("v0.3"))
+            .args(["--against"])
+            .arg(wit_root.join("v0.2/wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["check"])
+            .arg(&wit_root)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // 4. `witforge retire` enforces release status, contiguous oldest-prefix order, and >= 1 live.
+    // 4a. Refuses retiring unreleased `v1.0`.
+    let retire_unreleased = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v1.0"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        retire_unreleased.status.code(),
+        Some(1),
+        "{retire_unreleased:?}"
+    );
+
+    // 4b. Refuses retiring `v0.2` while `v0.1` is still live.
+    let retire_non_prefix = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.2"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        retire_non_prefix.status.code(),
+        Some(1),
+        "{retire_non_prefix:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&retire_non_prefix.stderr).contains("older version `v0.1`"),
+        "{retire_non_prefix:?}"
+    );
+
+    // 4c. Retiring `v0.1` succeeds, preserves comments, and is idempotent.
+    fs::write(
+        wit_root.join("released"),
+        "# released versions\nv0.1\nv0.2\n",
+    )
+    .unwrap();
+    let retire_v01 = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.1"))
+        .output()
+        .unwrap();
+    assert!(retire_v01.status.success(), "{retire_v01:?}");
+    assert_eq!(
+        fs::read_to_string(wit_root.join("released")).unwrap(),
+        "# released versions\nv0.1 retired\nv0.2\n"
+    );
+    let retire_again = witforge()
+        .args(["retire"])
+        .arg(wit_root.join("v0.1"))
+        .output()
+        .unwrap();
+    assert!(retire_again.status.success(), "{retire_again:?}");
+
+    // 4d. Retiring the last live version is refused.
+    let single = base.join("single-retire");
+    assert!(
+        witforge()
+            .args(["init"])
+            .arg(&single)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["release"])
+            .arg(single.join("wit/v0.1"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let retire_last = witforge()
+        .args(["retire"])
+        .arg(single.join("wit/v0.1"))
+        .output()
+        .unwrap();
+    assert_eq!(retire_last.status.code(), Some(1), "{retire_last:?}");
+    assert!(
+        String::from_utf8_lossy(&retire_last.stderr).contains("at least one live version"),
+        "{retire_last:?}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

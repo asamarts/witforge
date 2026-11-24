@@ -60,7 +60,8 @@ frozen as a whole, which covers the remaining source-level cases.
   directory that does not exist or has no `wire.lock`. The tool and `ci/check-release-freeze.sh`
   apply the same entry rule; the tool rejects a malformed manifest, duplicate entries, and missing,
   symlinked, or lockfile-less listed directories.
-- **Version retirement:** marking a released version `retired` records that its directory stays on
+- **Version retirement:** marking a released version `retired` (via `witforge retire <wit-dir>`
+  or editing `wit/released`) records that its directory stays on
   disk and stays frozen (still validated for lockfile continuity into any later minor of its major,
   still refused by `lock`, and still frozen by `witforge freeze`), while every generator stops
   emitting it (so stale-file removal deletes its plain Rust module, JSON Schema file, and adapters

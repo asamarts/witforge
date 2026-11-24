@@ -46,6 +46,10 @@ contains `my-contract/`, and the test suite runs them in this order.
 
 ## One version
 
+To scaffold a starter project (`wit/v0.1/contract.wit`, initial `wire.lock`, and `witforge.toml`)
+in one step without overwriting existing files, run `witforge init my-contract --package example:hello`
+(add `--serde` to enable Serde derives). The manual steps below walk through each file explicitly.
+
 Create a root with a version directory:
 
 ```text

@@ -139,14 +139,27 @@ Run every generator configured in `witforge.toml` across all projects or `--proj
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Select a single project from `witforge.toml`. |
 
+### `witforge init`
+
+Scaffold a new witforge contract project (`wit/v0.1/contract.wit`, initial `wit/v0.1/wire.lock`,
+and `witforge.toml`), refusing to overwrite any existing file.
+
+| Option / Argument | Description |
+|---|---|
+| `[DIR]` | Target directory to initialize (defaults to `.`). |
+| `--package <NS:NAME>` | WIT package identity (`<namespace>:<name>`, for example `example:hello`; defaults to `example:<dir-name>`). |
+| `--serde` | Enable `serde = true` in the generated `witforge.toml` Rust section. |
+
 ### `witforge new-version`
 
-Scaffold the next minor (or major) version directory from the latest existing version.
+Scaffold the next minor (or major) version directory from the latest existing version or an
+explicit `--from` version.
 
 | Option / Argument | Description |
 |---|---|
 | `[WIT_ROOT]` | WIT root containing version directories; omit to use the configured project root. |
 | `--major` | Create `v<major+1>.0` without copying `wire.lock` instead of `v<major>.<minor+1>`. |
+| `--from <VERSION>` | Source version directory to clone (for example `v0.2`), allowing maintenance minors on an earlier major line. |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Select a single project from `witforge.toml`. |
@@ -158,6 +171,19 @@ Validate a version directory and append it to the `released` manifest.
 | Option / Argument | Description |
 |---|---|
 | `<WIT_DIR>` | WIT version directory to validate and record as released. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_DIR>/../released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Select a single project from `witforge.toml`. |
+
+### `witforge retire`
+
+Mark a released version directory as `retired` in the `released` manifest, enforcing contiguous
+oldest-prefix retirement order and requiring at least one remaining live version.
+
+| Option / Argument | Description |
+|---|---|
+| `<WIT_DIR>` | Released WIT version directory to mark as `retired`. |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_DIR>/../released`). |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |

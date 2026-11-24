@@ -7,7 +7,10 @@ title: Contract evolution
 
 ## Add a minor version
 
-A new minor is a new directory that starts as a copy of the previous version, lockfile included:
+A new minor is a new directory that starts as a copy of the previous version, lockfile included
+(`witforge new-version wit` automates this from the latest version, and
+`witforge new-version wit --from v0.2` creates a maintenance minor `v0.3` on an earlier major line
+even after `v1.0` exists):
 
 ```sh
 mkdir wit/v0.2
@@ -108,8 +111,10 @@ Across a major boundary:
 
 ### Retiring old versions
 
-Once consumers no longer need the oldest versions in a WIT root, mark them `retired` in
-`wit/released` (first supported in 0.7.0; earlier releases reject the syntax):
+Once consumers no longer need the oldest versions in a WIT root, retire them with
+`witforge retire wit/v0.1` (which validates release status, contiguous oldest-prefix ordering, and
+at least one remaining live version before atomically marking `<entry> retired` in `wit/released`,
+first supported in 0.7.0; earlier releases reject the syntax):
 
 ```text
 v0.1 retired

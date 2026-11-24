@@ -8,14 +8,17 @@
 //!                [--serde | --no-serde] [--check] [--diff] [--released PATH]
 //! witforge proto [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
-//! witforge schema [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
-//!                [--check] [--diff] [--released PATH]
+//! witforge schema [<wit-root>] [--out DIR] [--draft 7|2020-12] [--config PATH | --no-config]
+//!                [--project NAME] [--check] [--diff] [--released PATH]
 //! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
 //!                [--config PATH | --no-config] [--project NAME] [--check] [--diff] [--released PATH]
 //! witforge generate [--config PATH | --no-config] [--project NAME] [--check] [--diff]
 //!                   [--serde | --no-serde] [--released PATH]
-//! witforge new-version [<wit-root>] [--major] [--config PATH | --no-config] [--project NAME]
+//! witforge init  [DIR] [--package NS:NAME] [--serde]
+//! witforge new-version [<wit-root>] [--major] [--from VERSION] [--config PATH | --no-config]
+//!                      [--project NAME]
 //! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
+//! witforge retire  <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge diff  <old> <new> [--json] [--check[=VIEWS]]
 //! witforge freeze [<wit-root>] [--released PATH] [--config PATH | --no-config] [--project NAME] [--base REV]
 //! witforge completions <bash|zsh|fish>
@@ -89,17 +92,21 @@ enum Command {
     Rust(RustOptions),
     /// Generate protobuf schemas.
     Proto(ProtoOptions),
-    /// Generate Draft 7 JSON Schema definitions.
+    /// Generate JSON Schema definitions (Draft 7 default, opt-in Draft 2020-12).
     Schema(SchemaOptions),
     /// Generate protobuf glue conversions and function helpers.
     Glue(GlueOptions),
     /// Run every generator configured in `witforge.toml`.
     Generate(GenerateOptions),
-    /// Create the next minor or major version directory from the latest version.
+    /// Scaffold a starter `wit/v0.1/contract.wit`, initial `wire.lock`, and `witforge.toml`.
+    Init(InitOptions),
+    /// Create the next minor or major version directory from the latest (or `--from`) version.
     #[command(name = "new-version")]
     NewVersion(NewVersionOptions),
     /// Validate a version directory and append it to the `released` manifest.
     Release(ReleaseOptions),
+    /// Mark a released version directory as `retired` in the `released` manifest.
+    Retire(RetireOptions),
     /// Compare two contract versions and classify breaking changes.
     Diff(DiffOptions),
     /// Verify that released version directories have not changed in Git history.
@@ -291,6 +298,19 @@ struct GenerateOptions {
 }
 
 #[derive(Debug, Args)]
+struct InitOptions {
+    /// Target directory to initialize (defaults to the current directory).
+    #[arg(value_name = "DIR")]
+    dir: Option<PathBuf>,
+    /// WIT package identity (`<namespace>:<name>`, for example `example:hello`).
+    #[arg(long, value_name = "NS:NAME")]
+    package: Option<String>,
+    /// Enable `serde = true` in the generated `witforge.toml` Rust section.
+    #[arg(long)]
+    serde: bool,
+}
+
+#[derive(Debug, Args)]
 struct NewVersionOptions {
     /// WIT root containing version directories; omit to use the configured project root.
     #[arg(value_name = "WIT_ROOT")]
@@ -298,6 +318,9 @@ struct NewVersionOptions {
     /// Start the next major version (`v<major+1>.0`) with no copied wire.lock instead of the next minor.
     #[arg(long)]
     major: bool,
+    /// Source version directory to clone (for example `v0.2`), instead of the globally latest version.
+    #[arg(long, value_name = "VERSION")]
+    from: Option<String>,
     /// Configuration file; discovered upwards from the working directory when omitted.
     #[command(flatten)]
     config: ConfigArgs,
@@ -306,6 +329,19 @@ struct NewVersionOptions {
 #[derive(Debug, Args)]
 struct ReleaseOptions {
     /// WIT version directory to validate and record in `released`.
+    #[arg(value_name = "WIT_DIR")]
+    dir: PathBuf,
+    /// Released-version manifest path; defaults to `<WIT_DIR>/../released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file; read only when `--config` or `--project` is passed.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct RetireOptions {
+    /// Released WIT version directory to mark as `retired` in `released`.
     #[arg(value_name = "WIT_DIR")]
     dir: PathBuf,
     /// Released-version manifest path; defaults to `<WIT_DIR>/../released`.
@@ -983,8 +1019,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Schema(options) => schema(&options, &mut reporter),
         Command::Glue(options) => glue(&options, &mut reporter),
         Command::Generate(options) => generate_command(&options, &mut reporter),
+        Command::Init(options) => init_command(&options, &mut reporter),
         Command::NewVersion(options) => new_version_command(&options, &mut reporter),
         Command::Release(options) => release_command(&options, &mut reporter),
+        Command::Retire(options) => retire_command(&options, &mut reporter),
         Command::Diff(options) => diff_command(&options, &mut reporter),
         Command::Freeze(options) => freeze_command(&options, &mut reporter),
         Command::Completions(options) => Ok(completions_command(&options, &mut reporter)),
@@ -2118,6 +2156,22 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
     }
 }
 
+fn init_command(options: &InitOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let target_dir = options.dir.clone().unwrap_or_else(|| PathBuf::from("."));
+    let (package_id, config_path) =
+        workflow::init_project(&target_dir, options.package.as_deref(), options.serde)?;
+    if reporter.human() && !reporter.is_quiet() {
+        reporter.write_stdout_line(&format!(
+            "initialized {} for {package_id}@0.1.0 (next: `witforge check --config {}` and \
+             `witforge generate --config {}`)",
+            target_dir.display(),
+            shell_quote(&config_path),
+            shell_quote(&config_path),
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let wit_root = if let Some(root) = &options.root {
         if options.config.config.is_some() || options.config.project.is_some() {
@@ -2167,7 +2221,7 @@ fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> 
     };
 
     let (latest_dir, target_dir, copied_lock) =
-        workflow::create_new_version(&wit_root, options.major)?;
+        workflow::create_new_version(&wit_root, options.major, options.from.as_deref())?;
     if reporter.human() && !reporter.is_quiet() {
         let next_cmd = if copied_lock {
             format!(
@@ -2185,6 +2239,57 @@ fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> 
         ));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn resolve_manifest_for_version_dir(
+    dir: &Path,
+    explicit_released: Option<&Path>,
+    config_args: &ConfigArgs,
+) -> Result<PathBuf> {
+    if let Some(explicit) = explicit_released {
+        return Ok(explicit.to_path_buf());
+    }
+    if config_args.config.is_some() || config_args.project.is_some() {
+        let Some(config_path) = resolve_config_path_opt(config_args, true)? else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--project` requires `--config`",
+                None,
+            ));
+        };
+        let (config, base) = load_config_file(&config_path)?;
+        let name = match &config_args.project {
+            Some(name) => name.clone(),
+            None if config.project.len() == 1 => config
+                .project
+                .keys()
+                .next()
+                .expect("checked one project")
+                .clone(),
+            None => {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "configuration {} has multiple projects; pass --project",
+                        config_path.display()
+                    ),
+                    Some(config_path.display().to_string()),
+                ));
+            }
+        };
+        let Some(project) = config.project.get(&name) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("configuration has no project `{name}`"),
+                Some(config_path.display().to_string()),
+            ));
+        };
+        return Ok(project.released.as_deref().map_or_else(
+            || default_released_manifest(dir),
+            |p| resolve_config_path(&base, p),
+        ));
+    }
+    Ok(default_released_manifest(dir))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2212,50 +2317,11 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
             )
         })?;
 
-    let manifest_path = if let Some(explicit) = &options.released {
-        explicit.clone()
-    } else if options.config.config.is_some() || options.config.project.is_some() {
-        let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
-            return Err(op_error(
-                codes::CLI_USAGE,
-                "`--project` requires `--config`",
-                None,
-            ));
-        };
-        let (config, base) = load_config_file(&config_path)?;
-        let name = match &options.config.project {
-            Some(name) => name.clone(),
-            None if config.project.len() == 1 => config
-                .project
-                .keys()
-                .next()
-                .expect("checked one project")
-                .clone(),
-            None => {
-                return Err(op_error(
-                    codes::CLI_USAGE,
-                    format!(
-                        "configuration {} has multiple projects; pass --project",
-                        config_path.display()
-                    ),
-                    Some(config_path.display().to_string()),
-                ));
-            }
-        };
-        let Some(project) = config.project.get(&name) else {
-            return Err(op_error(
-                codes::CLI_USAGE,
-                format!("configuration has no project `{name}`"),
-                Some(config_path.display().to_string()),
-            ));
-        };
-        project.released.as_deref().map_or_else(
-            || default_released_manifest(&options.dir),
-            |p| resolve_config_path(&base, p),
-        )
-    } else {
-        default_released_manifest(&options.dir)
-    };
+    let manifest_path = resolve_manifest_for_version_dir(
+        &options.dir,
+        options.released.as_deref(),
+        &options.config,
+    )?;
 
     if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(op_error(
@@ -2335,6 +2401,146 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
     if reporter.human() && !reporter.is_quiet() {
         reporter.write_stdout_line(&format!(
             "released `{entry_name}` in {}",
+            manifest_path.display()
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[allow(clippy::too_many_lines)]
+fn retire_command(options: &RetireOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    ensure_version_directory(&options.dir)?;
+    let canonical_dir = fs::canonicalize(&options.dir).with_context(|| {
+        format!(
+            "failed to resolve version directory {}",
+            options.dir.display()
+        )
+    })?;
+    let entry_name = canonical_dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_string)
+        .filter(|name| version_directory(Path::new(name)).is_some())
+        .ok_or_else(|| {
+            op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "`{}` is not a `v<major>.<minor>` version directory",
+                    options.dir.display()
+                ),
+                Some(options.dir.display().to_string()),
+            )
+        })?;
+    let wit_root = canonical_dir.parent().ok_or_else(|| {
+        op_error(
+            codes::IO_ERROR,
+            format!(
+                "version directory `{}` has no parent WIT root",
+                options.dir.display()
+            ),
+            Some(options.dir.display().to_string()),
+        )
+    })?;
+
+    let manifest_path = resolve_manifest_for_version_dir(
+        &options.dir,
+        options.released.as_deref(),
+        &options.config,
+    )?;
+
+    if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{}` is a symlink; commit a regular file",
+                manifest_path.display()
+            ),
+            Some(manifest_path.display().to_string()),
+        ));
+    }
+    if !manifest_path.exists() {
+        bail!(ContractError::with_diagnostic(
+            Diagnostic::error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "cannot retire `{entry_name}`: released manifest {} does not exist; release \
+                     `{entry_name}` first",
+                    manifest_path.display()
+                ),
+            )
+            .with_path(manifest_path.display().to_string())
+        ));
+    }
+
+    let manifest = ReleasedManifest::load(&manifest_path)?;
+    if !manifest.contains(&entry_name) {
+        bail!(ContractError::with_diagnostic(
+            Diagnostic::error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "cannot retire `{entry_name}`: it is not listed in {}; release `{entry_name}` \
+                     first",
+                    manifest_path.display()
+                ),
+            )
+            .with_path(manifest_path.display().to_string())
+        ));
+    }
+    if manifest.is_retired(&entry_name) {
+        if reporter.human() && !reporter.is_quiet() {
+            reporter.write_stdout_line(&format!(
+                "`{entry_name}` is already retired in {}",
+                manifest_path.display()
+            ));
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let versions = discover_version_directories(wit_root)?;
+    let mut first_live: Option<String> = None;
+    for (_, _, dir) in &versions {
+        let name = dir
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        if manifest.is_retired(name) || name == entry_name {
+            if let Some(ref older_live) = first_live {
+                bail!(ContractError::with_diagnostic(
+                    Diagnostic::error(
+                        codes::LOCKFILE_ERROR,
+                        format!(
+                            "cannot retire `{name}` while older version `{older_live}` is still \
+                             live; only the oldest versions of a WIT root may be retired"
+                        ),
+                    )
+                    .with_path(manifest_path.display().to_string())
+                ));
+            }
+        } else if first_live.is_none() {
+            first_live = Some(name.to_string());
+        }
+    }
+    if first_live.is_none() {
+        bail!(ContractError::with_diagnostic(
+            Diagnostic::error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "cannot retire `{entry_name}`: every version directory under {} would be \
+                     retired; at least one live version is required",
+                    wit_root.display()
+                ),
+            )
+            .with_path(manifest_path.display().to_string())
+        ));
+    }
+
+    let raw = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let updated = workflow::retire_released_entry_text(&raw, &entry_name)?;
+    workflow::write_atomic_manifest(&manifest_path, &updated)?;
+    if reporter.human() && !reporter.is_quiet() {
+        reporter.write_stdout_line(&format!(
+            "retired `{entry_name}` in {}",
             manifest_path.display()
         ));
     }
