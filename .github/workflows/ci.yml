@@ -59,11 +59,12 @@ jobs:
           git diff --check "$empty_tree" HEAD
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p witforge-build --all-targets --all-features -- -D warnings
       # The fuzz workspace is separate from the main workspace, so these stable checks must
       # name it explicitly; the fuzz campaign itself still runs under cargo-fuzz/nightly.
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: cargo check --manifest-path fuzz/Cargo.toml --locked
-      - run: cargo doc --workspace --no-deps
+      - run: cargo doc --workspace --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -194,6 +195,7 @@ jobs:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - run: cargo test --workspace --locked
+      - run: cargo test -p witforge-build --all-features --locked
       # /bin/bash is 3.2 on macOS, which consumers of the freeze script may run it with.
       - if: runner.os != 'Windows'
         run: /bin/bash ci/test-release-freeze.sh

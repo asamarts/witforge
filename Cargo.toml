@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/witforge", "crates/witforge-cli"]
+members = ["crates/witforge", "crates/witforge-build", "crates/witforge-cli"]
 
 [workspace.package]
 version = "0.7.0"

@@ -92,9 +92,13 @@ explicit release-owner action.
 ## Later releases
 
 - [ ] Bump `version` under `[workspace.package]` in `Cargo.toml` and `witforge-cli`'s
-      requirement on `witforge` in `crates/witforge-cli/Cargo.toml` to the new version (the CLI
-      uses the library's API as of that version; `ci/check-release.sh` refuses a mismatch), and
-      refresh `Cargo.lock` with `cargo update -w`, since CI builds with `--locked`.
+      requirement on `witforge` in `crates/witforge-cli/Cargo.toml` to the new version (all three
+      workspace crates — `witforge`, `witforge-build`, and `witforge-cli` — share the workspace
+      version; `ci/check-release.sh` refuses a mismatch), and refresh `Cargo.lock` with
+      `cargo update -w`, since CI builds with `--locked`.
+      Note: the first release containing `witforge-build` publishes `witforge-build` by hand once
+      (using a short-lived `publish-new` token) and configures crates.io Trusted Publishing for
+      `witforge-build` before tagging `v0.8.0` (just as 0.1.0 did for `witforge` and `witforge-cli`).
 - [ ] Turn `## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - YYYY-MM-DD` (the tag date) and
       update the README's status line. Say in the section's intro whether generated output
       changes for a contract the previous release accepts (`git diff vPREV -- crates/*/tests`

@@ -172,9 +172,9 @@ rerunning the same command without `--dry-run`.
   loud (`APLAN022`). Put a new task in its milestone's `blocked_by` when you write it.
 - Closing a task stamps the `traces` sections it names, and a later edit to one of them reports
   the task (`APLAN018`). Re-read the section, then `aplan close --restamp` if it still holds.
-- A `test` citation resolves against the configured runners (`witforge`, `witforge-cli`): it has
-  to be a name the runner lists, and where several runners list it the citation is refused rather
-  than guessed (`APLAN013`).
+- A `test` citation resolves against the configured runners (`witforge`, `witforge-build`,
+  `witforge-cli`): it has to be a name the runner lists, and where several runners list it the
+  citation is refused rather than guessed (`APLAN013`).
 - **Every warning blocks** here (`deny_warnings`): a finding is a finding.
 
 ## Through MCP

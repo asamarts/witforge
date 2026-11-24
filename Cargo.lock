@@ -1467,6 +1467,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "witforge-build"
+version = "0.7.0"
+dependencies = [
+ "pbjson",
+ "pbjson-build",
+ "prost",
+ "prost-build",
+ "protox",
+ "serde",
+ "serde_json",
+ "witforge",
+]
+
+[[package]]
 name = "witforge-cli"
 version = "0.7.0"
 dependencies = [

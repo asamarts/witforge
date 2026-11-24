@@ -26,7 +26,7 @@ cleanup() {
     local dir
     for dir in "${cargo_home}/registry/src/"-*/; do
         [[ -d "${dir}" ]] || continue
-        rm -rf "${dir}witforge-${VERSION}" "${dir}witforge-cli-${VERSION}"
+        rm -rf "${dir}witforge-${VERSION}" "${dir}witforge-build-${VERSION}" "${dir}witforge-cli-${VERSION}"
         rmdir "${dir}" 2>/dev/null || true
     done
 }
@@ -55,7 +55,9 @@ dry_run() {
     local output status=0
     # Plain output, so the match below works when CI sets CARGO_TERM_COLOR=always.
     output="$(CARGO_TERM_COLOR=never ci/publish.sh --dry-run 2>&1)" || status=$?
-    if [[ ${status} -ne 0 ]] || ! grep -qF "Uploading witforge-cli v${VERSION}" <<<"${output}"; then
+    if [[ ${status} -ne 0 ]] \
+        || ! grep -qF "Uploading witforge-build v${VERSION}" <<<"${output}" \
+        || ! grep -qF "Uploading witforge-cli v${VERSION}" <<<"${output}"; then
         echo "FAIL: $1 (exit ${status}):" >&2
         tail -n 20 <<<"${output}" >&2
         exit 1

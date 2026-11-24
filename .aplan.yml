@@ -29,6 +29,11 @@ test:
     list: [cargo, test, -q, -p, witforge, --, --list]
     run: [cargo, test, -q, -p, witforge, --, --exact, '{test}']
     skipped: [cargo, test, -q, -p, witforge, --, --list, --ignored]
+  - name: witforge-build
+    covers: [crates/witforge-build/**]
+    list: [cargo, test, -q, -p, witforge-build, --all-features, --, --list]
+    run: [cargo, test, -q, -p, witforge-build, --all-features, --, --exact, '{test}']
+    skipped: [cargo, test, -q, -p, witforge-build, --all-features, --, --list, --ignored]
   - name: witforge-cli
     covers: [crates/witforge-cli/**]
     list: [cargo, test, -q, -p, witforge-cli, --, --list]

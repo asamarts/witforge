@@ -43,6 +43,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
       witforge_crate_sha256: ${{ steps.crate_digests.outputs.witforge_sha256 }}
+      witforge_build_crate_sha256: ${{ steps.crate_digests.outputs.witforge_build_sha256 }}
       witforge_cli_crate_sha256: ${{ steps.crate_digests.outputs.witforge_cli_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -129,10 +130,12 @@ jobs:
         run: |
           pkg_dir="$RUNNER_TEMP/verified-crates"
           rm -rf "$pkg_dir"
-          cargo package --locked --no-verify -p witforge -p witforge-cli --target-dir "$pkg_dir"
+          cargo package --locked --no-verify -p witforge -p witforge-build -p witforge-cli --target-dir "$pkg_dir"
           lib_sha="$(sha256sum "${pkg_dir}/package/witforge-${VERSION}.crate" | awk '{print $1}')"
+          build_sha="$(sha256sum "${pkg_dir}/package/witforge-build-${VERSION}.crate" | awk '{print $1}')"
           cli_sha="$(sha256sum "${pkg_dir}/package/witforge-cli-${VERSION}.crate" | awk '{print $1}')"
           echo "witforge_sha256=${lib_sha}" >> "$GITHUB_OUTPUT"
+          echo "witforge_build_sha256=${build_sha}" >> "$GITHUB_OUTPUT"
           echo "witforge_cli_sha256=${cli_sha}" >> "$GITHUB_OUTPUT"
 
   binaries:
@@ -311,15 +314,21 @@ jobs:
         env:
           VERSION: ${{ needs.verify.outputs.version }}
           EXPECTED_LIB: ${{ needs.verify.outputs.witforge_crate_sha256 }}
+          EXPECTED_BUILD: ${{ needs.verify.outputs.witforge_build_crate_sha256 }}
           EXPECTED_CLI: ${{ needs.verify.outputs.witforge_cli_crate_sha256 }}
         run: |
           pkg_dir="$RUNNER_TEMP/publish-crates"
           rm -rf "$pkg_dir"
-          cargo package --locked --no-verify -p witforge -p witforge-cli --target-dir "$pkg_dir"
+          cargo package --locked --no-verify -p witforge -p witforge-build -p witforge-cli --target-dir "$pkg_dir"
           got_lib="$(sha256sum "${pkg_dir}/package/witforge-${VERSION}.crate" | awk '{print $1}')"
+          got_build="$(sha256sum "${pkg_dir}/package/witforge-build-${VERSION}.crate" | awk '{print $1}')"
           got_cli="$(sha256sum "${pkg_dir}/package/witforge-cli-${VERSION}.crate" | awk '{print $1}')"
           if [[ "$got_lib" != "$EXPECTED_LIB" ]]; then
             echo "::error::witforge .crate digest mismatch: got ${got_lib}, expected ${EXPECTED_LIB}"
+            exit 1
+          fi
+          if [[ "$got_build" != "$EXPECTED_BUILD" ]]; then
+            echo "::error::witforge-build .crate digest mismatch: got ${got_build}, expected ${EXPECTED_BUILD}"
             exit 1
           fi
           if [[ "$got_cli" != "$EXPECTED_CLI" ]]; then

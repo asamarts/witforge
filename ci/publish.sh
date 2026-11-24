@@ -17,8 +17,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
-# Dependency order: the CLI depends on the library through the registry.
-CRATES=(witforge witforge-cli)
+# Dependency order: the CLI depends on the library through the registry; `witforge-build` is standalone.
+CRATES=(witforge witforge-build witforge-cli)
 
 mode=publish
 case "${1:-}" in

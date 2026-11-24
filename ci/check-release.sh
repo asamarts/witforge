@@ -20,11 +20,11 @@ fail() {
 }
 
 metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
-versions="$(jq -r '.packages[] | select(.name == "witforge" or .name == "witforge-cli") | .version' \
+versions="$(jq -r '.packages[] | select(.name == "witforge" or .name == "witforge-build" or .name == "witforge-cli") | .version' \
     <<<"${metadata}" | sort -u)"
 count="$(wc -l <<<"${versions}")"
 [[ "${count}" -eq 1 && -n "${versions}" ]] \
-    || fail "witforge and witforge-cli must have one version, found: ${versions//$'\n'/, }"
+    || fail "witforge, witforge-build, and witforge-cli must have one version, found: ${versions//$'\n'/, }"
 version="${versions}"
 # witforge-cli uses the library's API as of this version, so it must require at least it.
 requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependencies[]

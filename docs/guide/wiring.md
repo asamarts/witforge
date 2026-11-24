@@ -261,6 +261,41 @@ cargo run --manifest-path my-contract-crate/Cargo.toml
   with `default-features = false, features = ["derive"]` (and `serde` with `default-features =
   false, features = ["alloc", "derive"]` if `serde = true`).
 
+## Simplifying `build.rs` with `witforge-build`
+
+Instead of wiring `protox`, `prost-build`, and manual `cargo:rerun-if-changed` directives by hand,
+you can use the optional `witforge-build` helper crate in `[build-dependencies]`:
+
+```toml
+[build-dependencies]
+witforge-build = "0.7.0"
+```
+
+```rust
+// build.rs
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    witforge_build::compile_protos("src/generated/proto")?;
+    Ok(())
+}
+```
+
+Then include the generated `prost_include.rs` in `src/lib.rs`:
+
+```rust
+#[allow(clippy::all, missing_docs)]
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/prost_include.rs"));
+}
+```
+
+`witforge-build` discovers every `.proto` file in deterministic order, emits per-file
+`cargo:rerun-if-changed` directives, compiles with pure-Rust `protox` (no external `protoc`
+needed), and generates a `prost_include.rs` layout matching `witforge glue` for both standalone
+contracts (`crate::proto::v0::*`) and contracts with `deps/`
+(`crate::proto::<namespace>::<pkg>::v<major>::*`). Enable `features = ["pbjson"]` and call
+`witforge_build::Config::new().pbjson(true).compile_protos("src/generated/proto")?` to also emit
+and include proto3-JSON `serde` implementations via `pbjson-build`.
+
 ## Released-directory options (`--lock`, `--released`, and `released`)
 
 - **`--lock <PATH>`** (on `check` and `lock` for a single version directory): overrides the
