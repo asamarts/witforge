@@ -343,6 +343,13 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 - [x] Alint PR #647 (`https://github.com/asamarts/alint/pull/647`, merge commit `188defd5a`)
       regenerated the proof crate with the released binary. Consumer drift/control checks,
       19 round-trip/inventory tests, Clippy, and every hosted PR check passed.
+
+The separate 1.0 consumer-evolution gate remains open. PR #647 changes only the witforge pin and
+generated stability comments for alint's sole draft `0.1.0` contract; it has no `v0.2` or
+`released` manifest. Public code search found no other consumer, and alint defers real
+plugin-host/fixer contract evolution to v0.25 at the earliest. Revisit `W10-100` when that work or
+another real consumer minor exists; a synthetic version or pin-only change is not evidence.
+
 - [x] Post-release main CI run 45279025604
       (`https://github.com/asamarts/witforge/actions/runs/45279025604/job/138061874035`) restored
       ordinary semver compatibility against published 0.7.0, enforced the tagged signature

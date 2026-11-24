@@ -71,6 +71,12 @@ in addition to the criteria above and to independent external adoption (`W10-001
       witforge releases.** This does not replace independent adoption (`W10-001`); `alint`'s proof
       crate can satisfy it by evolving its contract across a minor version and moving its pin
       across two witforge releases, proved by the two changes in its repository.
+      As of 2026-11-23 this remains unmet: alint PR
+      [#647](https://github.com/asamarts/alint/pull/647) proves regeneration against 0.7.0 but
+      keeps the sole draft contract at `0.1.0`, with no `released` manifest or earlier real minor.
+      Alint defers its first plugin-host/fixer contract work to v0.25 at the earliest
+      ([ADR-0048](https://github.com/asamarts/alint/blob/188defd5aa83d4396c701627c03566f352354bae/docs/adr/0048-v024-owner-decisions.md));
+      `W10-100` waits for that real evolution or another consumer rather than synthesizing one.
 - [ ] **All four 1.0 surface-freezing decisions are implemented, not only decided:**
       major-version boundaries and version retirement (`W10-093`), `#[non_exhaustive]` library
       types and tightened public API table (`W10-095`), lossless JSON Schema result representation

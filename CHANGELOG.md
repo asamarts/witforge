@@ -23,7 +23,8 @@ Release evidence: tag `v0.7.0` points to commit `34835c2`; exact-commit
 both crates plus five checksum- and provenance-verified platform archives and passed the tagged
 Action matrix. Alint [PR #647](https://github.com/asamarts/alint/pull/647) (`188defd5a`) regenerated
 its consumer with the released binary and passed the consumer controls, 19 round-trip/inventory
-tests, Clippy, and the full hosted CI suite.
+tests, Clippy, and the full hosted CI suite. It is a pin-only regeneration of the unchanged draft
+`0.1.0` contract, not the real contract-minor evolution still required for 1.0.
 
 ### Added
 
