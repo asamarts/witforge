@@ -1173,5 +1173,107 @@ fn wrapper_stability_docs_unused_imports_and_json_name_collisions() {
         "check must refuse proto3 json_name collision with reserved field"
     );
 
+    // 5. Two different named option wrappers producing the same proto message name (`ABC`), and
+    //    a named option colliding with an anonymous `WitforgeListOfU32` wrapper, are refused
+    //    both by `subset::check_located_diagnostics` (`WF1003`) and directly by `proto::emit_major`.
+    let named_coll_dir = base.join("named-opt-coll/v0.1");
+    fs::create_dir_all(&named_coll_dir).unwrap();
+    fs::write(
+        named_coll_dir.join("contract.wit"),
+        "package ex:nc@0.1.0;\n\
+         interface a {\n\
+           /// Doc A.\n\
+           type b-c = option<list<u32>>;\n\
+         }\n\
+         interface a-b {\n\
+           /// Doc B.\n\
+           type c = option<list<u32>>;\n\
+         }\n",
+    )
+    .unwrap();
+    let nc_diags = witforge::subset::check_located_diagnostics(&load(&named_coll_dir).unwrap());
+    assert!(
+        nc_diags
+            .iter()
+            .any(|d| d.diagnostic.code == witforge::diagnostic::codes::IDENTIFIER_COLLISION),
+        "{nc_diags:?}"
+    );
+
+    let anon_coll_dir = base.join("anon-opt-coll/v0.1");
+    fs::create_dir_all(&anon_coll_dir).unwrap();
+    fs::write(
+        anon_coll_dir.join("contract.wit"),
+        "package ex:ac@0.1.0;\n\
+         interface witforge {\n\
+           type list-of-u32 = option<list<u32>>;\n\
+           record r { nested: list<list<u32>> }\n\
+         }\n",
+    )
+    .unwrap();
+    let ac_diags = witforge::subset::check_located_diagnostics(&load(&anon_coll_dir).unwrap());
+    assert!(
+        ac_diags.iter().any(|d| {
+            d.diagnostic.code == witforge::diagnostic::codes::IDENTIFIER_COLLISION
+                && d.diagnostic.message.contains("WitforgeListOfU32")
+        }),
+        "{ac_diags:?}"
+    );
+
+    // 6. Enum and method-enum `reserved_prost` collisions (`foo-1` reserved vs `foo1` live)
+    //    are refused by both `proto::emit_major` and `workflow::check`.
+    let enum_coll_dir = base.join("enum-prost-coll/v0.1");
+    fs::create_dir_all(&enum_coll_dir).unwrap();
+    fs::write(
+        enum_coll_dir.join("contract.wit"),
+        "package ex:epc@0.1.0;\ninterface api { enum kind { foo1 } }\n",
+    )
+    .unwrap();
+    let epc_model = model::build(&load(&enum_coll_dir).unwrap()).unwrap();
+    let mut epc_lock = WireLock::parse(&format!(
+        "{}\nex:epc/api/kind.foo-1 = 1 enum-case reserved\n",
+        witforge::lock::HEADER
+    ))
+    .unwrap();
+    epc_lock.reconcile(&epc_model.members().unwrap()).unwrap();
+    fs::write(enum_coll_dir.join("wire.lock"), epc_lock.render()).unwrap();
+    let epc_err = proto::emit_major(&epc_model, &epc_lock).unwrap_err();
+    assert!(witforge::is_contract_error(&epc_err), "{epc_err:#}");
+    assert!(
+        format!("{epc_err:#}").contains("collides with reserved value"),
+        "{epc_err:#}"
+    );
+    assert!(
+        !witforge::workflow::check(&witforge::workflow::VersionOptions::new(enum_coll_dir))
+            .unwrap()
+            .is_ok()
+    );
+
+    let meth_coll_dir = base.join("meth-prost-coll/v0.1");
+    fs::create_dir_all(&meth_coll_dir).unwrap();
+    fs::write(
+        meth_coll_dir.join("contract.wit"),
+        "package ex:mpc@0.1.0;\ninterface api { call1: func(); }\n",
+    )
+    .unwrap();
+    let mpc_model = model::build(&load(&meth_coll_dir).unwrap()).unwrap();
+    let mut mpc_lock = WireLock::parse(&format!(
+        "{}\nex:mpc/api.call-1 = 1 method reserved\n",
+        witforge::lock::HEADER
+    ))
+    .unwrap();
+    mpc_lock.reconcile(&mpc_model.members().unwrap()).unwrap();
+    fs::write(meth_coll_dir.join("wire.lock"), mpc_lock.render()).unwrap();
+    let mpc_err = proto::emit_major(&mpc_model, &mpc_lock).unwrap_err();
+    assert!(witforge::is_contract_error(&mpc_err), "{mpc_err:#}");
+    assert!(
+        format!("{mpc_err:#}").contains("collides with reserved method value"),
+        "{mpc_err:#}"
+    );
+    assert!(
+        !witforge::workflow::check(&witforge::workflow::VersionOptions::new(meth_coll_dir))
+            .unwrap()
+            .is_ok()
+    );
+
     fs::remove_dir_all(&base).unwrap();
 }

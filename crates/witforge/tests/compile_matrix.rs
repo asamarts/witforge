@@ -1799,4 +1799,142 @@ world svc {
         String::from_utf8_lossy(&test.stdout),
         String::from_utf8_lossy(&test.stderr)
     );
+
+    // Also verify `#![no_std]` + `alloc` + `serde = true` compiles cleanly under Clippy and
+    // roundtrips through `serde_json` (`default-features = false, features = ["alloc"]`).
+    let serde_plain_out = krate.join("src/plain_serde");
+    rust::plan_with_options(
+        &wit_root,
+        None,
+        &rust::RustOptions::new().with_no_std(true).with_serde(true),
+    )
+    .unwrap()
+    .write(&serde_plain_out)
+    .unwrap();
+    let serde_v01 = fs::read_to_string(serde_plain_out.join("v0_1.rs")).unwrap();
+    assert!(
+        serde_v01.contains("default-features = false, features = [\"alloc\", \"derive\"]"),
+        "expected no_std serde header comment:\n{serde_v01}"
+    );
+    assert!(
+        !serde_v01.contains("::std::"),
+        "no_std + serde must not leak ::std:::\n{serde_v01}"
+    );
+    for edition in ["2021", "2024"] {
+        for entry in fs::read_dir(&serde_plain_out).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+                continue;
+            }
+            let fmt = Command::new("rustfmt")
+                .args(["--edition", edition, "--check"])
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(
+                fmt.status.success(),
+                "rustfmt --edition {edition} failed on no_std+serde {}:\n{}",
+                path.display(),
+                String::from_utf8_lossy(&fmt.stderr)
+            );
+        }
+    }
+    let serde_krate = krate.parent().unwrap().join("nostd_serde_crate");
+    fs::create_dir_all(serde_krate.join("src/plain")).unwrap();
+    for entry in fs::read_dir(&serde_plain_out).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(
+            entry.path(),
+            serde_krate.join("src/plain").join(entry.file_name()),
+        )
+        .unwrap();
+    }
+    fs::copy(
+        workspace_root().join("Cargo.lock"),
+        serde_krate.join("Cargo.lock"),
+    )
+    .unwrap();
+    fs::write(
+        serde_krate.join("Cargo.toml"),
+        "[package]\n\
+         name = \"witforge-nostd-serde-check\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2024\"\n\
+         \n\
+         [dependencies]\n\
+         serde = { version = \"1\", default-features = false, features = [\"alloc\", \"derive\"] }\n\
+         serde_json = { version = \"1\", default-features = false, features = [\"alloc\"] }\n",
+    )
+    .unwrap();
+    fs::write(
+        serde_krate.join("src/lib.rs"),
+        "#![no_std]\n\
+         #![deny(missing_docs)]\n\
+         \n\
+         //! `#![no_std]` + `serde` verification crate.\n\
+         \n\
+         extern crate alloc;\n\
+         \n\
+         /// Generated plain Rust types with serde derives.\n\
+         #[path = \"plain/mod.rs\"]\n\
+         pub mod plain;\n\
+         \n\
+         /// Verify `serde` roundtrip under `#![no_std]` + `alloc`.\n\
+         #[must_use]\n\
+         pub fn verify_nostd_serde_roundtrip() -> bool {\n\
+             let v1 = plain::v0_1::api::Envelope {\n\
+                 name: ::alloc::string::String::from(\"hi\"),\n\
+                 raw: ::alloc::vec![1, 2, 3],\n\
+                 items: ::alloc::vec![plain::v0_1::api::Item {\n\
+                     id: 7,\n\
+                     dep: plain::witforge_deps::ex_shared::types::DepItem {\n\
+                         tag: ::alloc::string::String::from(\"tag\"),\n\
+                         bytes: ::alloc::vec![9, 10],\n\
+                     },\n\
+                 }],\n\
+             };\n\
+             let json = ::serde_json::to_string(&v1).expect(\"serialize\");\n\
+             let back: plain::v0_1::api::Envelope = ::serde_json::from_str(&json).expect(\"deserialize\");\n\
+             back == v1\n\
+         }\n\
+         \n\
+         #[cfg(test)]\n\
+         mod tests {\n\
+             #[test]\n\
+             fn nostd_serde_roundtrip_passes() {\n\
+                 assert!(super::verify_nostd_serde_roundtrip());\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let serde_clippy = Command::new(env!("CARGO"))
+        .args(["clippy", "--offline", "--lib", "--manifest-path"])
+        .arg(serde_krate.join("Cargo.toml"))
+        .args(["--", "-D", "warnings"])
+        .env("CARGO_TARGET_DIR", &shared_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        serde_clippy.status.success(),
+        "no_std + serde crate failed clippy:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&serde_clippy.stdout),
+        String::from_utf8_lossy(&serde_clippy.stderr)
+    );
+    let serde_test = Command::new(env!("CARGO"))
+        .args(["test", "--offline", "--lib", "--manifest-path"])
+        .arg(serde_krate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &shared_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        serde_test.status.success(),
+        "no_std + serde crate failed tests:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&serde_test.stdout),
+        String::from_utf8_lossy(&serde_test.stderr)
+    );
 }

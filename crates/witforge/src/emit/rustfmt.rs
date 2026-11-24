@@ -23,8 +23,8 @@ const ARRAY_WIDTH: usize = 60;
 /// Conservative check for whether a rendered Rust type expression may trigger
 /// `clippy::type_complexity` (default threshold 250).
 pub(crate) fn needs_allow_type_complexity(ty: &str) -> bool {
-    let mut depth = 0usize;
-    let mut max_depth = 0usize;
+    let mut depth = usize::from(ty.trim_start().starts_with('&'));
+    let mut max_depth = depth;
     let mut generic_count = 0usize;
     for ch in ty.chars() {
         match ch {
@@ -41,7 +41,7 @@ pub(crate) fn needs_allow_type_complexity(ty: &str) -> bool {
             _ => {}
         }
     }
-    max_depth >= 4 || generic_count >= 5
+    max_depth >= 4 || generic_count >= 4
 }
 
 /// Write outer Rust doc comments for `docs_text`, falling back to `fallback` so generated public
@@ -335,20 +335,38 @@ pub(crate) fn fmt_let_stmt(indent: usize, binding: &str, expr: &str) -> String {
         if indent + 4 + expr.len() < MAX_WIDTH {
             return format!("{prefix}let {binding} =\n{prefix}    {expr};");
         }
-        if expr.ends_with(')')
-            && let Some(open) = find_top_level_char(expr, '(')
-            && let Some(args) = split_top_level(&expr[open + 1..expr.len() - 1], ',')
+        let (call_core, call_suffix) = if let Some(stripped) = expr.strip_suffix(")?") {
+            (Some(format!("{stripped})")), "?")
+        } else if expr.ends_with(')') {
+            (Some(expr.to_string()), "")
+        } else {
+            (None, "")
+        };
+        if let Some(core) = call_core
+            && let Some(open) = find_top_level_char(&core, '(')
+            && let Some(args) = split_top_level(&core[open + 1..core.len() - 1], ',')
         {
-            let callee = &expr[..open];
+            let callee = &core[..open];
             let trimmed: Vec<String> = args
                 .into_iter()
                 .map(|arg| arg.trim().to_string())
                 .filter(|arg| !arg.is_empty())
                 .collect();
+            let head = format!("{prefix}let {binding} = ");
+            if head.len() + callee.len() < MAX_WIDTH {
+                let wrapped = fmt_call(indent, callee, &trimmed, head.len(), call_suffix.len() + 1);
+                return format!("{head}{wrapped}{call_suffix};");
+            }
             let rhs_indent = indent + 4;
             let rhs_prefix = " ".repeat(rhs_indent);
-            let wrapped = fmt_call(rhs_indent, callee, &trimmed, rhs_indent, 1);
-            return format!("{prefix}let {binding} =\n{rhs_prefix}{wrapped};");
+            let wrapped = fmt_call(
+                rhs_indent,
+                callee,
+                &trimmed,
+                rhs_indent,
+                call_suffix.len() + 1,
+            );
+            return format!("{prefix}let {binding} =\n{rhs_prefix}{wrapped}{call_suffix};");
         }
         return format!("{prefix}let {binding} =\n{prefix}    {expr};");
     }

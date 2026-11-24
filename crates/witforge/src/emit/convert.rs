@@ -1088,7 +1088,13 @@ fn record_body(
                     target_field.name
                 );
             };
-            fields.push((target_name, default.to_string()));
+            let mut field_expr = default.to_string();
+            if indent + 4 + target_name.len() + 2 + field_expr.len() + 1 > rustfmt::MAX_WIDTH {
+                let tmp = fresh(next_id);
+                stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &field_expr));
+                field_expr = tmp;
+            }
+            fields.push((target_name, field_expr));
         }
     }
     let mut out = String::new();
@@ -1691,9 +1697,16 @@ fn emit_convert_value(
                 false,
                 no_std,
             )?;
-            let mut if_code = format!(
-                "{prefix}if let ::core::option::Option::Some({item_var}) = {expression} {{\n"
+            let mut header = format!(
+                "{prefix}if let ::core::option::Option::Some({item_var}) = {expression} {{"
             );
+            if expression.contains('\n') || header.len() > rustfmt::MAX_WIDTH {
+                let tmp = fresh(next_id);
+                stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, expression));
+                header =
+                    format!("{prefix}if let ::core::option::Option::Some({item_var}) = {tmp} {{");
+            }
+            let mut if_code = format!("{header}\n");
             for s in body_stmts {
                 let _ = writeln!(if_code, "{s}");
             }

@@ -160,32 +160,75 @@ fn trim_blank_edges(lines: &mut Vec<String>) {
 /// `wit-parser` strips the outer `/**` and `*/` delimiters but preserves leading indentation and
 /// decorative `*` prefixes on inner lines of block comments. This strips them only when the lines
 /// match a block-comment gutter so normal `/// * bullet` Markdown lists are preserved.
+#[allow(clippy::too_many_lines)]
 fn strip_block_comment_asterisks(lines: &mut [String]) {
-    fn parse_star(line: &str) -> Option<(usize, &str)> {
-        let spaces = line.bytes().take_while(|&b| b == b' ').count();
-        let rest = &line[spaces..];
+    fn parse_star(line: &str) -> Option<(&str, &str)> {
+        let ws_len = line
+            .bytes()
+            .take_while(|&b| b == b' ' || b == b'\t')
+            .count();
+        let gutter = &line[..ws_len];
+        let rest = &line[ws_len..];
         let after = rest.strip_prefix('*')?;
         if after.is_empty() {
-            Some((spaces, ""))
+            Some((gutter, ""))
         } else if let Some(body) = after.strip_prefix(' ') {
-            Some((spaces, body))
+            Some((gutter, body))
         } else if after.starts_with('\t') {
-            Some((spaces, after))
+            Some((gutter, after))
         } else {
             None
         }
     }
 
-    // Form 1: every non-empty line shares the same `<spaces>*` gutter (`spaces >= 1`), or every
-    // non-empty line starts with `*` at column 0 and at least one line is a bare `*` blank line.
+    fn is_closing_star_banner(line: &str, expected_gutter: &str) -> bool {
+        let Some(rest) = line.strip_prefix(expected_gutter) else {
+            return false;
+        };
+        rest.len() >= 2 && rest.bytes().all(|b| b == b'*')
+    }
+
+    fn strip_inline_closing_stars(line: &str) -> Option<String> {
+        if !line.starts_with([' ', '\t']) {
+            return None;
+        }
+        let no_stars = line.trim_end_matches('*');
+        if no_stars.len() < line.len() && no_stars.ends_with([' ', '\t']) {
+            Some(no_stars.trim().to_string())
+        } else {
+            None
+        }
+    }
+
+    // Single-line `/** Hello. **/` block comments leave leading space and trailing ` *+`.
+    if lines.len() == 1
+        && let Some(stripped) = strip_inline_closing_stars(&lines[0])
+    {
+        lines[0] = stripped;
+        return;
+    }
+
+    // Form 1: every non-empty line shares the same `<spaces/tabs>*` gutter (non-empty gutter or
+    // at least one bare `*` blank line), optionally ending in a matching `*`-only closing banner
+    // line (`***/`).
     let mut all_match = true;
-    let mut gutter: Option<usize> = None;
+    let mut gutter: Option<&str> = None;
     let mut has_bare_star = false;
-    for line in lines.iter() {
+    let mut has_closing_banner = false;
+    let last_idx = lines.len().saturating_sub(1);
+    for (idx, line) in lines.iter().enumerate() {
         if line.is_empty() {
             continue;
         }
-        let Some((spaces, body)) = parse_star(line) else {
+        if idx == last_idx
+            && lines.len() >= 2
+            && let Some(g) = gutter
+            && is_closing_star_banner(line, g)
+        {
+            has_closing_banner = true;
+            continue;
+        }
+        let Some((ws, body)) = parse_star(line) else {
             all_match = false;
             break;
         };
@@ -193,8 +236,8 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
             has_bare_star = true;
         }
         match gutter {
-            None => gutter = Some(spaces),
-            Some(prev) if prev != spaces => {
+            None => gutter = Some(ws),
+            Some(prev) if prev != ws => {
                 all_match = false;
                 break;
             }
@@ -202,11 +245,13 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
         }
     }
     if all_match
-        && let Some(spaces) = gutter
-        && (spaces >= 1 || has_bare_star)
+        && let Some(ws) = gutter
+        && (!ws.is_empty() || has_bare_star || has_closing_banner)
     {
-        for line in lines.iter_mut() {
-            if let Some((_, body)) = parse_star(line) {
+        for (idx, line) in lines.iter_mut().enumerate() {
+            if idx == last_idx && has_closing_banner {
+                line.clear();
+            } else if let Some((_, body)) = parse_star(line) {
                 *line = body.to_string();
             }
         }
@@ -214,16 +259,27 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
     }
 
     // Form 2: `/** First line\n * Second line\n */` where line 0 is prose and every non-empty
-    // continuation line shares a `<spaces>*` gutter.
+    // continuation line shares a `<spaces/tabs>*` gutter (optionally followed by a matching
+    // closing `*`-only banner line). Require either leading whitespace on line 0 (from `/** `),
+    // a tab or >=4-column gutter, a bare `*` blank line, or a closing star banner so 1-space-
+    // indented `///` Markdown `*` bullet lists after a heading are preserved intact.
     if lines.len() >= 2 && list_marker_content_col(&lines[0]).is_none() {
         let mut tail_match = true;
-        let mut tail_gutter: Option<usize> = None;
+        let mut tail_gutter: Option<&str> = None;
         let mut tail_bare_star = false;
-        for line in &lines[1..] {
+        let mut tail_closing_banner = false;
+        for (idx, line) in lines.iter().enumerate().skip(1) {
             if line.is_empty() {
                 continue;
             }
-            let Some((spaces, body)) = parse_star(line) else {
+            if idx == last_idx
+                && let Some(g) = tail_gutter
+                && is_closing_star_banner(line, g)
+            {
+                tail_closing_banner = true;
+                continue;
+            }
+            let Some((ws, body)) = parse_star(line) else {
                 tail_match = false;
                 break;
             };
@@ -231,8 +287,8 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
                 tail_bare_star = true;
             }
             match tail_gutter {
-                None => tail_gutter = Some(spaces),
-                Some(prev) if prev != spaces => {
+                None => tail_gutter = Some(ws),
+                Some(prev) if prev != ws => {
                     tail_match = false;
                     break;
                 }
@@ -240,12 +296,18 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
             }
         }
         if tail_match
-            && let Some(spaces) = tail_gutter
-            && (spaces == 1 || spaces >= 4 || tail_bare_star)
+            && let Some(ws) = tail_gutter
+            && ((lines[0].starts_with([' ', '\t']) && !ws.is_empty())
+                || ws.contains('\t')
+                || ws.len() >= 4
+                || tail_bare_star
+                || tail_closing_banner)
         {
-            lines[0] = lines[0].trim_start_matches(' ').to_string();
-            for line in &mut lines[1..] {
-                if let Some((_, body)) = parse_star(line) {
+            lines[0] = lines[0].trim_start_matches([' ', '\t']).to_string();
+            for (idx, line) in lines.iter_mut().enumerate().skip(1) {
+                if idx == last_idx && tail_closing_banner {
+                    line.clear();
+                } else if let Some((_, body)) = parse_star(line) {
                     *line = body.to_string();
                 }
             }
@@ -938,6 +1000,26 @@ mod tests {
         assert_eq!(
             sanitize_rust_lines(block),
             vec!["Summary.", "", "```text", "fn code() {}", "```"]
+        );
+
+        // Tab-indented block-comment gutter and closing banner lines (`***/`, `/** Hello. **/`).
+        let tabbed_block = "\n\t* First line.\n\t*\n\t* Second line.\n\t**\n";
+        assert_eq!(
+            sanitize_rust_lines(tabbed_block),
+            vec!["First line.", "", "Second line."]
+        );
+        assert_eq!(sanitize_rust_lines(" Hello. *"), vec!["Hello."]);
+        assert_eq!(sanitize_rust_lines(" Hello. **"), vec!["Hello."]);
+        assert_eq!(
+            sanitize_rust_lines(" First line.\n * Second line.\n **"),
+            vec!["First line.", "Second line."]
+        );
+
+        // 1-space-indented `///` Markdown bullet list after a heading must NOT be stripped.
+        let markdown_bullets = "Options:\n * alpha\n * beta\n";
+        assert_eq!(
+            sanitize_rust_lines(markdown_bullets),
+            vec!["Options:", " * alpha", " * beta"]
         );
     }
 }

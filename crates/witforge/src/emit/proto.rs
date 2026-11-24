@@ -230,9 +230,18 @@ struct Emitter<'a> {
     wrappers: BTreeMap<String, String>,
     /// The source type that produced each synthesized wrapper, for collision diagnostics.
     wrapper_sources: BTreeMap<String, String>,
+    /// Owner kind per wrapper so colliding named options or named-vs-anonymous wrappers fail
+    /// rather than silently deduplicating and overwriting docs/stability.
+    wrapper_owners: BTreeMap<String, WrapperOwner>,
     wrapper_docs: BTreeMap<String, String>,
     wrapper_stability: BTreeMap<String, Stability>,
     live_keys: BTreeSet<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum WrapperOwner {
+    Named(QualifiedName),
+    Anonymous,
 }
 
 #[derive(Clone)]
@@ -294,6 +303,7 @@ impl<'a> Emitter<'a> {
             enum_values: BTreeMap::new(),
             wrappers: BTreeMap::new(),
             wrapper_sources: BTreeMap::new(),
+            wrapper_owners: BTreeMap::new(),
             wrapper_docs: BTreeMap::new(),
             wrapper_stability: BTreeMap::new(),
             live_keys,
@@ -663,6 +673,10 @@ impl<'a> Emitter<'a> {
         let reserved = self.reserved_type(interface, &def.name, &name)?;
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
+        let reserved_prost: BTreeMap<String, String> = reserved
+            .iter()
+            .map(|(_, val)| (ident::prost_enum_variant(&name, val), val.clone()))
+            .collect();
         for case in cases {
             let case_name = ident::proto_upper_snake(&case.name);
             let value = ident::proto_enum_value_name(&name, &case.name);
@@ -677,6 +691,12 @@ impl<'a> Emitter<'a> {
             }
             self.register_enum_value(&value)?;
             let prost_variant = ident::prost_enum_variant(&name, &value);
+            if let Some(previous) = reserved_prost.get(&prost_variant) {
+                contract_bail!(
+                    "enum `{interface}/{}`: proto value `{value}` maps to prost variant `{prost_variant}`, which collides with reserved value `{previous}`",
+                    def.name
+                );
+            }
             if let Some(previous) = prost_variants.insert(prost_variant.clone(), value.clone()) {
                 contract_bail!(
                     "enum `{interface}/{}`: proto values `{previous}` and `{value}` both map to prost variant `{prost_variant}`",
@@ -918,6 +938,13 @@ impl<'a> Emitter<'a> {
         }
         let reserved_names: BTreeSet<String> =
             reserved.iter().map(|(_, name)| name.clone()).collect();
+        let reserved_prost: BTreeMap<String, String> = reserved
+            .iter()
+            .map(|(_, res_name)| {
+                let full = format!("{prefix}_METHOD_{res_name}");
+                (ident::prost_enum_variant(&name, &full), full)
+            })
+            .collect();
         let mut numbers = BTreeSet::new();
         if let Some(interface_def) = self.model.interface(interface) {
             for function in &interface_def.functions {
@@ -935,6 +962,11 @@ impl<'a> Emitter<'a> {
                 let value = ident::proto_method_enum_value(interface, &function.name);
                 self.register_enum_value(&value)?;
                 let prost_variant = ident::prost_enum_variant(&name, &value);
+                if let Some(previous) = reserved_prost.get(&prost_variant) {
+                    contract_bail!(
+                        "interface `{interface}`: method value `{value}` maps to prost variant `{prost_variant}`, which collides with reserved method value `{previous}`"
+                    );
+                }
                 if let Some(previous) = prost_variants.insert(prost_variant.clone(), value.clone())
                 {
                     contract_bail!(
@@ -1483,7 +1515,12 @@ impl<'a> Emitter<'a> {
                     );
                 }
                 let elem_ty = self.dependency_defined_singular(owner, element)?;
-                self.ensure_wrapper(wrapper_name, WrapperKind::ListElement(elem_ty), source)
+                self.ensure_wrapper(
+                    wrapper_name,
+                    WrapperKind::ListElement(elem_ty),
+                    source,
+                    WrapperOwner::Anonymous,
+                )
             }
             TypeDefKind::Option(payload) => {
                 let shape = self.foreign_shape_name_for_caller(None, owner, name, kind)?;
@@ -1503,7 +1540,12 @@ impl<'a> Emitter<'a> {
                         self.dependency_defined_singular(owner, payload)?
                     }
                 };
-                self.ensure_wrapper(wrapper_name, WrapperKind::OptionValue(some), source)
+                self.ensure_wrapper(
+                    wrapper_name,
+                    WrapperKind::OptionValue(some),
+                    source,
+                    WrapperOwner::Anonymous,
+                )
             }
         }
     }
@@ -1978,14 +2020,24 @@ impl<'a> Emitter<'a> {
         let wrapper_name = if let Some(name) = named {
             if let Some(direct) = self.named_option_wrapper(name, payload)? {
                 let wrapper = format!("WitforgeOptionOf{direct}");
-                return self.ensure_wrapper(wrapper, WrapperKind::OptionValue(direct), source);
+                return self.ensure_wrapper(
+                    wrapper,
+                    WrapperKind::OptionValue(direct),
+                    source,
+                    WrapperOwner::Anonymous,
+                );
             }
             format!("WitforgeOptionOf{}", self.shape_name(payload)?)
         } else {
             format!("WitforgeOptionOf{}", self.shape_name(payload)?)
         };
         let some = self.singular(payload)?;
-        self.ensure_wrapper(wrapper_name, WrapperKind::OptionValue(some), source)
+        self.ensure_wrapper(
+            wrapper_name,
+            WrapperKind::OptionValue(some),
+            source,
+            WrapperOwner::Anonymous,
+        )
     }
 
     fn resolve_foreign_named(
@@ -2020,7 +2072,8 @@ impl<'a> Emitter<'a> {
         name: &QualifiedName,
         payload: &TypeExpr,
     ) -> Result<Option<String>> {
-        let source = self.wrapper_source(None, &TypeExpr::Named(name.clone()))?;
+        let source = format!("type {}/{}", name.interface, name.name);
+        let owner = WrapperOwner::Named(name.clone());
         match self.shape(payload)? {
             Shape::List => {
                 let wrapper = Self::type_ident(&name.interface, &name.name)?;
@@ -2032,10 +2085,16 @@ impl<'a> Emitter<'a> {
                         wrapper.clone(),
                         WrapperKind::ListElement(elem_ty),
                         source,
+                        owner,
                     )?;
                 } else {
                     let element = self.list_element(payload)?;
-                    self.ensure_wrapper(wrapper.clone(), WrapperKind::List(element), source)?;
+                    self.ensure_wrapper(
+                        wrapper.clone(),
+                        WrapperKind::List(element),
+                        source,
+                        owner,
+                    )?;
                 }
                 Ok(Some(wrapper))
             }
@@ -2054,7 +2113,12 @@ impl<'a> Emitter<'a> {
                     let inner = self.option_payload(payload)?;
                     self.singular(&inner)?
                 };
-                self.ensure_wrapper(wrapper.clone(), WrapperKind::OptionValue(some), source)?;
+                self.ensure_wrapper(
+                    wrapper.clone(),
+                    WrapperKind::OptionValue(some),
+                    source,
+                    owner,
+                )?;
                 Ok(Some(wrapper))
             }
             _ => Ok(None),
@@ -2111,14 +2175,24 @@ impl<'a> Emitter<'a> {
         let wrapped = TypeExpr::List(Box::new(element.clone()));
         let name = format!("WitforgeListOf{}", self.shape_name(element)?);
         let source = self.wrapper_source(None, &wrapped)?;
-        self.ensure_wrapper(name.clone(), WrapperKind::List(element.clone()), source)
+        self.ensure_wrapper(
+            name.clone(),
+            WrapperKind::List(element.clone()),
+            source,
+            WrapperOwner::Anonymous,
+        )
     }
 
     fn ensure_result_wrapper(&mut self, result: &ResultExpr) -> Result<String> {
         let wrapped = TypeExpr::Result(result.clone());
         let name = format!("Witforge{}", self.shape_name(&wrapped)?);
         let source = self.wrapper_source(None, &wrapped)?;
-        self.ensure_wrapper(name.clone(), WrapperKind::Result(result.clone()), source)
+        self.ensure_wrapper(
+            name.clone(),
+            WrapperKind::Result(result.clone()),
+            source,
+            WrapperOwner::Anonymous,
+        )
     }
 
     fn ensure_wrapper(
@@ -2126,6 +2200,7 @@ impl<'a> Emitter<'a> {
         name: String,
         kind: WrapperKind,
         source: String,
+        owner: WrapperOwner,
     ) -> Result<String> {
         if name.len() > MAX_WRAPPER_NAME_BYTES {
             contract_bail!(
@@ -2166,7 +2241,7 @@ impl<'a> Emitter<'a> {
         })()
         .with_context(|| format!("synthesizing wrapper `{name}` for `{source}`"))?;
         if let Some(existing) = self.wrappers.get(&name) {
-            if existing == &body {
+            if existing == &body && self.wrapper_owners.get(&name) == Some(&owner) {
                 return Ok(name);
             }
             let previous = self
@@ -2183,6 +2258,7 @@ impl<'a> Emitter<'a> {
         }
         self.wrappers.insert(name.clone(), body);
         self.wrapper_sources.insert(name.clone(), source);
+        self.wrapper_owners.insert(name.clone(), owner);
         Ok(name)
     }
 
@@ -2589,6 +2665,7 @@ mod tests {
                 name.clone(),
                 WrapperKind::Result(u32_result.clone()),
                 "result<u32,string>".to_string(),
+                WrapperOwner::Anonymous,
             )
             .unwrap();
         // A different result mapped to one name is a collision.
@@ -2601,6 +2678,7 @@ mod tests {
                 name.clone(),
                 WrapperKind::Result(u64_result),
                 "result<u64,string>".to_string(),
+                WrapperOwner::Anonymous,
             )
             .unwrap_err();
         assert!(crate::is_contract_error(&error), "{error:#}");
@@ -2608,13 +2686,14 @@ mod tests {
         assert!(message.contains(&name), "{message}");
         assert!(message.contains("result<u32,string>"), "{message}");
         assert!(message.contains("result<u64,string>"), "{message}");
-        // The same body is one wrapper, whatever spelling produced it.
+        // The same body with the same anonymous owner is one wrapper, whatever spelling produced it.
         assert_eq!(
             emitter
                 .ensure_wrapper(
                     name,
                     WrapperKind::Result(u32_result),
-                    "another spelling of result<u32,string>".to_string()
+                    "another spelling of result<u32,string>".to_string(),
+                    WrapperOwner::Anonymous,
                 )
                 .unwrap(),
             "WitforgeResultOfU32AndString"
@@ -2646,5 +2725,52 @@ mod tests {
             format!("{error:#}").contains("missing from the model"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn named_option_wrappers_refuse_owner_collisions_even_with_identical_bodies() {
+        let model = Model {
+            package: Package {
+                namespace: "ex".to_string(),
+                name: "nc".to_string(),
+                version: Version::new(0, 1, 0),
+                docs: String::new(),
+            },
+            interfaces: vec![
+                crate::model::Interface {
+                    name: "a".to_string(),
+                    docs: String::new(),
+                    stability: Stability::Unknown,
+                    types: vec![TypeDef {
+                        name: "b-c".to_string(),
+                        docs: "Doc A.".to_string(),
+                        stability: Stability::Unknown,
+                        kind: TypeDefKind::Option(TypeExpr::List(Box::new(TypeExpr::U32))),
+                    }],
+                    functions: Vec::new(),
+                },
+                crate::model::Interface {
+                    name: "a-b".to_string(),
+                    docs: String::new(),
+                    stability: Stability::Unknown,
+                    types: vec![TypeDef {
+                        name: "c".to_string(),
+                        docs: "Doc B.".to_string(),
+                        stability: Stability::Unknown,
+                        kind: TypeDefKind::Option(TypeExpr::List(Box::new(TypeExpr::U32))),
+                    }],
+                    functions: Vec::new(),
+                },
+            ],
+            worlds: Vec::new(),
+            dependencies: Vec::new(),
+        };
+        let lock = WireLock::default();
+        let err = emit_major(&model, &lock).unwrap_err();
+        assert!(crate::is_contract_error(&err), "{err:#}");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("wrapper message `ABC`"), "{msg}");
+        assert!(msg.contains("type a/b-c"), "{msg}");
+        assert!(msg.contains("type a-b/c"), "{msg}");
     }
 }

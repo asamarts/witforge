@@ -140,6 +140,7 @@ Run every generator configured in `witforge.toml` across all projects or `--proj
 | `--no-serde` | Disable Serde derives across configured Rust outputs (conflicts with `--serde`). |
 | `--no-std` | Emit `#![no_std]` + `alloc` compatible paths across configured Rust and glue outputs (conflicts with `--std`). |
 | `--std` | Emit default `std` paths across configured Rust and glue outputs, overriding config (conflicts with `--no-std`). |
+| `--draft <DRAFT>` | Override the JSON Schema dialect for configured schema outputs (`7` or `2020-12`). |
 | `--released <PATH>` | Override the released-version manifest path for the run. |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |

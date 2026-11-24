@@ -328,6 +328,9 @@ struct GenerateOptions {
     /// Emit default `std` paths across configured Rust and glue outputs, overriding config.
     #[arg(long = "std", conflicts_with = "no_std")]
     std_mode: bool,
+    /// JSON Schema dialect for configured schema outputs (`7` or `2020-12`), overriding config.
+    #[arg(long, value_name = "DRAFT")]
+    draft: Option<String>,
     /// Released-version manifest to validate; overrides a project's `released` setting.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -2261,6 +2264,9 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
     } else {
         None
     };
+    if let Some(raw) = options.draft.as_deref() {
+        parse_schema_draft(raw, "`--draft`", None)?;
+    }
 
     let mut planned: Vec<(String, Vec<Emitter>)> = Vec::with_capacity(selected.len());
     for (proj_name, proj) in &selected {
@@ -2347,7 +2353,7 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                     &SchemaOptions {
                         root: None,
                         out: None,
-                        draft: None,
+                        draft: options.draft.clone(),
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),

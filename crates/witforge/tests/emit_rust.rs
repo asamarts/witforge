@@ -1537,3 +1537,233 @@ fn generated_rust_passes_rustfmt_clippy_and_missing_docs_in_2021_and_2024() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn emitter_clippy_and_rustfmt_audit_regressions() {
+    use std::fmt::Write as _;
+    use witforge::emit::{glue, proto};
+    use witforge::lock::{LockMode, WireLock};
+
+    let base = std::env::temp_dir().join(format!("witforge-emitter-audit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+
+    // Build a 31-hop alias chain to a padded 200-byte record (`25 * pair { u32, u8 }`) so both
+    // struct-alignment padding AND alias-depth (where `alias_hops + struct_depth > MAX_TYPE_NESTING`)
+    // are tested against Clippy's `large_enum_variant`, alongside depth-3 4-generic
+    // `type_complexity`, `&Result` depth-3 `to_request`, long `if let`, and long defaulted
+    // `convert.rs` fields.
+    let mut alias_chain = String::new();
+    alias_chain.push_str("  type a0 = big-padded;\n");
+    for idx in 1..=30 {
+        let _ = writeln!(alias_chain, "  type a{idx} = a{};", idx - 1);
+    }
+    let mut padded_fields = String::new();
+    for idx in 0..25 {
+        let _ = writeln!(padded_fields, "    p{idx}: pair,");
+    }
+
+    let common_body = format!(
+        "interface api {{\n\
+           record pair {{ a: u32, b: u8 }}\n\
+           record big-padded {{\n\
+         {padded_fields}\
+           }}\n\
+         {alias_chain}\
+           variant padded-choice {{\n\
+             tiny,\n\
+             huge(a30),\n\
+           }}\n\
+           record complex-fields {{\n\
+             tree: result<result<result<u32, u32>, result<u32, u32>>, u32>,\n\
+             super-long-optional-record-field-name-for-if-let-wrapping: option<string>,\n\
+           }}\n\
+           take-complex: func(\n\
+             tree: result<result<result<u32, u32>, result<u32, u32>>, u32>,\n\
+             nested: result<result<result<u32, u32>, u32>, u32>,\n\
+           ) -> result<result<result<u32, u32>, result<u32, u32>>, u32>;\n\
+         }}\n"
+    );
+    fs::write(
+        v01.join("contract.wit"),
+        format!("package example:audit@0.1.0;\n\n{common_body}"),
+    )
+    .unwrap();
+    let v02_body = common_body.replace(
+        "super-long-optional-record-field-name-for-if-let-wrapping: option<string>,\n",
+        "super-long-optional-record-field-name-for-if-let-wrapping: option<string>,\n\
+         very-long-defaulted-list-field-name-exceeding-fifty-seven-characters-here: list<u32>,\n",
+    );
+    fs::write(
+        v02.join("contract.wit"),
+        format!("package example:audit@0.2.0;\n\n{v02_body}"),
+    )
+    .unwrap();
+
+    let m01 = model::build(&load(&v01).unwrap()).unwrap();
+    let mut l01 = WireLock::default();
+    l01.reconcile_with(&m01.members().unwrap(), LockMode::First)
+        .unwrap();
+    fs::write(v01.join("wire.lock"), l01.render()).unwrap();
+
+    let m02 = model::build(&load(&v02).unwrap()).unwrap();
+    let mut l02 = l01.clone();
+    l02.reconcile_with(&m02.members().unwrap(), LockMode::Against(&l01))
+        .unwrap();
+    fs::write(v02.join("wire.lock"), l02.render()).unwrap();
+
+    let proto_out = base.join("proto");
+    proto::generate(&wit_root, &proto_out).unwrap();
+    let prost_out = base.join("prost");
+    fs::create_dir_all(&prost_out).unwrap();
+    let descriptors = protox::compile([proto_out.join("v0.proto")], [&proto_out]).unwrap();
+    prost_build::Config::new()
+        .out_dir(&prost_out)
+        .compile_fds(descriptors)
+        .unwrap();
+
+    let target_dir = base.join("cargo-target");
+    for no_std in [false, true] {
+        let mode = if no_std { "nostd" } else { "std" };
+        let plain_out = base.join(format!("plain_{mode}"));
+        let glue_out = base.join(format!("glue_{mode}"));
+        rust::plan_with_options(
+            &wit_root,
+            None,
+            &rust::RustOptions::new().with_no_std(no_std),
+        )
+        .unwrap()
+        .write(&plain_out)
+        .unwrap();
+        glue::plan_with_options(
+            &wit_root,
+            "crate::plain",
+            "crate::proto",
+            None,
+            &glue::GlueOptions::new().with_no_std(no_std),
+        )
+        .unwrap()
+        .write(&glue_out)
+        .unwrap();
+
+        // Check `rustfmt --check` under BOTH Edition 2021 and Edition 2024 on every `.rs` file.
+        for edition in ["2021", "2024"] {
+            for dir in [&plain_out, &glue_out] {
+                for entry in fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.extension().is_some_and(|ext| ext == "rs") {
+                        let fmt = Command::new("rustfmt")
+                            .args(["--edition", edition, "--check"])
+                            .arg(&path)
+                            .output()
+                            .unwrap();
+                        assert!(
+                            fmt.status.success(),
+                            "rustfmt --edition {edition} ({mode}) failed on {}:\nstdout:\n{}\nstderr:\n{}",
+                            path.display(),
+                            String::from_utf8_lossy(&fmt.stdout),
+                            String::from_utf8_lossy(&fmt.stderr),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Compile & clippy with `-D warnings` and `#![deny(missing_docs)]`.
+        let crate_dir = base.join(format!("crate_{mode}"));
+        let src = crate_dir.join("src");
+        fs::create_dir_all(src.join("plain")).unwrap();
+        fs::create_dir_all(src.join("glue")).unwrap();
+        fs::create_dir_all(src.join("proto")).unwrap();
+        for (from, to) in [
+            (&plain_out, src.join("plain")),
+            (&glue_out, src.join("glue")),
+            (&prost_out, src.join("proto")),
+        ] {
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                if entry.path().extension().is_some_and(|ext| ext == "rs") {
+                    fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+                }
+            }
+        }
+        fs::write(
+            src.join("proto/mod.rs"),
+            "pub mod v0 { include!(\"example.audit.v0.rs\"); }\n",
+        )
+        .unwrap();
+        let nostd_header = if no_std {
+            "#![no_std]\n#![deny(missing_docs)]\n//! Test crate.\nextern crate alloc;\n"
+        } else {
+            "#![deny(missing_docs)]\n//! Test crate.\n"
+        };
+        fs::write(
+            src.join("lib.rs"),
+            format!(
+                "{nostd_header}\n\
+                 /// Plain.\n\
+                 pub mod plain;\n\
+                 /// Proto.\n\
+                 #[allow(missing_docs, clippy::all)]\n\
+                 pub mod proto;\n\
+                 /// Glue.\n\
+                 pub mod glue;\n"
+            ),
+        )
+        .unwrap();
+        let prost_dep = if no_std {
+            "prost = { version = \"0.14\", default-features = false, features = [\"derive\"] }"
+        } else {
+            "prost = \"0.14\""
+        };
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            format!(
+                "[package]\n\
+                 name = \"witforge-emitter-audit-{mode}\"\n\
+                 version = \"0.0.0\"\n\
+                 edition = \"2024\"\n\
+                 publish = false\n\
+                 \n\
+                 [dependencies]\n\
+                 {prost_dep}\n\
+                 \n\
+                 [workspace]\n"
+            ),
+        )
+        .unwrap();
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("Cargo.lock"),
+            crate_dir.join("Cargo.lock"),
+        )
+        .unwrap();
+
+        let clippy = Command::new(env!("CARGO"))
+            .args(["clippy", "--offline", "--lib", "--manifest-path"])
+            .arg(crate_dir.join("Cargo.toml"))
+            .args(["--", "-D", "warnings"])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env("CARGO_TERM_COLOR", "never")
+            .env_remove("RUSTFLAGS")
+            .output()
+            .unwrap();
+        assert!(
+            clippy.status.success(),
+            "clippy -D warnings ({mode}) failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&clippy.stdout),
+            String::from_utf8_lossy(&clippy.stderr)
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

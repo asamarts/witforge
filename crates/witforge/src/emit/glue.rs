@@ -2176,7 +2176,7 @@ fn push_let_else_err(
     let body_indent = indent + 4;
     let body_prefix = " ".repeat(body_indent);
     let err_prefix = "return ::core::result::Result::Err(";
-    let return_stmt = if body_indent + err_prefix.len() + err_path.len() + 2 >= rustfmt::MAX_WIDTH {
+    let return_stmt = if body_indent + err_prefix.len() + err_path.len() + 4 >= rustfmt::MAX_WIDTH {
         let arg_indent = body_indent + 4;
         let arg_prefix = " ".repeat(arg_indent);
         let err_expr = rustfmt::fmt_struct_lit(arg_indent, err_path, err_fields, arg_indent, 1);
@@ -3624,7 +3624,7 @@ impl Emitter<'_> {
         }
         if param_types
             .iter()
-            .any(|ty| rustfmt::needs_allow_type_complexity(ty))
+            .any(|ty| rustfmt::needs_allow_type_complexity(&format!("&{ty}")))
         {
             writeln!(out, "{item_pad}#[allow(clippy::type_complexity)]")?;
         }
@@ -3959,9 +3959,15 @@ impl Emitter<'_> {
             encoded,
             assign_prefix.len() + 2,
         );
-        let mut block = format!(
-            "{pad}if let ::core::option::Option::Some({item_var}) = {borrowed}.as_ref() {{\n"
-        );
+        let scrutinee = format!("{borrowed}.as_ref()");
+        let mut header =
+            format!("{pad}if let ::core::option::Option::Some({item_var}) = {scrutinee} {{");
+        if scrutinee.contains('\n') || header.len() > rustfmt::MAX_WIDTH {
+            let tmp = temps.fresh();
+            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &scrutinee));
+            header = format!("{pad}if let ::core::option::Option::Some({item_var}) = {tmp} {{");
+        }
+        let mut block = format!("{header}\n");
         for stmt in if_stmts {
             let _ = writeln!(block, "{stmt}");
         }
@@ -4005,8 +4011,14 @@ impl Emitter<'_> {
             decoded,
             assign_prefix.len() + 2,
         );
-        let mut block =
-            format!("{pad}if let ::core::option::Option::Some({item_var}) = {opt_expr} {{\n");
+        let mut header =
+            format!("{pad}if let ::core::option::Option::Some({item_var}) = {opt_expr} {{");
+        if opt_expr.contains('\n') || header.len() > rustfmt::MAX_WIDTH {
+            let tmp = temps.fresh();
+            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, opt_expr));
+            header = format!("{pad}if let ::core::option::Option::Some({item_var}) = {tmp} {{");
+        }
+        let mut block = format!("{header}\n");
         for stmt in if_stmts {
             let _ = writeln!(block, "{stmt}");
         }

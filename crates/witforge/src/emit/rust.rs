@@ -322,6 +322,29 @@ pub fn emit_version_with_options(model: &Model, options: &RustOptions) -> Result
     emit_version_with_resolver(model, *options, &resolver)
 }
 
+fn write_option_header_comments(out: &mut String, options: RustOptions) -> Result<()> {
+    if options.serde {
+        if options.no_std {
+            writeln!(
+                out,
+                "// serde derives in no_std require `serde` with `default-features = false, features = [\"alloc\", \"derive\"]`."
+            )?;
+        } else {
+            writeln!(
+                out,
+                "// serde derives require the consumer's `serde` crate with `derive`."
+            )?;
+        }
+    }
+    if options.no_std {
+        writeln!(
+            out,
+            "// no_std output requires `extern crate alloc;` in the consuming crate."
+        )?;
+    }
+    Ok(())
+}
+
 fn emit_version_with_resolver(
     model: &Model,
     options: RustOptions,
@@ -338,18 +361,7 @@ fn emit_version_with_resolver(
         "// source: {}:{}@{}",
         model.package.namespace, model.package.name, model.package.version
     )?;
-    if options.serde {
-        writeln!(
-            out,
-            "// serde derives require the consumer's `serde` crate with `derive`."
-        )?;
-    }
-    if options.no_std {
-        writeln!(
-            out,
-            "// no_std output requires `extern crate alloc;` in the consuming crate."
-        )?;
-    }
+    write_option_header_comments(&mut out, options)?;
     let has_inner_docs = !docs::sanitize_rust_lines(&model.package.docs).is_empty();
     if has_inner_docs {
         writeln!(out)?;
@@ -513,18 +525,7 @@ fn emit_dependency_bindings_layout(
     let mut out = String::new();
     writeln!(out, "{header}")?;
     writeln!(out, "// source: wit/deps")?;
-    if options.serde {
-        writeln!(
-            out,
-            "// serde derives require the consumer's `serde` crate with `derive`."
-        )?;
-    }
-    if options.no_std {
-        writeln!(
-            out,
-            "// no_std output requires `extern crate alloc;` in the consuming crate."
-        )?;
-    }
+    write_option_header_comments(&mut out, options)?;
     if layout
         .by_major
         .values()
@@ -1146,7 +1147,7 @@ fn has_large_variant_disparity(model: &Model, cases: &[crate::model::Case]) -> b
         .map(|case| {
             case.payload
                 .as_ref()
-                .map_or(0, |ty| estimate_type_size(model, None, ty, 0))
+                .map_or(0, |ty| estimate_type_layout(model, None, ty, 0, 0).0)
         })
         .collect();
     sizes.sort_unstable();
@@ -1155,74 +1156,114 @@ fn has_large_variant_disparity(model: &Model, cases: &[crate::model::Case]) -> b
     largest.saturating_sub(second) >= 160
 }
 
-fn estimate_type_size(
+/// Conservative `(size, align)` estimate for `clippy::large_enum_variant` detection.
+///
+/// Tracks `alias_hops` separately from structural `depth` so deep alias chains (up to
+/// `MAX_ALIAS_CHAIN`) do not truncate size estimation prematurely, and rounds record and enum
+/// sizes up to their maximum power-of-two field alignment (matching Rust's `repr(Rust)` layout).
+fn estimate_type_layout(
     model: &Model,
     context: Option<&crate::model::Dependency>,
     ty: &TypeExpr,
     depth: usize,
-) -> usize {
-    if depth > crate::model::MAX_TYPE_NESTING {
-        return 24;
+    alias_hops: usize,
+) -> (usize, usize) {
+    if depth > crate::model::MAX_TYPE_NESTING || alias_hops > crate::model::MAX_ALIAS_CHAIN {
+        return (24, 8);
     }
     match ty {
-        TypeExpr::Bool | TypeExpr::U8 | TypeExpr::S8 => 1,
-        TypeExpr::U16 | TypeExpr::S16 => 2,
-        TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 => 4,
-        TypeExpr::U64 | TypeExpr::S64 | TypeExpr::F64 => 8,
-        TypeExpr::String | TypeExpr::List(_) => 24,
+        TypeExpr::Bool | TypeExpr::U8 | TypeExpr::S8 => (1, 1),
+        TypeExpr::U16 | TypeExpr::S16 => (2, 2),
+        TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 => (4, 4),
+        TypeExpr::U64 | TypeExpr::S64 | TypeExpr::F64 => (8, 8),
+        TypeExpr::String | TypeExpr::List(_) => (24, 8),
         TypeExpr::Option(inner) => {
-            estimate_type_size(model, context, inner, depth + 1).saturating_add(8)
+            let (sz, al) = estimate_type_layout(model, context, inner, depth + 1, alias_hops);
+            (sz.saturating_add(al), al)
         }
         TypeExpr::Result(result) => {
-            let ok = result
-                .ok
-                .as_deref()
-                .map_or(0, |t| estimate_type_size(model, context, t, depth + 1));
-            let err = result
-                .err
-                .as_deref()
-                .map_or(0, |t| estimate_type_size(model, context, t, depth + 1));
-            ok.max(err).saturating_add(8)
+            let (ok_sz, ok_al) = result.ok.as_deref().map_or((0, 1), |t| {
+                estimate_type_layout(model, context, t, depth + 1, alias_hops)
+            });
+            let (err_sz, err_al) = result.err.as_deref().map_or((0, 1), |t| {
+                estimate_type_layout(model, context, t, depth + 1, alias_hops)
+            });
+            let al = ok_al.max(err_al).max(1);
+            let sz = ok_sz.max(err_sz).saturating_add(al).next_multiple_of(al);
+            (sz, al)
         }
         TypeExpr::Named(name) => {
             let Some((resolved_dep, def)) = model.type_def_in(context, name) else {
-                return 8;
+                return (8, 8);
             };
             match &def.kind {
-                TypeDefKind::Record(fields) => fields.iter().fold(0usize, |acc, field| {
-                    let fsz = estimate_type_size(model, resolved_dep, &field.ty, depth + 1);
-                    // Round up each field to at most 8-byte alignment for a safe upper bound.
-                    acc.saturating_add(fsz.next_multiple_of(fsz.clamp(1, 8)))
-                }),
-                TypeDefKind::Variant(cases) => cases
-                    .iter()
-                    .map(|case| {
-                        case.payload
-                            .as_ref()
-                            .map_or(0, |t| estimate_type_size(model, resolved_dep, t, depth + 1))
-                    })
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_add(8),
-                TypeDefKind::Enum(_) => 4,
-                TypeDefKind::Flags(flags) => flags.len(),
-                TypeDefKind::Alias(target) => {
-                    estimate_type_size(model, resolved_dep, target, depth + 1)
+                TypeDefKind::Record(fields) => {
+                    let mut sum = 0usize;
+                    let mut max_align = 1usize;
+                    for field in fields {
+                        let (fsz, fal) = estimate_type_layout(
+                            model,
+                            resolved_dep,
+                            &field.ty,
+                            depth + 1,
+                            alias_hops,
+                        );
+                        max_align = max_align.max(fal);
+                        sum = sum.saturating_add(fsz);
+                    }
+                    (sum.next_multiple_of(max_align), max_align)
                 }
-                TypeDefKind::List(_) => 24,
+                TypeDefKind::Variant(cases) => {
+                    let mut max_sz = 0usize;
+                    let mut max_align = 1usize;
+                    for case in cases {
+                        if let Some(t) = &case.payload {
+                            let (csz, cal) =
+                                estimate_type_layout(model, resolved_dep, t, depth + 1, alias_hops);
+                            max_sz = max_sz.max(csz);
+                            max_align = max_align.max(cal);
+                        }
+                    }
+                    let tag_align = if cases.len() <= 256 {
+                        1
+                    } else if cases.len() <= 65_536 {
+                        2
+                    } else {
+                        4
+                    };
+                    let al = max_align.max(tag_align);
+                    let sz = max_sz.saturating_add(al).next_multiple_of(al);
+                    (sz, al)
+                }
+                TypeDefKind::Enum(cases) => {
+                    if cases.len() <= 256 {
+                        (1, 1)
+                    } else if cases.len() <= 65_536 {
+                        (2, 2)
+                    } else {
+                        (4, 4)
+                    }
+                }
+                TypeDefKind::Flags(flags) => (flags.len(), 1),
+                TypeDefKind::Alias(target) => {
+                    estimate_type_layout(model, resolved_dep, target, depth, alias_hops + 1)
+                }
+                TypeDefKind::List(_) => (24, 8),
                 TypeDefKind::Option(inner) => {
-                    estimate_type_size(model, resolved_dep, inner, depth + 1).saturating_add(8)
+                    let (sz, al) =
+                        estimate_type_layout(model, resolved_dep, inner, depth + 1, alias_hops);
+                    (sz.saturating_add(al), al)
                 }
                 TypeDefKind::Result(result) => {
-                    let ok = result
-                        .ok
-                        .as_deref()
-                        .map_or(0, |t| estimate_type_size(model, resolved_dep, t, depth + 1));
-                    let err = result
-                        .err
-                        .as_deref()
-                        .map_or(0, |t| estimate_type_size(model, resolved_dep, t, depth + 1));
-                    ok.max(err).saturating_add(8)
+                    let (ok_sz, ok_al) = result.ok.as_deref().map_or((0, 1), |t| {
+                        estimate_type_layout(model, resolved_dep, t, depth + 1, alias_hops)
+                    });
+                    let (err_sz, err_al) = result.err.as_deref().map_or((0, 1), |t| {
+                        estimate_type_layout(model, resolved_dep, t, depth + 1, alias_hops)
+                    });
+                    let al = ok_al.max(err_al).max(1);
+                    let sz = ok_sz.max(err_sz).saturating_add(al).next_multiple_of(al);
+                    (sz, al)
                 }
             }
         }

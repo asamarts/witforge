@@ -779,6 +779,7 @@ fn freeze_honors_custom_released_manifest_and_retirement_order() {
     fs::remove_dir_all(&base).unwrap();
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn schema_draft_option_works_via_cli_and_config_and_rejects_invalid_values() {
     let root = project("schema-draft");
@@ -829,7 +830,37 @@ draft = "2020-12"
     assert_eq!(doc7["$schema"], "http://json-schema.org/draft-07/schema#");
     assert!(doc7["definitions"].is_object());
 
-    // 3. Invalid CLI `--draft` and invalid config `draft` exit 2 (WF9001).
+    // 3. `witforge generate --draft <DRAFT>` overrides configured `schema.draft` and rejects
+    //    invalid draft values upfront (`WF9001`, exit 2).
+    let gen_override = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .args(["--draft", "7"])
+        .output()
+        .unwrap();
+    assert!(gen_override.status.success(), "{gen_override:?}");
+    let gen_doc7: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("generated/schema-2020/v0_1.schema.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        gen_doc7["$schema"],
+        "http://json-schema.org/draft-07/schema#"
+    );
+
+    let bad_gen_draft = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .args(["--draft", "2019-09", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad_gen_draft.status.code(), Some(2), "{bad_gen_draft:?}");
+    let bad_gen_json: serde_json::Value = serde_json::from_slice(&bad_gen_draft.stdout).unwrap();
+    assert_eq!(bad_gen_json["diagnostics"][0]["code"], "WF9001");
+
+    // 4. Invalid CLI `--draft` and invalid config `draft` exit 2 (WF9001).
     let bad_cli = witforge()
         .current_dir(&root)
         .args([
