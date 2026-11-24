@@ -54,9 +54,10 @@ archive and run `witforge.exe`.
 ## Action usage
 
 The action is published from this repository. It installs the release matching the action tag
-by default. Every GitHub API and release-asset request has a 30-second abort timeout, so a
-stalled network fails the step instead of hanging until the job timeout. The timeout was added in
-0.6.0 (Action releases through `v0.5.0` did not bound requests).
+by default. Every GitHub API request, release-asset download, and `gh attestation verify`
+invocation has a 30-second abort timeout, so a stalled network fails the step instead of hanging
+until the job timeout. The HTTP timeout was added in 0.6.0 (Action releases through `v0.5.0` did
+not bound requests), and the `gh attestation verify` timeout was added in 0.8.0.
 
 The JavaScript entry point uses GitHub's Node 24 Action runtime and has no npm dependencies. CI
 executes the checked-out action with `uses: ./` so changes to `action.yml` are covered before
@@ -72,6 +73,7 @@ resolution, archive extraction, or PATH propagation.
     diff-new: wit/v0.2
     config: witforge.toml
     generators: rust,proto
+    github-token: ${{ github.token }} # required through v0.7.x; defaulted from v0.8.0
 ```
 
 Floating refs such as `@main`, commit SHAs (`@<40-hex>`), and local `./` checkouts install the
@@ -86,9 +88,10 @@ only when floating latest is explicitly desired, or pass `version` to pin anothe
     version: 0.7.0
 ```
 
-`github-token` defaults to `${{ github.token }}` so `gh attestation verify` and explicit
-`version: latest` API lookups work out of the box without anonymous GitHub API rate limits. The
-token is never sent with public release-asset downloads. All inputs are validated before any
+Starting in `v0.8.0`, `github-token` defaults to `${{ github.token }}` so `gh attestation verify`
+and explicit `version: latest` API lookups work out of the box without anonymous GitHub API rate
+limits (releases through `v0.7.x` require passing `github-token: ${{ github.token }}` explicitly).
+The token is never sent with public release-asset downloads. All inputs are validated before any
 network request; transient network/5xx errors retry up to 3 attempts while HTTP 4xx and SHA-256
 checksum mismatches are never retried. Downloaded archive and `.sha256` scratch files are removed
 immediately after extracting the binary under `$RUNNER_TEMP`.
@@ -110,21 +113,21 @@ Every input and output is documented publicly on [`docs/guide/ci.md`](../guide/c
 |---|---|---|
 | `version` | empty | `X.Y.Z`/`vX.Y.Z`, or `latest`. Empty uses the action ref tag or the Action tree's `Cargo.toml` version. Cannot be combined with `binary`. |
 | `binary` | empty | Path to an existing local `witforge` executable, skipping download. Cannot be combined with `version`. |
-| `check` | empty | Version directories or WIT roots for `witforge check`, one per line, or `true` to check every project in `config`. |
+| `check` | empty | Version directories or WIT roots for `witforge check`, one per line, or `true` (from `v0.8.0`) to check every project in `config`. |
 | `against` | empty | Baseline `wire.lock` path (single `check` entry) or `<check-dir>=<baseline>` lines (multiple `check` entries) for `check --against`. Cannot be combined with `check: true`. |
 | `diff-old` | empty | Old version directory or root for `witforge diff`. |
 | `diff-new` | empty | New version directory or root for `witforge diff`. |
 | `diff-check` | `true` | `true` (`--check`), `false` (report only), or comma-separated views (`wire`, `source`, `api`, `decode`). |
 | `config` | empty | `witforge.toml` used for `check: true`, `freeze: true`, and configured generators. |
 | `project` | empty | Project name passed to `check: true`, `freeze: true`, and configured generators. |
-| `generators` | `rust` | Comma- or whitespace-separated `rust`, `proto`, `schema`, `glue` (each runs with `--config` and `--check`), or `all` to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
+| `generators` | `rust` | Comma- or whitespace-separated `rust`, `proto`, `schema`, `glue` (each runs with `--config` and `--check`), or `all` (from `v0.8.0`) to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
 | `freeze` | empty | WIT roots to verify with `witforge freeze` (one per line), or `true` to verify every project in `config` (requires `fetch-depth: 0`). |
 | `format` | `human` | `human`, `json`, or `sarif`. Failing checks always emit workflow annotations (`::error file=...,line=...,col=...::...`). |
 | `sarif-file` | empty | Combined SARIF 2.1.0 output file path when `format: sarif` is set (default `witforge.sarif`). |
-| `github-token` | `${{ github.token }}` | Token for GitHub API calls (`version: latest` and `gh attestation verify`); defaults to the workflow token and is never sent with asset downloads. |
+| `github-token` | `${{ github.token }}` (from `v0.8.0`) | Token for GitHub API calls (`version: latest` and `gh attestation verify`); defaults to the workflow token from `v0.8.0` and is never sent with asset downloads. |
 
-Outputs: `failed-command` (`install` or `witforge <subcommand>` on failure; empty on success) and
-`sarif-file` (path to the written SARIF file when `format: sarif` is set).
+Outputs: `failed-command` (`validate`, `install`, or `witforge <subcommand>` on failure; empty on
+success) and `sarif-file` (path to the written SARIF file when `format: sarif` is set).
 
 With `diff-old` and `diff-new` set and `diff-check` left at its default, the step fails on any
 wire-, source-, or generated-API-breaking change. That includes an added record field, so a
@@ -135,10 +138,13 @@ when its pin moves to `v0.6.0` or later.
 The action leaves `witforge` on `PATH` and exports `WITFORGE_BIN` for later steps. It runs, in
 order:
 
-1. every `check` entry (with `--against` where configured);
-2. `diff` when both old and new are set;
-3. `freeze` when enabled;
-4. every configured generator with `--check`.
+1. `check`: either `witforge check --config ...` (when `check: true`) or each explicit `check`
+   entry (with `--against` where configured);
+2. `diff` when both `diff-old` and `diff-new` are set;
+3. `freeze` when enabled (either `witforge freeze --config ...` for `freeze: true` or each explicit
+   WIT root);
+4. configured generators: either `witforge generate --config ... --check` (when `generators: all`)
+   or each listed generator with `--config` and `--check`.
 
 ### Checksums and supply chain
 
@@ -153,8 +159,9 @@ and the release workflow pins its GitHub Actions to immutable commits.
 ## Release workflow
 
 The `v*` tag workflow (`release.yml`) runs `verify -> binaries -> smoke-artifacts -> publish ->
-github-release -> action-smoke`: platform archives are built for all five targets (Linux x86_64,
-Linux arm64, macOS Intel, macOS Apple silicon, Windows x86_64), attested with
+github-release -> action-smoke`: platform archives are built for seven target archives across five
+platforms (Linux x86_64 static `musl` and `gnu`, Linux arm64 static `musl` and `gnu`, macOS Intel,
+macOS Apple silicon, Windows x86_64), attested with
 `actions/attest-build-provenance`, and smoke-tested from workflow artifacts before anything is
 published. `publish` verifies deterministic `.crate` digests and publishes with `--no-verify`;
 `github-release` creates a draft release, uploads assets without `--clobber` (verifying existing

@@ -281,11 +281,13 @@ jobs:
             bin="$scratch_root/smoke-bin/witforge"
             chmod +x "$bin"
             if [[ "${TARGET}" == *-musl ]]; then
-              if readelf -l "$bin" | grep -q 'INTERP'; then
+              phdrs="$(readelf -l "$bin")"
+              if grep -q 'INTERP' <<<"$phdrs"; then
                 echo "::error::musl binary ${TARGET} unexpectedly requires a dynamic interpreter"
                 exit 1
               fi
-              if readelf -d "$bin" 2>/dev/null | grep -q '(NEEDED)'; then
+              dyn="$(readelf -d "$bin" 2>/dev/null || true)"
+              if grep -q '(NEEDED)' <<<"$dyn"; then
                 echo "::error::musl binary ${TARGET} unexpectedly has NEEDED shared library dependencies"
                 exit 1
               fi

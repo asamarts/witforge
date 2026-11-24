@@ -90,8 +90,9 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
     - **Type**: `///` on the Rust `struct`/`enum`/`type`, `///` on the glue `pub mod <type>`,
       `//` on the protobuf `message`/`enum` (records, variants, enums, flags, named results), and
       `"description"` on the JSON Schema definition.
-    - **Field / flag / variant case / enum case**: `///` on the Rust member and `//` on the
-      protobuf field or enum value.
+    - **Field / flag / variant case / enum case**: `///` on the Rust member, `//` on the protobuf
+      field or enum value, and `"description"` in JSON Schema for documented record fields, flags,
+      and variant cases.
     - **Function**: `///` on the Rust trait method, `///` on the glue `functions::<fn>` module,
       and `//` on the protobuf `<Interface><Fn>Request` message. (WIT syntax does not attach
       documentation comments to function parameters.)
@@ -205,9 +206,10 @@ wit/
 - Rust output is one module per version: `v<major>_<minor>`.
 - Proto output is one file per major version: `v<major>.proto`, generated from the highest
   minor of that major. A new minor updates the same file; a new major adds a new file/package.
-- `check` and `lock` operate on a single version directory; `check` cannot establish the
-  cross-version dependency invariant. The `rust`, `proto`, `schema`, and `glue` commands take
-  the root and enforce it.
+- Single-directory `check` and `lock` operate on one version directory (comparing pinned
+  dependencies only against an `--against` version-directory baseline). Whole-root `check
+  <wit-root>` and the `rust`, `proto`, `schema`, `glue`, and `generate` commands take the WIT root
+  and enforce the cross-version dependency, lockfile-continuity, and retirement-order invariants.
 
 ## 3. Rust emitter
 
@@ -904,30 +906,41 @@ The glue tests in section 6 must cover these rules.
 ### 5.1 Commands
 
 ```text
-witforge check <version-dir> [--lock <path>] [--against <path> | --first]
-                            [--released <path>]
-witforge lock  <version-dir> [--lock <path>] [--against <path> | --first]
-                            [--released <path>]
-witforge rust  [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
-               [--serde | --no-serde] [--check] [--diff] [--released <path>]
-               # also writes convert.rs for adjacent versions
-witforge proto [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
-                            [--check] [--diff] [--released <path>]
-witforge schema [<wit-root>] [--out <dir>] [--config <file>] [--project <name>]
-                            [--check] [--diff] [--released <path>]
-witforge glue  [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <path>]
-                            [--config <file>] [--project <name>] [--check] [--diff]
-                            [--released <path>]
-witforge diff  <old> <new> [--check] [--json]
+witforge check  [<path>] [--lock <path>] [--against <path> | --first]
+                         [--released <path>] [--config <file> | --no-config] [--project <name>]
+witforge lock   <version-dir> [--lock <path>] [--against <path> | --first]
+                              [--released <path>]
+witforge rust   [<wit-root>] [--out <dir>] [--config <file> | --no-config] [--project <name>]
+                [--serde | --no-serde] [--no-std | --std] [--check] [--diff] [--released <path>]
+                # also writes convert.rs for adjacent versions
+witforge proto  [<wit-root>] [--out <dir>] [--config <file> | --no-config] [--project <name>]
+                             [--check] [--diff] [--released <path>]
+witforge schema [<wit-root>] [--out <dir>] [--draft 7|2020-12]
+                             [--config <file> | --no-config] [--project <name>]
+                             [--check] [--diff] [--released <path>]
+witforge glue   [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <path>]
+                             [--no-std | --std] [--config <file> | --no-config] [--project <name>]
+                             [--check] [--diff] [--released <path>]
+witforge generate [--config <file> | --no-config] [--project <name>] [--check] [--diff]
+                  [--serde | --no-serde] [--no-std | --std] [--draft 7|2020-12] [--released <path>]
+witforge diff   <old> <new> [--check[=<views>]] [--json]
+witforge inspect [<path>] [--json] [--released <path>] [--config <file> | --no-config] [--project <name>]
+witforge init   [<dir>] [--package <ns:name>] [--serde]
+witforge new-version [<wit-root>] [--major] [--from <version>]
+                     [--config <file> | --no-config] [--project <name>]
+witforge release <wit-dir> [--released <path>] [--config <file> | --no-config] [--project <name>]
+witforge retire  <wit-dir> [--released <path>] [--config <file> | --no-config] [--project <name>]
+witforge freeze [<wit-root>] [--released <path>] [--base <rev>]
+                [--config <file> | --no-config] [--project <name>]
 ```
 
 Every command also accepts the global `--format human|json|sarif`
 ([`diagnostics.md`](diagnostics.md)). `diff` is specified in [`diff.md`](diff.md).
 
-- `check` and `lock` take one version directory; the default lockfile is
-  `<version-dir>/wire.lock`. A directory named `v<major>.<minor>` must hold that package version,
-  as for the generators ([`lockfile.md`](lockfile.md) section 2); any other name is an ad-hoc
-  directory.
+- `lock` takes one version directory; `check` takes either one version directory or a WIT root (or
+  configured project roots when omitted). The default lockfile is `<version-dir>/wire.lock`. A
+  directory named `v<major>.<minor>` must hold that package version, as for the generators
+  ([`lockfile.md`](lockfile.md) section 2); any other name is an ad-hoc directory.
 - `rust`, `proto`, `schema`, and `glue` take the WIT root and require every version directory to
   be valid and locked, and every minor's lockfile to continue the previous minor's in its major.
   The positional root and output flags may instead be resolved from a `--config` project
@@ -1702,8 +1715,9 @@ The generator and workflow commands accept a TOML configuration file (`witforge.
 
 ```text
 witforge generate [--config witforge.toml | --no-config] [--project NAME] [--check] [--diff]
+                  [--serde | --no-serde] [--no-std | --std] [--draft 7|2020-12] [--released PATH]
 witforge check    [<path>] [--config witforge.toml | --no-config] [--project NAME]
-witforge freeze   [<wit-root>] [--config witforge.toml | --no-config] [--project NAME] [--base REV]
+witforge freeze   [<wit-root>] [--released PATH] [--config witforge.toml | --no-config] [--project NAME] [--base REV]
 witforge new-version [<wit-root>] [--major] [--from VERSION] [--config witforge.toml | --no-config] [--project NAME]
 witforge release  <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge retire   <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
@@ -1771,10 +1785,10 @@ proto-root = "crate::proto"
 ### 11.2 Precedence and selection
 
 - `--project <name>` selects a project. Single-target commands (`rust`, `proto`, `schema`, `glue`,
-  `new-version`, `release`) default to the sole project when the file has one and require
-  `--project` when it has several. Whole-repo commands (`generate`, `check` with no path, `freeze`
-  with no path) run across every project when `--project` is omitted, or only the named project
-  when `--project` is given.
+  `new-version`, `release`, `retire`, `inspect` with no path) default to the sole project when the
+  file has one and require `--project` when it has several. Whole-repo commands (`generate`, `check`
+  with no path, `freeze` with no path) run across every project when `--project` is omitted, or only
+  the named project when `--project` is given.
 - `--project` without a `--config` file or discovered `witforge.toml` (or with `--no-config`) is
   an error.
 - For every path, an explicit CLI value wins over the selected project: positional `WIT_ROOT`
@@ -1783,8 +1797,9 @@ proto-root = "crate::proto"
 - Config-only invocation (`witforge rust --config ...` or `witforge generate`) and CLI-only
   invocation (`witforge rust <root> --out ...`) are both valid. An explicitly passed `--config`
   file is validated even when CLI flags override all of its values.
-- `--serde` and `--no-serde` override the `rust` section's `serde` value. `--check` has no
-  configuration key: it is an action, not a project setting.
+- `--serde` and `--no-serde` override `rust.serde`; `--no-std` and `--std` override `rust.no-std`
+  and `glue.no-std`; `--draft` overrides `schema.draft`. `--check` has no configuration key: it is
+  an action, not a project setting.
 - `witforge generate` runs every configured emitter (`rust`, `proto`, `schema`, `glue`) for each
   selected project; one failing emitter does not prevent the remaining emitters from reporting,
   and the command exits `1` if any emitter reported a violation (or `2` on an operational error).

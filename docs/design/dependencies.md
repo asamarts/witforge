@@ -102,8 +102,10 @@ that prost's package-relative references resolve. The plain dependency types rem
 
 JSON Schema also emits one `<namespace>.<package>.v<major>.schema.json` file per dependency.
 A root or dependency schema refers to a foreign definition with a relative file reference,
-`<namespace>.<package>.v<major>.schema.json#/definitions/<interface>/<type>`, so a consumer can
-resolve dependency values by keeping the generated schema files together. The version adapters
+`<namespace>.<package>.v<major>.schema.json#/definitions/<interface>~1<type>` in Draft 7 (or
+`<namespace>.<package>.v<major>.schema.json#/$defs/<interface>~1<type>` in Draft 2020-12, with `/`
+escaped as `~1` per RFC 6901), so a consumer can resolve dependency values by keeping the generated
+schema files together. The version adapters
 in `convert.rs` copy a value whose type is the same pinned dependency type in both versions; a
 changed dependency type is not a local conversion and must be handled by a new contract type.
 

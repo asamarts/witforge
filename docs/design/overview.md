@@ -30,7 +30,7 @@ separately scoped tested work.
 
 witforge compiles one hand-written WIT package into the bindings other implementations of the
 contract need: plain Rust types and traits, a protobuf schema with stable field numbers, and
-Draft 7 JSON Schema. It does not generate WASM guest or host bindings (`wit-bindgen` and
+JSON Schema (Draft 7 default, opt-in Draft 2020-12). It does not generate WASM guest or host bindings (`wit-bindgen` and
 `wasmtime::component::bindgen!` already do that) and it does not implement any transport.
 
 Out of scope for the current 0.x line: services and RPC frameworks, direct language SDKs, WIT resources,
@@ -263,14 +263,17 @@ The rules in this section describe the implemented format.
 
 `witforge diff <old> <new>` compares two version directories or the highest versions under two
 WIT roots. It reports added, removed, reordered, retyped, kind-changed, renumbered, and
-defaulted changes, with independent wire-identity, source, and generated-API verdicts. `--check`
+defaulted changes, with independent wire-identity, source, generated-API, and protobuf binary
+decode verdicts. `--check` (or `--check=<views>`)
 fails on any breaking verdict; `--json` is the machine-readable form. The normative rules are in
 [`diff.md`](diff.md). This is a review aid: the lockfile, emitted-output `--check`, and release
 freeze remain the gates that protect a published version.
 
 ### 5.5 Machine-readable diagnostics
 
-`check`, `lock`, `diff`, and the generators accept `--format json` or `--format sarif`.
+Every command (`check`, `lock`, `diff`, `rust`, `proto`, `schema`, `glue`, `generate`, `init`,
+`new-version`, `release`, `retire`, `inspect`, `freeze`, `completions`, and `explain`) accepts
+`--format json` or `--format sarif`.
 Diagnostics have stable codes, severities, paths, and optional source positions; the default
 human output is unchanged. The envelope, SARIF mapping, and code catalogue are in
 [`diagnostics.md`](diagnostics.md).
@@ -438,8 +441,9 @@ Ergonomics observations:
 
 - Generation offers both the four explicit commands (`rust`, `proto`, `schema`, `glue`) and the
   config-driven `witforge generate` shorthand; `witforge.toml` is discovered upwards (stopping at
-  `.git`), with `--no-config` to disable discovery. `witforge check <root>`, `new-version`,
-  `release`, and `freeze` cover the full lifecycle without removing any explicit form. `glue`
+  `.git`), with `--no-config` to disable discovery. `witforge init`, `check <root>`, `new-version`,
+  `release`, `retire`, `inspect`, and `freeze` cover the full lifecycle without removing any
+  explicit form. `glue`
   requires both module roots; consumers cannot accidentally get a guessed dependency.
 - Generated plain Rust and glue have no runtime dependency of their own. Protobuf and JSON
   encoding stay on the consumer's `prost`/`pbjson` side.

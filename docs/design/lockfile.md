@@ -78,13 +78,15 @@ frozen as a whole, which covers the remaining source-level cases.
   directory (the parent of the canonicalised directory, so `.` and a symlinked WIT root find
   their real parent's manifest) and `<wit-root>/released` for generation. A missing default
   manifest means no version is treated as released. An explicitly supplied missing manifest is an
-  error. Every command that takes `--released` (`check`, `lock`, `rust`, `proto`, `schema`, and
-  `glue`) validates the manifest it uses and fails with exit `2` if it is missing when given
-  explicitly or is malformed. `lock` refuses to edit any version listed in the explicit manifest
-  in addition to the default manifests; whole-root `check` and every generator (`rust`, `proto`,
-  `schema`, `glue`, and `generate`) also enforce retirement order and exclude entries marked
-  `retired` in the manifest they use. `diff` does not take `--released` and does not read the
-  manifest.
+  error. Every command that takes `--released` (`check`, `lock`, `rust`, `proto`, `schema`, `glue`,
+  `generate`, `release`, `retire`, `inspect` on a WIT root, and `freeze`) validates the manifest it
+  uses and fails with exit `2` if it is missing when given explicitly or is malformed (on `release`,
+  an explicit nonexistent path is created once validation succeeds; `inspect` refuses `--released`
+  on a single version directory). `lock` refuses to edit any version listed in the explicit manifest
+  in addition to the default manifests; whole-root `check`, `freeze`, and every generator (`rust`,
+  `proto`, `schema`, `glue`, and `generate`) also enforce retirement order, and generators exclude
+  entries marked `retired` in the manifest they use. `diff` does not take `--released` and does not
+  read the manifest.
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
@@ -92,7 +94,7 @@ frozen as a whole, which covers the remaining source-level cases.
   numbers and reserved names are append-only: a member removed in a later minor stays as a
   `reserved` number and name, while a type or function removed as a whole drops its messages
   from the schema and keeps its method number reserved.
-- `witforge freeze [<WIT_ROOT>] [--config PATH] [--project NAME] [--base REV]` (also invoked by
+- `witforge freeze [<WIT_ROOT>] [--released PATH] [--config PATH | --no-config] [--project NAME] [--base REV]` (also invoked by
   the wrapper `ci/check-release-freeze.sh [WIT_ROOT]`) reads the full history of the manifest,
   merges included: every entry a committed manifest listed must still be listed, and each listed
   directory must not be or hold a symlink, must hold a `wire.lock` that git tracks under exactly
@@ -124,9 +126,9 @@ frozen as a whole, which covers the remaining source-level cases.
   version directory (`v<major>.<minor>`), each at its written and its resolved location, always
   apply, whatever `--released` names, so neither a lockfile in another WIT root, nor one in a
   subdirectory of a released directory (`--lock other/v0.1/sub/wire.lock`), nor an explicit
-  manifest that omits the directory gets past the manifest that lists it. `check`, `rust`,
-  `proto`, `schema`, `glue`, and `diff` are allowed; they verify, reproduce, or compare the
-  frozen contract. For a released
+  manifest that omits the directory gets past the manifest that lists it. `check`, `rust`, `proto`,
+  `schema`, `glue`, `generate`, `diff`, `inspect`, `freeze`, and `retire` are allowed on released
+  versions; they verify, reproduce, inspect, compare, or retire the frozen contract. For a released
   version, `check` advises restoring the released WIT and lockfile rather than naming a `lock`
   command that `lock` refuses.
 - A new major version starts a fresh lockfile. A new minor version starts as a copy of the

@@ -58,7 +58,8 @@ highlighted source snippet (naming file, line, and column) to stderr in human mo
 structured JSON/SARIF positions directly from `wit-parser` spans.
 
 A contract violation emits the same diagnostic code, path, and message whichever command reports it
-(`check`, `lock`, `diff`, `rust`, `proto`, `schema`, or `glue`). Multiple violations remain
+(`check`, `lock`, `diff`, `rust`, `proto`, `schema`, `glue`, `generate`, `release`, `retire`,
+`inspect`, or `freeze`). Multiple violations remain
 separate diagnostics in the `diagnostics` / SARIF `results` array and are never joined into one
 message.
 
@@ -198,9 +199,10 @@ Without `--check`, `diff` exits `0` and emits `WF3001` at severity/level `warnin
 results never carry `level: "error"` on a zero-exit run; with `--check` or `--check=<views>`,
 `diff` emits `WF3001` at severity/level `error` for changes breaking a gated view (and exits `1`
 when any gated view is broken) and `warning` for changes breaking only non-gated views.
-`diff --json` remains the full diff report described in [`diff.md`](diff.md); when both `--json`
-and a non-human `--format` are given, `--json` wins and the diagnostic envelope is suppressed
-(including on command errors, which are written to stderr just as `diff --json` does).
+`diff --json` remains the full diff report described in [`diff.md`](diff.md), and `inspect --json`
+remains the versioned contract IR described in [`emitters.md`](emitters.md#12-versioned-contract-ir-witforge-inspect);
+when both `--json` and a non-human `--format` are given, `--json` wins and the diagnostic envelope
+is suppressed (including on command errors, which are written to stderr just as `--json` does).
 
 `witforge explain <CODE>` prints the code's severity, superseded prior code (if any), normative
 meaning from `witforge::diagnostic::explanation`, and documentation URL. An unknown code is a

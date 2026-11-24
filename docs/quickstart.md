@@ -10,7 +10,7 @@ package into the artifacts the two sides of a contract need:
 
 - plain Rust types and interface traits;
 - a protobuf schema with append-only field numbers;
-- Draft 7 JSON Schema definitions;
+- JSON Schema definitions (Draft 7 default, opt-in Draft 2020-12);
 - glue between the plain Rust and protobuf types;
 - old-to-new and new-to-old Rust adapters for adjacent contract versions.
 

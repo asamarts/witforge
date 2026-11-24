@@ -16,13 +16,17 @@ Generated output changes:
   for documented record fields, flags, and variant cases (as well as record/variant/enum/flags type
   descriptions). Regenerate and commit JSON Schema files with `witforge schema` (or
   `witforge generate`).
-- **Protobuf (`W10-107`):** Generated anonymous `Witforge*` wrapper messages now preserve exact
-  spacing and deterministic doc comments, and unused dependency `import` statements (such as a
-  world-only dependency interface not referenced by any proto message) are omitted. Regenerate and
+- **Protobuf (`W10-107`, `W10-115`):** Generated anonymous `Witforge*` wrapper messages now preserve
+  exact spacing and deterministic doc comments, and unused dependency `import` statements (such as a
+  world-only dependency interface not referenced by any proto message) are omitted while preserving
+  every dependency transitively referenced in non-comment message/field bodies. Regenerate and
   commit `.proto` files if affected.
-- **Plain Rust & Glue (`W10-107`):** Deeply nested generic type signatures gain
-  `#[allow(clippy::type_complexity)]` where required for `-D warnings`, and glue output matches
-  `rustfmt` for long identifiers and `result<_, _>` expressions. Regenerate if affected.
+- **Plain Rust & Glue (`W10-107`, `W10-120`):** Deeply nested generic type signatures gain
+  `#[allow(clippy::type_complexity)]` where required for `-D warnings`, alignment-aware layout
+  sizing covers padded records and long alias chains for `#[allow(clippy::large_enum_variant)]`,
+  and generated plain/convert/glue output matches `rustfmt` (Editions 2021 and 2024) for long
+  identifiers, defaulted fields, `if let` scrutinees, and `result<_, _>` expressions. Regenerate if
+  affected.
 
 ### Added
 
@@ -35,14 +39,14 @@ Generated output changes:
     prefix and non-empty live-set rules.
   - Added `--from <VERSION>` to `witforge new-version` so a new minor or major can branch from an
     explicit base version rather than only the highest version.
-- **Versioned contract IR export (`W10-110`):**
+- **Versioned contract IR export (`W10-110`, `W10-118`):**
   - Added `witforge::inspect` (`IR_VERSION = 1`, `emit_version_json`, `inspect_version_json`,
-    `inspect_root_json`, `summarize_version`, `summarize_root`) with zero new runtime dependencies,
-    plus `WireLock::order_fingerprints`.
+    `inspect_root_json`, `summarize_version`, `summarize_root`) with zero new runtime dependencies.
   - Added `witforge inspect [<PATH>] [--json] [--released]` (with `witforge.toml` discovery) to
     emit deterministic, machine-readable JSON contract IR (versions, packages, interfaces, types,
-    functions, worlds, dependencies, stability metadata, and lockfile entries/order fingerprints)
-    or a human summary for external tooling and custom code generators.
+    functions, worlds, dependencies with derived wire numbers, stability metadata, and lockfile
+    reserved entries and order fingerprints) or a human summary for external tooling and custom code
+    generators.
 - **Opt-in `no_std` + `alloc` Rust, conversion, and glue codegen (`W10-111`):**
   - Added `witforge::emit::rust::{RustOptions, plan_with_options, emit_version_with_options}` and
     `witforge::emit::glue::{GlueOptions, plan_with_options, emit_root_with_options,
@@ -51,29 +55,32 @@ Generated output changes:
     under `[project.<name>.rust]` and `[project.<name>.glue]` in `witforge.toml`. When enabled,
     generated plain Rust, `convert.rs`, `worlds.rs`, `witforge_deps.rs`, and glue reference
     `::core::` and `::alloc::` exclusively with zero `::std::` references.
-- **Optional `witforge-build` helper crate (`W10-112`):**
-  - Added the standalone workspace crate `witforge-build` (`Config`, `compile_protos`,
-    `discover_protos`, `BuildOutput`, `Error`, `DEFAULT_INCLUDE_FILE`) to replace hand-written
-    `build.rs` `protox` + `prost-build` boilerplate with deterministic `.proto` discovery, per-file
-    `cargo:rerun-if-changed` emission, symlink refusal, automatic standalone vs. `deps/`
-    `prost_include.rs` module layout matching `witforge glue`, and an optional `pbjson` feature for
-    proto3-JSON `serde` implementations.
-- **JSON Schema Draft 2020-12 and member descriptions (`W10-108`):**
+- **Optional `witforge-build` helper crate (`W10-112`, `W10-117`):**
+  - Added the standalone workspace crate `witforge-build` (`Config`, `Config::with_pbjson_builder`,
+    `Config::pbjson_builder`, `compile_protos`, `discover_protos`, `BuildOutput`, `Error`,
+    `Error::InvalidIncludeFile`, `DEFAULT_INCLUDE_FILE`) to replace hand-written `build.rs` `protox`
+    + `prost-build` boilerplate with deterministic `.proto` discovery, per-file and subdirectory
+    `cargo:rerun-if-changed` emission, symlink refusal, incremental `prost_include.rs` writes,
+    keyword/uppercase-safe automatic standalone vs. `deps/` module layout matching `witforge glue`,
+    and an optional `pbjson` feature for proto3-JSON `serde` implementations.
+- **JSON Schema Draft 2020-12 and member descriptions (`W10-108`, `W10-120`):**
   - Added `witforge::emit::json_schema::{JsonSchemaDraft, SchemaOptions, plan_with_options,
     emit_version_with_options}` (`Draft7` default, opt-in `Draft202012` emitting `$defs`, native
     `deprecated: true`, and Draft 2020-12 `$schema`).
-  - Added `--draft 7|2020-12` on `witforge schema` and `draft = "7" | "2020-12"` under
-    `[project.<name>.schema]` in `witforge.toml`.
-- **Static `musl` Linux release archives (`W10-113`):**
+  - Added `--draft 7|2020-12` on `witforge schema` and `witforge generate`, and
+    `draft = "7" | "2020-12"` under `[project.<name>.schema]` in `witforge.toml`.
+- **Static `musl` Linux release archives (`W10-113`, `W10-116`):**
   - Added `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` static release archives
-    (with `.sha256` checksums and SLSA provenance attestations) alongside the existing `gnu`
-    archives in `.github/workflows/release.yml`, and updated the GitHub Action to select static
-    `musl` archives on Linux for releases `>= 0.8.0` (keeping `gnu` for `<= 0.7.x`) so older LTS
-    distros and Alpine/musl containers work without a glibc 2.39 floor.
-- **GitHub Action shorthand inputs and default token (`W10-102`):**
-  - Added `check: "true"` (auto-runs `witforge check` using the discovered/configured project) and
-    `generators: "all"` (expands to `rust,proto,schema,glue`) to `action.yml` while preserving the
-    existing `generators: "rust"` default.
+    (built with `-C target-feature=+crt-static`, verified ELF static via `readelf`, with `.sha256`
+    checksums and SLSA provenance attestations) alongside the existing `gnu` archives in
+    `.github/workflows/release.yml`, added a dedicated `musl` CI job, and updated the GitHub Action
+    to select static `musl` archives on Linux for releases `>= 0.8.0` (keeping `gnu` for `<= 0.7.x`)
+    so older LTS distros and Alpine/musl containers work without a glibc 2.39 floor.
+- **GitHub Action shorthand inputs and default token (`W10-102`, `W10-116`):**
+  - Added `check: "true"` (runs `witforge check` for the configured project(s) in `config`) and
+    `generators: "all"` (runs `witforge generate --config ... --check` across every configured
+    generator and project) to `action.yml` while preserving the existing `generators: "rust"`
+    default.
 - **Additive library APIs (`W10-103`, `W10-105`, `W10-106`):**
   - Added `witforge::freeze::check_root_with_manifest` (custom released manifest path,
     semver-safe alongside `check_root`), `witforge::workflow::check_release`, and
@@ -116,8 +123,37 @@ Generated output changes:
   - Added proto3 `json_name` collision checking against reserved members, fixed wrapper message doc
     comments and blank-line spacing, and gated dependency `import` statements to actually referenced
     packages.
-- **Documentation and comment drift (`W10-114`):** Reconciled post-0.7.0 drift across `AGENTS.md`,
-  `crates/witforge/src/lib.rs`, `docs/design/{overview,lockfile,diff,diagnostics,dependencies,action}.md`,
+- **Documentation and comment drift (`W10-114`, `W10-121`):** Reconciled post-0.7.0 drift across
+  `AGENTS.md`, `crates/witforge/src/lib.rs`, `docs/design/{overview,lockfile,diff,diagnostics,
+  dependencies,action,emitters}.md`, `docs/guide/{ci,wiring,reference}.md`, and `docs/quickstart.md`.
+- **Adversarial audit hardening (`W10-115`–`W10-120`):**
+  - Derived protobuf `import` statements from actual non-comment body references so transitive
+    dependency imports are never dropped (`W10-115`).
+  - Hardened `.github/workflows/{ci,release}.yml`, `action/index.js` (strict version regex,
+    attestation timeout, UNC/Windows SARIF URI normalization, explicit `config` validation,
+    `failed-command=validate`), and `ci/check-release.sh` / `ci/check-version-references.sh` /
+    `ci/test-publish.sh` (`W10-116`).
+  - Fixed `witforge-build` module filename resolution for uppercase and Rust-keyword proto packages
+    (including `pbjson-build` `r#gen` compatibility), incremental `prost_include.rs` writes, and
+    pbjson prefix scoping (`W10-117`).
+  - Populated dependency member wire numbers and aligned single-version validation (`WF1031`,
+    `WF1002`, `WF1103`/`WF1105`, symlink refusal, canonical `retired` sorting, `--released` guard)
+    in `witforge inspect` (`W10-118`).
+  - Hardened `init` (all 44 WIT keywords, non-empty/symlink checks, atomic rollback), `new-version`
+    (UTF-8 char-boundary safety, string-literal and nested-package lexing, `--from` gap/retired
+    checks, special-file refusal), `retire` (BOM handling, exit codes, retirement-order validation
+    on already-retired entries, diagnostic file paths), `freeze` (retirement order with invalid
+    entries, deleted manifest parent dir, case reconciliation, staged-index tampering, un-retire
+    line positions), `diff` (`preserves` kind/type check, dropped-reserved-number decode reuse,
+    human `result:` line matching `--check` views), `workflow` (zero-member missing lockfile,
+    explicit `--released` isolation in `check_root`, `check_release` continuity/report parity,
+    `lock` proto validation), `subset` (world-owned `use` stability), `SinceHistory`, `load_sources`
+    in-memory package header location, and Windows SARIF URI handling (`W10-119`).
+  - Fixed emitter `clippy::type_complexity`, alignment/alias-aware `clippy::large_enum_variant`,
+    Editions 2021/2024 `rustfmt` wrapping (`fmt_let_stmt`, `push_let_else_err`, long option
+    `if let`, defaulted `convert.rs` fields), `proto.rs` named-option wrapper ownership collisions
+    and enum/method `reserved_prost` checks, `docs.rs` tab/closing-banner/bullet-list normalization,
+    and `#![no_std]` + `serde` header/test coverage (`W10-120`).
   `.github/workflows/ci.yml`, `README.md`, and `docs/design/public-api-inventory.txt`.
 
 ## [0.7.0] - 2026-11-23

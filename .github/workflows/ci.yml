@@ -245,11 +245,13 @@ jobs:
           RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C target-feature=+crt-static" \
             cargo build --locked --release -p witforge-cli --target "${TARGET}"
           bin="target/${TARGET}/release/witforge"
-          if readelf -l "$bin" | grep -q 'INTERP'; then
+          phdrs="$(readelf -l "$bin")"
+          if grep -q 'INTERP' <<<"$phdrs"; then
             echo "::error::musl binary ${TARGET} unexpectedly requires a dynamic interpreter"
             exit 1
           fi
-          if readelf -d "$bin" 2>/dev/null | grep -q '(NEEDED)'; then
+          dyn="$(readelf -d "$bin" 2>/dev/null || true)"
+          if grep -q '(NEEDED)' <<<"$dyn"; then
             echo "::error::musl binary ${TARGET} unexpectedly has NEEDED shared library dependencies"
             exit 1
           fi

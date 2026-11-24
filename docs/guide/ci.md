@@ -68,7 +68,7 @@ steps:
       format: sarif
       sarif-file: witforge.sarif
       github-token: ${{ github.token }}
-  - if: always()
+  - if: always() && steps.witforge.outputs.sarif-file != ''
     uses: github/codeql-action/upload-sarif@v3
     with:
       sarif_file: ${{ steps.witforge.outputs.sarif-file }}
@@ -96,24 +96,24 @@ request diffs regardless of `format`.
 |---|---|---|
 | `version` | empty | `X.Y.Z`, `vX.Y.Z`, or `latest`. Empty installs the release tag or the workspace version at the Action's commit SHA/branch. Cannot be combined with `binary`. |
 | `binary` | empty | Path to an existing local `witforge` binary to run instead of downloading a release. Cannot be combined with `version`. |
-| `check` | empty | WIT version directories or WIT roots to pass to `witforge check`, one per line, or `true` to check every project in `config`. |
+| `check` | empty | WIT version directories or WIT roots to pass to `witforge check`, one per line, or `true` (from `v0.8.0`) to check every project in `config`. |
 | `against` | empty | Baseline `wire.lock` path(s) for `witforge check --against`: a single lockfile path when `check` lists one directory, or `<check-dir>=<baseline-lockfile>` lines when `check` lists multiple directories. Cannot be combined with `check: true`. |
 | `diff-old` | empty | Old version directory or WIT root for `witforge diff` (must be paired with `diff-new`). |
 | `diff-new` | empty | New version directory or WIT root for `witforge diff` (must be paired with `diff-old`). |
 | `diff-check` | `true` | `true` (`--check`, gates on `wire,source,api`), `false` (report only), or comma-separated views from `wire`, `source`, `api`, `decode` (`--check=<views>`). |
 | `config` | empty | Path to `witforge.toml` for `check: true`, `freeze: true`, and configured generators. |
 | `project` | empty | Optional project name in `witforge.toml`. |
-| `generators` | `rust` | Comma- or whitespace-separated subset of `rust`, `proto`, `schema`, `glue` run with `--config` and `--check`, or `all` to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
+| `generators` | `rust` | Comma- or whitespace-separated subset of `rust`, `proto`, `schema`, `glue` run with `--config` and `--check`, or `all` (from `v0.8.0`) to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
 | `freeze` | empty | WIT roots to verify with `witforge freeze` (one per line), or `true` to verify every project in `config`. Requires `fetch-depth: 0`. |
 | `format` | `human` | Output format: `human`, `json`, or `sarif`. Failing checks emit GitHub workflow annotations in all formats. |
 | `sarif-file` | empty | Output file path for the combined SARIF 2.1.0 report when `format: sarif` is set (defaults to `witforge.sarif`). |
-| `github-token` | `${{ github.token }}` | Token sent only to GitHub API calls (`version: latest` lookup and `gh attestation verify`), defaulting to the workflow token and never sent with asset downloads. |
+| `github-token` | `${{ github.token }}` (from `v0.8.0`) | Token sent only to GitHub API calls (`version: latest` lookup and `gh attestation verify`), defaulting to the workflow token from `v0.8.0` (pass explicitly on `<= v0.7.x`) and never sent with asset downloads. |
 
 ### Action outputs
 
 | Output | Description |
 |---|---|
-| `failed-command` | Empty on success; names the failing stage (`install` or `witforge <subcommand>`, such as `witforge diff`) on failure. |
+| `failed-command` | Empty on success; names the failing stage (`validate`, `install`, or `witforge <subcommand>`, such as `witforge diff`) on failure. |
 | `sarif-file` | Path to the combined SARIF 2.1.0 file when `format: sarif` was requested. |
 
 ### Release freeze and `diff` upgrade notes
