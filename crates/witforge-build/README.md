@@ -14,7 +14,7 @@ Add `witforge-build` under `[build-dependencies]` (first published on crates.io 
 prost = "0.14"
 
 [build-dependencies]
-witforge-build = "0.7.0"
+witforge-build = "0.8.0"
 ```
 
 In `build.rs`:

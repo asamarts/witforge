@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-24
+
 All library API changes since 0.7.0 are strictly additive (`docs/design/public-api-inventory.txt`
 retains every v0.7.0 symbol and signature). Wire numbers and lockfile identity do not change.
 
