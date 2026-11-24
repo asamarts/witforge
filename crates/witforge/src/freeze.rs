@@ -58,7 +58,8 @@ impl FreezeReport {
     }
 }
 
-/// Verify the released-directory freeze invariant for one WIT root.
+/// Verify the released-directory freeze invariant for one WIT root using the default
+/// `<WIT_ROOT>/released` manifest.
 ///
 /// # Errors
 ///
@@ -66,8 +67,29 @@ impl FreezeReport {
 /// a directory, `git` is missing from `PATH`, `wit_root` is outside any Git repository, the
 /// repository is a shallow clone, `--base` does not name a valid commit, or a `git` command fails
 /// unexpectedly.
-#[allow(clippy::too_many_lines)]
 pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeReport> {
+    check_root_with_manifest(wit_root, None, options)
+}
+
+/// Verify the released-directory freeze invariant for one WIT root with an optional explicit
+/// released-version manifest path (defaults to `<WIT_ROOT>/released` when `manifest` is `None`).
+///
+/// Also validates retirement ordering (retired versions must form a contiguous oldest prefix of
+/// version directories under `wit_root` and leave at least one live version).
+///
+/// # Errors
+///
+/// Returns an operational [`crate::DiagnosticError`] (exit `2` in the CLI) when `wit_root` is not
+/// a directory, an explicitly supplied `manifest` does not exist on disk or in Git history or lies
+/// outside the repository, `git` is missing from `PATH`, `wit_root` is outside any Git repository,
+/// the repository is a shallow clone, `--base` does not name a valid commit, or a `git` command
+/// fails unexpectedly.
+#[allow(clippy::too_many_lines)]
+pub fn check_root_with_manifest(
+    wit_root: &Path,
+    manifest: Option<&Path>,
+    options: &FreezeOptions,
+) -> Result<FreezeReport> {
     if !wit_root.is_dir() {
         return Err(operational_error(
             codes::IO_ERROR,
@@ -115,7 +137,17 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
     } else {
         (rel_slashes.clone(), format!("{rel_slashes}/"))
     };
-    let manifest = format!("{prefix}released");
+    let (manifest_rel, manifest_in_root, explicit_manifest) = match manifest {
+        Some(explicit) => {
+            let resolved = resolve_manifest_in_repo(explicit, &repo)?;
+            let in_root = resolved
+                .strip_prefix(&prefix)
+                .is_some_and(|rest| !rest.contains('/'));
+            (resolved, in_root, Some(explicit))
+        }
+        None => (format!("{prefix}released"), true, None),
+    };
+    let manifest = manifest_rel;
 
     // Shallow clones cannot prove the full history of `released`.
     let shallow_out = git_stdout(&repo, &["rev-parse", "--is-shallow-repository"])?;
@@ -163,6 +195,16 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
         .is_some_and(|meta| meta.file_type().is_file());
 
     if manifest_meta.is_none() && log_commits.is_empty() {
+        if let Some(explicit) = explicit_manifest {
+            return Err(operational_error(
+                codes::IO_ERROR,
+                format!(
+                    "release freeze: released manifest `{}` does not exist",
+                    explicit.display()
+                ),
+                Some(explicit.display().to_string()),
+            ));
+        }
         return Ok(FreezeReport {
             root: root_label,
             manifest,
@@ -202,8 +244,9 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
 
     // 1. Validate every entry in the current working-tree manifest.
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    // Map current listed entry name -> is_retired.
+    // Map current listed entry name -> is_retired, plus source line position for diagnostics.
     let mut current_entries_map: BTreeMap<String, bool> = BTreeMap::new();
+    let mut entry_positions: BTreeMap<String, Option<Position>> = BTreeMap::new();
     for (line_no, raw_line, trimmed_line) in &current_entries {
         let pos = Some(line_position(*line_no, raw_line));
         let Some((entry, is_retired)) = parse_manifest_entry(trimmed_line) else {
@@ -231,6 +274,7 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
             continue;
         }
         current_entries_map.insert(entry.clone(), is_retired);
+        entry_positions.insert(entry.clone(), pos);
 
         let dir_rel = format!("{prefix}{entry}");
         let dir_disk = repo.join(&dir_rel);
@@ -325,6 +369,48 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
         }
     }
 
+    // 1b. Enforce retirement order: retired versions must form a contiguous oldest prefix of
+    // version directories under `wit_root` and leave at least one live version.
+    if current_entries_map.values().any(|&retired| retired)
+        && let Ok(versions) = crate::discover_version_directories(&abs_root)
+    {
+        let mut first_live: Option<String> = None;
+        for (_, _, dir) in &versions {
+            let name = dir
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or_default();
+            if current_entries_map.get(name) == Some(&true) {
+                if let Some(ref older_live) = first_live {
+                    push_violation(
+                        &mut violations,
+                        &repo,
+                        &manifest,
+                        entry_positions.get(name).copied().flatten(),
+                        format!(
+                            "cannot retire `{name}` while older version `{older_live}` is still \
+                             live; only the oldest versions of a WIT root may be retired"
+                        ),
+                    );
+                }
+            } else if first_live.is_none() {
+                first_live = Some(name.to_string());
+            }
+        }
+        if first_live.is_none() && !versions.is_empty() {
+            push_violation(
+                &mut violations,
+                &repo,
+                &manifest,
+                None,
+                format!(
+                    "every version directory under {root_label} is retired; at least one live \
+                     version is required"
+                ),
+            );
+        }
+    }
+
     // 2. Walk the manifest's commit history at its current path.
     let mut checks = 0usize;
     let mut reported_removals: BTreeSet<(String, String)> = BTreeSet::new();
@@ -393,12 +479,13 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
     if has_head && !log_commits.is_empty() {
         let earlier_paths = follow_renamed_manifests(&repo, &manifest, base_commit.as_deref())?;
         for old_manifest in earlier_paths {
-            let old_prefix = if old_manifest == "released" {
-                String::new()
-            } else if let Some(prefix_part) = old_manifest.strip_suffix("/released") {
-                format!("{prefix_part}/")
+            let old_prefix = if manifest_in_root {
+                match old_manifest.rsplit_once('/') {
+                    Some((dir, _)) => format!("{dir}/"),
+                    None => String::new(),
+                }
             } else {
-                continue;
+                prefix.clone()
             };
             let old_commits = manifest_commits(&repo, &old_manifest, base_commit.as_deref())?;
             for commit in &old_commits {
@@ -500,6 +587,46 @@ pub fn check_root(wit_root: &Path, options: &FreezeOptions) -> Result<FreezeRepo
         no_manifest: false,
         violations,
     })
+}
+
+fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
+    let Some(file_name) = explicit.file_name() else {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "release freeze: invalid released manifest path `{}`",
+                explicit.display()
+            ),
+            Some(explicit.display().to_string()),
+        ));
+    };
+    let parent = explicit
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let abs_parent = fs::canonicalize(parent).map_err(|err| {
+        operational_error(
+            codes::IO_ERROR,
+            format!(
+                "release freeze: released manifest `{}` cannot be resolved: {err}",
+                explicit.display()
+            ),
+            Some(explicit.display().to_string()),
+        )
+    })?;
+    let abs_manifest = abs_parent.join(file_name);
+    let rel_manifest = abs_manifest.strip_prefix(repo).map_err(|_| {
+        operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "release freeze: released manifest `{}` is not inside the repository {}",
+                explicit.display(),
+                repo.display()
+            ),
+            Some(explicit.display().to_string()),
+        )
+    })?;
+    Ok(to_git_path(rel_manifest))
 }
 
 fn push_violation(

@@ -123,6 +123,14 @@ expect "removing a retired entry fails" 1 "was removed"
 printf 'v0.1 bogus\n' >wit/released
 expect "an unknown manifest state token fails" 1 "invalid released entry"
 
+# Retirement order: retiring a newer version while an older one is live, or retiring every version,
+# must fail `witforge freeze` just as it fails `check` and generators.
+fresh
+printf 'v0.1\nv0.2 retired\n' >wit/released
+expect "retiring a non-oldest version fails" 1 "cannot retire \`v0.2\` while older version \`v0.1\` is still live"
+printf 'v0.1 retired\nv0.2 retired\n' >wit/released
+expect "retiring every version fails" 1 "every version directory under wit is retired"
+
 for entry in "..." ".hidden" "v0 1" "../v0.1" "v0.1/"; do
     fresh
     printf 'v0.1\n%s\n' "${entry}" >wit/released

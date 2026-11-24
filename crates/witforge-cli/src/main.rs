@@ -17,7 +17,7 @@
 //! witforge new-version [<wit-root>] [--major] [--config PATH | --no-config] [--project NAME]
 //! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge diff  <old> <new> [--json] [--check[=VIEWS]]
-//! witforge freeze [<wit-root>] [--config PATH | --no-config] [--project NAME] [--base REV]
+//! witforge freeze [<wit-root>] [--released PATH] [--config PATH | --no-config] [--project NAME] [--base REV]
 //! witforge completions <bash|zsh|fish>
 //! witforge explain <code-id>
 //!
@@ -253,6 +253,9 @@ struct FreezeOptions {
     /// WIT root containing version directories and `released` manifest.
     #[arg(value_name = "WIT_ROOT")]
     root: Option<PathBuf>,
+    /// Released-version manifest to verify; defaults to `<WIT_ROOT>/released` or project `released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
     /// Lower-bound Git revision to bound the manifest history scan (default: full history).
     #[arg(long, value_name = "REV")]
     base: Option<String>,
@@ -1726,13 +1729,14 @@ fn explain_command(options: &ExplainOptions, reporter: &mut Reporter) -> Result<
 }
 
 fn freeze_command(options: &FreezeOptions, reporter: &mut Reporter) -> Result<ExitCode> {
-    let roots = resolve_freeze_roots(options)?;
+    let targets = resolve_freeze_roots(options)?;
     let freeze_opts = witforge::freeze::FreezeOptions {
         base: options.base.clone(),
     };
     let mut failed = false;
-    for root in roots {
-        let report = witforge::freeze::check_root(&root, &freeze_opts)?;
+    for (root, manifest) in targets {
+        let report =
+            witforge::freeze::check_root_with_manifest(&root, manifest.as_deref(), &freeze_opts)?;
         if report.is_ok() {
             if reporter.human() && !reporter.is_quiet() {
                 if report.no_manifest {
@@ -1768,7 +1772,7 @@ fn freeze_command(options: &FreezeOptions, reporter: &mut Reporter) -> Result<Ex
     }
 }
 
-fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<PathBuf>> {
+fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<(PathBuf, Option<PathBuf>)>> {
     if let Some(root) = &options.root {
         if options.config.config.is_some() || options.config.project.is_some() {
             return Err(op_error(
@@ -1777,7 +1781,7 @@ fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<PathBuf>> {
                 None,
             ));
         }
-        return Ok(vec![root.clone()]);
+        return Ok(vec![(root.clone(), options.released.clone())]);
     }
     let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
         return Err(op_error(
@@ -1795,12 +1799,26 @@ fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<PathBuf>> {
                 Some(config_path.display().to_string()),
             ));
         };
-        return Ok(vec![resolve_config_path(&base, &project.root)]);
+        let released = options.released.clone().or_else(|| {
+            project
+                .released
+                .as_deref()
+                .map(|p| resolve_config_path(&base, p))
+        });
+        return Ok(vec![(resolve_config_path(&base, &project.root), released)]);
     }
     Ok(config
         .project
         .values()
-        .map(|project| resolve_config_path(&base, &project.root))
+        .map(|project| {
+            let released = options.released.clone().or_else(|| {
+                project
+                    .released
+                    .as_deref()
+                    .map(|p| resolve_config_path(&base, p))
+            });
+            (resolve_config_path(&base, &project.root), released)
+        })
         .collect())
 }
 

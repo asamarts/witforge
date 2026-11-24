@@ -182,6 +182,7 @@ Verify that every directory listed in `wit/released` has remained immutable in G
 | Option / Argument | Description |
 |---|---|
 | `[WIT_ROOT]` | WIT root containing `released` and version directories; omit to check all configured projects. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released` or project `released` in `witforge.toml`). |
 | `--base <REV>` | Lower-bound Git revision to bound the manifest history scan (defaults to full history). |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |

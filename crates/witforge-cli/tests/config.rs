@@ -614,3 +614,167 @@ root = "wit"
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn freeze_honors_custom_released_manifest_and_retirement_order() {
+    let base = std::env::temp_dir().join(format!(
+        "witforge-config-freeze-custom-released-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    fs::create_dir_all(wit_root.join("v0.1")).unwrap();
+    fs::write(
+        wit_root.join("v0.1/contract.wit"),
+        "package ex:frz@0.1.0;\ninterface i { record r { a: u32 } }\n",
+    )
+    .unwrap();
+    write_config(
+        &base,
+        "version = 1\n[project.demo]\nroot = \"wit\"\nreleased = \"wit/released-prod\"\n",
+    );
+
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_root.join("v0.1"))
+            .arg("--first")
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["release"])
+            .arg(wit_root.join("v0.1"))
+            .args(["--config"])
+            .arg(base.join("witforge.toml"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["new-version"])
+            .arg(&wit_root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(wit_root.join("v0.2"))
+            .args(["--against"])
+            .arg(wit_root.join("v0.1/wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["release"])
+            .arg(wit_root.join("v0.2"))
+            .args(["--config"])
+            .arg(base.join("witforge.toml"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&base)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.name", "test"]);
+    run_git(&["config", "user.email", "test@example.invalid"]);
+    run_git(&["add", "."]);
+    run_git(&["commit", "-q", "-m", "init"]);
+
+    // 1. Untouched custom manifest passes through both `--config` and explicit `--released`.
+    let clean = witforge()
+        .current_dir(&base)
+        .args(["freeze", "--config", "witforge.toml"])
+        .output()
+        .unwrap();
+    assert!(clean.status.success(), "{clean:?}");
+    let clean_stdout = String::from_utf8_lossy(&clean.stdout);
+    assert!(
+        clean_stdout.contains("2 release check(s)"),
+        "expected custom manifest checks, got: {clean_stdout}"
+    );
+
+    // 2. Missing explicit `--released` exits 2 (operational error).
+    let missing = witforge()
+        .current_dir(&base)
+        .args(["freeze", "wit", "--released", "wit/no-such-manifest"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
+
+    // 3. Non-prefix retirement (`v0.2 retired` while `v0.1` is live) and retiring all versions fail.
+    fs::write(wit_root.join("released-prod"), "v0.1\nv0.2 retired\n").unwrap();
+    let non_prefix = witforge()
+        .current_dir(&base)
+        .args(["freeze", "--config", "witforge.toml"])
+        .output()
+        .unwrap();
+    assert_eq!(non_prefix.status.code(), Some(1), "{non_prefix:?}");
+    assert!(
+        String::from_utf8_lossy(&non_prefix.stderr).contains("cannot retire `v0.2`"),
+        "{non_prefix:?}"
+    );
+
+    fs::write(
+        wit_root.join("released-prod"),
+        "v0.1 retired\nv0.2 retired\n",
+    )
+    .unwrap();
+    let all_retired = witforge()
+        .current_dir(&base)
+        .args(["freeze", "wit", "--released", "wit/released-prod"])
+        .output()
+        .unwrap();
+    assert_eq!(all_retired.status.code(), Some(1), "{all_retired:?}");
+    assert!(
+        String::from_utf8_lossy(&all_retired.stderr).contains("every version directory"),
+        "{all_retired:?}"
+    );
+
+    // Valid oldest-prefix retirement (`v0.1 retired`, `v0.2` live) passes.
+    fs::write(wit_root.join("released-prod"), "v0.1 retired\nv0.2\n").unwrap();
+    let valid_retire = witforge()
+        .current_dir(&base)
+        .args(["freeze", "--config", "witforge.toml"])
+        .output()
+        .unwrap();
+    assert!(valid_retire.status.success(), "{valid_retire:?}");
+
+    // 4. Editing a released directory tracked via `project.released` is caught after commit!
+    fs::write(
+        wit_root.join("v0.1/contract.wit"),
+        "package ex:frz@0.1.0;\n// tampered\ninterface i { record r { a: u32 } }\n",
+    )
+    .unwrap();
+    run_git(&["add", "wit/v0.1/contract.wit"]);
+    run_git(&["commit", "-q", "-m", "tamper"]);
+
+    let tampered = witforge()
+        .current_dir(&base)
+        .args(["freeze", "--config", "witforge.toml"])
+        .output()
+        .unwrap();
+    assert_eq!(tampered.status.code(), Some(1), "{tampered:?}");
+    assert!(
+        String::from_utf8_lossy(&tampered.stderr).contains("changed since its release"),
+        "{tampered:?}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}
