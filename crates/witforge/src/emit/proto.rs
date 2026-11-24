@@ -233,9 +233,6 @@ struct Emitter<'a> {
     wrapper_docs: BTreeMap<String, String>,
     wrapper_stability: BTreeMap<String, Stability>,
     live_keys: BTreeSet<String>,
-    /// Dependency `.proto` files referenced by at least one emitted cross-package type reference.
-    used_imports: BTreeSet<String>,
-    recording_imports: bool,
 }
 
 #[derive(Clone)]
@@ -300,8 +297,6 @@ impl<'a> Emitter<'a> {
             wrapper_docs: BTreeMap::new(),
             wrapper_stability: BTreeMap::new(),
             live_keys,
-            used_imports: BTreeSet::new(),
-            recording_imports: true,
         })
     }
 
@@ -375,10 +370,11 @@ impl<'a> Emitter<'a> {
         write_docs(&mut out, 0, &self.model.package.docs)?;
         writeln!(out, "package {};", self.package)?;
         writeln!(out)?;
-        for import in &self.used_imports {
+        let imports = self.referenced_imports(&body);
+        for import in &imports {
             writeln!(out, "import \"{import}\";")?;
         }
-        if !self.used_imports.is_empty() {
+        if !imports.is_empty() {
             writeln!(out)?;
         }
         out.push_str(&body);
@@ -386,6 +382,46 @@ impl<'a> Emitter<'a> {
             out.push('\n');
         }
         Ok(out)
+    }
+
+    /// Collect the dependency `.proto` files actually referenced by non-comment lines in `body`.
+    fn referenced_imports(&self, body: &str) -> BTreeSet<String> {
+        let candidates: Vec<(String, String)> = self
+            .model
+            .dependencies
+            .iter()
+            .filter(|dep| {
+                dep.package.namespace != self.model.package.namespace
+                    || dep.package.name != self.model.package.name
+            })
+            .map(|dep| {
+                (
+                    format!(".{}.", self.dep_proto_package(dep)),
+                    self.dep_file_name(dep),
+                )
+            })
+            .collect();
+        if candidates.is_empty() {
+            return BTreeSet::new();
+        }
+        let mut imports = BTreeSet::new();
+        for line in body.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            for token in trimmed.split_whitespace() {
+                for (prefix, file_name) in &candidates {
+                    if let Some(rest) = token.strip_prefix(prefix.as_str())
+                        && !rest.is_empty()
+                        && !rest.contains('.')
+                    {
+                        imports.insert(file_name.clone());
+                    }
+                }
+            }
+        }
+        imports
     }
 
     fn emit_type(&mut self, out: &mut String, interface: &str, def: &TypeDef) -> Result<()> {
@@ -398,13 +434,7 @@ impl<'a> Emitter<'a> {
             TypeDefKind::List(element) => {
                 // Glue covers every named type whether or not a member refers to it, so
                 // synthesize any wrappers the named list needs even when unreferenced.
-                // Do not record imports for discarded top-level `repeated` spellings;
-                // `ensure_wrapper` re-enables import recording if a nested wrapper is emitted.
-                let prev = self.recording_imports;
-                self.recording_imports = false;
-                let res = self.direct(&TypeExpr::List(Box::new(element.clone())), true);
-                self.recording_imports = prev;
-                let _ = res?;
+                let _ = self.direct(&TypeExpr::List(Box::new(element.clone())), true)?;
                 Ok(())
             }
             TypeDefKind::Option(payload) => {
@@ -417,21 +447,13 @@ impl<'a> Emitter<'a> {
                     self.wrapper_stability
                         .insert(wrapper, def.stability.clone());
                 } else {
-                    let prev = self.recording_imports;
-                    self.recording_imports = false;
-                    let res = self.direct_option(payload);
-                    self.recording_imports = prev;
-                    let _ = res?;
+                    let _ = self.direct_option(payload)?;
                 }
                 Ok(())
             }
             TypeDefKind::Alias(target) => {
                 if !matches!(target, TypeExpr::Named(name) if name.is_foreign()) {
-                    let prev = self.recording_imports;
-                    self.recording_imports = false;
-                    let res = self.direct(target, true);
-                    self.recording_imports = prev;
-                    let _ = res?;
+                    let _ = self.direct(target, true)?;
                 }
                 Ok(())
             }
@@ -1163,9 +1185,6 @@ impl<'a> Emitter<'a> {
             && (dependency.package.namespace != self.model.package.namespace
                 || dependency.package.name != self.model.package.name)
         {
-            if self.recording_imports {
-                self.used_imports.insert(self.dep_file_name(dependency));
-            }
             return Ok(format!(
                 ".{}.{}",
                 self.dep_proto_package(dependency),
@@ -1181,13 +1200,10 @@ impl<'a> Emitter<'a> {
         pkg_a.namespace == pkg_b.namespace && pkg_a.name == pkg_b.name
     }
 
-    fn dependency_wrapper_ref(&mut self, dependency: &Dependency, wrapper: &str) -> String {
+    fn dependency_wrapper_ref(&self, dependency: &Dependency, wrapper: &str) -> String {
         if dependency.package.namespace != self.model.package.namespace
             || dependency.package.name != self.model.package.name
         {
-            if self.recording_imports {
-                self.used_imports.insert(self.dep_file_name(dependency));
-            }
             format!(".{}.{wrapper}", self.dep_proto_package(dependency))
         } else {
             wrapper.to_string()
@@ -2007,53 +2023,39 @@ impl<'a> Emitter<'a> {
         let source = self.wrapper_source(None, &TypeExpr::Named(name.clone()))?;
         match self.shape(payload)? {
             Shape::List => {
-                let prev_recording = self.recording_imports;
-                self.recording_imports = true;
-                let res = (|| -> Result<String> {
-                    let wrapper = Self::type_ident(&name.interface, &name.name)?;
-                    if let Some((dep, _, TypeDefKind::List(element))) =
-                        self.resolve_foreign_named(payload)?
-                    {
-                        let elem_ty = self.dependency_defined_singular(&dep, &element)?;
-                        self.ensure_wrapper(
-                            wrapper.clone(),
-                            WrapperKind::ListElement(elem_ty),
-                            source,
-                        )?;
-                    } else {
-                        let element = self.list_element(payload)?;
-                        self.ensure_wrapper(wrapper.clone(), WrapperKind::List(element), source)?;
-                    }
-                    Ok(wrapper)
-                })();
-                self.recording_imports = prev_recording;
-                Ok(Some(res?))
+                let wrapper = Self::type_ident(&name.interface, &name.name)?;
+                if let Some((dep, _, TypeDefKind::List(element))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let elem_ty = self.dependency_defined_singular(&dep, &element)?;
+                    self.ensure_wrapper(
+                        wrapper.clone(),
+                        WrapperKind::ListElement(elem_ty),
+                        source,
+                    )?;
+                } else {
+                    let element = self.list_element(payload)?;
+                    self.ensure_wrapper(wrapper.clone(), WrapperKind::List(element), source)?;
+                }
+                Ok(Some(wrapper))
             }
             Shape::Option => {
-                let prev_recording = self.recording_imports;
-                self.recording_imports = true;
-                let res = (|| -> Result<String> {
-                    let wrapper = Self::type_ident(&name.interface, &name.name)?;
-                    let some = if let Some((dep, foreign_name, TypeDefKind::Option(inner))) =
-                        self.resolve_foreign_named(payload)?
-                    {
-                        match self.foreign_shape_ty(Some(&dep), &inner)? {
-                            Shape::List | Shape::Option => {
-                                self.type_ref(Some(&dep), &foreign_name)?
-                            }
-                            Shape::Scalar | Shape::Bytes | Shape::Message => {
-                                self.dependency_defined_singular(&dep, &inner)?
-                            }
+                let wrapper = Self::type_ident(&name.interface, &name.name)?;
+                let some = if let Some((dep, foreign_name, TypeDefKind::Option(inner))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    match self.foreign_shape_ty(Some(&dep), &inner)? {
+                        Shape::List | Shape::Option => self.type_ref(Some(&dep), &foreign_name)?,
+                        Shape::Scalar | Shape::Bytes | Shape::Message => {
+                            self.dependency_defined_singular(&dep, &inner)?
                         }
-                    } else {
-                        let inner = self.option_payload(payload)?;
-                        self.singular(&inner)?
-                    };
-                    self.ensure_wrapper(wrapper.clone(), WrapperKind::OptionValue(some), source)?;
-                    Ok(wrapper)
-                })();
-                self.recording_imports = prev_recording;
-                Ok(Some(res?))
+                    }
+                } else {
+                    let inner = self.option_payload(payload)?;
+                    self.singular(&inner)?
+                };
+                self.ensure_wrapper(wrapper.clone(), WrapperKind::OptionValue(some), source)?;
+                Ok(Some(wrapper))
             }
             _ => Ok(None),
         }
@@ -2133,9 +2135,7 @@ impl<'a> Emitter<'a> {
             );
         }
         let has_oneof = matches!(kind, WrapperKind::OptionValue(_) | WrapperKind::Result(_));
-        let prev_recording = self.recording_imports;
-        self.recording_imports = true;
-        let body_res = (|| -> Result<String> {
+        let body = (|| -> Result<String> {
             Ok(match kind {
                 WrapperKind::List(element) => {
                     let ty = self.singular(&element)?;
@@ -2163,10 +2163,8 @@ impl<'a> Emitter<'a> {
                     )
                 }
             })
-        })();
-        self.recording_imports = prev_recording;
-        let body =
-            body_res.with_context(|| format!("synthesizing wrapper `{name}` for `{source}`"))?;
+        })()
+        .with_context(|| format!("synthesizing wrapper `{name}` for `{source}`"))?;
         if let Some(existing) = self.wrappers.get(&name) {
             if existing == &body {
                 return Ok(name);
