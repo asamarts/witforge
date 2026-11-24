@@ -1424,6 +1424,24 @@ fn subset_use_deps_utf16_columns_and_cwd_relative_sarif_uris() {
     // `\t` (1) + `record r { /* café ` (19) + `😀` (2 UTF-16 units) + ` */ ` (4) = 26 -> 1-based col 27!
     assert_eq!(col_diag["column"], 27, "{col_diag}");
 
+    // Relative SARIF URIs percent-encode spaces while preserving `/` separators.
+    let spaced_dir = root.join("my contracts/v0.1");
+    fs::create_dir_all(&spaced_dir).unwrap();
+    fs::write(
+        spaced_dir.join("contract.wit"),
+        "package ex:space@0.1.0;\ninterface a { record r { bad: char } }\n",
+    )
+    .unwrap();
+    let spaced_sarif = witforge()
+        .current_dir(&root)
+        .args(["check", "my contracts/v0.1", "--format", "sarif"])
+        .output()
+        .unwrap();
+    assert_eq!(spaced_sarif.status.code(), Some(1), "{spaced_sarif:?}");
+    let spaced_uri = &json(&spaced_sarif)["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+        ["artifactLocation"]["uri"];
+    assert_eq!(spaced_uri, "my%20contracts/v0.1/contract.wit");
+
     fs::remove_dir_all(&root).unwrap();
 }
 

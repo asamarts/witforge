@@ -730,12 +730,54 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
               },
             ],
           },
+          {
+            ruleId: 'WF1017',
+            level: 'error',
+            message: { text: 'char unsupported' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: 'file:///home/runner/my%20repo/wit/v0.1/contract.wit' },
+                  region: { startLine: 2, startColumn: 1 },
+                },
+              },
+            ],
+          },
+          {
+            ruleId: 'WF1017',
+            level: 'error',
+            message: { text: 'windows uri' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: 'file:///C:/work/my%20dir/contract.wit' },
+                  region: { startLine: 3, startColumn: 1 },
+                },
+              },
+            ],
+          },
+          {
+            ruleId: 'WF1017',
+            level: 'error',
+            message: { text: 'relative encoded uri' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: 'my%20contracts/v0.1/contract.wit' },
+                  region: { startLine: 4, startColumn: 1 },
+                },
+              },
+            ],
+          },
         ],
       },
     ],
   });
   assert.deepEqual(fromSarif, [
     '::warning file=wit/v0.2/contract.wit,line=7,col=3,endLine=7,endColumn=15,title=WF3001::added field breaks source',
+    '::error file=/home/runner/my repo/wit/v0.1/contract.wit,line=2,col=1,title=WF1017::char unsupported',
+    '::error file=C%3A/work/my dir/contract.wit,line=3,col=1,title=WF1017::windows uri',
+    '::error file=my contracts/v0.1/contract.wit,line=4,col=1,title=WF1017::relative encoded uri',
   ]);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'witforge-action-run-'));

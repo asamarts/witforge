@@ -102,6 +102,7 @@ pub(crate) fn create_new_version(
             .with_context(|| format!("failed to read {}", latest_dir.display()))?;
         entries.sort();
 
+        let mut rewritten_headers = 0usize;
         for entry_path in entries {
             let meta = fs::symlink_metadata(&entry_path)
                 .with_context(|| format!("failed to inspect {}", entry_path.display()))?;
@@ -128,13 +129,25 @@ pub(crate) fn create_new_version(
             {
                 let text = fs::read_to_string(&entry_path)
                     .with_context(|| format!("failed to read {}", entry_path.display()))?;
-                let rewritten = rewrite_package_version(&text, &old_ver, &new_ver);
+                let (rewritten, count) =
+                    rewrite_package_version_with_count(&text, &old_ver, &new_ver);
+                rewritten_headers += count;
                 fs::write(target_dir.join(name), rewritten).with_context(|| {
                     format!("failed to write {}", target_dir.join(name).display())
                 })?;
             } else if meta.is_dir() && name == "deps" {
                 copy_dir_no_symlinks(&entry_path, &target_dir.join("deps"))?;
             }
+        }
+        if rewritten_headers == 0 {
+            return Err(op_error(
+                codes::PARSE_ERROR,
+                format!(
+                    "no `package ...@{old_ver};` header was found in `{}` to rewrite to `{new_ver}`",
+                    latest_dir.display()
+                ),
+                Some(latest_dir.display().to_string()),
+            ));
         }
 
         if !major_bump {
@@ -158,104 +171,121 @@ pub(crate) fn create_new_version(
 }
 
 /// Rewrite `@<old_ver>` to `@<new_ver>` in top-level `package ...@<old_ver>;` declarations while
-/// leaving comments, `use` imports, and line endings untouched.
+/// leaving comments (including nested `/* ... /* ... */ ... */` block comments), `use` imports,
+/// and line endings untouched.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn rewrite_package_version(text: &str, old_ver: &str, new_ver: &str) -> String {
+    rewrite_package_version_with_count(text, old_ver, new_ver).0
+}
+
+pub(crate) fn rewrite_package_version_with_count(
+    text: &str,
+    old_ver: &str,
+    new_ver: &str,
+) -> (String, usize) {
     let old_suffix = format!("@{old_ver}");
     let new_suffix = format!("@{new_ver}");
+    let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len() + 8);
-    let mut in_block_comment = false;
+    let mut last_copied = 0usize;
+    let mut i = if text.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    };
+    let mut comment_depth = 0usize;
+    let mut in_line_comment = false;
+    let mut brace_depth = 0usize;
+    let mut in_package_header = false;
+    let mut count = 0usize;
 
-    for raw_line in text.split_inclusive('\n') {
-        let (line_body, newline) = if let Some(stripped) = raw_line.strip_suffix("\r\n") {
-            (stripped, "\r\n")
-        } else if let Some(stripped) = raw_line.strip_suffix('\n') {
-            (stripped, "\n")
-        } else {
-            (raw_line, "")
-        };
-        let (bom, body) = if out.is_empty() {
-            match line_body.strip_prefix('\u{feff}') {
-                Some(rest) => ("\u{feff}", rest),
-                None => ("", line_body),
+    let is_ident_byte = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'%');
+
+    while i < bytes.len() {
+        if in_line_comment {
+            if bytes[i] == b'\n' {
+                in_line_comment = false;
             }
-        } else {
-            ("", line_body)
-        };
-
-        // Advance through leading whitespace and `/* ... */` block comments on this line so
-        // `/* doc */ package ex:foo@0.1.0;` and multi-line comment endings before `package` are
-        // handled accurately.
-        let bytes = body.as_bytes();
-        let mut i = 0usize;
-        let mut code_start = None;
-        while i < bytes.len() {
-            if in_block_comment {
-                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    in_block_comment = false;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            } else if bytes[i] == b' ' || bytes[i] == b'\t' {
-                i += 1;
-            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                break;
-            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true;
+            i += 1;
+            continue;
+        }
+        if comment_depth > 0 {
+            if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                comment_depth += 1;
+                i += 2;
+            } else if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                comment_depth -= 1;
                 i += 2;
             } else {
-                code_start = Some(i);
-                break;
-            }
-        }
-
-        let mut replaced = None;
-        if let Some(start) = code_start {
-            let code_tail = &body[start..];
-            if (code_tail.starts_with("package ") || code_tail.starts_with("package\t"))
-                && let Some(rel_pos) = code_tail.find(&old_suffix)
-            {
-                let pos = start + rel_pos;
-                let after = &body[pos + old_suffix.len()..];
-                let boundary_ok = after
-                    .chars()
-                    .next()
-                    .is_none_or(|ch| matches!(ch, ';' | '{' | ' ' | '\t' | '/'));
-                if boundary_ok {
-                    let mut updated = String::with_capacity(body.len() + new_suffix.len());
-                    updated.push_str(&body[..pos]);
-                    updated.push_str(&new_suffix);
-                    updated.push_str(after);
-                    replaced = Some(updated);
-                }
-            }
-            // Track any block comment opened or closed later on the same line.
-            while i + 1 < bytes.len() {
-                if in_block_comment {
-                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                        in_block_comment = false;
-                        i += 2;
-                        continue;
-                    }
-                } else if bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                    break;
-                } else if bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    in_block_comment = true;
-                    i += 2;
-                    continue;
-                }
                 i += 1;
             }
+            continue;
         }
-
-        out.push_str(bom);
-        match replaced {
-            Some(updated) => out.push_str(&updated),
-            None => out.push_str(body),
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            in_line_comment = true;
+            i += 2;
+            continue;
         }
-        out.push_str(newline);
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            comment_depth = 1;
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'{' {
+            in_package_header = false;
+            brace_depth += 1;
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'}' {
+            in_package_header = false;
+            brace_depth = brace_depth.saturating_sub(1);
+            i += 1;
+            continue;
+        }
+        if in_package_header {
+            if bytes[i] == b';' {
+                in_package_header = false;
+                i += 1;
+                continue;
+            }
+            if text[i..].starts_with(&old_suffix) {
+                let end = i + old_suffix.len();
+                let boundary_ok = text[end..]
+                    .chars()
+                    .next()
+                    .is_none_or(|ch| matches!(ch, ';' | '{' | ' ' | '\t' | '\r' | '\n' | '/'));
+                if boundary_ok {
+                    out.push_str(&text[last_copied..i]);
+                    out.push_str(&new_suffix);
+                    last_copied = end;
+                    i = end;
+                    count += 1;
+                    continue;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if brace_depth == 0
+            && text[i..].starts_with("package")
+            && (i == 0 || !is_ident_byte(bytes[i - 1]))
+        {
+            let after_kw = i + "package".len();
+            let kw_end_ok = bytes
+                .get(after_kw)
+                .is_none_or(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'/'));
+            if kw_end_ok {
+                in_package_header = true;
+                i = after_kw;
+                continue;
+            }
+        }
+        i += 1;
     }
-    out
+
+    out.push_str(&text[last_copied..]);
+    (out, count)
 }
 
 fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
@@ -407,5 +437,22 @@ mod tests {
         let got2 = rewrite_package_version(multiline, "0.1.0", "1.0.0");
         assert!(got2.contains(" package ex:fake@0.1.0;\n"), "{got2}");
         assert!(got2.contains(" */ package ex:demo@1.0.0;\r\n"), "{got2}");
+
+        // Nested WIT block comments and multi-line package headers.
+        let nested = "/* outer /* inner package ex:nope@0.1.0; */ still comment package ex:nope2@0.1.0; */\n\
+                      package\n  /* inline */ ex:demo@0.1.0;\n\
+                      interface a { use ex:dep/t@0.1.0.{x}; }\n";
+        let (got3, count3) = rewrite_package_version_with_count(nested, "0.1.0", "0.2.0");
+        assert_eq!(count3, 1, "{got3}");
+        assert!(got3.contains("inner package ex:nope@0.1.0;"), "{got3}");
+        assert!(
+            got3.contains("still comment package ex:nope2@0.1.0;"),
+            "{got3}"
+        );
+        assert!(
+            got3.contains("package\n  /* inline */ ex:demo@0.2.0;"),
+            "{got3}"
+        );
+        assert!(got3.contains("use ex:dep/t@0.1.0.{x};"), "{got3}");
     }
 }

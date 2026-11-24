@@ -1025,7 +1025,11 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
             contract_workflow::CheckTargetKind::Neither => {
                 // Still check for malformed version-like entries (`v00.1`, `v0.1.1`) or symlinks.
                 ensure_version_directory(dir)?;
-                let _ = discover_version_directories(dir)?;
+                if let Err(err) = discover_version_directories(dir)
+                    && !format!("{err:#}").contains("no v<major>.<minor> version directories")
+                {
+                    return Err(err);
+                }
                 Err(op_error(
                     codes::IO_ERROR,
                     format!(
@@ -2231,19 +2235,10 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
     }
     ensure_no_symlinks_in_dir(&options.dir, &entry_name)?;
 
-    // Validate the version directory before recording the release.
-    let check_opts = Options {
-        dir: options.dir.clone(),
-        lock: None,
-        against: if already_listed {
-            None
-        } else {
-            predecessor.as_ref().map(|(_, p)| p.join("wire.lock"))
-        },
-        first: !already_listed && predecessor.is_none(),
-        released: manifest_path.exists().then(|| manifest_path.clone()),
-    };
-    let status = check_single(&check_opts, reporter)?;
+    // Validate the version directory and enclosing WIT-root invariants (package identity,
+    // `@since` history, dependency-graph identity, and retirement order) before recording.
+    let report = contract_workflow::check_release(&options.dir, Some(&manifest_path))?;
+    let status = render_workflow_report(&report, reporter);
     if status != ExitCode::SUCCESS {
         return Ok(status);
     }

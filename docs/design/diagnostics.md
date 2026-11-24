@@ -81,8 +81,9 @@ the typed `ChangeElement` enum while retaining the same human and JSON labels.
 code, `level` equal to its severity (`error`, `warning`, or `note`), and a `message.text`.
 
 - `locations[0].physicalLocation.artifactLocation.uri` is emitted only when a physical file is
-  known, and is always either a working-directory-relative path with `/` separators or an absolute
-  percent-encoded `file:///` URI (never `..`, never Windows `\\?\`, and never a logical WIT name).
+  known, and is always either a working-directory-relative percent-encoded URI with `/` separators
+  or an absolute percent-encoded `file:///` URI (never `..`, never Windows `\\?\`, and never a
+  logical WIT name).
 - `locations[0].physicalLocation.region` (`startLine`, `startColumn`, `endLine`, `endColumn` in
   1-based UTF-16 code units) is emitted whenever a source position is available.
 - `locations[0].logicalLocations` carries `[{ "fullyQualifiedName": "<logical>" }]` whenever a

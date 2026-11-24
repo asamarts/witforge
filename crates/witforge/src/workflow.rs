@@ -307,17 +307,30 @@ pub fn classify_check_target(path: &Path) -> Result<CheckTargetKind> {
 ///
 /// Returns operational errors as `anyhow::Error`; contract errors retain [`ContractError`]
 /// classification. Contract drift is collected in the returned report.
-#[allow(clippy::too_many_lines)]
 pub fn check(options: &VersionOptions) -> Result<Report> {
+    check_with_loaded(options, None, true).map(|(report, _)| report)
+}
+
+#[allow(clippy::too_many_lines)]
+fn check_with_loaded(
+    options: &VersionOptions,
+    released_override: Option<bool>,
+    check_baseline_deps: bool,
+) -> Result<(Report, Option<(crate::Contract, Model)>)> {
     ensure_version_directory(&options.directory)?;
     ensure_not_wit_root(&options.directory, "check")?;
-    load_released_manifest(&options.directory, options.released.as_deref())?;
+    if released_override.is_none() {
+        load_released_manifest(&options.directory, options.released.as_deref())?;
+    }
     let contract = load(&options.directory)?;
     let violations = subset::check_located_diagnostics(&contract);
     if !violations.is_empty() {
-        return Ok(Report {
-            findings: violations.into_iter().map(Finding::subset).collect(),
-        });
+        return Ok((
+            Report {
+                findings: violations.into_iter().map(Finding::subset).collect(),
+            },
+            None,
+        ));
     }
     let member_locations = contract.member_locations();
     let model = model::build(&contract)?;
@@ -333,15 +346,15 @@ pub fn check(options: &VersionOptions) -> Result<Report> {
         .unwrap_or_default();
     let (previous, against_positions) = read_previous(options.against())?;
     let mut result = Report::default();
-    if let Some(against) = options.against() {
+    if check_baseline_deps && let Some(against) = options.against() {
         if let Some(baseline) = baseline_model(against)? {
-            if let Err(error) = ensure_same_dependency_graph(&model, &baseline) {
+            if let Err(error) = ensure_same_dependency_graph(&baseline, &model) {
                 result.error(
                     codes::DEPENDENCY_GRAPH_MISMATCH,
                     format!("{error:#}"),
                     Some(against.display().to_string()),
                 );
-                return Ok(result);
+                return Ok((result, Some((contract, model))));
             }
         } else {
             let against_text = against.display().to_string();
@@ -361,7 +374,10 @@ pub fn check(options: &VersionOptions) -> Result<Report> {
             ));
         }
     }
-    let released = is_released(&options.directory, options.released.as_deref())?;
+    let released = match released_override {
+        Some(flag) => flag,
+        None => is_released(&options.directory, options.released.as_deref())?,
+    };
     let remedy = if released {
         Remedy::Released(options.directory.display().to_string())
     } else {
@@ -378,7 +394,7 @@ pub fn check(options: &VersionOptions) -> Result<Report> {
         &against_positions,
         &mut result,
     ) {
-        return Ok(result);
+        return Ok((result, Some((contract, model))));
     }
     let mode = lock_mode(options, previous.as_ref());
     let case_collisions: BTreeSet<(String, String)> = lock
@@ -395,7 +411,7 @@ pub fn check(options: &VersionOptions) -> Result<Report> {
                 format!("{error:#}"),
                 Some(lock_path.display().to_string()),
             );
-            return Ok(result);
+            return Ok((result, Some((contract, model))));
         }
     };
     let canonical = released
@@ -425,7 +441,7 @@ pub fn check(options: &VersionOptions) -> Result<Report> {
             ),
             Some(lock_path.display().to_string()),
         );
-        return Ok(result);
+        return Ok((result, Some((contract, model))));
     }
     if canonical
         && reconciliation.is_empty()
@@ -433,7 +449,7 @@ pub fn check(options: &VersionOptions) -> Result<Report> {
     {
         if is_contract_error(&error) {
             append_contract_error(&mut result, &error, Some(&lock_path));
-            return Ok(result);
+            return Ok((result, Some((contract, model))));
         }
         return Err(error);
     }
@@ -453,7 +469,7 @@ pub fn check(options: &VersionOptions) -> Result<Report> {
         &context,
         &mut result,
     );
-    Ok(result)
+    Ok((result, Some((contract, model))))
 }
 
 /// Check every version under one WIT root in semver order.
@@ -508,18 +524,19 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
         if let Some(path) = explicit_released {
             options = options.with_released(path.to_path_buf());
         }
-        match check(&options) {
-            Ok(report) => result.merge(report),
+        let loaded = match check_with_loaded(&options, Some(released), false) {
+            Ok((report, loaded)) => {
+                result.merge(report);
+                loaded
+            }
             Err(error) if is_contract_error(&error) => {
                 append_contract_error(&mut result, &error, None);
+                None
             }
             Err(error) => return Err(error),
-        }
+        };
 
-        if let Ok(contract) = load(&directory)
-            && subset::check_diagnostics(&contract).is_empty()
-            && let Ok(current_model) = model::build(&contract)
-        {
+        if let Some((contract, current_model)) = loaded {
             let same_package = match &first_model {
                 Some(baseline)
                     if baseline.package.namespace != current_model.package.namespace
@@ -597,6 +614,191 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
         }
         previous_by_major.insert(major, directory);
     }
+    Ok(result)
+}
+
+/// Validate a version directory as a release candidate inside its enclosing WIT root.
+///
+/// Validates both the single version directory (subset, lockfile canonical form and drift against
+/// its same-major predecessor or `--first`, order section, and protobuf schema) and the enclosing
+/// WIT-root invariants up through this version: package identity, `@since` history, same-major
+/// dependency-graph identity, and retirement order in the target manifest.
+///
+/// When `explicit_released` is `Some(path)` and `path` does not exist yet, it is treated as an
+/// empty manifest without falling back to the default `released` manifest beside `version_dir`.
+///
+/// # Errors
+///
+/// Returns operational errors immediately and collects contract violations into [`Report`].
+#[allow(clippy::too_many_lines)]
+pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Result<Report> {
+    ensure_version_directory(version_dir)?;
+    let canonical_dir = fs::canonicalize(version_dir).with_context(|| {
+        format!(
+            "failed to resolve version directory {}",
+            version_dir.display()
+        )
+    })?;
+    let entry_name = canonical_dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            operational_error(
+                codes::CLI_USAGE,
+                format!(
+                    "`{}` is not a `v<major>.<minor>` version directory",
+                    version_dir.display()
+                ),
+                Some(version_dir.display().to_string()),
+            )
+        })?;
+    let Some((target_major, target_minor)) = version_from_dir(&canonical_dir) else {
+        return Err(operational_error(
+            codes::CLI_USAGE,
+            format!(
+                "`{}` is not a `v<major>.<minor>` version directory",
+                version_dir.display()
+            ),
+            Some(version_dir.display().to_string()),
+        ));
+    };
+    let manifest_path = explicit_released.map_or_else(
+        || crate::default_released_manifest(version_dir),
+        Path::to_path_buf,
+    );
+    let manifest = if manifest_path.exists() {
+        crate::ReleasedManifest::load(&manifest_path)?
+    } else {
+        crate::ReleasedManifest::default()
+    };
+    let already_listed = manifest.contains(&entry_name);
+
+    let wit_root = canonical_dir.parent().ok_or_else(|| {
+        operational_error(
+            codes::IO_ERROR,
+            format!(
+                "version directory `{}` has no enclosing WIT root",
+                version_dir.display()
+            ),
+            Some(version_dir.display().to_string()),
+        )
+    })?;
+    let versions = discover_version_directories(wit_root)?;
+    validate_retirement_order(&versions, &manifest, wit_root)?;
+
+    let predecessor = versions
+        .iter()
+        .filter(|(major, minor, _)| *major == target_major && *minor < target_minor)
+        .max_by_key(|(_, minor, _)| *minor)
+        .map(|(_, _, path)| path.clone());
+    let baseline = if already_listed {
+        Baseline::Default
+    } else if let Some(pred) = &predecessor {
+        Baseline::Against(pred.join("wire.lock"))
+    } else {
+        Baseline::First
+    };
+    let mut options = VersionOptions::new(version_dir.to_path_buf()).with_baseline(baseline);
+    if manifest_path.exists() {
+        options = options.with_released(manifest_path);
+    }
+    let (mut result, target_loaded) = check_with_loaded(&options, Some(already_listed), true)?;
+    if !result.is_ok() {
+        return Ok(result);
+    }
+
+    let mut since_history = model::SinceHistory::new(
+        versions
+            .iter()
+            .filter(|(major, minor, _)| (*major, *minor) <= (target_major, target_minor))
+            .map(|(major, minor, _)| model::Version::new(*major, *minor, 0)),
+    );
+    let mut first_model: Option<Model> = None;
+    let mut first_model_by_major: BTreeMap<u64, Model> = BTreeMap::new();
+    let mut target_loaded = target_loaded;
+
+    for (major, minor, directory) in versions {
+        if (major, minor) > (target_major, target_minor) {
+            break;
+        }
+        let is_target = major == target_major && minor == target_minor;
+        let (contract, current_model) = if is_target && let Some(loaded) = target_loaded.take() {
+            loaded
+        } else {
+            let contract = load(&directory)?;
+            let violations = subset::check_located_diagnostics(&contract);
+            if !violations.is_empty() {
+                for violation in violations {
+                    result.findings.push(Finding::subset(violation));
+                }
+                continue;
+            }
+            let model = model::build(&contract)?;
+            (contract, model)
+        };
+
+        let same_package = match &first_model {
+            Some(baseline)
+                if baseline.package.namespace != current_model.package.namespace
+                    || baseline.package.name != current_model.package.name =>
+            {
+                result.error(
+                    codes::PACKAGE_MISMATCH,
+                    format!(
+                        "{} declares package {}:{}, expected {}:{}",
+                        directory.display(),
+                        current_model.package.namespace,
+                        current_model.package.name,
+                        baseline.package.namespace,
+                        baseline.package.name
+                    ),
+                    Some(directory.display().to_string()),
+                );
+                false
+            }
+            Some(_) => true,
+            None => {
+                first_model = Some(current_model.clone());
+                true
+            }
+        };
+        if same_package {
+            let stability_errors = since_history.check(&current_model);
+            if !stability_errors.is_empty() {
+                let locations = contract.member_locations();
+                for (path, message) in stability_errors {
+                    let mut diagnostic = Diagnostic::error(codes::SUBSET_ANNOTATION, message)
+                        .with_path(path.clone());
+                    if let Some((_, position)) = locations.get(&path) {
+                        diagnostic = diagnostic.with_position(*position);
+                    }
+                    let mut located =
+                        LocatedDiagnostic::from_diagnostic(diagnostic).with_logical(path.clone());
+                    if let Some((file, _)) = locations.get(&path) {
+                        located = located.with_file(file.clone());
+                    } else {
+                        located = located.with_file(directory.display().to_string());
+                    }
+                    result.push_error(located);
+                }
+            }
+        }
+        if let Some(baseline) = first_model_by_major.get(&major) {
+            if (!is_target || already_listed)
+                && let Err(error) = ensure_same_dependency_graph(baseline, &current_model)
+            {
+                result.error(
+                    codes::DEPENDENCY_GRAPH_MISMATCH,
+                    format!("{error:#}"),
+                    Some(directory.display().to_string()),
+                );
+            }
+        } else {
+            first_model_by_major.insert(major, current_model);
+        }
+    }
+
     Ok(result)
 }
 

@@ -322,3 +322,77 @@ fn since_history_tracks_contiguous_non_unstable_lifetime_and_rejects_metadata() 
 
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn check_against_and_check_root_report_dependency_diffs_in_order_and_without_duplicates() {
+    let root = std::env::temp_dir().join(format!(
+        "witforge-workflow-dep-order-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let v01 = root.join("v0.1");
+    let v02 = root.join("v0.2");
+    fs::create_dir_all(v01.join("deps/shared")).unwrap();
+    fs::create_dir_all(v02.join("deps/shared")).unwrap();
+
+    fs::write(
+        v01.join("deps/shared/types.wit"),
+        "package ex:shared@0.1.0;\ninterface common { record tag { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:app@0.1.0;\ninterface api { use ex:shared/common@0.1.0.{tag}; record r { t: tag } }\n",
+    )
+    .unwrap();
+    workflow::lock(&VersionOptions::new(v01.clone()).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+
+    fs::write(
+        v02.join("deps/shared/types.wit"),
+        "package ex:shared@0.2.0;\ninterface common { record tag { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:app@0.2.0;\ninterface api { use ex:shared/common@0.2.0.{tag}; record r { t: tag } }\n",
+    )
+    .unwrap();
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+
+    // Single-directory `check --against` must report baseline -> current (`0.1.0` -> `0.2.0`).
+    let single = workflow::check(
+        &VersionOptions::new(v02.clone()).with_baseline(Baseline::Against(v01.join("wire.lock"))),
+    )
+    .unwrap();
+    let dep_diags: Vec<_> = single
+        .findings
+        .iter()
+        .filter_map(|f| f.diagnostic.as_ref())
+        .filter(|d| d.diagnostic.code == codes::DEPENDENCY_GRAPH_MISMATCH)
+        .collect();
+    assert_eq!(dep_diags.len(), 1, "{single:?}");
+    let msg = &dep_diags[0].diagnostic.message;
+    assert!(
+        msg.contains("0.1.0") && msg.contains("0.2.0"),
+        "unexpected dependency mismatch message: {msg}"
+    );
+    assert!(
+        msg.find("0.1.0").unwrap() < msg.find("0.2.0").unwrap(),
+        "expected baseline (0.1.0) before current (0.2.0): {msg}"
+    );
+
+    // `check_root` must emit exactly ONE WF1033 per mismatch (no duplicate contradictory WF1033).
+    let root_report = workflow::check_root(&root, None).unwrap();
+    let root_dep_diags: Vec<_> = root_report
+        .findings
+        .iter()
+        .filter_map(|f| f.diagnostic.as_ref())
+        .filter(|d| d.diagnostic.code == codes::DEPENDENCY_GRAPH_MISMATCH)
+        .collect();
+    assert_eq!(root_dep_diags.len(), 1, "{root_dep_diags:?}");
+
+    fs::remove_dir_all(&root).unwrap();
+}

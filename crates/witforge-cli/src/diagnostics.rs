@@ -162,11 +162,16 @@ pub(crate) fn normalize_file_path(raw: &str) -> String {
 }
 
 /// Normalize a physical filesystem path for SARIF `artifactLocation.uri`:
-/// cwd-relative with forward slashes when inside the current working directory, otherwise an
-/// absolute percent-encoded `file:///` URI (never `..` and never a logical identifier).
+/// cwd-relative percent-encoded URI with forward slashes when inside the current working
+/// directory, otherwise an absolute percent-encoded `file:///` URI (never `..` and never a
+/// logical identifier).
 pub(crate) fn sarif_artifact_uri(raw: &str) -> String {
     match resolve_cwd_relative(raw) {
-        NormalizedPath::Relative(rel) => rel,
+        NormalizedPath::Relative(rel) => {
+            let mut out = String::with_capacity(rel.len());
+            encode_relative_uri_path(&mut out, &rel);
+            out
+        }
         NormalizedPath::Absolute(abs) => absolute_path_to_file_uri(&abs),
     }
 }
@@ -294,6 +299,16 @@ fn absolute_path_to_file_uri(abs_forward: &str) -> String {
 fn encode_uri_path(out: &mut String, path: &str) {
     for &byte in path.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~' | b':') {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+}
+
+fn encode_relative_uri_path(out: &mut String, path: &str) {
+    for &byte in path.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
             out.push(char::from(byte));
         } else {
             let _ = write!(out, "%{byte:02X}");

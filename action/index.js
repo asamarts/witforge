@@ -627,6 +627,22 @@ function annotationsFromJsonReport(report) {
   return lines;
 }
 
+function normalizeSarifFile(uri) {
+  if (!uri) return undefined;
+  let text = String(uri);
+  if (text.startsWith('file://')) {
+    text = text.slice('file://'.length);
+    if (/^\/[A-Za-z]:\//.test(text)) {
+      text = text.slice(1);
+    }
+  }
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
 function annotationsFromSarifDocument(doc) {
   if (!doc || !Array.isArray(doc.runs)) return [];
   const lines = [];
@@ -640,7 +656,8 @@ function annotationsFromSarifDocument(doc) {
         Array.isArray(result.locations) && result.locations[0]
           ? result.locations[0].physicalLocation
           : null;
-      const file = loc && loc.artifactLocation ? loc.artifactLocation.uri : undefined;
+      const file =
+        loc && loc.artifactLocation ? normalizeSarifFile(loc.artifactLocation.uri) : undefined;
       const region = loc ? loc.region : null;
       lines.push(
         formatAnnotationLine({

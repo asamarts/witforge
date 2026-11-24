@@ -4548,3 +4548,126 @@ fn build_identity_quiet_mode_completions_and_explain() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn release_validates_root_invariants_and_explicit_nonexistent_manifest() {
+    let base = std::env::temp_dir().join(format!(
+        "witforge-release-root-checks-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let wit = base.join("wit");
+    let v01 = wit.join("v0.1");
+    let v02 = wit.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:orig@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v01)
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        witforge()
+            .args(["release"])
+            .arg(&v01)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // 1. Mismatched package name in v1.0 must be refused by `witforge release` before writing.
+    let v10 = wit.join("v1.0");
+    fs::create_dir_all(&v10).unwrap();
+    fs::write(
+        v10.join("contract.wit"),
+        "package ex:wrong@1.0.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v10)
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let bad_pkg = witforge().args(["release"]).arg(&v10).output().unwrap();
+    assert_eq!(bad_pkg.status.code(), Some(1), "{bad_pkg:?}");
+    assert_eq!(fs::read_to_string(wit.join("released")).unwrap(), "v0.1\n");
+    fs::remove_dir_all(&v10).unwrap();
+
+    // 2. Bogus `@since(version = 0.2.0)` on an unbroken item from v0.1 must be refused by `release`.
+    fs::create_dir_all(&v02).unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:orig@0.2.0;\ninterface api { @since(version = 0.2.0) record item { id: u64 } }\n",
+    )
+    .unwrap();
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v02)
+            .arg("--against")
+            .arg(v01.join("wire.lock"))
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let bad_since = witforge().args(["release"]).arg(&v02).output().unwrap();
+    assert_eq!(bad_since.status.code(), Some(1), "{bad_since:?}");
+    assert!(
+        String::from_utf8_lossy(&bad_since.stderr).contains("first declaration in this root"),
+        "{bad_since:?}"
+    );
+    assert_eq!(fs::read_to_string(wit.join("released")).unwrap(), "v0.1\n");
+
+    // 3. Explicit non-existent `--released` must NOT fall back to a malformed default `wit/released`.
+    let custom_base = base.join("custom");
+    let c_v01 = custom_base.join("v0.1");
+    fs::create_dir_all(&c_v01).unwrap();
+    fs::write(
+        c_v01.join("contract.wit"),
+        "package ex:cust@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&c_v01)
+            .arg("--first")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    // Corrupt default `released` beside `v0.1`, then release into a brand-new `--released` file.
+    fs::write(custom_base.join("released"), "v0.1 bogus-token\n").unwrap();
+    let custom_manifest = custom_base.join("released-prod");
+    let rel_custom = witforge()
+        .args(["release"])
+        .arg(&c_v01)
+        .arg("--released")
+        .arg(&custom_manifest)
+        .output()
+        .unwrap();
+    assert!(rel_custom.status.success(), "{rel_custom:?}");
+    assert_eq!(fs::read_to_string(&custom_manifest).unwrap(), "v0.1\n");
+
+    fs::remove_dir_all(&base).unwrap();
+}
