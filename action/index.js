@@ -113,10 +113,9 @@ function normalizeFormat(value) {
 }
 
 function versionAtLeast(version, minParts) {
-  const parts = String(version || '')
-    .split('.')
-    .map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 3 || parts.some(Number.isNaN)) return false;
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version || '').trim());
+  if (!match) return false;
+  const parts = [Number(match[1]), Number(match[2]), Number(match[3])];
   for (let i = 0; i < 3; i += 1) {
     if (parts[i] > minParts[i]) return true;
     if (parts[i] < minParts[i]) return false;
@@ -145,6 +144,7 @@ function verifyAttestation(archivePath, version, options = {}) {
   }
   const env = { ...process.env };
   if (options.token) env.GH_TOKEN = options.token;
+  const timeout = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   try {
     exec(
       'gh',
@@ -157,7 +157,7 @@ function verifyAttestation(archivePath, version, options = {}) {
         '--signer-workflow',
         RELEASE_SIGNER_WORKFLOW,
       ],
-      { stdio: 'pipe', env },
+      { stdio: 'pipe', env, timeout },
     );
     return 'verified';
   } catch (error) {
@@ -342,26 +342,36 @@ function buildCommands(binary, options) {
     }
   }
 
+  const rawGenerators = splitList(options.generators).map((item) => item.toLowerCase());
+  const generators = [...new Set(rawGenerators)];
+  if (!config && project) {
+    throw new Error('project requires config');
+  }
+  if (generators.includes('all')) {
+    if (generators.length !== 1) {
+      throw new Error('generators: all cannot be combined with individual generator names');
+    }
+  } else {
+    for (const generator of generators) {
+      if (!GENERATORS.has(generator)) {
+        throw new Error(
+          `unknown generator \`${generator}\`; expected rust, proto, schema, glue, or all`,
+        );
+      }
+    }
+  }
+
   if (config) {
-    const generators = splitList(options.generators);
     if (generators.length === 0 && !freezeUsesConfig && !checkUsesConfig) {
       throw new Error('config is set but generators is empty');
     }
     if (generators.includes('all')) {
-      if (generators.length !== 1) {
-        throw new Error('generators: all cannot be combined with individual generator names');
-      }
       const args = [binary, 'generate', '--config', config, '--check'];
       if (project) args.push('--project', project);
       if (format !== 'human') args.push('--format', format);
       commands.push(args);
     } else {
       for (const generator of generators) {
-        if (!GENERATORS.has(generator)) {
-          throw new Error(
-            `unknown generator \`${generator}\`; expected rust, proto, schema, glue, or all`,
-          );
-        }
         const args = [binary, generator, '--config', config, '--check'];
         if (project) args.push('--project', project);
         if (format !== 'human') args.push('--format', format);
@@ -369,24 +379,10 @@ function buildCommands(binary, options) {
       }
     }
   } else if (
-    String(options.generators || '').trim() &&
-    String(options.generators || '').trim() !== 'rust'
+    generators.length > 0 &&
+    !(generators.length === 1 && generators[0] === 'rust' && rawGenerators.length === 1)
   ) {
-    // Validate explicitly listed generator names even when config is omitted, catching typos up front.
-    const generators = splitList(options.generators);
-    if (generators.includes('all')) {
-      if (generators.length !== 1) {
-        throw new Error('generators: all cannot be combined with individual generator names');
-      }
-    } else {
-      for (const generator of generators) {
-        if (!GENERATORS.has(generator)) {
-          throw new Error(
-            `unknown generator \`${generator}\`; expected rust, proto, schema, glue, or all`,
-          );
-        }
-      }
-    }
+    throw new Error('generators requires config (or omit `generators` / leave default `rust` when `config` is unset)');
   }
 
   return commands;
@@ -630,17 +626,27 @@ function annotationsFromJsonReport(report) {
 function normalizeSarifFile(uri) {
   if (!uri) return undefined;
   let text = String(uri);
-  if (text.startsWith('file://')) {
-    text = text.slice('file://'.length);
-    if (/^\/[A-Za-z]:\//.test(text)) {
-      text = text.slice(1);
+  let wasFileUri = false;
+  if (/^file:\/\//i.test(text)) {
+    wasFileUri = true;
+    if (/^file:\/\/localhost\//i.test(text)) {
+      text = text.slice('file://localhost'.length);
+    } else if (/^file:\/\/\//i.test(text)) {
+      text = text.slice('file://'.length);
+    } else {
+      // UNC path: `file://server/share/path` -> `//server/share/path`.
+      text = text.slice('file:'.length);
     }
   }
   try {
-    return decodeURIComponent(text);
+    text = decodeURIComponent(text);
   } catch {
-    return text;
+    // Keep undecodable sequences intact.
   }
+  if (wasFileUri && /^\/[A-Za-z]:\//.test(text)) {
+    text = text.slice(1);
+  }
+  return text;
 }
 
 function annotationsFromSarifDocument(doc) {
@@ -714,7 +720,7 @@ function runCommands(commands, options = {}) {
             // Fall back cleanly if the installed binary did not emit JSON diagnostics.
           }
         }
-        failed = { command, status: result.status };
+        failed = { command, status: result.status, signal: result.signal };
         break;
       }
       continue;
@@ -735,7 +741,7 @@ function runCommands(commands, options = {}) {
         // Ignore unparseable stdout when a command failed before emitting JSON.
       }
       if (result.status !== 0) {
-        failed = { command, status: result.status };
+        failed = { command, status: result.status, signal: result.signal };
         break;
       }
     } else if (format === 'sarif') {
@@ -747,7 +753,7 @@ function runCommands(commands, options = {}) {
         // Keep stderr visible and still record command failure below.
       }
       if (result.status !== 0) {
-        failed = { command, status: result.status };
+        failed = { command, status: result.status, signal: result.signal };
         break;
       }
     }
@@ -768,6 +774,9 @@ function runCommands(commands, options = {}) {
   if (failed) {
     const label = commandLabel(failed.command);
     setOutput('failed-command', label, env);
+    if (failed.status === null && failed.signal) {
+      throw new Error(`${label} terminated by signal ${failed.signal}`);
+    }
     throw new Error(`${label} exited with status ${failed.status}`);
   }
   setOutput('failed-command', '', env);
@@ -775,7 +784,13 @@ function runCommands(commands, options = {}) {
 
 async function main() {
   const inputs = readInputs();
-  const { format } = validateInputs(inputs);
+  let format;
+  try {
+    ({ format } = validateInputs(inputs));
+  } catch (error) {
+    setOutput('failed-command', 'validate');
+    throw error;
+  }
   let binary;
   try {
     binary = await install(inputs.install);

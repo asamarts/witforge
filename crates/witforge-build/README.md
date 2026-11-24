@@ -5,8 +5,9 @@ Build-script (`build.rs`) helper for compiling [witforge](https://github.com/asa
 
 ## Usage
 
-Add `witforge-build` under `[build-dependencies]` (enable `features = ["pbjson"]` if you also need
-proto3-JSON `serde::Serialize` / `serde::Deserialize` implementations):
+Add `witforge-build` under `[build-dependencies]` (first published on crates.io starting in
+`0.8.0`; enable `features = ["pbjson"]` if you also need proto3-JSON
+`serde::Serialize` / `serde::Deserialize` implementations):
 
 ```toml
 [dependencies]

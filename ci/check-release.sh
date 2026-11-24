@@ -2,10 +2,10 @@
 # Check that the workspace is ready to release, and print its version.
 #
 # Usage: ci/check-release.sh [TAG]
-#   Both crates must have the same version, witforge-cli must require that version of witforge,
-#   and CHANGELOG.md must have a dated section for it
-#   (`## [X.Y.Z] - YYYY-MM-DD`) with at least one entry. With TAG, the tag must be `vX.Y.Z`
-#   and point at HEAD, and HEAD must be on origin/main.
+#   All three workspace crates (witforge, witforge-build, witforge-cli) must exist and share one
+#   version, witforge-cli must require that version of witforge, and CHANGELOG.md must have a dated
+#   section for it (`## [X.Y.Z] - YYYY-MM-DD`) with at least one entry. With TAG, the tag must be
+#   `vX.Y.Z` and point at HEAD, and HEAD must be on origin/main.
 #   The release notes (that section, without its heading) are written to RELEASE_NOTES when it
 #   is set.
 set -euo pipefail
@@ -20,6 +20,10 @@ fail() {
 }
 
 metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
+pkg_count="$(jq -r '[.packages[] | select(.name == "witforge" or .name == "witforge-build" or .name == "witforge-cli")] | length' \
+    <<<"${metadata}")"
+[[ "${pkg_count}" -eq 3 ]] \
+    || fail "expected all 3 workspace crates (witforge, witforge-build, witforge-cli), found ${pkg_count}"
 versions="$(jq -r '.packages[] | select(.name == "witforge" or .name == "witforge-build" or .name == "witforge-cli") | .version' \
     <<<"${metadata}" | sort -u)"
 count="$(wc -l <<<"${versions}")"

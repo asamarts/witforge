@@ -60,7 +60,8 @@ inputs:
     description: >-
       Comma- or whitespace-separated generators to run with `--check` against `config`
       (`rust`, `proto`, `schema`, `glue`), or `all` to run `witforge generate --check` across every
-      configured generator and project. Empty skips generation.
+      configured generator and project. Set to `''` to skip generation when using `config` only for
+      `check: true` or `freeze: true`.
     required: false
     default: 'rust'
   freeze:
@@ -90,8 +91,8 @@ inputs:
 outputs:
   failed-command:
     description: >-
-      Empty on success; names the failing stage (`install` or `witforge <subcommand>`, such as
-      `witforge diff`) when the step fails.
+      Empty on success; names the failing stage (`validate`, `install`, or `witforge <subcommand>`,
+      such as `witforge diff`) when the step fails.
   sarif-file:
     description: >-
       Path to the written SARIF 2.1.0 report when `format: sarif` was requested.

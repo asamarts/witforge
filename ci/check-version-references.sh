@@ -111,6 +111,7 @@ check_workflow_pattern() {
 
 current_release='Current release: \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*'
 install_version='cargo install witforge-cli --version ([0-9]+\.[0-9]+\.[0-9]+)'
+witforge_build_dep='witforge-build = "([0-9]+\.[0-9]+\.[0-9]+)"'
 action_ref='asamarts/witforge@v([0-9]+\.[0-9]+\.[0-9]+)'
 action_comment='installs witforge ([0-9]+\.[0-9]+\.[0-9]+)'
 action_version='VERSION=([0-9]+\.[0-9]+\.[0-9]+)'
@@ -123,6 +124,8 @@ check_pattern README.md "${install_version}" "install version"
 check_pattern docs/quickstart.md "${install_version}" "install version"
 check_pattern docs/guide/wiring.md "${install_version}" "install version"
 check_pattern docs/guide/wiring.md "${action_version}" "prebuilt version example"
+check_pattern docs/guide/wiring.md "${witforge_build_dep}" "witforge-build dependency version"
+check_pattern crates/witforge-build/README.md "${witforge_build_dep}" "witforge-build dependency version"
 check_pattern README.md "${action_ref}" "Action reference"
 check_pattern docs/guide/ci.md "${action_ref}" "Action reference"
 check_pattern docs/design/action.md "${action_ref}" "Action reference"

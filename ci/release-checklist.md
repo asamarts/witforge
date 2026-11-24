@@ -96,9 +96,6 @@ explicit release-owner action.
       workspace crates — `witforge`, `witforge-build`, and `witforge-cli` — share the workspace
       version; `ci/check-release.sh` refuses a mismatch), and refresh `Cargo.lock` with
       `cargo update -w`, since CI builds with `--locked`.
-      Note: the first release containing `witforge-build` publishes `witforge-build` by hand once
-      (using a short-lived `publish-new` token) and configures crates.io Trusted Publishing for
-      `witforge-build` before tagging `v0.8.0` (just as 0.1.0 did for `witforge` and `witforge-cli`).
 - [ ] Turn `## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - YYYY-MM-DD` (the tag date) and
       update the README's status line. Say in the section's intro whether generated output
       changes for a contract the previous release accepts (`git diff vPREV -- crates/*/tests`
@@ -123,9 +120,17 @@ explicit release-owner action.
       compatibility applies. Neither the semver nor protobuf compatibility gate names a moving
       baseline: cargo-semver-checks compares with the newest published release, and the protobuf
       check walks every release tag, so there is nothing to advance after a release.
-- [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass. Record the commit SHA
-      and job URL; `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push
-      --status success` must identify that run.
+- [ ] Merge to `main` and wait for the exact commit's `ci ok` job to pass (including `musl` static
+      builds and `witforge-build --all-features`). Record the commit SHA and job URL;
+      `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push --status success`
+      must identify that run.
+- [ ] *(One-time bootstrap for a new workspace crate such as `witforge-build` in 0.8.0, only after
+      `main` `ci ok` is green)*: crates.io cannot configure Trusted Publishing for a crate that does
+      not exist yet. Mint a short-lived crates.io token scoped strictly to `publish-new` for the
+      new crate, run `cargo publish --locked -p witforge-build` from that exact clean `main` commit
+      (never `ci/publish.sh`, which would also attempt to upload `witforge` and `witforge-cli`),
+      add the Trusted Publisher on crates.io (GitHub, `asamarts/witforge`, `release.yml`,
+      environment `release`), revoke the temporary token, and `unset CARGO_REGISTRY_TOKEN`.
 - [ ] Tag that exact commit `vX.Y.Z` (annotated; signed with `git tag -s` when a signing key is
       available, while tag-protection rulesets, exact-commit `ci ok`, and SLSA provenance
       attestations provide the CI-verifiable chain) and push the tag. `release.yml` independently
@@ -144,7 +149,8 @@ explicit release-owner action.
       `sha256sum -c witforge-X.Y.Z-<target>.tar.gz.sha256` and
       `gh attestation verify witforge-X.Y.Z-<target>.tar.gz --repo asamarts/witforge --signer-workflow asamarts/witforge/.github/workflows/release.yml`.
 - [ ] Verify `cargo install witforge-cli --version X.Y.Z --locked` reports `witforge X.Y.Z`,
-      the GitHub release exists, and docs.rs built the library.
+      the GitHub release exists with all seven platform archives, and docs.rs built both `witforge`
+      and `witforge-build`.
 - [ ] Record the release commit, its exact-commit `ci ok` URL, and the release run URL under the
       changelog section.
 - [ ] Update CI's pinned published-Action ref and every Action `version` input in
@@ -156,7 +162,7 @@ explicit release-owner action.
 ### Withdrawing a release and provenance/SBOM policy
 
 - **Withdrawing (yanking) a release:** `cargo yank --version X.Y.Z witforge-cli` and (if needed)
-  `cargo yank --version X.Y.Z witforge`. Tag-protection rulesets intentionally keep the immutable
+  `cargo yank --version X.Y.Z witforge` and `cargo yank --version X.Y.Z witforge-build`. Tag-protection rulesets intentionally keep the immutable
   `vX.Y.Z` tag in Git history; add `vX.Y.Z <reason>` to `ci/buf-history-skip` so
   `ci/check-buf-history.sh` skips the yanked release with an explicit recorded reason.
 - **SBOM decision:** A separate CycloneDX/SPDX SBOM asset is not attached yet because the complete

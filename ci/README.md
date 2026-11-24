@@ -75,7 +75,8 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 - **benchmark**: runs the small/large contract budget in release mode; property tests run in
   the normal test matrix and in the MSRV job.
 - **package**: `ci/test-publish.sh` bumps a committed scratch copy to an unpublished version,
-  packages and verifies both crates through `ci/publish.sh --dry-run`, then changes the library
+  packages and verifies all three crates (`witforge`, `witforge-build`, `witforge-cli`) through
+  `ci/publish.sh --dry-run`, then changes the library
   and repeats to prove the CLI is always verified against the current library. A direct workspace
   dry run at an already-published version would resolve the CLI against crates.io's older copy.
 - **public API compatibility**: installs cargo-semver-checks 0.51.0 and compares the library
@@ -165,7 +166,7 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
 
 `.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed:
 
-- **verify**: `ci/check-release.sh` requires one version for both crates, `witforge-cli`'s
+- **verify**: `ci/check-release.sh` requires one version for all three workspace crates, `witforge-cli`'s
   dependency on `witforge` to require that version, a dated `CHANGELOG.md` section with entries
   for it, and a tag that matches the version, points at the checked-out commit, and is on `main`.
   For a tag push, it also requires a successful `ci ok` job whose head SHA is that exact commit.

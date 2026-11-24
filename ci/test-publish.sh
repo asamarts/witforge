@@ -4,7 +4,7 @@
 # against the copy of the library cargo unpacked and built for the first run.
 #
 # It runs the working tree's ci/publish.sh on a copy of HEAD, needs the network (crates.io and
-# its index), and builds the two crates twice in a scratch target directory.
+# its index), and builds all three workspace crates twice in a scratch target directory.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,6 +56,7 @@ dry_run() {
     # Plain output, so the match below works when CI sets CARGO_TERM_COLOR=always.
     output="$(CARGO_TERM_COLOR=never ci/publish.sh --dry-run 2>&1)" || status=$?
     if [[ ${status} -ne 0 ]] \
+        || ! grep -qF "Uploading witforge v${VERSION}" <<<"${output}" \
         || ! grep -qF "Uploading witforge-build v${VERSION}" <<<"${output}" \
         || ! grep -qF "Uploading witforge-cli v${VERSION}" <<<"${output}"; then
         echo "FAIL: $1 (exit ${status}):" >&2
@@ -72,7 +73,7 @@ dry_run() {
     echo "ok: $1"
 }
 
-dry_run "the first dry run verifies both crates"
+dry_run "the first dry run verifies all three crates"
 
 # A library change the CLI depends on: a dry run against the first run's library fails to build.
 cat >>crates/witforge/src/lib.rs <<'EOF'

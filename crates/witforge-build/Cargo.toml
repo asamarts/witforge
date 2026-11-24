@@ -13,6 +13,9 @@ categories = ["development-tools::build-utils", "encoding"]
 exclude = ["tests/"]
 publish = true
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 pbjson = ["dep:pbjson-build"]

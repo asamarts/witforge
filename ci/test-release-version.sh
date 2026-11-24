@@ -9,7 +9,7 @@ tmp="$(mktemp -d "${tmp_root}/witforge-release-version.XXXXXX")"
 trap 'rm -rf "${tmp}"' EXIT
 base="${tmp}/base"
 mkdir -p "${base}/docs/guide" "${base}/docs/design" "${base}/.github/workflows" \
-    "${base}/.github/ISSUE_TEMPLATE"
+    "${base}/.github/ISSUE_TEMPLATE" "${base}/crates/witforge-build"
 
 write_fixture() {
     cat >"${base}/README.md" <<'EOF'
@@ -35,6 +35,10 @@ EOF
     cat >"${base}/docs/guide/wiring.md" <<'EOF'
 cargo install witforge-cli --version 9.9.9 --locked
 VERSION=9.9.9
+witforge-build = "9.9.9"
+EOF
+    cat >"${base}/crates/witforge-build/README.md" <<'EOF'
+witforge-build = "9.9.9"
 EOF
     cat >"${base}/docs/design/action.md" <<'EOF'
 VERSION=9.9.9
@@ -117,6 +121,10 @@ expect_failure "the wiring guide install version" docs/guide/wiring.md \
     's/--version 9\.9\.9/--version 9.9.8/'
 expect_failure "the wiring guide VERSION example" docs/guide/wiring.md \
     's/VERSION=9\.9\.9/VERSION=9.9.8/'
+expect_failure "the wiring guide witforge-build version" docs/guide/wiring.md \
+    's/witforge-build = "9\.9\.9"/witforge-build = "9.9.8"/'
+expect_failure "the witforge-build README version" crates/witforge-build/README.md \
+    's/witforge-build = "9\.9\.9"/witforge-build = "9.9.8"/'
 expect_failure "the Action guide VERSION example" docs/design/action.md \
     's/VERSION=9\.9\.9/VERSION=9.9.8/'
 expect_failure "the Action guide reference" docs/design/action.md \

@@ -39,7 +39,10 @@ const WORKSPACE_VERSION = workspaceVersion();
 test('platform targets and archive names are stable', () => {
   assert.equal(supportsMusl('0.7.0'), false);
   assert.equal(supportsMusl('0.7.9'), false);
+  assert.equal(supportsMusl('0.8.0-rc1'), false);
+  assert.equal(supportsMusl('0.8.0-rc.1'), false);
   assert.equal(supportsMusl('0.8.0'), true);
+  assert.equal(supportsMusl('0.10.0'), true);
   assert.equal(supportsMusl('1.0.0'), true);
 
   assert.equal(assetTarget('linux', 'x64'), 'x86_64-unknown-linux-gnu');
@@ -410,6 +413,36 @@ test('check: true and generators: all align with witforge.toml multi-project com
     () => buildCommands('witforge', { generators: 'all,rust' }),
     /generators: all cannot be combined/,
   );
+  assert.throws(
+    () => buildCommands('witforge', { generators: 'all' }),
+    /generators requires config/,
+  );
+  assert.throws(
+    () => buildCommands('witforge', { generators: 'proto' }),
+    /generators requires config/,
+  );
+  assert.throws(
+    () => buildCommands('witforge', { project: 'demo' }),
+    /project requires config/,
+  );
+  // Case-insensitive and deduplicated generator lists are normalized cleanly.
+  assert.deepEqual(
+    buildCommands('witforge', {
+      config: 'witforge.toml',
+      generators: 'Rust, PROTO, rust',
+    }),
+    [
+      ['witforge', 'rust', '--config', 'witforge.toml', '--check'],
+      ['witforge', 'proto', '--config', 'witforge.toml', '--check'],
+    ],
+  );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      config: 'witforge.toml',
+      generators: 'ALL, all',
+    }),
+    [['witforge', 'generate', '--config', 'witforge.toml', '--check']],
+  );
 });
 
 test('requests retry transient 5xx and network errors but never retry 4xx', async () => {
@@ -575,6 +608,39 @@ test('install names `version` on 404, never retries checksum mismatch, and clean
       'https://github.com/asamarts/witforge/releases/download/v0.8.0/witforge-0.8.0-aarch64-unknown-linux-musl.tar.gz',
       'https://github.com/asamarts/witforge/releases/download/v0.8.0/witforge-0.8.0-aarch64-unknown-linux-musl.tar.gz.sha256',
     ]);
+
+    // 5. `version: latest` resolves the concrete release version before selecting musl vs gnu.
+    const latestUrls = [];
+    await install(
+      { version: 'latest', binary: '', token: 'tok' },
+      {
+        env: { RUNNER_TEMP: runnerTemp, GITHUB_PATH: ghPath, GITHUB_ENV: ghEnv },
+        platform: 'linux',
+        arch: 'x64',
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ tag_name: 'v0.10.0' }),
+        }),
+        download: async (url, dest) => {
+          latestUrls.push(url);
+          if (url.endsWith('.sha256')) {
+            fs.writeFileSync(dest, `${digest}  witforge-0.10.0-x86_64-unknown-linux-musl.tar.gz\n`);
+          } else {
+            fs.writeFileSync(dest, payload);
+          }
+        },
+        verifyExecFileSync: () => {},
+        execFileSync: (_cmd, args) => {
+          const destDir = args[args.indexOf('-C') + 1];
+          fs.writeFileSync(path.join(destDir, 'witforge'), '#!/bin/sh\n');
+        },
+      },
+    );
+    assert.deepEqual(latestUrls, [
+      'https://github.com/asamarts/witforge/releases/download/v0.10.0/witforge-0.10.0-x86_64-unknown-linux-musl.tar.gz',
+      'https://github.com/asamarts/witforge/releases/download/v0.10.0/witforge-0.10.0-x86_64-unknown-linux-musl.tar.gz.sha256',
+    ]);
   } finally {
     fs.rmSync(runnerTemp, { recursive: true, force: true });
   }
@@ -621,7 +687,7 @@ test('attestation verification runs for >=0.7.0, warns when gh is absent, and fa
     verifyAttestation('/tmp/witforge-0.7.0.tar.gz', '0.7.0', {
       token: 'tok',
       execFileSync: (cmd, args, opts) => {
-        captured = { cmd, args, ghToken: opts.env.GH_TOKEN };
+        captured = { cmd, args, ghToken: opts.env.GH_TOKEN, timeout: opts.timeout };
       },
     }),
     'verified',
@@ -637,6 +703,7 @@ test('attestation verification runs for >=0.7.0, warns when gh is absent, and fa
     'asamarts/witforge/.github/workflows/release.yml',
   ]);
   assert.equal(captured.ghToken, 'tok');
+  assert.equal(captured.timeout, REQUEST_TIMEOUT_MS);
 
   const warnings = [];
   assert.equal(
@@ -769,6 +836,45 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
               },
             ],
           },
+          {
+            ruleId: 'WF1017',
+            level: 'error',
+            message: { text: 'encoded windows colon' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: 'FILE:///C%3A/work/a.wit' },
+                  region: { startLine: 5, startColumn: 1 },
+                },
+              },
+            ],
+          },
+          {
+            ruleId: 'WF1017',
+            level: 'error',
+            message: { text: 'localhost uri' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: 'file://localhost/home/runner/a.wit' },
+                  region: { startLine: 6, startColumn: 1 },
+                },
+              },
+            ],
+          },
+          {
+            ruleId: 'WF1017',
+            level: 'error',
+            message: { text: 'unc uri' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: 'file://server/share/my%20dir/a.wit' },
+                  region: { startLine: 7, startColumn: 1 },
+                },
+              },
+            ],
+          },
         ],
       },
     ],
@@ -778,6 +884,9 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
     '::error file=/home/runner/my repo/wit/v0.1/contract.wit,line=2,col=1,title=WF1017::char unsupported',
     '::error file=C%3A/work/my dir/contract.wit,line=3,col=1,title=WF1017::windows uri',
     '::error file=my contracts/v0.1/contract.wit,line=4,col=1,title=WF1017::relative encoded uri',
+    '::error file=C%3A/work/a.wit,line=5,col=1,title=WF1017::encoded windows colon',
+    '::error file=/home/runner/a.wit,line=6,col=1,title=WF1017::localhost uri',
+    '::error file=//server/share/my dir/a.wit,line=7,col=1,title=WF1017::unc uri',
   ]);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'witforge-action-run-'));
@@ -832,6 +941,18 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
     assert.ok(
       logs.some((line) => line.startsWith('::error file=wit/v0.2/contract.wit,line=2,col=1,title=WF3001::')),
       `expected annotation in logs: ${logs.join('\n')}`,
+    );
+
+    // Signal-killed child processes report the signal rather than `status null`.
+    assert.throws(
+      () =>
+        runCommands([['witforge', 'check', 'wit']], {
+          format: 'human',
+          env: { GITHUB_OUTPUT: ghOutput },
+          log: () => {},
+          spawnSync: () => ({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }),
+        }),
+      /witforge check terminated by signal SIGKILL/,
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

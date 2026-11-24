@@ -90,6 +90,7 @@ jobs:
           fi
           echo "exact-commit ci ok: ${ci_ok_url}"
       - run: cargo test --workspace --locked
+      - run: cargo test -p witforge-build --all-features --locked
       - name: Install cargo-semver-checks
         run: cargo install --locked cargo-semver-checks --version 0.51.0
       # Before and on the 0.7.0 tag, require exactly the reviewed cargo-semver failure inventory.
@@ -134,9 +135,11 @@ jobs:
           lib_sha="$(sha256sum "${pkg_dir}/package/witforge-${VERSION}.crate" | awk '{print $1}')"
           build_sha="$(sha256sum "${pkg_dir}/package/witforge-build-${VERSION}.crate" | awk '{print $1}')"
           cli_sha="$(sha256sum "${pkg_dir}/package/witforge-cli-${VERSION}.crate" | awk '{print $1}')"
-          echo "witforge_sha256=${lib_sha}" >> "$GITHUB_OUTPUT"
-          echo "witforge_build_sha256=${build_sha}" >> "$GITHUB_OUTPUT"
-          echo "witforge_cli_sha256=${cli_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "witforge_sha256=${lib_sha}"
+            echo "witforge_build_sha256=${build_sha}"
+            echo "witforge_cli_sha256=${cli_sha}"
+          } >> "$GITHUB_OUTPUT"
 
   binaries:
     name: binary (${{ matrix.target }})
@@ -176,9 +179,14 @@ jobs:
           toolchain: stable
       - name: Build the release binary
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          rustup target add "${{ matrix.target }}"
-          cargo build --locked --release -p witforge-cli --target "${{ matrix.target }}"
+          rustup target add "${TARGET}"
+          if [[ "${TARGET}" == *-musl ]]; then
+            export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C target-feature=+crt-static"
+          fi
+          cargo build --locked --release -p witforge-cli --target "${TARGET}"
       - name: Package and checksum the asset
         id: package
         shell: bash
@@ -272,6 +280,16 @@ jobs:
             tar -xzf "${asset}" -C "$scratch_root/smoke-bin"
             bin="$scratch_root/smoke-bin/witforge"
             chmod +x "$bin"
+            if [[ "${TARGET}" == *-musl ]]; then
+              if readelf -l "$bin" | grep -q 'INTERP'; then
+                echo "::error::musl binary ${TARGET} unexpectedly requires a dynamic interpreter"
+                exit 1
+              fi
+              if readelf -d "$bin" 2>/dev/null | grep -q '(NEEDED)'; then
+                echo "::error::musl binary ${TARGET} unexpectedly has NEEDED shared library dependencies"
+                exit 1
+              fi
+            fi
           fi
           cd "$GITHUB_WORKSPACE"
           got="$("$bin" --version | tr -d '\r')"

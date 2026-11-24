@@ -213,6 +213,48 @@ jobs:
           components: rustfmt, clippy
       # 1.88 is the floor set by wit-parser.
       - run: cargo test --workspace --locked
+      - run: cargo test -p witforge-build --all-features --locked
+
+  musl:
+    name: static musl binary (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+      - name: Build and verify static musl binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup target add "${TARGET}"
+          RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C target-feature=+crt-static" \
+            cargo build --locked --release -p witforge-cli --target "${TARGET}"
+          bin="target/${TARGET}/release/witforge"
+          if readelf -l "$bin" | grep -q 'INTERP'; then
+            echo "::error::musl binary ${TARGET} unexpectedly requires a dynamic interpreter"
+            exit 1
+          fi
+          if readelf -d "$bin" 2>/dev/null | grep -q '(NEEDED)'; then
+            echo "::error::musl binary ${TARGET} unexpectedly has NEEDED shared library dependencies"
+            exit 1
+          fi
+          "$bin" --version
+          "$bin" check examples/evolved/wit/v0.2
 
   package:
     name: package (publish dry run)
@@ -227,10 +269,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      # Bump a committed scratch copy to an unpublished version, package and verify both crates
-      # through the same temporary-registry flow as release publication, then change the library
-      # and repeat. A direct dry run at the workspace's already-published version would resolve
-      # the CLI against crates.io's older library and fail whenever main uses a new library API.
+      # Bump a committed scratch copy to an unpublished version, package and verify all three
+      # workspace crates through the same temporary-registry flow as release publication, then
+      # change the library and repeat. A direct dry run at the workspace's already-published
+      # version would resolve the CLI against crates.io's older library and fail whenever main
+      # uses a new library API.
       - run: ci/test-publish.sh
 
   semver:
@@ -460,10 +503,12 @@ jobs:
           components: rustfmt, clippy
       - run: rustc --version && cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo doc --workspace --no-deps
+      - run: cargo clippy -p witforge-build --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo test --workspace --locked
+      - run: cargo test -p witforge-build --all-features --locked
 
   fuzz-smoke:
     name: weekly fuzz smoke
@@ -510,7 +555,7 @@ jobs:
   ok:
     name: ci ok
     if: always()
-    needs: [lint, workflows, published-action, test, msrv, package, semver, public-api, generated, plan, benchmark, security, buf, floating-stable, fuzz-smoke]
+    needs: [lint, workflows, published-action, test, msrv, musl, package, semver, public-api, generated, plan, benchmark, security, buf, floating-stable, fuzz-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

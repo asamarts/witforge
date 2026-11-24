@@ -264,7 +264,8 @@ cargo run --manifest-path my-contract-crate/Cargo.toml
 ## Simplifying `build.rs` with `witforge-build`
 
 Instead of wiring `protox`, `prost-build`, and manual `cargo:rerun-if-changed` directives by hand,
-you can use the optional `witforge-build` helper crate in `[build-dependencies]`:
+you can use the optional `witforge-build` helper crate (first published on crates.io starting in
+`0.8.0`) in `[build-dependencies]`:
 
 ```toml
 [build-dependencies]
