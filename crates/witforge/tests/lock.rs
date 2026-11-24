@@ -1254,10 +1254,37 @@ fn an_unchanged_lockfile_is_not_rewritten() {
 
 #[test]
 fn lockfile_type_tokens_are_bounded_in_depth_and_length() {
-    let deep = format!("{}u8{}", "list<".repeat(40), ">".repeat(40));
+    // 32 levels of container nesting is the documented maximum and must both lock and parse.
+    let at_limit = format!("{}u8{}", "list<".repeat(32), ">".repeat(32));
+    let contract_source =
+        format!("package a:b@0.1.0;\ninterface i {{\n  record t {{ x: {at_limit} }}\n}}\n");
+    let contract = witforge::load_sources(vec![witforge::SourceFile::new(
+        "contract.wit".to_string(),
+        contract_source,
+    )])
+    .unwrap();
+    let built = model::build(&contract).unwrap();
+    let members = built.members().unwrap();
+    let mut lock = WireLock::default();
+    lock.reconcile(&members).unwrap();
+    let rendered = lock.render();
+    let reparsed = WireLock::parse(&rendered).expect("32-level nested type must parse back");
+    assert_eq!(
+        reparsed.get("a:b/i/t.x").unwrap().ty.as_deref(),
+        Some(at_limit.as_str())
+    );
+
+    // 33 levels fails consistently in both model building and lockfile parsing.
+    let over_limit = format!("{}u8{}", "list<".repeat(33), ">".repeat(33));
+    let over_contract = witforge::load_sources(vec![witforge::SourceFile::new(
+        "contract.wit".to_string(),
+        format!("package a:b@0.1.0;\ninterface i {{\n  record t {{ x: {over_limit} }}\n}}\n"),
+    )])
+    .unwrap();
+    assert!(model::build(&over_contract).is_err());
     let error = format!(
         "{:#}",
-        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field {deep}\n")).unwrap_err()
+        WireLock::parse(&format!("{HEADER}\na:b/i/t.x = 1 field {over_limit}\n")).unwrap_err()
     );
     assert!(error.contains("nesting"), "{error}");
 

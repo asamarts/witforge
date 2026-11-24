@@ -136,12 +136,14 @@ impl SinceHistory {
 
     pub(crate) fn check(&mut self, model: &Model) -> Vec<(String, String)> {
         let mut errors = Vec::new();
+        let mut present = BTreeSet::new();
         for interface in &model.interfaces {
             let interface_path = interface.name.clone();
             self.check_item(
                 &interface_path,
                 model.package.version,
                 &interface.stability,
+                &mut present,
                 &mut errors,
             );
             for def in &interface.types {
@@ -149,6 +151,7 @@ impl SinceHistory {
                     &format!("{interface_path}/{}", def.name),
                     model.package.version,
                     &def.stability,
+                    &mut present,
                     &mut errors,
                 );
             }
@@ -157,6 +160,7 @@ impl SinceHistory {
                     &format!("{interface_path}#{}", function.name),
                     model.package.version,
                     &function.stability,
+                    &mut present,
                     &mut errors,
                 );
             }
@@ -167,6 +171,7 @@ impl SinceHistory {
                 &world_path,
                 model.package.version,
                 &world.stability,
+                &mut present,
                 &mut errors,
             );
             for (side, interfaces) in [("import", &world.imports), ("export", &world.exports)] {
@@ -175,11 +180,13 @@ impl SinceHistory {
                         &format!("{world_path}/{side}/{}", interface.qualified_name()),
                         model.package.version,
                         &interface.stability,
+                        &mut present,
                         &mut errors,
                     );
                 }
             }
         }
+        self.first_seen.retain(|path, _| present.contains(path));
         errors
     }
 
@@ -188,8 +195,21 @@ impl SinceHistory {
         path: &str,
         current: Version,
         stability: &Stability,
+        present: &mut BTreeSet<String>,
         errors: &mut Vec<(String, String)>,
     ) {
+        if matches!(
+            stability,
+            Stability::Unstable { .. }
+                | Stability::Deprecated {
+                    since: None,
+                    feature: Some(_),
+                    ..
+                }
+        ) {
+            return;
+        }
+        present.insert(path.to_string());
         let first = *self.first_seen.entry(path.to_string()).or_insert(current);
         let Some(since) = stability.since() else {
             return;

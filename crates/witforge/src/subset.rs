@@ -327,12 +327,26 @@ pub fn check_located_diagnostics(contract: &Contract) -> Vec<LocatedDiagnostic> 
 
     for (iface_name, &iface_id) in &package.interfaces {
         let iface = &resolve.interfaces[iface_id];
+        check_wit_stability(
+            &iface.stability,
+            &format!("{pkg}/{iface_name}"),
+            None,
+            iface.span,
+            &mut sink,
+        );
         check_interface_case_collisions(resolve, &pkg, iface_name, iface, &mut sink);
         // `use` aliases are owned by the interface that names them, so they are checked here
         // too: an alias of a type from another package is refused at the `use`.
         for (type_name, &type_id) in &iface.types {
             let at = format!("{pkg}/{iface_name}/{type_name}");
             let type_span = pick_span(resolve.types[type_id].span, iface.span);
+            check_wit_stability(
+                &resolve.types[type_id].stability,
+                &at,
+                None,
+                type_span,
+                &mut sink,
+            );
             check_external_id(
                 resolve.types[type_id].external_id.as_deref(),
                 &at,
@@ -353,6 +367,7 @@ pub fn check_located_diagnostics(contract: &Contract) -> Vec<LocatedDiagnostic> 
         for (func_name, func) in &iface.functions {
             let at = format!("{pkg}/{iface_name}#{func_name}");
             let func_span = pick_span(func.span, iface.span);
+            check_wit_stability(&func.stability, &at, None, func_span, &mut sink);
             check_external_id(func.external_id.as_deref(), &at, None, func_span, &mut sink);
             check_function(contract, func, &at, None, func_span, &mut sink);
             check_dependency_function_refs(
@@ -381,6 +396,7 @@ pub fn check_located_diagnostics(contract: &Contract) -> Vec<LocatedDiagnostic> 
     sink.out
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_model_and_emitters(contract: &Contract, pkg: &str, sink: &mut Sink<'_>) {
     let mut locations: Option<BTreeMap<String, (String, Position)>> = None;
     let pkg_loc = sink.package_location(contract.package);
@@ -389,7 +405,7 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, sink: &mut Sink<'_>)
         Err(err) => {
             if let Some(diags) = crate::error_located_diagnostics(&err) {
                 sink.out.extend(diags.iter().cloned());
-            } else if crate::is_contract_error(&err) {
+            } else {
                 sink.emit_at(codes::SUBSET_UNSUPPORTED, pkg, format!("{err:#}"), pkg_loc);
             }
             return;
@@ -404,6 +420,7 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, sink: &mut Sink<'_>)
         }
         return;
     }
+    check_dependency_model_wit_stability(contract, &model, sink);
     let stability_errors = stability_errors(&model);
     if !stability_errors.is_empty() {
         let map = locations.get_or_insert_with(|| contract.member_locations());
@@ -411,6 +428,8 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, sink: &mut Sink<'_>)
             let loc = map.get(&location).cloned().or_else(|| pkg_loc.clone());
             sink.emit_at(codes::SUBSET_ANNOTATION, location, message, loc);
         }
+    }
+    if !sink.out.is_empty() {
         return;
     }
     let checks: [anyhow::Result<()>; 4] = [
@@ -421,17 +440,114 @@ fn check_model_and_emitters(contract: &Contract, pkg: &str, sink: &mut Sink<'_>)
     ];
     let mut seen_messages = HashSet::new();
     for result in checks {
-        if let Err(err) = result
-            && crate::is_contract_error(&err)
-        {
-            let message = format!("{err:#}");
-            if seen_messages.insert(message.clone()) {
-                let code = if message.contains("-byte limit") {
-                    codes::SUBSET_TYPE_LIMIT
-                } else {
-                    CODE_IDENTIFIER_COLLISION
-                };
-                sink.emit_at(code, pkg, message, pkg_loc.clone());
+        let Err(err) = result else {
+            continue;
+        };
+        if let Some(diags) = crate::error_located_diagnostics(&err) {
+            let map = locations.get_or_insert_with(|| contract.member_locations());
+            for located in diags {
+                if seen_messages.insert(located.diagnostic.message.clone()) {
+                    let mut located = located.clone();
+                    if located.file.is_none()
+                        && let Some((file, pos)) = located
+                            .logical
+                            .as_deref()
+                            .or(located.diagnostic.path.as_deref())
+                            .and_then(|path| map.get(path).cloned())
+                            .or_else(|| pkg_loc.clone())
+                    {
+                        if located.diagnostic.position.is_none() {
+                            located.diagnostic.position = Some(pos);
+                        }
+                        located = located.with_file(file);
+                    }
+                    sink.out.push(located);
+                }
+            }
+            continue;
+        }
+        if let Some(diags) = crate::error_diagnostics(&err) {
+            let map = locations.get_or_insert_with(|| contract.member_locations());
+            for diag in diags {
+                if seen_messages.insert(diag.message.clone()) {
+                    let mut located = LocatedDiagnostic::from_diagnostic(diag.clone());
+                    if let Some(path) = &diag.path {
+                        located = located.with_logical(path.clone());
+                    }
+                    if let Some((file, pos)) = diag
+                        .path
+                        .as_deref()
+                        .and_then(|path| map.get(path).cloned())
+                        .or_else(|| pkg_loc.clone())
+                    {
+                        if located.diagnostic.position.is_none() {
+                            located.diagnostic.position = Some(pos);
+                        }
+                        located = located.with_file(file);
+                    }
+                    sink.out.push(located);
+                }
+            }
+            continue;
+        }
+        let message = format!("{err:#}");
+        if seen_messages.insert(message.clone()) {
+            let code = if message.contains("-byte limit") {
+                codes::SUBSET_TYPE_LIMIT
+            } else if crate::is_contract_error(&err) {
+                CODE_IDENTIFIER_COLLISION
+            } else {
+                codes::SUBSET_UNSUPPORTED
+            };
+            sink.emit_at(code, pkg, message, pkg_loc.clone());
+        }
+    }
+}
+
+fn check_dependency_model_wit_stability(
+    contract: &Contract,
+    model: &crate::model::Model,
+    sink: &mut Sink<'_>,
+) {
+    let resolve = &contract.resolve;
+    for dependency in &model.dependencies {
+        let Some(&dep_id) = contract.dependencies.iter().find(|&&id| {
+            let pkg = &resolve.packages[id].name;
+            pkg.namespace == dependency.package.namespace && pkg.name == dependency.package.name
+        }) else {
+            continue;
+        };
+        let dep = &resolve.packages[dep_id];
+        let dep_pkg = format!("{}:{}", dep.name.namespace, dep.name.name);
+        for interface in &dependency.interfaces {
+            let Some(&iface_id) = dep.interfaces.get(&interface.name) else {
+                continue;
+            };
+            let iface = &resolve.interfaces[iface_id];
+            let iface_path = format!("{dep_pkg}/{}", interface.name);
+            check_wit_stability(&iface.stability, &iface_path, None, iface.span, sink);
+            for def in &interface.types {
+                if let Some(&type_id) = iface.types.get(&def.name) {
+                    let wit_def = &resolve.types[type_id];
+                    check_wit_stability(
+                        &wit_def.stability,
+                        &format!("{iface_path}/{}", def.name),
+                        None,
+                        pick_span(wit_def.span, iface.span),
+                        sink,
+                    );
+                }
+            }
+            for func in &interface.functions {
+                if let Some(wit_func) = iface.functions.get(&func.name) {
+                    check_wit_stability(
+                        &wit_func.stability,
+                        &format!("{iface_path}#{}", func.name),
+                        None,
+                        pick_span(wit_func.span, iface.span),
+                        sink,
+                    );
+                }
             }
         }
     }
@@ -660,6 +776,42 @@ fn check_scope_case_collisions<'a>(
     }
 }
 
+fn check_wit_stability(
+    stability: &wit_parser::Stability,
+    at: &str,
+    reason: Option<&str>,
+    span: Span,
+    sink: &mut Sink<'_>,
+) {
+    let versions = match stability {
+        wit_parser::Stability::Unknown => [("@since", None), ("@deprecated", None)],
+        wit_parser::Stability::Unstable { deprecated, .. } => {
+            [("@since", None), ("@deprecated", deprecated.as_ref())]
+        }
+        wit_parser::Stability::Stable { since, deprecated } => [
+            ("@since", Some(since)),
+            ("@deprecated", deprecated.as_ref()),
+        ],
+    };
+    for (annotation, version) in versions {
+        let Some(version) = version else {
+            continue;
+        };
+        if !version.pre.as_str().is_empty() || !version.build.as_str().is_empty() {
+            sink.refuse_with_reason(
+                codes::SUBSET_ANNOTATION,
+                at,
+                format!(
+                    "{annotation} version `{version}` must be `<major>.<minor>.0`; \
+                     patch, pre-release, and build metadata are not supported"
+                ),
+                reason,
+                span,
+            );
+        }
+    }
+}
+
 fn check_external_id(
     external_id: Option<&str>,
     at: &str,
@@ -691,6 +843,7 @@ fn check_world(
 ) {
     let resolve = &contract.resolve;
     let world = &resolve.worlds[world_id];
+    check_wit_stability(&world.stability, at, None, world.span, sink);
     for (verb, singular, items) in [
         ("imports", "import", &world.imports),
         ("exports", "export", &world.exports),
@@ -736,13 +889,23 @@ fn check_world(
                 (
                     WorldKey::Interface(_),
                     WorldItem::Interface {
-                        id, external_id, ..
+                        id,
+                        stability,
+                        external_id,
+                        ..
                     },
                 ) => {
                     let is_implicit = singular == "import"
                         && !contract.is_explicit_world_import(&world.name, *id);
                     if !is_implicit {
                         let label = interface_display_name(contract, *id);
+                        check_wit_stability(
+                            stability,
+                            &format!("{at}/{singular}/{label}"),
+                            None,
+                            item_span,
+                            sink,
+                        );
                         check_external_id(
                             external_id.as_deref(),
                             &format!("{at}/{label}"),
@@ -1002,6 +1165,7 @@ fn check_dependency_interface(
     let interface_name = interface.name.as_deref().unwrap_or_default();
     check_interface_case_collisions(resolve, &dep_pkg, interface_name, interface, sink);
     let base = format!("{dep_pkg}/{interface_name}");
+    check_wit_stability(&interface.stability, &base, reason, interface.span, sink);
     for (name, id) in &interface.types {
         check_dependency_def(
             contract,
@@ -1015,6 +1179,7 @@ fn check_dependency_interface(
     for (name, function) in &interface.functions {
         let at = format!("{base}#{name}");
         let func_span = pick_span(function.span, interface.span);
+        check_wit_stability(&function.stability, &at, reason, func_span, sink);
         check_external_id(
             function.external_id.as_deref(),
             &at,
@@ -1071,6 +1236,7 @@ fn check_dependency_def(
     if is_dependency_def(contract, id) {
         let def = &contract.resolve.types[id];
         let def_span = def.span;
+        check_wit_stability(&def.stability, at, reason, def_span, sink);
         check_external_id(def.external_id.as_deref(), at, reason, def_span, sink);
         check_def(contract, id, at, reason, def_span, sink);
     }

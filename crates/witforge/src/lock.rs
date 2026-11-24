@@ -1700,33 +1700,26 @@ impl<'a> CanonicalTypeParser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<()> {
-        if self.depth >= MAX_TYPE_NESTING {
-            bail!("type nesting exceeds {MAX_TYPE_NESTING} levels");
-        }
-        self.depth += 1;
-        let result = self.parse_type_inner();
-        self.depth -= 1;
-        result
-    }
-
-    fn parse_type_inner(&mut self) -> Result<()> {
         let ident = self.ident()?;
         if ident == "list" && self.eat('<') {
-            self.parse_type()?;
-            self.expect('>')?;
-            return Ok(());
+            return self.enter_container(|parser| {
+                parser.parse_type()?;
+                parser.expect('>')
+            });
         }
         if ident == "option" && self.eat('<') {
-            self.parse_type()?;
-            self.expect('>')?;
-            return Ok(());
+            return self.enter_container(|parser| {
+                parser.parse_type()?;
+                parser.expect('>')
+            });
         }
         if ident == "result" && self.eat('<') {
-            self.parse_slot()?;
-            self.expect(',')?;
-            self.parse_slot()?;
-            self.expect('>')?;
-            return Ok(());
+            return self.enter_container(|parser| {
+                parser.parse_slot()?;
+                parser.expect(',')?;
+                parser.parse_slot()?;
+                parser.expect('>')
+            });
         }
         if self.eat(':') {
             self.ident()?;
@@ -1758,6 +1751,17 @@ impl<'a> CanonicalTypeParser<'a> {
             return Ok(());
         }
         bail!("unknown type name `{ident}`")
+    }
+
+    fn enter_container(&mut self, parse: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
+        let next = self.depth + 1;
+        if next > MAX_TYPE_NESTING {
+            bail!("type nesting exceeds {MAX_TYPE_NESTING} levels");
+        }
+        self.depth = next;
+        let result = parse(self);
+        self.depth -= 1;
+        result
     }
 
     fn parse_slot(&mut self) -> Result<()> {

@@ -472,21 +472,13 @@ fn load_line_index<'a>(
     virtual_sources: Option<&BTreeMap<String, String>>,
 ) -> Option<&'a LineIndex> {
     if !cache.contains_key(path) {
-        let text = virtual_sources
-            .and_then(|sources| sources.get(path).cloned())
-            .or_else(|| fs::read_to_string(path).ok())?;
+        let text = match virtual_sources {
+            Some(sources) => sources.get(path).cloned()?,
+            None => fs::read_to_string(path).ok()?,
+        };
         cache.insert(path.to_string(), LineIndex::new(text));
     }
     cache.get(path)
-}
-
-/// Resolve a `wit-parser` [`wit_parser::Span`] against `source_map` using a file-index cache.
-pub(crate) fn resolve_span_cached(
-    source_map: &SourceMap,
-    span: wit_parser::Span,
-    cache: &mut BTreeMap<String, LineIndex>,
-) -> Option<(String, diagnostic::Position)> {
-    resolve_span_cached_with_sources(source_map, span, cache, None)
 }
 
 fn resolve_span_cached_with_sources(
@@ -511,7 +503,7 @@ pub(crate) fn resolve_contract_span_cached(
         &contract.resolve.source_map,
         span,
         cache,
-        Some(&contract.source_contents),
+        contract.source_contents.as_ref(),
     )
 }
 
@@ -520,8 +512,16 @@ pub(crate) fn resolve_span_location(
     source_map: &SourceMap,
     span: wit_parser::Span,
 ) -> Option<(String, diagnostic::Position)> {
+    resolve_span_location_with_sources(source_map, span, None)
+}
+
+fn resolve_span_location_with_sources(
+    source_map: &SourceMap,
+    span: wit_parser::Span,
+    virtual_sources: Option<&BTreeMap<String, String>>,
+) -> Option<(String, diagnostic::Position)> {
     let mut cache = BTreeMap::new();
-    resolve_span_cached(source_map, span, &mut cache)
+    resolve_span_cached_with_sources(source_map, span, &mut cache, virtual_sources)
 }
 
 /// Locate the `package ...;` declaration line inside `file`, skipping comments and falling back
@@ -635,7 +635,7 @@ pub(crate) fn package_location(
             .map(|p| p.display().to_string());
     }
     let file = file?;
-    find_package_header_position(&file, cache, Some(&contract.source_contents))
+    find_package_header_position(&file, cache, contract.source_contents.as_ref())
 }
 
 /// An interface explicitly imported by a root world: `(Option<(namespace, package)>, interface)`.
@@ -682,7 +682,7 @@ pub struct Contract {
     pub(crate) dependency_entries: BTreeMap<PackageId, PathBuf>,
     pub(crate) explicit_world_imports: BTreeMap<String, BTreeSet<ExplicitWorldImport>>,
     pub(crate) included_foreign_worlds: BTreeMap<String, Vec<ForeignWorldInclude>>,
-    pub(crate) source_contents: BTreeMap<String, String>,
+    pub(crate) source_contents: Option<BTreeMap<String, String>>,
 }
 
 impl Contract {
@@ -980,14 +980,7 @@ pub fn load(dir: &Path) -> Result<Contract> {
     };
     let loaded_deps =
         load_deps_dir(&dir.join("deps"), &mut resolve).with_context(|| context.clone())?;
-    finish_load(
-        top_pkg,
-        loaded_deps,
-        resolve,
-        &context,
-        dir,
-        BTreeMap::new(),
-    )
+    finish_load(top_pkg, loaded_deps, resolve, &context, dir, None)
 }
 
 /// Load a WIT package from named in-memory UTF-8 sources.
@@ -1078,7 +1071,7 @@ pub fn load_sources(sources: Vec<SourceFile>) -> Result<Contract> {
         resolve,
         "failed to load the in-memory WIT package",
         Path::new("<memory>"),
-        source_contents,
+        Some(source_contents),
     )
 }
 
@@ -1110,12 +1103,15 @@ fn parse_memory_group(
             .then_with(|| left.name.as_bytes().cmp(right.name.as_bytes()))
     });
     let mut map = SourceMap::new();
+    let mut virtual_sources = BTreeMap::new();
     for source in &sources {
         map.push_str(&source.name, source.contents.clone());
+        virtual_sources.insert(source.name.clone(), source.contents.clone());
     }
     map.parse().map_err(|(source_map, err)| {
         let span = err.kind().span();
-        let resolved = resolve_span_location(&source_map, span);
+        let resolved =
+            resolve_span_location_with_sources(&source_map, span, Some(&virtual_sources));
         let rendered = err.render(&source_map);
         let message = if let Some(source) = sources
             .iter()
@@ -1150,7 +1146,7 @@ fn finish_load(
     mut resolve: Resolve,
     context: &str,
     fallback_path: &Path,
-    source_contents: BTreeMap<String, String>,
+    source_contents: Option<BTreeMap<String, String>>,
 ) -> Result<Contract> {
     let (explicit_world_imports, included_foreign_worlds) =
         collect_explicit_world_imports(&top_pkg.main);
@@ -1164,7 +1160,11 @@ fn finish_load(
         .push_groups(top_pkg, loaded_deps.groups)
         .map_err(|err| {
             let span = err.kind().span();
-            let resolved = resolve_span_location(&resolve.source_map, span);
+            let resolved = resolve_span_location_with_sources(
+                &resolve.source_map,
+                span,
+                source_contents.as_ref(),
+            );
             let err_anyhow: anyhow::Error = err.into();
             let rendered = resolve.render_error(&err_anyhow);
             match resolved {
@@ -2255,8 +2255,7 @@ pub(crate) fn shell_quote(path: &Path) -> String {
     }
 }
 
-/// The highest sibling `v<major>.<minor>` version directory of `dir` in the same major whose
-/// `wire.lock` exists, if any.
+/// The highest sibling `v<major>.<minor>` version directory of `dir` in the same major, if any.
 pub(crate) fn sibling_predecessor(dir: &Path) -> Option<(u64, u64, PathBuf)> {
     let canonical = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let name = canonical.file_name()?.to_str()?;
@@ -2433,6 +2432,52 @@ mod tests {
                 end_line: 1,
                 end_column: 8,
             }
+        );
+    }
+
+    #[test]
+    fn load_sources_resolves_parse_and_resolution_spans_from_memory() {
+        // Parse error on line 3 in a virtual file that does not exist on disk.
+        let parse_err = load_sources(vec![SourceFile::new(
+            "virtual-only.wit".to_string(),
+            "package ex:mem@0.1.0;\ninterface api {\n  record broken { x: }\n}\n".to_string(),
+        )])
+        .unwrap_err();
+        let diags = error_located_diagnostics(&parse_err).expect("located parse diagnostic");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].file.as_deref(), Some("virtual-only.wit"));
+        let pos = diags[0]
+            .diagnostic
+            .position
+            .expect("parse error position from virtual buffer");
+        assert_eq!(pos.line, 3, "{diags:?}");
+
+        // Resolution error on line 4 (unknown imported type) resolves from virtual buffer,
+        // never falling back to disk even when the virtual file does not exist on disk.
+        let resolve_err = load_sources(vec![SourceFile::new(
+            "virtual-resolve.wit".to_string(),
+            "package ex:mem@0.1.0;\ninterface api {\n  record r {\n    x: nonexistent,\n  }\n}\n"
+                .to_string(),
+        )])
+        .unwrap_err();
+        let diags = error_located_diagnostics(&resolve_err).expect("located resolve diagnostic");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].file.as_deref(), Some("virtual-resolve.wit"));
+        let pos = diags[0]
+            .diagnostic
+            .position
+            .expect("resolution error position from virtual buffer");
+        assert_eq!(pos.line, 4, "{diags:?}");
+
+        // Shadowing check: `load_line_index` with `Some(virtual_sources)` must never read disk.
+        let mut cache = BTreeMap::new();
+        let mut virtual_sources = BTreeMap::new();
+        virtual_sources.insert("Cargo.toml".to_string(), "line1\nline2\n".to_string());
+        let index = load_line_index("Cargo.toml", &mut cache, Some(&virtual_sources)).unwrap();
+        assert_eq!(index.body, "line1\nline2\n");
+        assert!(
+            load_line_index("README.md", &mut cache, Some(&virtual_sources)).is_none(),
+            "memory-backed lookup must not read unrelated files from disk"
         );
     }
 }

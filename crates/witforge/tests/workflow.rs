@@ -169,3 +169,156 @@ fn root_check_validates_since_at_the_first_declaration() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn since_history_tracks_contiguous_non_unstable_lifetime_and_rejects_metadata() {
+    let root =
+        std::env::temp_dir().join(format!("witforge-since-lifecycle-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let v01 = root.join("v0.1");
+    let v02 = root.join("v0.2");
+    let v10 = root.join("v1.0");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+    fs::create_dir_all(&v10).unwrap();
+
+    // v0.1: `draft` is @unstable, `recycled` is stable at 0.1.0.
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:life@0.1.0;\n\
+         interface api {\n\
+             @unstable(feature = exp)\n\
+             record draft { id: u64 }\n\
+             @since(version = 0.1.0)\n\
+             record recycled { id: u64 }\n\
+         }\n",
+    )
+    .unwrap();
+    workflow::lock(&VersionOptions::new(v01.clone()).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+
+    // v0.2: `draft` stabilizes at 0.2.0; `recycled` is removed.
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:life@0.2.0;\n\
+         interface api {\n\
+             @since(version = 0.2.0)\n\
+             record draft { id: u64 }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    workflow::lock(
+        &VersionOptions::new(v02.clone()).with_baseline(Baseline::Against(v01.join("wire.lock"))),
+    )
+    .unwrap()
+    .write()
+    .unwrap();
+
+    // v1.0: `draft` remains @since(0.2.0); `recycled` is re-added in the new major at @since(1.0.0).
+    fs::write(
+        v10.join("contract.wit"),
+        "package ex:life@1.0.0;\n\
+         interface api {\n\
+             @since(version = 0.2.0)\n\
+             record draft { id: u64 }\n\
+             @since(version = 1.0.0)\n\
+             record recycled { id: u64 }\n\
+         }\n",
+    )
+    .unwrap();
+    workflow::lock(&VersionOptions::new(v10.clone()).with_baseline(Baseline::First))
+        .unwrap()
+        .write()
+        .unwrap();
+
+    let report = workflow::check_root(&root, None).unwrap();
+    assert!(report.is_ok(), "{:?}", report.findings);
+    witforge::emit::rust::plan(&root).unwrap();
+
+    // Claiming @since(0.1.0) on `recycled` after it was absent in v0.2 must fail.
+    fs::write(
+        v10.join("contract.wit"),
+        "package ex:life@1.0.0;\n\
+         interface api {\n\
+             @since(version = 0.2.0)\n\
+             record draft { id: u64 }\n\
+             @since(version = 0.1.0)\n\
+             record recycled { id: u64 }\n\
+         }\n",
+    )
+    .unwrap();
+    let bad = workflow::check_root(&root, None).unwrap();
+    assert!(
+        bad.findings.iter().any(|finding| {
+            finding.diagnostic.as_ref().is_some_and(|diag| {
+                diag.diagnostic.code == codes::SUBSET_ANNOTATION
+                    && diag.logical.as_deref() == Some("api/recycled")
+            })
+        }),
+        "{:?}",
+        bad.findings
+    );
+
+    // Pre-release and build metadata on @since and @deprecated must fail with WF1014.
+    // Use package version 0.2.0 so `wit-parser` accepts `0.1.0+build.1` (semver orders
+    // `0.1.0+build.1 > 0.1.0` and `< 0.2.0`) and hands it to witforge's subset checker.
+    for (annotation, source) in [
+        (
+            "@since pre-release",
+            "package ex:meta@0.2.0;\ninterface api { @since(version = 0.1.0-alpha.1) record r { id: u64 } }\n",
+        ),
+        (
+            "@since build",
+            "package ex:meta@0.2.0;\ninterface api { @since(version = 0.1.0+build.1) record r { id: u64 } }\n",
+        ),
+        (
+            "@deprecated pre-release",
+            "package ex:meta@0.2.0;\ninterface api { @since(version = 0.1.0) @deprecated(version = 0.2.0-rc.1) record r { id: u64 } }\n",
+        ),
+        (
+            "@deprecated build",
+            "package ex:meta@0.2.0;\ninterface api { @since(version = 0.1.0) @deprecated(version = 0.1.0+meta) record r { id: u64 } }\n",
+        ),
+    ] {
+        let contract = witforge::load_sources(vec![witforge::SourceFile::new(
+            "contract.wit".to_string(),
+            source.to_string(),
+        )])
+        .unwrap();
+        let diags = witforge::subset::check_diagnostics(&contract);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| diag.code == codes::SUBSET_ANNOTATION),
+            "{annotation}: expected WF1014, got {diags:?}"
+        );
+    }
+
+    // Dependency @since pre-release metadata is also refused with WF1014.
+    let dep_contract = witforge::load_sources(vec![
+        witforge::SourceFile::new(
+            "contract.wit".to_string(),
+            "package ex:root@0.1.0;\ninterface api { use ex:dep/shared@0.1.0.{item}; record r { x: item } }\n"
+                .to_string(),
+        ),
+        witforge::SourceFile::new(
+            "deps/dep.wit".to_string(),
+            "package ex:dep@0.1.0;\ninterface shared { @since(version = 0.1.0-beta.1) record item { id: u64 } }\n"
+                .to_string(),
+        ),
+    ])
+    .unwrap();
+    let dep_diags = witforge::subset::check_diagnostics(&dep_contract);
+    assert!(
+        dep_diags
+            .iter()
+            .any(|diag| diag.code == codes::SUBSET_ANNOTATION),
+        "{dep_diags:?}"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
