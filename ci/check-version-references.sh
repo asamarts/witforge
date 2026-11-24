@@ -115,6 +115,7 @@ action_ref='asamarts/witforge@v([0-9]+\.[0-9]+\.[0-9]+)'
 action_comment='installs witforge ([0-9]+\.[0-9]+\.[0-9]+)'
 action_version='VERSION=([0-9]+\.[0-9]+\.[0-9]+)'
 action_input='[[:space:]]version: ([0-9]+\.[0-9]+\.[0-9]+)'
+issue_version='placeholder: "witforge ([0-9]+\.[0-9]+\.[0-9]+)"'
 
 check_pattern README.md "${current_release}" "current release"
 check_pattern docs/index.md "${current_release}" "current release"
@@ -128,6 +129,7 @@ check_pattern docs/design/action.md "${action_ref}" "Action reference"
 check_pattern docs/design/action.md "${action_comment}" "Action reference comment"
 check_pattern docs/design/action.md "${action_version}" "Action version example"
 check_pattern docs/design/action.md "${action_input}" "Action input example"
+check_pattern .github/ISSUE_TEMPLATE/bug_report.yml "${issue_version}" "bug-report version placeholder"
 check_workflow_pattern .github/workflows/ci.yml "${action_ref}" "Action reference"
 check_workflow_pattern .github/workflows/ci.yml "${action_input}" "Action input"
 

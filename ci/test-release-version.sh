@@ -8,7 +8,8 @@ mkdir -p "${tmp_root}"
 tmp="$(mktemp -d "${tmp_root}/witforge-release-version.XXXXXX")"
 trap 'rm -rf "${tmp}"' EXIT
 base="${tmp}/base"
-mkdir -p "${base}/docs/guide" "${base}/docs/design" "${base}/.github/workflows"
+mkdir -p "${base}/docs/guide" "${base}/docs/design" "${base}/.github/workflows" \
+    "${base}/.github/ISSUE_TEMPLATE"
 
 write_fixture() {
     cat >"${base}/README.md" <<'EOF'
@@ -47,6 +48,12 @@ EOF
 - uses: asamarts/witforge@v9.9.9
   with:
     version: 9.9.9
+EOF
+    cat >"${base}/.github/ISSUE_TEMPLATE/bug_report.yml" <<'EOF'
+body:
+  - type: input
+    attributes:
+      placeholder: "witforge 9.9.9"
 EOF
     cat >"${base}/CHANGELOG.md" <<'EOF'
 # Changelog
@@ -118,6 +125,8 @@ expect_failure "the Action guide reference comment" docs/design/action.md \
     's/installs witforge 9\.9\.9/installs witforge 9.9.8/'
 expect_failure "the Action guide input example" docs/design/action.md \
     's/version: 9\.9\.9/version: 9.9.8/'
+expect_failure "the bug-report version placeholder" .github/ISSUE_TEMPLATE/bug_report.yml \
+    's/witforge 9\.9\.9/witforge 9.9.8/'
 
 # CI runs a published release: the workspace version or the release before it, and one release
 # throughout the workflow.
