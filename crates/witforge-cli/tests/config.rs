@@ -778,3 +778,97 @@ fn freeze_honors_custom_released_manifest_and_retirement_order() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn schema_draft_option_works_via_cli_and_config_and_rejects_invalid_values() {
+    let root = project("schema-draft");
+    let config = write_config(
+        &root,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.schema]
+out = "generated/schema-2020"
+draft = "2020-12"
+"#,
+    );
+
+    // 1. `witforge generate` honors `schema.draft = "2020-12"`.
+    let generated = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(generated.status.success(), "{generated:?}");
+    let doc: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("generated/schema-2020/v0_1.schema.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        doc["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert!(doc["$defs"].is_object());
+    assert!(doc.get("definitions").is_none());
+
+    // 2. CLI `--draft 7` overrides config `draft = "2020-12"`.
+    let overridden = witforge()
+        .current_dir(&root)
+        .args(["schema", "--config"])
+        .arg(&config)
+        .args(["--draft", "7", "--out", "generated/schema-7"])
+        .output()
+        .unwrap();
+    assert!(overridden.status.success(), "{overridden:?}");
+    let doc7: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("generated/schema-7/v0_1.schema.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(doc7["$schema"], "http://json-schema.org/draft-07/schema#");
+    assert!(doc7["definitions"].is_object());
+
+    // 3. Invalid CLI `--draft` and invalid config `draft` exit 2 (WF9001).
+    let bad_cli = witforge()
+        .current_dir(&root)
+        .args([
+            "schema",
+            "wit",
+            "--out",
+            "generated/bad",
+            "--draft",
+            "2019-09",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_cli.status.code(), Some(2), "{bad_cli:?}");
+    let bad_cli_json: serde_json::Value = serde_json::from_slice(&bad_cli.stdout).unwrap();
+    assert_eq!(bad_cli_json["diagnostics"][0]["code"], "WF9001");
+
+    let bad_config = write_config(
+        &root,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.schema]
+out = "generated/bad"
+draft = "draft-07"
+"#,
+    );
+    let bad_cfg_out = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&bad_config)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad_cfg_out.status.code(), Some(2), "{bad_cfg_out:?}");
+    let bad_cfg_json: serde_json::Value = serde_json::from_slice(&bad_cfg_out.stdout).unwrap();
+    assert_eq!(bad_cfg_json["diagnostics"][0]["code"], "WF9001");
+
+    fs::remove_dir_all(&root).unwrap();
+}

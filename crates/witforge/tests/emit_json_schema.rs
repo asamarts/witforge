@@ -306,6 +306,7 @@ fn description_escapes_all_control_characters_and_line_separators() {
     let mut model = model::build(&load(&fixture("ok")).unwrap()).unwrap();
     let hostile =
         "line1\r\nline2\rline3\0nul\u{000B}vt\u{000C}ff\u{007F}del\u{0085}nel\u{2028}ls\u{2029}ps";
+    let expected = "line1\nline2\nline3nul\nvt\nffdel\nnel\nls\nps";
     model.package.docs = hostile.to_string();
     model.interfaces[0].types[0].docs = hostile.to_string();
 
@@ -319,8 +320,8 @@ fn description_escapes_all_control_characters_and_line_separators() {
         );
     }
     let parsed: Value = serde_json::from_str(&rendered).unwrap();
-    assert_eq!(parsed["description"], hostile);
-    assert_eq!(parsed["definitions"]["types/span"]["description"], hostile);
+    assert_eq!(parsed["description"], expected);
+    assert_eq!(parsed["definitions"]["types/span"]["description"], expected);
     jsonschema::validator_for(&parsed).unwrap();
 }
 
@@ -589,4 +590,210 @@ fn numeric_bounds_validate_64_bit_integers_and_f32_limits() {
     let mut over_s64 = base_record;
     over_s64["s64-field"] = json!(u64::MAX);
     assert!(!validates(&schema, "values/record-value", over_s64));
+}
+
+#[test]
+fn docs_strip_block_comment_gutters_and_emit_member_descriptions() {
+    let source = r"/**
+ * Package title.
+ *
+ * Package details.
+ */
+package ex:docs@0.1.0;
+
+interface api {
+    /**
+     * Payload record.
+     * Second line.
+     */
+    record payload {
+        /**
+         * Identifier field.
+         */
+        id: string,
+        /** First line
+         * Second line.
+         */
+        note: string,
+        undocumented: u32,
+    }
+
+    /// Choice variant.
+    variant choice {
+        /// Carries a payload.
+        with-payload(payload),
+        /**
+         * Empty branch.
+         */
+        empty,
+    }
+
+    /// Bit flags.
+    flags perms {
+        /// Allow reads.
+        read,
+        /**
+         * Allow writes.
+         */
+        write,
+    }
+}
+";
+    let contract =
+        load_sources(vec![SourceFile::new("contract.wit".into(), source.into())]).unwrap();
+    let model = model::build(&contract).unwrap();
+    let rendered = json_schema::emit_version(&model).unwrap();
+    assert!(
+        !rendered.contains("* "),
+        "block comment gutter leaked into JSON Schema:\n{rendered}"
+    );
+    let schema: Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(schema["description"], "Package title.\n\nPackage details.");
+    assert_eq!(
+        schema["definitions"]["api/payload"]["description"],
+        "Payload record.\nSecond line."
+    );
+    assert_eq!(
+        schema["definitions"]["api/payload"]["properties"]["id"]["description"],
+        "Identifier field."
+    );
+    assert_eq!(
+        schema["definitions"]["api/payload"]["properties"]["note"]["description"],
+        "First line\nSecond line."
+    );
+    assert!(
+        schema["definitions"]["api/payload"]["properties"]["undocumented"]
+            .get("description")
+            .is_none()
+    );
+    let cases = schema["definitions"]["api/choice"]["oneOf"]
+        .as_array()
+        .unwrap();
+    assert_eq!(cases[0]["description"], "Carries a payload.");
+    assert_eq!(cases[1]["description"], "Empty branch.");
+    assert_eq!(
+        schema["definitions"]["api/perms"]["properties"]["read"]["description"],
+        "Allow reads."
+    );
+    assert_eq!(
+        schema["definitions"]["api/perms"]["properties"]["write"]["description"],
+        "Allow writes."
+    );
+    jsonschema::validator_for(&schema).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn draft_2020_12_emits_defs_native_deprecated_and_validates_with_jsonschema() {
+    let options =
+        json_schema::SchemaOptions::new().with_draft(json_schema::JsonSchemaDraft::Draft202012);
+    let model = model::build(&load(&fixture("emit/rust/all")).unwrap()).unwrap();
+    let rendered = json_schema::emit_version_with_options(&model, &options).unwrap();
+    let schema: Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(
+        schema["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert!(schema.get("definitions").is_none());
+    assert!(schema["$defs"].is_object());
+    assert_eq!(
+        schema["$defs"]["values/alias-value"]["$ref"],
+        "#/$defs/values~1payload"
+    );
+    assert_eq!(
+        schema["$defs"]["values/alias-value"]["description"],
+        "An alias to a record."
+    );
+    assert_eq!(
+        schema["$defs"]["values/record-value"]["properties"]["variant-field"]["$ref"],
+        "#/$defs/values~1variant-value"
+    );
+    assert_eq!(
+        schema["$defs"]["values/record-value"]["properties"]["variant-field"]["description"],
+        "A variant payload."
+    );
+
+    // Compile under Draft 2020-12 directly and validate valid & invalid documents.
+    jsonschema::draft202012::new(&schema).unwrap();
+    let wrapper = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": schema["$defs"].clone(),
+        "$ref": "#/$defs/values~1payload",
+    });
+    let validator = jsonschema::draft202012::new(&wrapper).unwrap();
+    assert!(
+        validator
+            .validate(&json!({"name": "ok", "bytes": [1, 255]}))
+            .is_ok()
+    );
+    assert!(
+        validator
+            .validate(&json!({"name": "bad", "bytes": [256]}))
+            .is_err()
+    );
+
+    // Dependency `$ref` pointers also use `#/$defs/` under Draft 2020-12 and resolve cleanly
+    // when both documents are loaded under a shared base URI.
+    let deps_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps-bytes/wit");
+    let dep_files = json_schema::plan_with_options(&deps_root, None, &options).unwrap();
+    let rendered_root_dep = &dep_files.files()["v0_1.schema.json"];
+    let root_dep_schema: Value = serde_json::from_str(rendered_root_dep).unwrap();
+    let shared_dep_schema: Value =
+        serde_json::from_str(&dep_files.files()["example.shared.v0.schema.json"]).unwrap();
+    assert_eq!(
+        root_dep_schema["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert!(
+        rendered_root_dep.contains("example.shared.v0.schema.json#/$defs/"),
+        "expected Draft 2020-12 dependency ref:\n{rendered_root_dep}"
+    );
+    assert!(
+        !rendered_root_dep.contains("#/definitions/"),
+        "unexpected Draft 7 pointer in Draft 2020-12 output:\n{rendered_root_dep}"
+    );
+    let dep_wrapper = json!({
+        "$id": "https://example.invalid/v0_1.schema.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": root_dep_schema["$defs"].clone(),
+        "$ref": "#/$defs/api~1box",
+    });
+    let registry = jsonschema::Registry::new()
+        .add(
+            "https://example.invalid/example.shared.v0.schema.json",
+            shared_dep_schema,
+        )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let dep_validator = jsonschema::draft202012::options()
+        .with_registry(&registry)
+        .build(&dep_wrapper)
+        .unwrap();
+    assert!(
+        dep_validator
+            .validate(&json!({
+                "direct": [1, 2],
+                "element": [[3]],
+                "named": [4],
+                "nested": [[5, 6]],
+                "deep": [[[7]]],
+                "renamed": [8],
+                "renamed-named": [9],
+            }))
+            .is_ok()
+    );
+    assert!(
+        dep_validator
+            .validate(&json!({
+                "direct": [256],
+                "element": [],
+                "named": [],
+                "nested": [],
+                "deep": [],
+                "renamed": [],
+                "renamed-named": [],
+            }))
+            .is_err()
+    );
 }

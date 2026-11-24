@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "example:tasks@0.1.0",
   "definitions": {
-    "types/task": {"description":"One task.","type":"object","properties":{"id":{"type":"integer","minimum":0,"maximum":18446744073709551615},"title":{"type":"string"},"done":{"type":"boolean"}},"required":["id","title","done"],"additionalProperties":false},
+    "types/task": {"description":"One task.","type":"object","properties":{"id":{"description":"Stable task id.","type":"integer","minimum":0,"maximum":18446744073709551615},"title":{"description":"Task title.","type":"string"},"done":{"description":"Whether the task is complete.","type":"boolean"}},"required":["id","title","done"],"additionalProperties":false},
     "service/task": {"$ref":"#/definitions/types~1task"}
   }
 }

@@ -1,14 +1,17 @@
-//! Deterministic Draft 7 JSON Schema generation from the owned model.
+//! Deterministic JSON Schema generation from the owned model (Draft 7 default, opt-in
+//! Draft 2020-12).
 //!
 //! The schema is a value projection, not a wire format: every contract version gets one
-//! `v<major>_<minor>.schema.json` file whose `definitions` contain every named type. There is
-//! no root instance type, so consumers select a definition with `$ref`.
+//! `v<major>_<minor>.schema.json` file whose `definitions` (Draft 7) or `$defs` (Draft 2020-12)
+//! contain every named type. There is no root instance type, so consumers select a definition with
+//! `$ref`.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::emit::docs;
 use crate::emit::output::{
     GeneratedFileFinding, GeneratedFiles, ensure_outside_wit_root, json_header,
 };
@@ -18,6 +21,63 @@ use crate::emit::versions::{
     DepLayout, Version, load_versions, load_versions_with_released, same_dependency,
 };
 use crate::model::{Dependency, Interface, Model, ResultExpr, TypeDef, TypeDefKind, TypeExpr};
+
+/// Target JSON Schema dialect emitted by [`plan_with_options`] and [`emit_version_with_options`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum JsonSchemaDraft {
+    /// JSON Schema Draft 7 (`http://json-schema.org/draft-07/schema#`, `definitions`).
+    #[default]
+    Draft7,
+    /// JSON Schema Draft 2020-12 (`https://json-schema.org/draft/2020-12/schema`, `$defs`).
+    Draft202012,
+}
+
+impl JsonSchemaDraft {
+    /// The `$schema` meta-schema URI for this draft.
+    #[must_use]
+    pub const fn schema_uri(self) -> &'static str {
+        match self {
+            Self::Draft7 => "http://json-schema.org/draft-07/schema#",
+            Self::Draft202012 => "https://json-schema.org/draft/2020-12/schema",
+        }
+    }
+
+    /// The top-level definitions container keyword (`definitions` in Draft 7, `$defs` in
+    /// Draft 2020-12).
+    #[must_use]
+    pub const fn defs_keyword(self) -> &'static str {
+        match self {
+            Self::Draft7 => "definitions",
+            Self::Draft202012 => "$defs",
+        }
+    }
+}
+
+/// Options controlling JSON Schema emission.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SchemaOptions {
+    /// Target JSON Schema dialect (defaults to [`JsonSchemaDraft::Draft7`]).
+    pub draft: JsonSchemaDraft,
+}
+
+impl SchemaOptions {
+    /// Create default JSON Schema options (Draft 7).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            draft: JsonSchemaDraft::Draft7,
+        }
+    }
+
+    /// Select the target JSON Schema dialect.
+    #[must_use]
+    pub const fn with_draft(mut self, draft: JsonSchemaDraft) -> Self {
+        self.draft = draft;
+        self
+    }
+}
 
 /// Legacy pre-0.6.0 shared ownership header for JSON Schema files.
 ///
@@ -36,7 +96,7 @@ fn header_for(namespace: &str, name: &str) -> String {
 ///
 /// Returns an error for invalid input or an output-root or I/O failure.
 pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
-    plan_versions(&load_versions(wit_root)?)
+    plan_versions(&load_versions(wit_root)?, &SchemaOptions::default())
 }
 
 /// Plan JSON Schema output for `wit_root`, using an optional explicit released-version manifest
@@ -46,11 +106,28 @@ pub fn plan(wit_root: &Path) -> Result<GeneratedFiles> {
 ///
 /// Returns the same errors as [`plan`].
 pub fn plan_with_released(wit_root: &Path, released: Option<&Path>) -> Result<GeneratedFiles> {
-    plan_versions(&load_versions_with_released(wit_root, released)?)
+    plan_with_options(wit_root, released, &SchemaOptions::default())
+}
+
+/// Plan JSON Schema output for `wit_root`, using an optional explicit released-version manifest
+/// path (`--released`) and [`SchemaOptions`] (such as Draft 2020-12).
+///
+/// # Errors
+///
+/// Returns the same errors as [`plan`].
+pub fn plan_with_options(
+    wit_root: &Path,
+    released: Option<&Path>,
+    options: &SchemaOptions,
+) -> Result<GeneratedFiles> {
+    plan_versions(&load_versions_with_released(wit_root, released)?, options)
 }
 
 /// Plan JSON Schema output for validated `versions`.
-pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
+pub(crate) fn plan_versions(
+    versions: &[Version],
+    options: &SchemaOptions,
+) -> Result<GeneratedFiles> {
     let dep_layout = DepLayout::from_versions(versions)?;
     let root_package = &versions
         .first()
@@ -61,9 +138,14 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
     let mut files = GeneratedFiles::new(&header);
     for version in versions {
         let module = version_module_name(&version.model);
-        let generated =
-            emit_version_with_layout(&version.model, &header, version.major, Some(&dep_layout))
-                .with_context(|| version.directory.display().to_string())?;
+        let generated = emit_version_with_layout(
+            &version.model,
+            &header,
+            version.major,
+            Some(&dep_layout),
+            options.draft,
+        )
+        .with_context(|| version.directory.display().to_string())?;
         files.insert(format!("{module}.schema.json"), generated)?;
     }
     let mut emitted_dep_files: std::collections::BTreeMap<String, Dependency> =
@@ -93,8 +175,9 @@ pub(crate) fn plan_versions(versions: &[Version]) -> Result<GeneratedFiles> {
                     .cloned()
                     .collect(),
             };
-            let generated = emit_version_with_layout(&model, &header, major, Some(&dep_layout))
-                .with_context(|| format!("dependency {}", dependency.package.name))?;
+            let generated =
+                emit_version_with_layout(&model, &header, major, Some(&dep_layout), options.draft)
+                    .with_context(|| format!("dependency {}", dependency.package.name))?;
             emitted_dep_files.insert(filename.clone(), dependency.clone());
             files.insert(filename, generated)?;
         }
@@ -128,7 +211,7 @@ pub fn check(wit_root: &Path, out: &Path) -> Result<Vec<GeneratedFileFinding>> {
 /// without contract refusals.
 pub(crate) fn validate_model(model: &Model) -> Result<()> {
     let header = header_for(&model.package.namespace, &model.package.name);
-    let _ = emit_version_with_header(model, &header)?;
+    let _ = emit_version_with_header(model, &header, JsonSchemaDraft::Draft7)?;
     let mut dependency_files = std::collections::BTreeSet::new();
     for dependency in &model.dependencies {
         let dep_model = Model {
@@ -145,12 +228,13 @@ pub(crate) fn validate_model(model: &Model) -> Result<()> {
                 .cloned()
                 .collect(),
         };
-        let _ = emit_version_with_header(&dep_model, &header).with_context(|| {
-            format!(
-                "dependency {}:{}",
-                dependency.package.namespace, dependency.package.name
-            )
-        })?;
+        let _ = emit_version_with_header(&dep_model, &header, JsonSchemaDraft::Draft7)
+            .with_context(|| {
+                format!(
+                    "dependency {}:{}",
+                    dependency.package.namespace, dependency.package.name
+                )
+            })?;
         let filename = dependency_schema_filename(dependency);
         if !dependency_files.insert(filename.clone()) {
             contract_bail!("dependency packages both generate `{filename}`");
@@ -159,19 +243,28 @@ pub(crate) fn validate_model(model: &Model) -> Result<()> {
     Ok(())
 }
 
-/// Emit one version's complete JSON Schema document.
+/// Emit one version's complete JSON Schema document (Draft 7).
 ///
 /// # Errors
 ///
 /// Returns a [`crate::ContractError`] when a WIT name or schema shape cannot be represented and a
 /// plain error when the model contains a dangling named type.
 pub fn emit_version(model: &Model) -> Result<String> {
-    let header = header_for(&model.package.namespace, &model.package.name);
-    emit_version_with_header(model, &header)
+    emit_version_with_options(model, &SchemaOptions::default())
 }
 
-fn emit_version_with_header(model: &Model, header: &str) -> Result<String> {
-    emit_version_with_layout(model, header, model.package.version.major, None)
+/// Emit one version's complete JSON Schema document using `options` (such as Draft 2020-12).
+///
+/// # Errors
+///
+/// Returns the same errors as [`emit_version`].
+pub fn emit_version_with_options(model: &Model, options: &SchemaOptions) -> Result<String> {
+    let header = header_for(&model.package.namespace, &model.package.name);
+    emit_version_with_header(model, &header, options.draft)
+}
+
+fn emit_version_with_header(model: &Model, header: &str, draft: JsonSchemaDraft) -> Result<String> {
+    emit_version_with_layout(model, header, model.package.version.major, None, draft)
 }
 
 fn emit_version_with_layout(
@@ -179,13 +272,11 @@ fn emit_version_with_layout(
     header: &str,
     root_major: u64,
     dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
 ) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{header}")?;
-    writeln!(
-        out,
-        "  \"$schema\": \"http://json-schema.org/draft-07/schema#\","
-    )?;
+    writeln!(out, "  \"$schema\": {},", json_string(draft.schema_uri()))?;
     writeln!(
         out,
         "  \"title\": {},",
@@ -194,19 +285,16 @@ fn emit_version_with_layout(
             model.package.namespace, model.package.name, model.package.version
         ))
     )?;
-    if !model.package.docs.is_empty() {
-        writeln!(
-            out,
-            "  \"description\": {},",
-            json_string(&model.package.docs)
-        )?;
+    let package_docs = docs::normalize_plain(&model.package.docs);
+    if !package_docs.is_empty() {
+        writeln!(out, "  \"description\": {},", json_string(&package_docs))?;
     }
-    writeln!(out, "  \"definitions\": {{")?;
+    writeln!(out, "  \"{}\": {{", draft.defs_keyword())?;
     let mut definitions = Vec::new();
     for interface in &model.interfaces {
         for def in &interface.types {
             let key = format!("{}/{}", interface.name, def.name);
-            let schema = definition_schema(model, interface, def, root_major, dep_layout)?;
+            let schema = definition_schema(model, interface, def, root_major, dep_layout, draft)?;
             definitions.push(format!("    {}: {}", json_string(&key), schema));
         }
     }
@@ -223,17 +311,18 @@ fn definition_schema(
     def: &TypeDef,
     root_major: u64,
     dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
 ) -> Result<String> {
     let schema = match &def.kind {
         TypeDefKind::Record(fields) => {
             let mut properties = Vec::new();
             let mut required = Vec::new();
             for field in fields {
-                properties.push(format!(
-                    "{}:{}",
-                    json_string(&field.name),
-                    type_schema(model, interface, &field.ty, root_major, dep_layout)?
-                ));
+                let prop = with_description(
+                    &field.docs,
+                    type_schema(model, interface, &field.ty, root_major, dep_layout, draft)?,
+                );
+                properties.push(format!("{}:{prop}", json_string(&field.name)));
                 required.push(json_string(&field.name));
             }
             format!(
@@ -247,15 +336,16 @@ fn definition_schema(
             for case in cases {
                 let value = match &case.payload {
                     Some(payload) => {
-                        type_schema(model, interface, payload, root_major, dep_layout)?
+                        type_schema(model, interface, payload, root_major, dep_layout, draft)?
                     }
                     None => "{\"type\":\"null\"}".to_string(),
                 };
                 let property = format!("{}:{}", json_string(&case.name), value);
-                variants.push(format!(
+                let case_schema = format!(
                     "{{\"type\":\"object\",\"properties\":{{{property}}},\"required\":[{}],\"additionalProperties\":false}}",
                     json_string(&case.name)
-                ));
+                );
+                variants.push(with_description(&case.docs, case_schema));
             }
             format!("{{\"oneOf\":[{}]}}", variants.join(","))
         }
@@ -271,10 +361,9 @@ fn definition_schema(
             let mut properties = Vec::new();
             let mut required = Vec::new();
             for flag in flags {
-                properties.push(format!(
-                    "{}:{{\"type\":\"boolean\"}}",
-                    json_string(&flag.name)
-                ));
+                let flag_schema =
+                    with_description(&flag.docs, "{\"type\":\"boolean\"}".to_string());
+                properties.push(format!("{}:{flag_schema}", json_string(&flag.name)));
                 required.push(json_string(&flag.name));
             }
             format!(
@@ -284,7 +373,7 @@ fn definition_schema(
             )
         }
         TypeDefKind::Alias(target) => {
-            type_schema(model, interface, target, root_major, dep_layout)?
+            type_schema(model, interface, target, root_major, dep_layout, draft)?
         }
         TypeDefKind::List(element) => {
             let item = if model.resolves_to_u8(element) {
@@ -294,14 +383,14 @@ fn definition_schema(
             };
             format!(
                 "{{\"type\":\"array\",\"items\":{}}}",
-                type_schema(model, interface, &item, root_major, dep_layout)?
+                type_schema(model, interface, &item, root_major, dep_layout, draft)?
             )
         }
         TypeDefKind::Option(payload) => {
-            option_schema(model, interface, payload, root_major, dep_layout)?
+            option_schema(model, interface, payload, root_major, dep_layout, draft)?
         }
         TypeDefKind::Result(result) => {
-            result_schema(model, interface, result, root_major, dep_layout)?
+            result_schema(model, interface, result, root_major, dep_layout, draft)?
         }
     };
     Ok(with_metadata(&def.docs, &def.stability, schema))
@@ -313,7 +402,9 @@ fn type_schema(
     ty: &TypeExpr,
     root_major: u64,
     dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
 ) -> Result<String> {
+    let defs = draft.defs_keyword();
     match ty {
         TypeExpr::Bool => Ok("{\"type\":\"boolean\"}".to_string()),
         TypeExpr::U8 => Ok(integer_schema(0, u64::from(u8::MAX))),
@@ -353,7 +444,7 @@ fn type_schema(
                 );
                 return Ok(format!(
                     "{{\"$ref\":{}}}",
-                    json_string(&format!("{filename}#/definitions/{}", pointer(&key)))
+                    json_string(&format!("{filename}#/{defs}/{}", pointer(&key)))
                 ));
             }
             model
@@ -362,7 +453,7 @@ fn type_schema(
             Ok(format!(
                 "{{\"$ref\":{}}}",
                 json_string(&format!(
-                    "#/definitions/{}",
+                    "#/{defs}/{}",
                     pointer(&format!("{}/{}", name.interface, name.name))
                 ))
             ))
@@ -375,13 +466,15 @@ fn type_schema(
             };
             Ok(format!(
                 "{{\"type\":\"array\",\"items\":{}}}",
-                type_schema(model, interface, &item, root_major, dep_layout)?
+                type_schema(model, interface, &item, root_major, dep_layout, draft)?
             ))
         }
         TypeExpr::Option(payload) => {
-            option_schema(model, interface, payload, root_major, dep_layout)
+            option_schema(model, interface, payload, root_major, dep_layout, draft)
         }
-        TypeExpr::Result(result) => result_schema(model, interface, result, root_major, dep_layout),
+        TypeExpr::Result(result) => {
+            result_schema(model, interface, result, root_major, dep_layout, draft)
+        }
     }
 }
 
@@ -391,10 +484,11 @@ fn option_schema(
     payload: &TypeExpr,
     root_major: u64,
     dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
 ) -> Result<String> {
     Ok(format!(
         "{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}",
-        type_schema(model, interface, payload, root_major, dep_layout)?
+        type_schema(model, interface, payload, root_major, dep_layout, draft)?
     ))
 }
 
@@ -404,6 +498,7 @@ fn result_schema(
     result: &ResultExpr,
     root_major: u64,
     dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
 ) -> Result<String> {
     let ok = result_variant(
         model,
@@ -412,6 +507,7 @@ fn result_schema(
         result.ok.as_deref(),
         root_major,
         dep_layout,
+        draft,
     )?;
     let err = result_variant(
         model,
@@ -420,6 +516,7 @@ fn result_schema(
         result.err.as_deref(),
         root_major,
         dep_layout,
+        draft,
     )?;
     Ok(format!("{{\"oneOf\":[{ok},{err}]}}"))
 }
@@ -431,9 +528,10 @@ fn result_variant(
     payload: Option<&TypeExpr>,
     root_major: u64,
     dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
 ) -> Result<String> {
     let value = match payload {
-        Some(payload) => type_schema(model, interface, payload, root_major, dep_layout)?,
+        Some(payload) => type_schema(model, interface, payload, root_major, dep_layout, draft)?,
         None => "{\"type\":\"null\"}".to_string(),
     };
     let property = format!("{}:{value}", json_string(name));
@@ -447,13 +545,27 @@ fn integer_schema(minimum: i64, maximum: u64) -> String {
     format!("{{\"type\":\"integer\",\"minimum\":{minimum},\"maximum\":{maximum}}}")
 }
 
-fn with_metadata(description: &str, stability: &crate::model::Stability, schema: String) -> String {
+fn with_description(raw_docs: &str, schema: String) -> String {
+    let description = docs::normalize_plain(raw_docs);
+    if description.is_empty() {
+        schema
+    } else {
+        format!(
+            "{{\"description\":{},{}",
+            json_string(&description),
+            &schema[1..]
+        )
+    }
+}
+
+fn with_metadata(raw_docs: &str, stability: &crate::model::Stability, schema: String) -> String {
+    let normalized = docs::normalize_plain(raw_docs);
     let stability_description = stability_doc(stability);
-    let description = match (description.is_empty(), stability_description) {
+    let description = match (normalized.is_empty(), stability_description) {
         (true, None) => None,
-        (false, None) => Some(description.to_string()),
+        (false, None) => Some(normalized),
         (true, Some(stability)) => Some(stability),
-        (false, Some(stability)) => Some(format!("{description}\n\n{stability}")),
+        (false, Some(stability)) => Some(format!("{normalized}\n\n{stability}")),
     };
     let mut metadata = Vec::new();
     if let Some(description) = description {

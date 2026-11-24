@@ -101,6 +101,16 @@ pub(crate) fn sanitize_proto_lines(docs: &str) -> Vec<String> {
     sanitize_markdown_lines(&lines, Target::Proto)
 }
 
+/// Normalise WIT documentation into plain LF-separated text for JSON Schema descriptions and the
+/// contract IR.
+///
+/// Normalises line endings and Unicode line/paragraph separators to `\n`, strips C0/C1 control
+/// characters (except `\n` and `\t`), strips decorative `/** *` block-comment gutters, and trims
+/// leading and trailing blank lines.
+pub(crate) fn normalize_plain(docs: &str) -> String {
+    normalize_lines(docs).join("\n")
+}
+
 fn normalize_lines(raw: &str) -> Vec<String> {
     if raw.is_empty() {
         return Vec::new();

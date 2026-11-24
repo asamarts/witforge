@@ -92,13 +92,14 @@ Generate or check per-major protobuf schemas (`v<major>.proto` and dependency `.
 
 ### `witforge schema`
 
-Generate or check Draft 7 JSON Schema files (`v<major>_<minor>.schema.json` and dependency
-schemas).
+Generate or check JSON Schema files (`v<major>_<minor>.schema.json` and dependency schemas;
+Draft 7 by default, or Draft 2020-12 with `--draft 2020-12`).
 
 | Option / Argument | Description |
 |---|---|
 | `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
 | `--out <DIR>` | Output directory for generated JSON Schema files. |
+| `--draft <DRAFT>` | JSON Schema dialect: `7` (default) or `2020-12` (overrides `project.<name>.schema.draft`). |
 | `--check` | Verify existing files match without writing; exits `1` on drift. |
 | `--diff` | Print a unified diff of output changes without changing the exit status. |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
@@ -223,7 +224,8 @@ expansion.
 | `[project.<name>.proto]` | no | table | Protobuf generator configuration. |
 | `project.<name>.proto.out` | yes (if section set) | path | Output directory for generated `.proto` files. |
 | `[project.<name>.schema]` | no | table | JSON Schema generator configuration. |
-| `project.<name>.schema.out` | yes (if section set) | path | Output directory for generated Draft 7 JSON Schema files. |
+| `project.<name>.schema.out` | yes (if section set) | path | Output directory for generated JSON Schema files. |
+| `project.<name>.schema.draft` | no | string | JSON Schema dialect: `"7"` (default) or `"2020-12"`. |
 | `[project.<name>.glue]` | no | table | Rust/prost glue generator configuration. |
 | `project.<name>.glue.out` | yes (if section set) | path | Output directory for generated glue files. |
 | `project.<name>.glue.plain-root` | yes (if section set) | string | Absolute Rust module path to generated plain modules (`crate::...` or `::ext::...`). |

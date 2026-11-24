@@ -169,6 +169,9 @@ struct SchemaOptions {
     /// Output root for generated JSON Schema files.
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    /// JSON Schema dialect (`7` or `2020-12`; defaults to `7` or `schema.draft` in config).
+    #[arg(long, value_name = "DRAFT")]
+    draft: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -389,7 +392,7 @@ struct ProjectConfig {
     released: Option<PathBuf>,
     rust: Option<RustConfig>,
     proto: Option<OutConfig>,
-    schema: Option<OutConfig>,
+    schema: Option<SchemaConfig>,
     glue: Option<GlueConfig>,
 }
 
@@ -405,6 +408,14 @@ struct RustConfig {
     out: PathBuf,
     /// Add serde derives to generated records, enums, variants, and flags.
     serde: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SchemaConfig {
+    out: PathBuf,
+    /// JSON Schema dialect (`"7"` or `"2020-12"`).
+    draft: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -432,6 +443,7 @@ struct PathOverrides {
     plain_root: Option<String>,
     proto_root: Option<String>,
     serde: Option<bool>,
+    schema_draft: Option<emit::json_schema::JsonSchemaDraft>,
 }
 
 struct ResolvedPaths {
@@ -441,6 +453,7 @@ struct ResolvedPaths {
     plain_root: Option<String>,
     proto_root: Option<String>,
     serde: bool,
+    schema_draft: emit::json_schema::JsonSchemaDraft,
 }
 
 fn load_config_file(config_path: &Path) -> Result<(ConfigFile, PathBuf)> {
@@ -545,6 +558,7 @@ fn resolve_paths(
         plain_root,
         proto_root,
         serde,
+        schema_draft,
     } = overrides;
     let cli_complete = root.is_some()
         && out.is_some()
@@ -586,6 +600,7 @@ fn resolve_paths(
             plain_root,
             proto_root,
             serde: serde.unwrap_or(false),
+            schema_draft: schema_draft.unwrap_or_default(),
         });
     };
 
@@ -623,7 +638,10 @@ fn resolve_paths(
     let out = out.or_else(|| match emitter {
         Emitter::Rust => project.rust.as_ref().map(|config| from_config(&config.out)),
         Emitter::Proto => project.proto.map(|config| from_config(&config.out)),
-        Emitter::Schema => project.schema.map(|config| from_config(&config.out)),
+        Emitter::Schema => project
+            .schema
+            .as_ref()
+            .map(|config| from_config(&config.out)),
         Emitter::Glue => project.glue.as_ref().map(|config| from_config(&config.out)),
     });
     let Some(out) = out else {
@@ -656,6 +674,19 @@ fn resolve_paths(
     let serde = serde
         .or_else(|| project.rust.as_ref().and_then(|config| config.serde))
         .unwrap_or(false);
+    let config_schema_draft = match project
+        .schema
+        .as_ref()
+        .and_then(|config| config.draft.as_deref())
+    {
+        Some(raw) => Some(parse_schema_draft(
+            raw,
+            &format!("project.{name}.schema.draft"),
+            Some(config_path.display().to_string()),
+        )?),
+        None => None,
+    };
+    let schema_draft = schema_draft.or(config_schema_draft).unwrap_or_default();
     Ok(ResolvedPaths {
         root,
         out,
@@ -663,6 +694,7 @@ fn resolve_paths(
         plain_root,
         proto_root,
         serde,
+        schema_draft,
     })
 }
 
@@ -755,6 +787,13 @@ fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<
                 &schema.out,
                 config_path,
             )?;
+            if let Some(draft) = &schema.draft {
+                parse_schema_draft(
+                    draft,
+                    &format!("project.{proj_name}.schema.draft"),
+                    Some(config_path.display().to_string()),
+                )?;
+            }
         }
         if let Some(glue) = &proj.glue {
             check_config_path(
@@ -813,6 +852,22 @@ fn contains_windows_env_var(text: &str) -> bool {
         i += 1;
     }
     false
+}
+
+fn parse_schema_draft(
+    raw: &str,
+    label: &str,
+    path: Option<String>,
+) -> Result<emit::json_schema::JsonSchemaDraft> {
+    match raw {
+        "7" => Ok(emit::json_schema::JsonSchemaDraft::Draft7),
+        "2020-12" => Ok(emit::json_schema::JsonSchemaDraft::Draft202012),
+        _ => Err(op_error(
+            codes::CLI_USAGE,
+            format!("invalid {label} `{raw}`; expected `7` or `2020-12`"),
+            path,
+        )),
+    }
 }
 
 fn validate_configured_module_roots(config: &ConfigFile) -> Result<()> {
@@ -1238,6 +1293,7 @@ fn regenerate_command(
     plain_root: Option<&str>,
     proto_root: Option<&str>,
     serde_flag: Option<bool>,
+    schema_draft: Option<&str>,
 ) -> String {
     let mut command = format!("witforge {verb}");
     if let Some(root) = root {
@@ -1264,6 +1320,9 @@ fn regenerate_command(
         Some(true) => command.push_str(" --serde"),
         Some(false) => command.push_str(" --no-serde"),
         None => {}
+    }
+    if let Some(draft) = schema_draft {
+        let _ = write!(command, " --draft {}", shell_quote(Path::new(draft)));
     }
     if let Some(released) = released {
         let _ = write!(command, " --released {}", shell_quote(released));
@@ -1295,6 +1354,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             plain_root: None,
             proto_root: None,
             serde: serde_override,
+            schema_draft: None,
         },
     )?;
     guard_output_root(&paths)?;
@@ -1309,6 +1369,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         None,
         None,
         serde_override,
+        None,
     );
     run_generator(
         &files,
@@ -1331,6 +1392,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             plain_root: None,
             proto_root: None,
             serde: None,
+            schema_draft: None,
         },
     )?;
     guard_output_root(&paths)?;
@@ -1341,6 +1403,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         None,
         None,
         None,
@@ -1356,6 +1419,11 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
 }
 
 fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let draft_override = options
+        .draft
+        .as_deref()
+        .map(|raw| parse_schema_draft(raw, "`--draft`", None))
+        .transpose()?;
     let paths = resolve_paths(
         Emitter::Schema,
         &options.config,
@@ -1366,10 +1434,16 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             plain_root: None,
             proto_root: None,
             serde: None,
+            schema_draft: draft_override,
         },
     )?;
     guard_output_root(&paths)?;
-    let files = emit::json_schema::plan_with_released(&paths.root, paths.released.as_deref())?;
+    let schema_options = emit::json_schema::SchemaOptions::new().with_draft(paths.schema_draft);
+    let files = emit::json_schema::plan_with_options(
+        &paths.root,
+        paths.released.as_deref(),
+        &schema_options,
+    )?;
     let regen = regenerate_command(
         "schema",
         &options.config,
@@ -1379,6 +1453,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         None,
         None,
         None,
+        options.draft.as_deref(),
     );
     run_generator(
         &files,
@@ -1401,6 +1476,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             plain_root: options.plain_root.clone(),
             proto_root: options.proto_root.clone(),
             serde: None,
+            schema_draft: None,
         },
     )?;
     let plain_root = paths
@@ -1429,6 +1505,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.released.as_deref(),
         options.plain_root.as_deref(),
         options.proto_root.as_deref(),
+        None,
         None,
     );
     run_generator(
@@ -1980,6 +2057,7 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                     &SchemaOptions {
                         root: None,
                         out: None,
+                        draft: None,
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),
@@ -2647,6 +2725,7 @@ mod reference_doc_tests {
             "`project.<name>.proto.out`",
             "`[project.<name>.schema]`",
             "`project.<name>.schema.out`",
+            "`project.<name>.schema.draft`",
             "`[project.<name>.glue]`",
             "`project.<name>.glue.out`",
             "`project.<name>.glue.plain-root`",

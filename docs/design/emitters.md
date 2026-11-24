@@ -1581,8 +1581,9 @@ their own code beside the generated ones.
 
 ## 10. JSON Schema emitter
 
-`witforge schema <wit-root> --out <dir> [--check] [--released <path>]` writes one Draft 7 JSON
-Schema document per version and one per dependency:
+`witforge schema <wit-root> --out <dir> [--draft 7|2020-12] [--check] [--released <path>]` writes
+one JSON Schema document per version and one per dependency (Draft 7 by default, or opt-in
+Draft 2020-12):
 
 ```text
 <out>/v<major>_<minor>.schema.json
@@ -1591,7 +1592,7 @@ Schema document per version and one per dependency:
 
 Every version is validated and lockfile-checked like the other generators. The output is
 value-oriented and has no root instance type: a consumer selects a definition with a JSON
-Pointer `$ref` under `#/definitions/`.
+Pointer `$ref` under `#/definitions/` (Draft 7) or `#/$defs/` (Draft 2020-12).
 
 ### 10.1 Header and document shape
 
@@ -1603,10 +1604,11 @@ header:
 ```
 
 A foreign definition is referenced by a relative file and JSON Pointer, such as
-`example.shared.v0.schema.json#/definitions/types~1item`; keep the generated schema files
-together so the reference resolves.
+`example.shared.v0.schema.json#/definitions/types~1item` (Draft 7) or
+`example.shared.v0.schema.json#/$defs/types~1item` (Draft 2020-12); keep the generated schema
+files together so the reference resolves.
 
-The rest of the document is conventional JSON:
+The rest of the document is conventional JSON (Draft 7 shown):
 
 ```json
 {
@@ -1618,16 +1620,22 @@ The rest of the document is conventional JSON:
 }
 ```
 
-- `$schema` is Draft 7.
+- `$schema` is Draft 7 (`http://json-schema.org/draft-07/schema#`) by default, or Draft 2020-12
+  (`https://json-schema.org/draft/2020-12/schema`) when `--draft 2020-12` or
+  `project.<name>.schema.draft = "2020-12"` is selected.
 - `title` is the package identity and exact version.
-- `definitions` contains every named type in every interface, in interface and type source
-  order. Keys are canonical WIT identities `interface/type`.
+- `definitions` (Draft 7) or `$defs` (Draft 2020-12) contains every named type in every interface,
+  in interface and type source order. Keys are canonical WIT identities `interface/type`.
 - A `$ref` uses JSON Pointer escaping: `/` becomes `~1` and `~` becomes `~0`, so
-  `types/span` is `#/definitions/types~1span`.
-- WIT docs on a type become a JSON Schema `description`; empty docs are omitted.
-- Stability sentences are appended to `description`, separated from WIT docs by one blank line.
-  A deprecated named type also has `"deprecated": true`. Draft 7 does not define that keyword,
-  so Draft 7 validators ignore it as an annotation rather than rejecting the schema.
+  `types/span` is `#/definitions/types~1span` (Draft 7) or `#/$defs/types~1span` (Draft 2020-12).
+- WIT docs on packages, named types, record fields, flags, and variant cases are normalized
+  (stripping decorative `/** *` block-comment gutters, normalizing line endings/separators to LF,
+  and stripping control characters) and emitted as JSON Schema `description`; empty docs are
+  omitted.
+- Stability sentences are appended to type `description`, separated from WIT docs by one blank
+  line. A deprecated named type also has `"deprecated": true`. Draft 2020-12 defines `deprecated`
+  and `$ref` sibling annotations natively; Draft 7 validators treat them as annotations rather than
+  rejecting the schema.
 - The first line, LF line endings, final newline, deterministic ordering, output-root rules,
   stale-file removal, and `--check` behavior are the same ownership rules as section 1.
 
@@ -1725,6 +1733,7 @@ out = "proto"
 
 [project.alint.schema]
 out = "schema"
+draft = "7"
 
 [project.alint.glue]
 out = "src/glue"
@@ -1737,8 +1746,9 @@ proto-root = "crate::proto"
 - `root` is required for each project.
 - `released` is optional; when absent the generator's normal default applies.
 - `rust`, `proto`, `schema`, and `glue` sections are optional. Each output section has an `out`
-  path; `rust` also has optional `serde = true|false`; `glue` also has optional `plain-root` and
-  `proto-root` strings.
+  path; `rust` also has optional `serde = true|false`; `schema` also has optional
+  `draft = "7" | "2020-12"` (default `"7"`); `glue` also has optional `plain-root` and `proto-root`
+  strings.
 - Unknown keys or sections are errors, as are a missing/unsupported version, an empty project
   table, a missing project selected with `--project`, and a missing output section or CLI path
   needed by the selected command.
