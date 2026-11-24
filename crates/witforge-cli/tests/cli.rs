@@ -4977,5 +4977,29 @@ fn inspect_command_emits_versioned_json_ir_and_human_summary_for_version_root_an
     assert_eq!(prec_ir["version"], 1);
     assert_eq!(prec_ir["kind"], "root");
 
+    // 4. `--released` is refused on a single version directory (`WF9001`, exit 2).
+    let bad_released = witforge()
+        .args(["inspect"])
+        .arg(proj.join("wit/v0.1"))
+        .args(["--released", "wit/released", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad_released.status.code(), Some(2));
+    let bad_rel_json: serde_json::Value = serde_json::from_slice(&bad_released.stdout).unwrap();
+    assert_eq!(bad_rel_json["diagnostics"][0]["code"], "WF9001");
+
+    // 5. Malformed version directory (`v00.1`) under an empty root reports `WF9004` (exit 2).
+    let bad_root = base.join("bad-root");
+    fs::create_dir_all(bad_root.join("v00.1")).unwrap();
+    let bad_dir_out = witforge()
+        .args(["inspect"])
+        .arg(&bad_root)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad_dir_out.status.code(), Some(2));
+    let bad_dir_json: serde_json::Value = serde_json::from_slice(&bad_dir_out.stdout).unwrap();
+    assert_eq!(bad_dir_json["diagnostics"][0]["code"], "WF9004");
+
     fs::remove_dir_all(&base).unwrap();
 }

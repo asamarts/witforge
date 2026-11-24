@@ -2013,6 +2013,13 @@ fn inspect_command(options: &InspectOptions, reporter: &mut Reporter) -> Result<
 
     let rendered = match contract_workflow::classify_check_target(&target)? {
         contract_workflow::CheckTargetKind::VersionDirectory => {
+            if options.released.is_some() {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    "`--released` applies only to a WIT root, not a single version directory",
+                    Some(target.display().to_string()),
+                ));
+            }
             if options.json {
                 witforge::inspect::inspect_version_json(&target)?
             } else {
@@ -2038,6 +2045,12 @@ fn inspect_command(options: &InspectOptions, reporter: &mut Reporter) -> Result<
             ));
         }
         contract_workflow::CheckTargetKind::Neither => {
+            ensure_version_directory(&target)?;
+            if let Err(err) = discover_version_directories(&target)
+                && !format!("{err:#}").contains("no v<major>.<minor> version directories")
+            {
+                return Err(err);
+            }
             return Err(op_error(
                 codes::IO_ERROR,
                 format!(

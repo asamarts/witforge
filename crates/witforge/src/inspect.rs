@@ -12,6 +12,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::diagnostic::{Diagnostic, LocatedDiagnostic, codes};
 use crate::emit::docs;
 use crate::emit::versions::load_versions_with_released;
 use crate::lock::{PackageName, WireLock};
@@ -19,7 +20,11 @@ use crate::model::{
     Dependency, Function, Interface, Model, Package, Stability, TypeDef, TypeDefKind, TypeExpr,
     World, WorldInterface,
 };
-use crate::{ensure_version_directory, load, load_root_released_manifest, model};
+use crate::{
+    ContractError, ensure_directory_version, ensure_version_directory, load,
+    load_root_released_manifest, model, operational_error, operational_error_at,
+    parse_version_directory,
+};
 
 /// Current schema version of the JSON contract IR emitted by this module.
 pub const IR_VERSION: u32 = 1;
@@ -71,7 +76,7 @@ pub fn inspect_version_json(version_dir: &Path) -> Result<String> {
 pub fn inspect_root_json(wit_root: &Path, released: Option<&Path>) -> Result<String> {
     let versions = load_versions_with_released(wit_root, released)?;
     let manifest = load_root_released_manifest(wit_root, released)?;
-    let retired = manifest.retired_directories();
+    let retired = sorted_retired_directories(&manifest);
 
     let mut out = String::new();
     writeln!(out, "{{")?;
@@ -136,7 +141,7 @@ pub fn summarize_version(version_dir: &Path) -> Result<String> {
 pub fn summarize_root(wit_root: &Path, released: Option<&Path>) -> Result<String> {
     let versions = load_versions_with_released(wit_root, released)?;
     let manifest = load_root_released_manifest(wit_root, released)?;
-    let retired = manifest.retired_directories();
+    let retired = sorted_retired_directories(&manifest);
     let mut out = String::new();
     writeln!(
         out,
@@ -168,23 +173,124 @@ pub fn summarize_root(wit_root: &Path, released: Option<&Path>) -> Result<String
     Ok(out)
 }
 
+fn sorted_retired_directories(manifest: &crate::ReleasedManifest) -> Vec<&str> {
+    let mut retired = manifest.retired_directories();
+    retired.sort_by(|a, b| {
+        let ka = parse_version_directory(a).ok().flatten();
+        let kb = parse_version_directory(b).ok().flatten();
+        ka.cmp(&kb).then_with(|| a.cmp(b))
+    });
+    retired
+}
+
+#[allow(clippy::too_many_lines)]
 fn load_single_version(version_dir: &Path) -> Result<(Model, Option<WireLock>)> {
     ensure_version_directory(version_dir)?;
     let contract = load(version_dir)?;
     let built = model::build(&contract)?;
+    ensure_directory_version(version_dir, &built)?;
     let lock_path = version_dir.join("wire.lock");
-    let lock = if lock_path.is_file() {
-        let text = fs::read_to_string(&lock_path)
-            .with_context(|| format!("failed to read lockfile {}", lock_path.display()))?;
-        let parsed = WireLock::parse(&text)
-            .with_context(|| format!("failed to parse lockfile {}", lock_path.display()))?;
-        let pkg = PackageName::new(built.package.namespace.clone(), built.package.name.clone());
-        parsed
-            .check_package(&pkg)
-            .map_err(|err| anyhow::Error::new(crate::ContractError::from_error(&err)))?;
-        Some(parsed)
-    } else {
-        None
+    let lock_file = lock_path.display().to_string();
+    let lock = match fs::symlink_metadata(&lock_path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(operational_error(
+                codes::IO_ERROR,
+                format!("failed to read lockfile {lock_file}: {err}"),
+                Some(lock_file),
+            ));
+        }
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!("refusing to follow symlinked lockfile {lock_file}"),
+                Some(lock_file),
+            ));
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(operational_error(
+                codes::IO_ERROR,
+                format!("lockfile {lock_file} is not a regular file"),
+                Some(lock_file),
+            ));
+        }
+        Ok(_) => {
+            let text = fs::read_to_string(&lock_path)
+                .with_context(|| format!("failed to read lockfile {lock_file}"))?;
+            let parsed = WireLock::parse(&text).map_err(|err| {
+                let position = crate::error_diagnostics(&err)
+                    .and_then(|diags| diags.first())
+                    .and_then(|diag| diag.position);
+                operational_error_at(
+                    codes::PARSE_ERROR,
+                    format!("in {lock_file}: {err:#}"),
+                    lock_file.clone(),
+                    position,
+                )
+            })?;
+            let lock_positions = WireLock::entry_positions(&text);
+            let pkg = PackageName::new(built.package.namespace.clone(), built.package.name.clone());
+            parsed.check_package(&pkg).map_err(|err| {
+                let human = format!("in {lock_file}: {err:#}");
+                let foreign_pos = parsed
+                    .entries()
+                    .find(|(key, _)| key.package() != &pkg)
+                    .and_then(|(key, _)| lock_positions.get(&key.key()).copied());
+                let mut diag = Diagnostic::error(codes::LOCKFILE_WRONG_PACKAGE, format!("{err:#}"))
+                    .with_path(lock_file.clone());
+                if let Some(pos) = foreign_pos {
+                    diag = diag.with_position(pos);
+                }
+                let located = LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file.clone());
+                ContractError::with_located_diagnostics(human, vec![located])
+            })?;
+            let members = built.members()?;
+            for member in &members {
+                let key = member.key();
+                let Some(entry) = parsed.get(&key) else {
+                    continue;
+                };
+                if entry.reserved {
+                    let mut diag = Diagnostic::error(
+                        codes::LOCKFILE_REINTRODUCED,
+                        format!(
+                            "member `{key}` was previously removed and reserved as number {} in {lock_file}",
+                            entry.number
+                        ),
+                    )
+                    .with_path(key.clone());
+                    if let Some(pos) = lock_positions.get(&key).copied() {
+                        diag = diag.with_position(pos);
+                    }
+                    return Err(ContractError::with_located_diagnostic(
+                        LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file),
+                    )
+                    .into());
+                }
+                if entry.kind != member.kind || entry.ty != member.ty {
+                    let mut diag = Diagnostic::error(
+                        codes::LOCKFILE_CHANGED_DRAFT,
+                        format!(
+                            "member `{key}` in {} disagrees with {lock_file} (lockfile has kind `{}` type `{:?}`, WIT has kind `{}` type `{:?}`)",
+                            version_dir.display(),
+                            entry.kind,
+                            entry.ty,
+                            member.kind,
+                            member.ty,
+                        ),
+                    )
+                    .with_path(key.clone());
+                    if let Some(pos) = lock_positions.get(&key).copied() {
+                        diag = diag.with_position(pos);
+                    }
+                    return Err(ContractError::with_located_diagnostic(
+                        LocatedDiagnostic::from_diagnostic(diag).with_file(lock_file),
+                    )
+                    .into());
+                }
+            }
+            Some(parsed)
+        }
     };
     Ok((built, lock))
 }
@@ -295,7 +401,7 @@ fn write_contract(
     writeln!(out, ",")?;
 
     write!(out, "{inner}\"dependencies\": ")?;
-    write_dependencies(out, model, &model.dependencies, lock, indent + 2)?;
+    write_dependencies(out, model, &model.dependencies, indent + 2)?;
     writeln!(out, ",")?;
 
     write!(out, "{inner}\"lockfile\": ")?;
@@ -778,7 +884,6 @@ fn write_dependencies(
     out: &mut String,
     root_model: &Model,
     dependencies: &[Dependency],
-    lock: Option<&WireLock>,
     indent: usize,
 ) -> Result<()> {
     if dependencies.is_empty() {
@@ -804,6 +909,9 @@ fn write_dependencies(
                 .cloned()
                 .collect(),
         };
+        let dep_members = dep_model.members()?;
+        let mut dep_lock = WireLock::default();
+        dep_lock.reconcile(&dep_members)?;
         writeln!(out, "{item_pad}{{")?;
         write!(out, "{inner}\"package\": ")?;
         write_package(out, &dep.package, indent + 4)?;
@@ -814,7 +922,7 @@ fn write_dependencies(
             &dep_model,
             &dep.package,
             &dep.interfaces,
-            lock,
+            Some(&dep_lock),
             indent + 4,
         )?;
         writeln!(out)?;
