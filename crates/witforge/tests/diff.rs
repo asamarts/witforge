@@ -199,7 +199,16 @@ fn reuse_of_a_reserved_number_is_wire_breaking_and_generators_agree() {
         .expect("the added field is reported");
     assert!(matches!(added.kind, ChangeKind::Added { .. }), "{added:?}");
     assert!(added.wire_breaking, "{added:?}");
-    assert_eq!(report.summary.wire_breaking, 1);
+    let dropped_reserved = report
+        .changes
+        .iter()
+        .find(|change| {
+            change.path == "types/r.old" && change.element == ChangeElement::ReservedEntry
+        })
+        .expect("the deleted reserved entry is reported");
+    assert_eq!(dropped_reserved.kind, ChangeKind::Removed);
+    assert!(dropped_reserved.wire_breaking, "{dropped_reserved:?}");
+    assert_eq!(report.summary.wire_breaking, 2);
 
     let error = witforge::emit::proto::plan(&root).unwrap_err();
     assert!(witforge::is_contract_error(&error), "{error:#}");
@@ -455,6 +464,126 @@ fn decode_verdicts_cover_retypes_kind_changes_renumbering_and_interfaces() {
             old_reads_new: true,
         }
     );
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn live_number_reuse_and_reserved_entry_regressions_are_detected_within_major() {
+    use witforge::diff::DecodeVerdict;
+
+    let root = std::env::temp_dir().join(format!(
+        "witforge-diff-reuse-and-reserved-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+
+    // 1. Live wire-number reuse within the same major:
+    //    old has `old: option<u32>` at number 1; new drops it without reserving and puts
+    //    `fresh: option<string>` at number 1. Both wire and decode must report BREAKING(both).
+    let old_live = write_contract(
+        &root,
+        "live/v0.1",
+        "package ex:reuse@0.1.0;\ninterface types { record r { old: option<u32> } }\n",
+    );
+    fs::write(old_live.join("wire.lock"), generated_lock(&old_live)).unwrap();
+    let new_live = write_contract(
+        &root,
+        "live/v0.2",
+        "package ex:reuse@0.2.0;\ninterface types { record r { fresh: option<string> } }\n",
+    );
+    fs::write(new_live.join("wire.lock"), generated_lock(&new_live)).unwrap();
+
+    let full = witforge::diff::compare_full(&old_live, &new_live).unwrap();
+    let find = |path: &str| {
+        full.analysis
+            .report
+            .changes
+            .iter()
+            .zip(full.decode_verdicts.iter())
+            .find(|(c, _)| c.path == path)
+            .expect(path)
+    };
+    let (added, added_decode) = find("types/r.fresh");
+    assert!(added.wire_breaking, "{added:?}");
+    assert_eq!(*added_decode, DecodeVerdict::INCOMPATIBLE);
+    let (removed, removed_decode) = find("types/r.old");
+    assert!(removed.wire_breaking, "{removed:?}");
+    assert_eq!(*removed_decode, DecodeVerdict::INCOMPATIBLE);
+    assert_eq!(full.decode_summary.breaking, 2);
+
+    // 2. Deleted and altered same-major `reserved` lockfile entries are reported as
+    //    `ChangeElement::ReservedEntry` with `wire_breaking: true`.
+    let old_res = write_contract(
+        &root,
+        "res/v0.1",
+        "package ex:res@0.1.0;\ninterface types { record r { a: u32 } }\n",
+    );
+    let mut old_res_lock = generated_lock(&old_res);
+    old_res_lock.push_str(
+        "ex:res/types/r.gone = 2 field u32 reserved\n\
+         ex:res/types/r.altered = 3 field u32 reserved\n",
+    );
+    fs::write(old_res.join("wire.lock"), &old_res_lock).unwrap();
+
+    let new_res = write_contract(
+        &root,
+        "res/v0.2",
+        "package ex:res@0.2.0;\ninterface types { record r { a: u32 } }\n",
+    );
+    let mut new_res_lock = generated_lock(&new_res);
+    // Delete `gone`, renumber and retype `altered` (3 field u32 -> 4 field string).
+    new_res_lock.push_str("ex:res/types/r.altered = 4 field string reserved\n");
+    fs::write(new_res.join("wire.lock"), &new_res_lock).unwrap();
+
+    let res_report = witforge::diff::compare(&old_res, &new_res).unwrap();
+    assert!(
+        res_report.changes.iter().any(|c| {
+            c.element == ChangeElement::ReservedEntry
+                && c.path == "types/r.gone"
+                && c.kind == ChangeKind::Removed
+                && c.number == Some(2)
+                && c.wire_breaking
+                && !c.source_breaking
+                && !c.api_breaking
+        }),
+        "{res_report:#?}"
+    );
+    assert!(
+        res_report.changes.iter().any(|c| {
+            c.element == ChangeElement::ReservedEntry
+                && c.path == "types/r.altered"
+                && c.kind == ChangeKind::Renumbered { from: 3, to: 4 }
+                && c.wire_breaking
+        }),
+        "{res_report:#?}"
+    );
+    assert!(
+        res_report.changes.iter().any(|c| {
+            c.element == ChangeElement::ReservedEntry
+                && c.path == "types/r.altered"
+                && c.kind
+                    == ChangeKind::Retyped {
+                        from: "field u32".to_string(),
+                        to: "field string".to_string(),
+                    }
+                && c.wire_breaking
+        }),
+        "{res_report:#?}"
+    );
+    assert_eq!(res_report.summary.wire_breaking, 3);
+
+    // 3. Cross-major diff treats the new major as an independent wire namespace: dropping prior
+    //    reserved entries in v1.0 (--first) does not report reserved-entry regressions.
+    let v10 = write_contract(
+        &root,
+        "res/v1.0",
+        "package ex:res@1.0.0;\ninterface types { record r { a: u32 } }\n",
+    );
+    fs::write(v10.join("wire.lock"), generated_lock(&v10)).unwrap();
+    let cross = witforge::diff::compare(&old_res, &v10).unwrap();
+    assert_eq!(cross.summary.changes, 0, "{cross:#?}");
 
     fs::remove_dir_all(&root).unwrap();
 }

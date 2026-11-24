@@ -96,7 +96,8 @@ interface types {
         change["kind"] == "added"
             && change["defaulted"] == true
             && change["path"] == "types/task.note"
-            && change["wire_breaking"] == false
+            && change["wire_breaking"] == true
+            && change["decode_breaking"] == true
             && change["source_breaking"] == true
             && change["api_breaking"] == true
     }));
@@ -123,9 +124,9 @@ interface types {
             .any(|change| { change["kind"] == "added" && change["path"] == "types/status.failed" })
     );
     assert_eq!(report["summary"]["breaking"], 5);
-    // The new lock was started fresh, so the two removals lost their old entries as well as
-    // the explicit field retype.
-    assert_eq!(report["summary"]["wire_breaking"], 3);
+    // The new lock was started fresh, so the two removals lost their old entries AND the two
+    // additions reused those exact wire numbers (3 and 2), alongside the explicit field retype.
+    assert_eq!(report["summary"]["wire_breaking"], 5);
 
     let human = diff(&old, &new, &[]);
     assert!(human.status.success());
@@ -1918,6 +1919,53 @@ fn diff_decode_view_gates_only_when_selected_and_preserves_json_fields() {
             .status
             .success()
     );
+
+    // Case 4: Reusing a removed live option field's wire number fails `--check=decode` AND
+    // `--check=wire`, and deleting a same-major `reserved` entry fails `--check=wire`.
+    contract(
+        &root,
+        "reuse-old/v0.1",
+        "package example:reuse@0.1.0;\ninterface types { record r { old: option<u32> } }\n",
+    );
+    contract(
+        &root,
+        "reuse-new/v0.2",
+        "package example:reuse@0.2.0;\ninterface types { record r { fresh: option<string> } }\n",
+    );
+    let r_old = root.join("reuse-old/v0.1");
+    let r_new = root.join("reuse-new/v0.2");
+    lock(&root, "reuse-old/v0.1");
+    lock(&root, "reuse-new/v0.2");
+    let reuse_decode = diff(&r_old, &r_new, &["--check=decode"]);
+    assert_eq!(reuse_decode.status.code(), Some(1), "{reuse_decode:?}");
+    let reuse_text = String::from_utf8_lossy(&reuse_decode.stdout);
+    assert!(reuse_text.contains("decode:BREAKING(both)"), "{reuse_text}");
+    let reuse_wire = diff(&r_old, &r_new, &["--check=wire"]);
+    assert_eq!(reuse_wire.status.code(), Some(1), "{reuse_wire:?}");
+
+    contract(
+        &root,
+        "resdrop-old/v0.1",
+        "package example:resdrop@0.1.0;\ninterface types { record r { keep: u32 } }\n",
+    );
+    contract(
+        &root,
+        "resdrop-new/v0.2",
+        "package example:resdrop@0.2.0;\ninterface types { record r { keep: u32 } }\n",
+    );
+    let d_old = root.join("resdrop-old/v0.1");
+    let d_new = root.join("resdrop-new/v0.2");
+    lock(&root, "resdrop-old/v0.1");
+    lock(&root, "resdrop-new/v0.2");
+    let mut with_reserved = fs::read_to_string(d_old.join("wire.lock")).unwrap();
+    with_reserved.push_str("example:resdrop/types/r.old = 2 field u32 reserved\n");
+    fs::write(d_old.join("wire.lock"), with_reserved).unwrap();
+    let res_check = diff(&d_old, &d_new, &["--check=wire", "--json"]);
+    assert_eq!(res_check.status.code(), Some(1), "{res_check:?}");
+    let res_json: serde_json::Value = serde_json::from_slice(&res_check.stdout).unwrap();
+    assert_eq!(res_json["changes"][0]["element"], "reserved entry");
+    assert_eq!(res_json["changes"][0]["kind"], "removed");
+    assert_eq!(res_json["changes"][0]["wire_breaking"], true);
 
     fs::remove_dir_all(&root).unwrap();
 }

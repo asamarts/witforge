@@ -104,14 +104,18 @@ Wire-breaking changes are:
 
 - a changed wire number (`renumbered`), for a field, case, flag, parameter, or function method
   id;
-- a new member whose number was reserved in the old lockfile, even though the member itself is
-  an addition;
+- a new member within the same major whose number was reserved or assigned to a different live
+  member in the old lockfile, even though the member itself is an addition;
 - a changed kind or canonical type of a numbered member (`retyped`);
 - a type kind change (`kind-changed`), whether or not the old numbers stay reserved: every
   reference to the type keeps its canonical name while its encoding changes between an enum
   value, a bool field, and a message;
 - removal of a member or a whole type, interface, or function whose old lockfile entries are not
-  retained with their numbers and reserved.
+  retained with their numbers and reserved;
+- deletion, un-reservation, renumbering, or retyping of a `reserved` lockfile entry within the
+  same major (`reserved entry`), even when the WIT source did not change. Across a major boundary
+  (`old.major != new.major`), each major is an independent wire namespace and a fresh lockfile
+  may drop prior reserved entries.
 
 Additions are wire-compatible: they receive new numbers. A removal is wire-compatible only when
 the new lockfile keeps the old entry reserved. The lockfile remains the authority; `diff` does
@@ -167,7 +171,7 @@ A change is `decode_breaking` when either `new_reads_old` or `old_reads_new` is 
 | Removed function (or removed non-empty interface / type) | `false` | `true` | New reader no longer accepts the removed method/type; old reader accepts remaining ones |
 | Added standalone type, type-only interface, or world change | `true` | `true` | No existing wire message fails to decode |
 | Reordered record fields, cases, flags, functions, or parameters | `true` | `true` | Protobuf matches members by field number, not declaration order |
-| Retyped, kind-changed, renumbered, or reused reserved number | `false` | `false` | Wire encoding or field-number identity disagrees in both directions |
+| Retyped, kind-changed, renumbered, or reused reserved/live number (same major) | `false` | `false` | Wire encoding or field-number identity disagrees in both directions |
 | Stability or deprecation metadata changed | `true` | `true` | Generated annotations change; protobuf field numbers and value encodings do not |
 
 Important boundaries of this view:

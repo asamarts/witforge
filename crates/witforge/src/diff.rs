@@ -160,6 +160,8 @@ pub enum ChangeElement {
     WorldExport,
     /// World-export declaration order.
     WorldExportOrder,
+    /// A reserved lockfile entry.
+    ReservedEntry,
 }
 
 impl ChangeElement {
@@ -188,6 +190,7 @@ impl ChangeElement {
             Self::WorldImportOrder => "world import order",
             Self::WorldExport => "world export",
             Self::WorldExportOrder => "world export order",
+            Self::ReservedEntry => "reserved entry",
         }
     }
 
@@ -473,6 +476,7 @@ pub fn compare_full(old: &Path, new: &Path) -> Result<FullDiff> {
 
 /// Build the report, optionally collecting conversion-impact notes, cross-major omissions, and
 /// source locations.
+#[allow(clippy::too_many_lines)]
 fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Result<FullDiff> {
     let old = load_endpoint(old_arg)
         .with_context(|| format!("failed to read the old contract {}", old_arg.display()))?;
@@ -521,6 +525,7 @@ fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Resu
     };
     builder.compare_interfaces()?;
     builder.compare_worlds();
+    builder.compare_reserved_entries();
     let mut entries = builder.changes;
     entries.sort_by(|(left, _), (right, _)| {
         left.path
@@ -549,8 +554,21 @@ fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Resu
     } else {
         Vec::new()
     };
+    let pkg_prefix = format!("{}/", old.endpoint.package);
     let mut locations = old.locations;
     locations.extend(new.locations);
+    for (key, pos) in &new.lock_positions {
+        let logical = key.strip_prefix(&pkg_prefix).unwrap_or(key).to_string();
+        locations
+            .entry(logical)
+            .or_insert_with(|| (new.lock_file.clone(), *pos));
+    }
+    for (key, pos) in &old.lock_positions {
+        let logical = key.strip_prefix(&pkg_prefix).unwrap_or(key).to_string();
+        locations
+            .entry(logical)
+            .or_insert_with(|| (old.lock_file.clone(), *pos));
+    }
     Ok(FullDiff {
         analysis: DiffAnalysis {
             report: DiffReport {
@@ -718,8 +736,10 @@ struct Loaded {
     model: Model,
     members: BTreeMap<String, Member>,
     numbers: BTreeMap<String, u32>,
-    entries: BTreeMap<String, (u32, bool)>,
+    entries: BTreeMap<String, crate::lock::Entry>,
     locations: BTreeMap<String, (String, Position)>,
+    lock_file: String,
+    lock_positions: BTreeMap<String, Position>,
 }
 
 impl Loaded {
@@ -759,13 +779,13 @@ impl Loaded {
             .cloned()
             .map(|member| (member.key(), member))
             .collect();
-        let entries: BTreeMap<String, (u32, bool)> = lock
+        let entries: BTreeMap<String, crate::lock::Entry> = lock
             .entries()
-            .map(|(key, entry)| (key.key(), (entry.number, entry.reserved)))
+            .map(|(key, entry)| (key.key(), entry.clone()))
             .collect();
         let numbers: BTreeMap<String, u32> = entries
             .iter()
-            .map(|(key, (number, _))| (key.clone(), *number))
+            .map(|(key, entry)| (key.clone(), entry.number))
             .collect();
         let remedy = || lock_remedy(path, released);
         let locate_member =
@@ -869,6 +889,8 @@ impl Loaded {
             numbers,
             entries,
             locations,
+            lock_file,
+            lock_positions: lock_positions.clone(),
         })
     }
 
@@ -883,10 +905,13 @@ impl Loaded {
     }
 
     fn preserves(&self, old: &Self, key: &str) -> bool {
-        let Some((old_number, _)) = old.entries.get(key) else {
+        let Some(old_entry) = old.entries.get(key) else {
             return true;
         };
-        matches!(self.entries.get(key), Some((number, true)) if number == old_number)
+        matches!(
+            self.entries.get(key),
+            Some(entry) if entry.reserved && entry.number == old_entry.number
+        )
     }
 
     fn preserves_scope(&self, old: &Self, prefix: &str) -> bool {
@@ -905,8 +930,26 @@ impl Loaded {
         let prefix = format!("{}/{parent}.", self.endpoint.package);
         self.entries
             .iter()
-            .filter(|(key, (_, reserved))| *reserved && key.starts_with(&prefix))
-            .map(|(_, (number, _))| *number)
+            .filter(|(key, entry)| entry.reserved && key.starts_with(&prefix))
+            .map(|(_, entry)| entry.number)
+            .collect()
+    }
+
+    /// Live member names keyed by wire number under `parent`.
+    fn live_numbers(&self, parent: &str) -> BTreeMap<u32, String> {
+        let prefix = format!("{}/{parent}.", self.endpoint.package);
+        self.entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                if entry.reserved {
+                    return None;
+                }
+                let name = key.strip_prefix(&prefix)?;
+                if name.contains('/') || name.contains('#') || name.contains('.') {
+                    return None;
+                }
+                Some((entry.number, name.to_string()))
+            })
             .collect()
     }
 
@@ -1481,12 +1524,20 @@ impl Builder<'_> {
             .iter()
             .map(|(name, ty)| (name.as_str(), ty.as_str()))
             .collect();
+        let same_major =
+            self.old.model.package.version.major == self.new.model.package.version.major;
         let reserved_numbers = self.old.reserved_numbers(parent);
+        let old_live_numbers = self.old.live_numbers(parent);
+        let new_live_numbers = self.new.live_numbers(parent);
         for name in new_map.keys().filter(|name| !old_map.contains_key(**name)) {
             let number = self.new.number(parent, name)?;
-            // Reusing a number the old lockfile reserved changes the wire even though the
-            // member is newly added: the old number belonged to a removed member.
-            let wire = reserved_numbers.contains(&number);
+            // Reusing a number the old lockfile reserved or assigned to a different live member
+            // within the same major changes the wire even though the member is newly added.
+            let wire = same_major
+                && (reserved_numbers.contains(&number)
+                    || old_live_numbers
+                        .get(&number)
+                        .is_some_and(|old_name| old_name != *name));
             let decode = if wire {
                 DecodeVerdict::INCOMPATIBLE
             } else {
@@ -1520,17 +1571,25 @@ impl Builder<'_> {
         for name in old_map.keys().filter(|name| !new_map.contains_key(**name)) {
             let number = self.old.number(parent, name)?;
             let key = format!("{}/{parent}.{name}", self.old.endpoint.package);
-            let wire = !self.new.preserves(self.old, &key);
-            let decode = match decode_rule {
-                MemberDecodeRule::WireFields { old_absent_ok, .. } => DecodeVerdict {
-                    new_reads_old: true,
-                    old_reads_new: old_absent_ok.contains(*name),
-                },
-                MemberDecodeRule::ClosedCases => DecodeVerdict {
-                    new_reads_old: false,
-                    old_reads_new: true,
-                },
-                MemberDecodeRule::Flags => DecodeVerdict::COMPATIBLE,
+            let reused_by_new = same_major
+                && new_live_numbers
+                    .get(&number)
+                    .is_some_and(|new_name| new_name != *name);
+            let wire = !self.new.preserves(self.old, &key) || reused_by_new;
+            let decode = if reused_by_new {
+                DecodeVerdict::INCOMPATIBLE
+            } else {
+                match decode_rule {
+                    MemberDecodeRule::WireFields { old_absent_ok, .. } => DecodeVerdict {
+                        new_reads_old: true,
+                        old_reads_new: old_absent_ok.contains(*name),
+                    },
+                    MemberDecodeRule::ClosedCases => DecodeVerdict {
+                        new_reads_old: false,
+                        old_reads_new: true,
+                    },
+                    MemberDecodeRule::Flags => DecodeVerdict::COMPATIBLE,
+                }
             };
             self.push(
                 ChangeKind::Removed,
@@ -1722,6 +1781,7 @@ impl Builder<'_> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn compare_functions(&mut self, old: &Interface, new: &Interface) -> Result<()> {
         let old_map: BTreeMap<&str, &crate::model::Function> = old
             .functions
@@ -1733,10 +1793,18 @@ impl Builder<'_> {
             .iter()
             .map(|function| (function.name.as_str(), function))
             .collect();
+        let same_major =
+            self.old.model.package.version.major == self.new.model.package.version.major;
         let reserved_methods = self.old.reserved_numbers(&old.name);
+        let old_live_methods = self.old.live_numbers(&old.name);
+        let new_live_methods = self.new.live_numbers(&old.name);
         for name in new_map.keys().filter(|name| !old_map.contains_key(*name)) {
             let number = self.new.number(&old.name, name)?;
-            let wire = reserved_methods.contains(&number);
+            let wire = same_major
+                && (reserved_methods.contains(&number)
+                    || old_live_methods
+                        .get(&number)
+                        .is_some_and(|old_name| old_name != *name));
             let decode = if wire {
                 DecodeVerdict::INCOMPATIBLE
             } else {
@@ -1759,23 +1827,34 @@ impl Builder<'_> {
             );
         }
         for name in old_map.keys().filter(|name| !new_map.contains_key(*name)) {
+            let number = self.old.number(&old.name, name)?;
             let method = format!("{}/{}.{name}", self.old.endpoint.package, old.name);
             let params = format!("{}/{}#{name}", self.old.endpoint.package, old.name);
+            let reused_by_new = same_major
+                && new_live_methods
+                    .get(&number)
+                    .is_some_and(|new_name| new_name != *name);
+            let decode = if reused_by_new {
+                DecodeVerdict::INCOMPATIBLE
+            } else {
+                DecodeVerdict {
+                    new_reads_old: false,
+                    old_reads_new: true,
+                }
+            };
             self.push(
                 ChangeKind::Removed,
                 ChangeElement::Function,
                 format!("{}.{}", old.name, name),
-                Some(self.old.number(&old.name, name)?),
+                Some(number),
                 Breaking {
                     wire: !self.new.preserves(self.old, &method)
-                        || !self.new.preserves_scope(self.old, &params),
+                        || !self.new.preserves_scope(self.old, &params)
+                        || reused_by_new,
                     source: true,
                     api: true,
                 },
-                DecodeVerdict {
-                    new_reads_old: false,
-                    old_reads_new: true,
-                },
+                decode,
             );
         }
         for (name, old_function) in &old_map {
@@ -1945,6 +2024,76 @@ impl Builder<'_> {
                 DecodeVerdict::COMPATIBLE,
             );
         }
+    }
+
+    fn compare_reserved_entries(&mut self) {
+        if self.old.model.package.version.major != self.new.model.package.version.major {
+            return;
+        }
+        let pkg_prefix = format!("{}/", self.old.endpoint.package);
+        for (key, old_entry) in &self.old.entries {
+            if !old_entry.reserved {
+                continue;
+            }
+            let path = key.strip_prefix(&pkg_prefix).unwrap_or(key).to_string();
+            match self.new.entries.get(key) {
+                None => {
+                    self.push(
+                        ChangeKind::Removed,
+                        ChangeElement::ReservedEntry,
+                        path,
+                        Some(old_entry.number),
+                        Breaking::WIRE,
+                        DecodeVerdict::COMPATIBLE,
+                    );
+                }
+                Some(new_entry) if !new_entry.reserved => {
+                    self.push(
+                        ChangeKind::Removed,
+                        ChangeElement::ReservedEntry,
+                        path,
+                        Some(old_entry.number),
+                        Breaking::WIRE,
+                        DecodeVerdict::COMPATIBLE,
+                    );
+                }
+                Some(new_entry) => {
+                    if new_entry.number != old_entry.number {
+                        self.push(
+                            ChangeKind::Renumbered {
+                                from: old_entry.number,
+                                to: new_entry.number,
+                            },
+                            ChangeElement::ReservedEntry,
+                            path.clone(),
+                            Some(new_entry.number),
+                            Breaking::WIRE,
+                            DecodeVerdict::COMPATIBLE,
+                        );
+                    }
+                    if new_entry.kind != old_entry.kind || new_entry.ty != old_entry.ty {
+                        self.push(
+                            ChangeKind::Retyped {
+                                from: format_lock_entry_shape(old_entry),
+                                to: format_lock_entry_shape(new_entry),
+                            },
+                            ChangeElement::ReservedEntry,
+                            path,
+                            Some(new_entry.number),
+                            Breaking::WIRE,
+                            DecodeVerdict::COMPATIBLE,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn format_lock_entry_shape(entry: &crate::lock::Entry) -> String {
+    match &entry.ty {
+        Some(ty) => format!("{} {ty}", entry.kind),
+        None => entry.kind.to_string(),
     }
 }
 fn format_stability(stability: &crate::model::Stability) -> String {
