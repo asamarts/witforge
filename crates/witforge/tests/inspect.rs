@@ -91,7 +91,8 @@ fn emit_version_json_covers_all_wit_constructs_deterministically() {
         !parsed["contract"]["lockfile"]["order"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "expected lockfile order fingerprints: {parsed}"
     );
 }
 
@@ -129,7 +130,10 @@ fn inspect_root_json_and_summary_include_versions_deps_reserved_and_retired() {
         "expected resolved dependencies: {deps_ir}"
     );
     assert!(deps[0]["package"]["namespace"].is_string());
-    assert!(!deps[0]["interfaces"].as_array().unwrap().is_empty());
+    assert!(
+        !deps[0]["interfaces"].as_array().unwrap().is_empty(),
+        "expected dependency interfaces: {deps_ir}"
+    );
 
     // Unlocked single version emits `lockfile: null` and stability metadata cleanly.
     let scratch = std::env::temp_dir().join(format!("witforge-inspect-{}", std::process::id()));

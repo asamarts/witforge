@@ -157,7 +157,7 @@ beside each split code for consumers updating JSON or SARIF filters.
 | `WF3003` | note | — | `diff` found a record whose generated new-to-old conversion is guaranteed to fail. The path is the missing member. |
 | `WF3004` | note | — | `diff` found a non-defaulted required record field addition or retyped member that makes conversion generation refuse. The path is the affected member. |
 | `WF9000` | error | — | Internal compiler error (unexpected invariant failure only; never emitted for usage, I/O, parse, or guard errors). |
-| `WF9001` | error | — | Command-line usage or argument error (invalid flags, missing required options, WIT root passed to `check`/`lock`, reversed `diff` endpoints, invalid module root). |
+| `WF9001` | error | — | Command-line usage or argument error (invalid flags, missing required options, WIT root passed to `lock`, reversed `diff` endpoints, invalid module root). |
 | `WF9002` | error | — | Filesystem or I/O error (missing file, directory, or lockfile; permission denied; unreadable path; no version directories under root; write failure). |
 | `WF9003` | error | — | Parse or format error (invalid WIT source or resolution error, malformed `wire.lock`, malformed `released` manifest, or invalid `witforge.toml` / BOM). |
 | `WF9004` | error | — | Safety guard or freeze-policy refusal (locking or writing into a released directory, symlinked version directory or symlink in a released directory, overlapping/unowned/foreign/symlink output path, non-canonical or duplicate `v...` entry, or unexpanded shell path in `witforge.toml`). |
@@ -179,7 +179,9 @@ between a live WIT member and `wire.lock`, the primary location is the WIT decla
 
 ## Scope and exit codes
 
-`check`, `lock`, `diff`, `rust`, `proto`, `schema`, and `glue` accept `--format`. The default is
+The global `--format` option is accepted by every command (`check`, `lock`, `diff`, `rust`,
+`proto`, `schema`, `glue`, `generate`, `init`, `new-version`, `release`, `retire`, `inspect`,
+`freeze`, `completions`, and `explain`). The default is
 `human`, so existing human output is preserved byte-for-byte for the existing messages (with
 `wit-parser` syntax and resolution errors displaying their source snippets). Exit codes do not
 depend on the format: `0` success, `1` contract/lockfile/output or breaking-change failure, and

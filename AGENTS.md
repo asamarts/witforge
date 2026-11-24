@@ -13,12 +13,16 @@ JSON Schema, and protobuf glue.
 - Implemented: package loading with standard `deps/` dependencies, the
   restricted-subset checker, the append-only lockfile (v2, with
   declaration-order fingerprints), the Rust emitter (opt-in Serde derives,
-  `convert.rs` version adapters, `worlds.rs`), the protobuf, JSON Schema, and
-  glue emitters, contract `diff`, structured diagnostics
-  (`--format human|json|sarif`), `witforge.toml` projects, and the GitHub
-  Action.
+  opt-in `no_std` + `alloc`, `convert.rs` version adapters, `worlds.rs`), the
+  protobuf, JSON Schema (Draft 7 default, opt-in Draft 2020-12), and glue
+  emitters, versioned JSON contract IR (`inspect`), contract `diff`,
+  release-freeze enforcement, structured diagnostics
+  (`--format human|json|sarif`), `witforge.toml` projects, the optional
+  `witforge-build` helper crate, static `musl` Linux release archives, and the
+  GitHub Action.
 - The commands are `witforge check`, `lock`, `rust`, `proto`, `schema`, `glue`,
-  and `diff`.
+  `generate`, `init`, `new-version`, `release`, `retire`, `diff`, `inspect`,
+  `freeze`, `completions`, and `explain`.
 - The normative specifications are [`docs/design/model.md`](docs/design/model.md),
   [`docs/design/lockfile.md`](docs/design/lockfile.md), and
   [`docs/design/emitters.md`](docs/design/emitters.md) (Rust, protobuf, glue,

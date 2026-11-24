@@ -8,7 +8,6 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/witforge-build"
-readme = "README.md"
 keywords = ["wit", "protobuf", "prost", "build-dependencies", "witforge"]
 categories = ["development-tools::build-utils", "encoding"]
 exclude = ["tests/"]

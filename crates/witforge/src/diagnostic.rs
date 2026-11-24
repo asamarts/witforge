@@ -618,7 +618,7 @@ pub fn explanation(code: &str) -> Option<&'static str> {
         ),
         codes::CLI_USAGE => Some(
             "Command-line usage or argument error (invalid flags, missing required options, WIT \
-             root passed to `check`/`lock`, reversed `diff` endpoints, invalid module root).",
+             root passed to `lock`, reversed `diff` endpoints, invalid module root).",
         ),
         codes::IO_ERROR => Some(
             "Filesystem or I/O error (missing file, directory, or lockfile; permission denied; \

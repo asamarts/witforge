@@ -60,8 +60,8 @@ stalled network fails the step instead of hanging until the job timeout. The tim
 
 The JavaScript entry point uses GitHub's Node 24 Action runtime and has no npm dependencies. CI
 executes the checked-out action with `uses: ./` so changes to `action.yml` are covered before
-publication, then executes a pinned published ref on Linux x86_64, macOS arm64, macOS Intel, and
-Windows x86_64. Running `action/test.js` alone does not exercise GitHub's runtime, remote tag
+publication, then executes a pinned published ref on Linux x86_64, Linux arm64, macOS arm64,
+macOS Intel, and Windows x86_64. Running `action/test.js` alone does not exercise GitHub's runtime, remote tag
 resolution, archive extraction, or PATH propagation.
 
 ```yaml

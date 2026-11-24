@@ -1,6 +1,6 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-11-17 are logged in section
+Status: living design document (2026-10-14; decisions through 2026-11-24 are logged in section
 9). The internal model, lockfile format, and the Rust, protobuf, glue, conversion, and JSON
 Schema emitter conventions are specified normatively in [`model.md`](model.md),
 [`lockfile.md`](lockfile.md), and [`emitters.md`](emitters.md). `diff`, diagnostics,
@@ -331,8 +331,8 @@ witforge into a test crate, which checks the plain types, the `.proto` schema, a
 against alint's hand-written host types (alint PRs #409, #412, #414, and #415); the repository went
 public for 0.1.0.
 
-alint consumes only published releases. Its CI installs the release it pins (0.5.0 since
-2026-11-17, alint PR #555) from crates.io, checks the contract, and regenerates the committed output with
+alint consumes only published releases. Its CI installs the release it pins (0.7.0 since
+2026-11-23, alint PR #647) from crates.io, checks the contract, and regenerates the committed output with
 `--check`, so witforge's `main` can change without breaking alint, and alint sees a change only
 when it moves the pin. A change to generated output or to what `check` accepts therefore reaches
 alint as a pull request there that bumps the pin and commits the regenerated files, and it needs
@@ -412,6 +412,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-17 | 0.5.0 publishes the stale-lockfile fix, conversion-impact notes and additive `diff` API, and the post-0.4.4 output/documentation alignment. Wire numbers, protobuf/JSON Schema output, and generated Rust types/traits are unchanged; alint moves to 0.5.0. 1.0 remains gated on independent adoption | [`CHANGELOG.md`](../../CHANGELOG.md), [`W10-020`](../../aplan/tasks/W10-020.md) |
 | 2026-11-21 | 0.6.0 publishes the post-0.5.0 assurance work, the complete second-audit wire-identity, compile-contract, and tool-safety remediation, clean `rustfmt`/Clippy/`missing_docs` Rust output, hardened `convert.rs`, and complete JSON Schema `result` shapes and `f32` bounds. Library API remains minor-compatible with 0.5.0; MSRV remains 1.88; 1.0 remains gated on independent adoption and post-0.6.0 audit tasks | [`CHANGELOG.md`](../../CHANGELOG.md), [`W10-069`](../../aplan/tasks/W10-069.md) |
 | 2026-11-23 | 0.7.0 publishes the final planned pre-1.0 Rust-library break: extensible public data, library-owned structured workflows, and stability/deprecation projections. Contracts carrying stability annotations regenerate consumer-visible comments/attributes; wire numbers remain unchanged; MSRV remains 1.88. Later releases restore ordinary minor semver plus the tagged signature inventory baseline | [`CHANGELOG.md`](../../CHANGELOG.md), [`public-api.md`](public-api.md), [`W10-099`](../../aplan/tasks/W10-099.md) |
+| 2026-11-24 | Post-0.7.0 hardening and Tier 1 feature wave (`0.8.0` scope, additive over 0.7.0's public API): static `musl` Linux release archives alongside `gnu`, opt-in JSON Schema Draft 2020-12 and member descriptions, lifecycle CLI (`init`, `retire`, `new-version --from`), versioned JSON contract IR (`inspect --json`), opt-in `no_std` + `alloc` Rust/convert/glue output, and the optional `witforge-build` helper crate. Direct non-Rust generators and broader Tier 2/3 items are tracked under `M-p11` | [`CHANGELOG.md`](../../CHANGELOG.md), [`emitters.md`](emitters.md), [`action.md`](action.md), `aplan/` |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 

@@ -54,8 +54,8 @@ frozen as a whole, which covers the remaining source-level cases.
   relative to the manifest's directory: an ASCII letter or digit followed by ASCII letters,
   digits, `.`, `_`, or `-` (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), so `.`, `..`, hidden names,
   whitespace inside names, separators, non-ASCII names, and absolute paths are rejected. Unknown
-  trailing tokens are rejected as malformed. The `retired` syntax is first read by **0.7.0** (not
-  yet cut); earlier releases reject `<name> retired` as malformed. The manifest is append-only: CI
+  trailing tokens are rejected as malformed. The `retired` syntax was introduced in **0.7.0**;
+  earlier releases reject `<name> retired` as malformed. The manifest is append-only: CI
   fails if an entry is removed, duplicated, un-retired (`retired` back to live), or names a
   directory that does not exist or has no `wire.lock`. The tool and `ci/check-release-freeze.sh`
   apply the same entry rule; the tool rejects a malformed manifest, duplicate entries, and missing,

@@ -5,8 +5,10 @@
 //! A WIT package is the single source of truth for a contract. witforge checks that the package
 //! stays inside a restricted, pure subset of WIT that maps cleanly onto every target, keeps a
 //! committed, append-only lockfile of wire numbers so the protobuf projection stays stable across
-//! versions, and emits plain Rust types and traits, version-to-version adapters, a `.proto`
-//! schema, Draft 7 JSON Schema, and the glue that converts between the plain and protobuf types.
+//! versions, and emits plain Rust types and traits (including opt-in Serde derives and
+//! `no_std`/`alloc` mode), version-to-version adapters, a `.proto` schema, JSON Schema (Draft 7 by
+//! default, opt-in Draft 2020-12), versioned JSON contract IR, and the glue that converts between
+//! the plain and protobuf types.
 //!
 //! - [`load`] parses a version directory's WIT package, [`load_sources`] parses the same layout
 //!   from named in-memory sources, and [`subset`] checks either against the supported subset.
@@ -16,14 +18,20 @@
 //! - [`emit`] generates the [Rust](emit::rust) output (including version-to-version
 //!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema), and
 //!   [glue](emit::glue) output for a WIT root and checks committed output for drift.
+//! - [`diff`] compares two contract versions across wire, source, generated-API, and protobuf
+//!   binary decode compatibility views.
+//! - [`inspect`] exports a versioned machine-readable JSON contract IR and human summaries.
+//! - [`freeze`] checks release-freeze immutability and retirement ordering against Git history.
 //! - [`diagnostic`] defines the stable machine-readable diagnostics shared by the CLI commands.
-//! - [`workflow`] owns side-effect-free check and lock orchestration and returns structured
-//!   diagnostics; lockfile writing is explicit.
+//! - [`workflow`] owns side-effect-free check, release-readiness, and lock orchestration and
+//!   returns structured diagnostics; lockfile writing is explicit.
 //! - [`ContractError`] marks contract, lockfile, and output violations, as distinct from usage,
 //!   I/O, and parse errors.
 //!
 //! The `witforge` command-line interface (the `witforge-cli` crate) wraps these as the `check`,
-//! `lock`, `diff`, `rust`, `proto`, `schema`, and `glue` commands. The normative specifications
+//! `lock`, `rust`, `proto`, `schema`, `glue`, `generate`, `init`, `new-version`, `release`,
+//! `retire`, `diff`, `inspect`, `freeze`, `completions`, and `explain` commands. For Rust
+//! `build.rs` integration, see the companion `witforge-build` crate. The normative specifications
 //! are in [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
 pub mod diagnostic;

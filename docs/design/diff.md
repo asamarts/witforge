@@ -366,10 +366,11 @@ expects a breaking major change omits `--check` on that comparison.
 
 ## Limits
 
-`diff` compares root-contract structure, not root docs, root stability attributes, or generated
-file bytes. It does validate exact dependency-graph identity, including dependency docs and
-stability. Generated output changes caused by an existing contract (for example a new emitter
-convention) are detected by each emitter's `--check`, not by `diff`.
+`diff` compares root-contract structure and root stability attributes (`@since`, `@unstable`,
+`@deprecated`), not root docs or generated file bytes. It does validate exact dependency-graph
+identity, including dependency docs and stability. Generated output changes caused by an existing
+contract (for example a new emitter convention) are detected by each emitter's `--check`, not by
+`diff`.
 
 `diff` reports guaranteed new-to-old conversion failures as notes, but it does not run `rustc`
 or inspect generated file bytes. It does not report value-dependent failures such as a removed

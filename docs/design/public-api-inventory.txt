@@ -6,8 +6,12 @@ attribute #[non_exhaustive] witforge::diagnostic::Position
 attribute #[non_exhaustive] witforge::diagnostic::RelatedLocation
 attribute #[non_exhaustive] witforge::diagnostic::Severity
 attribute #[non_exhaustive] witforge::diff::ChangeElement
+attribute #[non_exhaustive] witforge::emit::glue::GlueOptions
+attribute #[non_exhaustive] witforge::emit::json_schema::JsonSchemaDraft
+attribute #[non_exhaustive] witforge::emit::json_schema::SchemaOptions
 attribute #[non_exhaustive] witforge::emit::output::GeneratedFileFinding
 attribute #[non_exhaustive] witforge::emit::output::GeneratedFileStatus
+attribute #[non_exhaustive] witforge::emit::rust::RustOptions
 attribute #[non_exhaustive] witforge::lock::Changes
 attribute #[non_exhaustive] witforge::lock::Discrepancy
 attribute #[non_exhaustive] witforge::lock::Entry
@@ -105,11 +109,13 @@ constant witforge::emit::glue::HEADER
 constant witforge::emit::json_schema::HEADER
 constant witforge::emit::proto::HEADER
 constant witforge::emit::rust::HEADER
+constant witforge::inspect::IR_VERSION
 constant witforge::lock::HEADER
 constant witforge::lock::ORDER_HEADER
 enum witforge::diagnostic::Severity
 enum witforge::diff::ChangeElement
 enum witforge::diff::ChangeKind
+enum witforge::emit::json_schema::JsonSchemaDraft
 enum witforge::emit::output::GeneratedFileStatus
 enum witforge::lock::LockMode
 enum witforge::lock::MemberKey
@@ -193,10 +199,14 @@ field witforge::diff::Summary.breaking
 field witforge::diff::Summary.changes
 field witforge::diff::Summary.source_breaking
 field witforge::diff::Summary.wire_breaking
+field witforge::emit::glue::GlueOptions.no_std
+field witforge::emit::json_schema::SchemaOptions.draft
 field witforge::emit::output::GeneratedFileFinding.path
 field witforge::emit::output::GeneratedFileFinding.regenerate_command
 field witforge::emit::output::GeneratedFileFinding.status
 field witforge::emit::output::GeneratedFileStatus::Changed.detail
+field witforge::emit::rust::RustOptions.no_std
+field witforge::emit::rust::RustOptions.serde
 field witforge::freeze::FreezeOptions.base
 field witforge::freeze::FreezeReport.checks
 field witforge::freeze::FreezeReport.manifest
@@ -364,17 +374,28 @@ function witforge::diff::compare_with_impacts
 function witforge::diff::compare_with_locations
 function witforge::diff::compare_with_omissions
 function witforge::discover_version_directories
+function witforge::emit::glue::GlueOptions::new
+function witforge::emit::glue::GlueOptions::with_no_std
 function witforge::emit::glue::check
 function witforge::emit::glue::emit_root
+function witforge::emit::glue::emit_root_with_options
 function witforge::emit::glue::emit_version
+function witforge::emit::glue::emit_version_with_options
 function witforge::emit::glue::generate
 function witforge::emit::glue::plan
+function witforge::emit::glue::plan_with_options
 function witforge::emit::glue::plan_with_released
 function witforge::emit::glue::validate_module_root
+function witforge::emit::json_schema::JsonSchemaDraft::defs_keyword
+function witforge::emit::json_schema::JsonSchemaDraft::schema_uri
+function witforge::emit::json_schema::SchemaOptions::new
+function witforge::emit::json_schema::SchemaOptions::with_draft
 function witforge::emit::json_schema::check
 function witforge::emit::json_schema::emit_version
+function witforge::emit::json_schema::emit_version_with_options
 function witforge::emit::json_schema::generate
 function witforge::emit::json_schema::plan
+function witforge::emit::json_schema::plan_with_options
 function witforge::emit::json_schema::plan_with_released
 function witforge::emit::output::GeneratedFileFinding::diagnostic
 function witforge::emit::output::GeneratedFileFinding::message
@@ -395,13 +416,18 @@ function witforge::emit::proto::emit_major
 function witforge::emit::proto::generate
 function witforge::emit::proto::plan
 function witforge::emit::proto::plan_with_released
+function witforge::emit::rust::RustOptions::new
+function witforge::emit::rust::RustOptions::with_no_std
+function witforge::emit::rust::RustOptions::with_serde
 function witforge::emit::rust::check
 function witforge::emit::rust::check_with_serde
 function witforge::emit::rust::emit_version
+function witforge::emit::rust::emit_version_with_options
 function witforge::emit::rust::emit_version_with_serde
 function witforge::emit::rust::generate
 function witforge::emit::rust::generate_with_serde
 function witforge::emit::rust::plan
+function witforge::emit::rust::plan_with_options
 function witforge::emit::rust::plan_with_released
 function witforge::emit::rust::plan_with_serde
 function witforge::emit::rust::version_module_name
@@ -415,6 +441,12 @@ function witforge::error_diagnostics
 function witforge::error_located_diagnostics
 function witforge::freeze::FreezeReport::is_ok
 function witforge::freeze::check_root
+function witforge::freeze::check_root_with_manifest
+function witforge::inspect::emit_version_json
+function witforge::inspect::inspect_root_json
+function witforge::inspect::inspect_version_json
+function witforge::inspect::summarize_root
+function witforge::inspect::summarize_version
 function witforge::is_contract_error
 function witforge::is_released
 function witforge::load
@@ -491,6 +523,7 @@ function witforge::workflow::VersionOptions::with_baseline
 function witforge::workflow::VersionOptions::with_lockfile
 function witforge::workflow::VersionOptions::with_released
 function witforge::workflow::check
+function witforge::workflow::check_release
 function witforge::workflow::check_root
 function witforge::workflow::classify_check_target
 function witforge::workflow::lock
@@ -516,9 +549,13 @@ impl Clone for witforge::diff::DiffReport
 impl Clone for witforge::diff::Endpoint
 impl Clone for witforge::diff::FullDiff
 impl Clone for witforge::diff::Summary
+impl Clone for witforge::emit::glue::GlueOptions
+impl Clone for witforge::emit::json_schema::JsonSchemaDraft
+impl Clone for witforge::emit::json_schema::SchemaOptions
 impl Clone for witforge::emit::output::GeneratedFileFinding
 impl Clone for witforge::emit::output::GeneratedFileStatus
 impl Clone for witforge::emit::output::GeneratedFiles
+impl Clone for witforge::emit::rust::RustOptions
 impl Clone for witforge::freeze::FreezeOptions
 impl Clone for witforge::freeze::FreezeReport
 impl Clone for witforge::lock::Changes
@@ -564,6 +601,9 @@ impl Copy for witforge::diff::ChangeElement
 impl Copy for witforge::diff::DecodeSummary
 impl Copy for witforge::diff::DecodeVerdict
 impl Copy for witforge::diff::Summary
+impl Copy for witforge::emit::glue::GlueOptions
+impl Copy for witforge::emit::json_schema::JsonSchemaDraft
+impl Copy for witforge::emit::rust::RustOptions
 impl Copy for witforge::lock::LockMode
 impl Copy for witforge::model::MemberKind
 impl Copy for witforge::model::Version
@@ -592,9 +632,13 @@ impl Debug for witforge::diff::DiffReport
 impl Debug for witforge::diff::Endpoint
 impl Debug for witforge::diff::FullDiff
 impl Debug for witforge::diff::Summary
+impl Debug for witforge::emit::glue::GlueOptions
+impl Debug for witforge::emit::json_schema::JsonSchemaDraft
+impl Debug for witforge::emit::json_schema::SchemaOptions
 impl Debug for witforge::emit::output::GeneratedFileFinding
 impl Debug for witforge::emit::output::GeneratedFileStatus
 impl Debug for witforge::emit::output::GeneratedFiles
+impl Debug for witforge::emit::rust::RustOptions
 impl Debug for witforge::freeze::FreezeOptions
 impl Debug for witforge::freeze::FreezeReport
 impl Debug for witforge::lock::Changes
@@ -636,6 +680,10 @@ impl Debug for witforge::workflow::VersionOptions
 impl Default for witforge::ReleasedManifest
 impl Default for witforge::diff::DecodeSummary
 impl Default for witforge::diff::Summary
+impl Default for witforge::emit::glue::GlueOptions
+impl Default for witforge::emit::json_schema::JsonSchemaDraft
+impl Default for witforge::emit::json_schema::SchemaOptions
+impl Default for witforge::emit::rust::RustOptions
 impl Default for witforge::freeze::FreezeOptions
 impl Default for witforge::lock::Changes
 impl Default for witforge::lock::Reconciliation
@@ -676,9 +724,13 @@ impl Eq for witforge::diff::DiffReport
 impl Eq for witforge::diff::Endpoint
 impl Eq for witforge::diff::FullDiff
 impl Eq for witforge::diff::Summary
+impl Eq for witforge::emit::glue::GlueOptions
+impl Eq for witforge::emit::json_schema::JsonSchemaDraft
+impl Eq for witforge::emit::json_schema::SchemaOptions
 impl Eq for witforge::emit::output::GeneratedFileFinding
 impl Eq for witforge::emit::output::GeneratedFileStatus
 impl Eq for witforge::emit::output::GeneratedFiles
+impl Eq for witforge::emit::rust::RustOptions
 impl Eq for witforge::freeze::FreezeOptions
 impl Eq for witforge::freeze::FreezeReport
 impl Eq for witforge::lock::Changes
@@ -756,9 +808,13 @@ impl PartialEq for witforge::diff::DiffReport
 impl PartialEq for witforge::diff::Endpoint
 impl PartialEq for witforge::diff::FullDiff
 impl PartialEq for witforge::diff::Summary
+impl PartialEq for witforge::emit::glue::GlueOptions
+impl PartialEq for witforge::emit::json_schema::JsonSchemaDraft
+impl PartialEq for witforge::emit::json_schema::SchemaOptions
 impl PartialEq for witforge::emit::output::GeneratedFileFinding
 impl PartialEq for witforge::emit::output::GeneratedFileStatus
 impl PartialEq for witforge::emit::output::GeneratedFiles
+impl PartialEq for witforge::emit::rust::RustOptions
 impl PartialEq for witforge::freeze::FreezeOptions
 impl PartialEq for witforge::freeze::FreezeReport
 impl PartialEq for witforge::lock::Changes
@@ -816,6 +872,7 @@ module witforge::emit::output
 module witforge::emit::proto
 module witforge::emit::rust
 module witforge::freeze
+module witforge::inspect
 module witforge::lock
 module witforge::model
 module witforge::subset
@@ -1021,19 +1078,35 @@ signature witforge::diff::compare_with_impacts {"function":{"sig":{"inputs":[["o
 signature witforge::diff::compare_with_locations {"function":{"sig":{"inputs":[["old",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["new",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[{"resolved_path":{"path":"DiffAnalysis","args":null}},{"resolved_path":{"path":"std::collections::BTreeMap","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}},{"type":{"tuple":[{"resolved_path":{"path":"String","args":null}},{"resolved_path":{"path":"crate::diagnostic::Position","args":null}}]}}],"constraints":[]}}}}]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::diff::compare_with_omissions {"function":{"sig":{"inputs":[["old",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["new",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[{"resolved_path":{"path":"DiffAnalysis","args":null}},{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"ConversionOmission","args":null}}}],"constraints":[]}}}},{"resolved_path":{"path":"std::collections::BTreeMap","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}},{"type":{"tuple":[{"resolved_path":{"path":"String","args":null}},{"resolved_path":{"path":"crate::diagnostic::Position","args":null}}]}}],"constraints":[]}}}}]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::discover_version_directories {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"tuple":[{"primitive":"u64"},{"primitive":"u64"},{"resolved_path":{"path":"std::path::PathBuf","args":null}}]}}],"constraints":[]}}}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::glue::GlueOptions {"params":[],"where_predicates":[]}
+signature witforge::emit::glue::GlueOptions.no_std {"struct_field":{"primitive":"bool"}}
+signature witforge::emit::glue::GlueOptions::new {"function":{"sig":{"inputs":[],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::glue::GlueOptions::with_no_std {"function":{"sig":{"inputs":[["self",{"generic":"Self"}],["no_std",{"primitive":"bool"}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::glue::HEADER {"constant":{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}},"const":{"expr":"\"// @generated by witforge; do not edit.\"","value":null,"is_literal":true}}}
 signature witforge::emit::glue::check {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFileFinding","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::glue::emit_root {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["majors",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"slice":{"primitive":"u64"}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::glue::emit_root_with_options {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["majors",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"slice":{"primitive":"u64"}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"GlueOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::glue::emit_version {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["lock",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::lock::WireLock","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::glue::emit_version_with_options {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["lock",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::lock::WireLock","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"GlueOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::glue::generate {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::glue::plan {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::glue::plan_with_options {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"GlueOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::glue::plan_with_released {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::glue::validate_module_root {"function":{"sig":{"inputs":[["root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::json_schema::HEADER {"constant":{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}},"const":{"expr":"\"{\\\"$comment\\\":\\\"@generated by witforge; do not edit.\\\",\"","value":null,"is_literal":true}}}
+signature witforge::emit::json_schema::JsonSchemaDraft {"params":[],"where_predicates":[]}
+signature witforge::emit::json_schema::JsonSchemaDraft::defs_keyword {"function":{"sig":{"inputs":[["self",{"generic":"Self"}]],"output":{"borrowed_ref":{"lifetime":"'static","is_mutable":false,"type":{"primitive":"str"}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::json_schema::JsonSchemaDraft::schema_uri {"function":{"sig":{"inputs":[["self",{"generic":"Self"}]],"output":{"borrowed_ref":{"lifetime":"'static","is_mutable":false,"type":{"primitive":"str"}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::json_schema::SchemaOptions {"params":[],"where_predicates":[]}
+signature witforge::emit::json_schema::SchemaOptions.draft {"struct_field":{"resolved_path":{"path":"JsonSchemaDraft","args":null}}}
+signature witforge::emit::json_schema::SchemaOptions::new {"function":{"sig":{"inputs":[],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::json_schema::SchemaOptions::with_draft {"function":{"sig":{"inputs":[["self",{"generic":"Self"}],["draft",{"resolved_path":{"path":"JsonSchemaDraft","args":null}}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::json_schema::check {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFileFinding","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::json_schema::emit_version {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::json_schema::emit_version_with_options {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"SchemaOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::json_schema::generate {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::json_schema::plan {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::json_schema::plan_with_options {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"SchemaOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::json_schema::plan_with_released {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::output::GeneratedFileFinding {"params":[],"where_predicates":[]}
 signature witforge::emit::output::GeneratedFileFinding.path {"struct_field":{"resolved_path":{"path":"std::path::PathBuf","args":null}}}
@@ -1063,13 +1136,21 @@ signature witforge::emit::proto::generate {"function":{"sig":{"inputs":[["wit_ro
 signature witforge::emit::proto::plan {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::proto::plan_with_released {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::HEADER {"constant":{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}},"const":{"expr":"\"// @generated by witforge; do not edit.\"","value":null,"is_literal":true}}}
+signature witforge::emit::rust::RustOptions {"params":[],"where_predicates":[]}
+signature witforge::emit::rust::RustOptions.no_std {"struct_field":{"primitive":"bool"}}
+signature witforge::emit::rust::RustOptions.serde {"struct_field":{"primitive":"bool"}}
+signature witforge::emit::rust::RustOptions::new {"function":{"sig":{"inputs":[],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::rust::RustOptions::with_no_std {"function":{"sig":{"inputs":[["self",{"generic":"Self"}],["no_std",{"primitive":"bool"}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::rust::RustOptions::with_serde {"function":{"sig":{"inputs":[["self",{"generic":"Self"}],["serde",{"primitive":"bool"}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::check {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFileFinding","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::check_with_serde {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["serde",{"primitive":"bool"}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFileFinding","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::emit_version {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::rust::emit_version_with_options {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"RustOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::emit_version_with_serde {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["serde",{"primitive":"bool"}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::generate {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::generate_with_serde {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["serde",{"primitive":"bool"}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::plan {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::rust::plan_with_options {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"RustOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::plan_with_released {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["serde",{"primitive":"bool"}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::plan_with_serde {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["serde",{"primitive":"bool"}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::version_module_name {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}]],"output":{"resolved_path":{"path":"String","args":null}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
@@ -1091,6 +1172,13 @@ signature witforge::freeze::FreezeReport.root {"struct_field":{"resolved_path":{
 signature witforge::freeze::FreezeReport.violations {"struct_field":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::diagnostic::LocatedDiagnostic","args":null}}}],"constraints":[]}}}}}
 signature witforge::freeze::FreezeReport::is_ok {"function":{"sig":{"inputs":[["self",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"generic":"Self"}}}]],"output":{"primitive":"bool"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::freeze::check_root {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"FreezeOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"FreezeReport","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::freeze::check_root_with_manifest {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["manifest",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"FreezeOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"FreezeReport","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::inspect::IR_VERSION {"constant":{"type":{"primitive":"u32"},"const":{"expr":"1","value":"1u32","is_literal":true}}}
+signature witforge::inspect::emit_version_json {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}],["lock",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::lock::WireLock","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::inspect::inspect_root_json {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::inspect::inspect_version_json {"function":{"sig":{"inputs":[["version_dir",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::inspect::summarize_root {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::inspect::summarize_version {"function":{"sig":{"inputs":[["version_dir",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"String","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::is_contract_error {"function":{"sig":{"inputs":[["error",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"anyhow::Error","args":null}}}}]],"output":{"primitive":"bool"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::is_released {"function":{"sig":{"inputs":[["wit_dir",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["explicit",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"primitive":"bool"}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::load {"function":{"sig":{"inputs":[["dir",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Contract","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
@@ -1319,6 +1407,7 @@ signature witforge::workflow::VersionOptions::with_baseline {"function":{"sig":{
 signature witforge::workflow::VersionOptions::with_lockfile {"function":{"sig":{"inputs":[["self",{"generic":"Self"}],["path",{"resolved_path":{"path":"PathBuf","args":null}}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::workflow::VersionOptions::with_released {"function":{"sig":{"inputs":[["self",{"generic":"Self"}],["path",{"resolved_path":{"path":"PathBuf","args":null}}]],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::workflow::check {"function":{"sig":{"inputs":[["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"VersionOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Report","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::workflow::check_release {"function":{"sig":{"inputs":[["version_dir",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["explicit_released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Report","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::workflow::check_root {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["explicit_released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Report","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::workflow::classify_check_target {"function":{"sig":{"inputs":[["path",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"CheckTargetKind","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::workflow::lock {"function":{"sig":{"inputs":[["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"VersionOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"LockReport","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
@@ -1342,8 +1431,11 @@ struct witforge::diff::DiffReport
 struct witforge::diff::Endpoint
 struct witforge::diff::FullDiff
 struct witforge::diff::Summary
+struct witforge::emit::glue::GlueOptions
+struct witforge::emit::json_schema::SchemaOptions
 struct witforge::emit::output::GeneratedFileFinding
 struct witforge::emit::output::GeneratedFiles
+struct witforge::emit::rust::RustOptions
 struct witforge::freeze::FreezeOptions
 struct witforge::freeze::FreezeReport
 struct witforge::lock::Changes
@@ -1389,6 +1481,7 @@ variant witforge::diff::ChangeElement::Parameter
 variant witforge::diff::ChangeElement::ParameterOrder
 variant witforge::diff::ChangeElement::RecordField
 variant witforge::diff::ChangeElement::RecordFieldOrder
+variant witforge::diff::ChangeElement::ReservedEntry
 variant witforge::diff::ChangeElement::Type
 variant witforge::diff::ChangeElement::VariantCase
 variant witforge::diff::ChangeElement::VariantCaseOrder
@@ -1404,6 +1497,8 @@ variant witforge::diff::ChangeKind::Renumbered
 variant witforge::diff::ChangeKind::Reordered
 variant witforge::diff::ChangeKind::Retyped
 variant witforge::diff::ChangeKind::StabilityChanged
+variant witforge::emit::json_schema::JsonSchemaDraft::Draft202012
+variant witforge::emit::json_schema::JsonSchemaDraft::Draft7
 variant witforge::emit::output::GeneratedFileStatus::Changed
 variant witforge::emit::output::GeneratedFileStatus::Extra
 variant witforge::emit::output::GeneratedFileStatus::Missing

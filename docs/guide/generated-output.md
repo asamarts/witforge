@@ -117,7 +117,7 @@ The schema emitter writes one Draft 7 document per contract version. Named WIT t
 accepts `null`, but the containing property is still required.
 
 ```json
-"types/item": {"description":"One item submitted to the ingester.","type":"object","properties":{"id":{"type":"integer","minimum":0,"maximum":18446744073709551615},"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"note":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["id","name","tags","note"],"additionalProperties":false},
+"types/item": {"description":"One item submitted to the ingester.","type":"object","properties":{"id":{"description":"Stable item id.","type":"integer","minimum":0,"maximum":18446744073709551615},"name":{"description":"Human-readable name.","type":"string"},"tags":{"description":"Free-form tags.","type":"array","items":{"type":"string"}},"note":{"description":"Optional note.","anyOf":[{"type":"string"},{"type":"null"}]}},"required":["id","name","tags","note"],"additionalProperties":false},
 "types/status": {"description":"The result state of an item.","type":"string","enum":["accepted","rejected"]},
 ```
 

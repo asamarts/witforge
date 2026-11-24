@@ -158,7 +158,9 @@ that updates the copied `deps/` graph in every version directory of the root at 
 adoption is refused. `check --against` applies the same comparison when its baseline is a
 version directory.
 
-`witforge check` accepts one version directory. It proves that directory loads, stays in the
+`witforge check` accepts either one version directory or a WIT root. When given a WIT root, it
+checks every version directory, adjacent lockfile continuity, and shared dependency-graph identity
+in one pass. When given a single version directory, it proves that directory loads, stays in the
 supported subset, has a current lockfile, and—when `--against` supplies a version directory's
 `wire.lock`—continues the prior lockfile and resolves the identical pinned dependency graph
 using the generators' shared comparison. A baseline lockfile copied outside a version directory
