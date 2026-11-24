@@ -144,9 +144,11 @@ function runnerEnvironment(inputs) {
 
 function declaredInputs() {
   const metadata = fs.readFileSync(path.join(__dirname, '..', 'action.yml'), 'utf8');
-  assert.ok(
-    !metadata.includes('${{'),
-    'action.yml must not contain `${{` expressions (GitHub evaluates them even in descriptions)',
+  const expressions = [...metadata.matchAll(/^.*\$\{\{.*$/gm)].map((match) => match[0].trim());
+  assert.deepEqual(
+    expressions,
+    ['default: ${{ github.token }}'],
+    'action.yml must only use `${{` for the github-token input default (never in descriptions)',
   );
   const start = metadata.indexOf('\ninputs:\n');
   const end = metadata.indexOf('\noutputs:\n');
@@ -343,6 +345,57 @@ test('freeze input builds witforge freeze commands from roots or config', () => 
     [['witforge', 'freeze', '--config', 'witforge.toml']],
   );
   assert.deepEqual(buildCommands('witforge', { freeze: 'false' }), []);
+});
+
+test('check: true and generators: all align with witforge.toml multi-project commands', () => {
+  assert.deepEqual(
+    buildCommands('witforge', {
+      check: 'true',
+      config: 'witforge.toml',
+      generators: 'all',
+      format: 'sarif',
+    }),
+    [
+      ['witforge', 'check', '--config', 'witforge.toml', '--format', 'sarif'],
+      ['witforge', 'generate', '--config', 'witforge.toml', '--check', '--format', 'sarif'],
+    ],
+  );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      check: 'true',
+      config: 'witforge.toml',
+      project: 'demo',
+      generators: '',
+    }),
+    [['witforge', 'check', '--config', 'witforge.toml', '--project', 'demo']],
+  );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      config: 'witforge.toml',
+      project: 'demo',
+      generators: 'all',
+    }),
+    [['witforge', 'generate', '--config', 'witforge.toml', '--check', '--project', 'demo']],
+  );
+  assert.deepEqual(buildCommands('witforge', { check: 'false' }), []);
+  assert.throws(() => buildCommands('witforge', { check: 'true' }), /check: true requires config/);
+  assert.throws(
+    () =>
+      buildCommands('witforge', {
+        check: 'true',
+        against: 'wit/v0.1/wire.lock',
+        config: 'witforge.toml',
+      }),
+    /against cannot be combined with check: true/,
+  );
+  assert.throws(
+    () => buildCommands('witforge', { config: 'witforge.toml', generators: 'all,rust' }),
+    /generators: all cannot be combined/,
+  );
+  assert.throws(
+    () => buildCommands('witforge', { generators: 'all,rust' }),
+    /generators: all cannot be combined/,
+  );
 });
 
 test('requests retry transient 5xx and network errors but never retry 4xx', async () => {
@@ -569,6 +622,28 @@ test('attestation verification runs for >=0.7.0, warns when gh is absent, and fa
       }),
     /attestation verification failed.*no matching attestation/,
   );
+
+  const prevGhToken = process.env.GH_TOKEN;
+  const prevGithubToken = process.env.GITHUB_TOKEN;
+  delete process.env.GH_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  try {
+    assert.throws(
+      () =>
+        verifyAttestation('/tmp/witforge-0.7.0.tar.gz', '0.7.0', {
+          token: '',
+          execFileSync: () => {
+            const err = new Error('exit 4');
+            err.stderr = 'To get started with GitHub CLI, please run: gh auth login';
+            throw err;
+          },
+        }),
+      /pass `github-token` or leave it at its default/,
+    );
+  } finally {
+    if (prevGhToken !== undefined) process.env.GH_TOKEN = prevGhToken;
+    if (prevGithubToken !== undefined) process.env.GITHUB_TOKEN = prevGithubToken;
+  }
 });
 
 test('workflow annotations and failed-command/sarif outputs are emitted from diagnostics', () => {

@@ -22,7 +22,8 @@ inputs:
     default: ''
   check:
     description: >-
-      WIT version directories or WIT roots to pass to `witforge check`, one per line.
+      WIT version directories or WIT roots to pass to `witforge check`, one per line, or `true` to
+      check every project in `config`.
     required: false
     default: ''
   against:
@@ -58,7 +59,8 @@ inputs:
   generators:
     description: >-
       Comma- or whitespace-separated generators to run with `--check` against `config`
-      (`rust`, `proto`, `schema`, `glue`). Empty skips generation.
+      (`rust`, `proto`, `schema`, `glue`), or `all` to run `witforge generate --check` across every
+      configured generator and project. Empty skips generation.
     required: false
     default: 'rust'
   freeze:
@@ -82,9 +84,9 @@ inputs:
   github-token:
     description: >-
       Token used for GitHub API queries (`version: latest` lookup and `gh attestation verify`);
-      pass the workflow token for rate limits. Release assets are downloaded without it.
+      defaults to the workflow token. Release assets are downloaded without it.
     required: false
-    default: ''
+    default: ${{ github.token }}
 outputs:
   failed-command:
     description: >-

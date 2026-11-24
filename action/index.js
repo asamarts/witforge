@@ -161,8 +161,12 @@ function verifyAttestation(archivePath, version, options = {}) {
     }
     const stderr = error && error.stderr ? String(error.stderr).trim() : '';
     const detail = stderr || (error && error.message) || String(error);
+    const authHint =
+      !options.token && !env.GH_TOKEN && !env.GITHUB_TOKEN && /gh auth login|GH_TOKEN/i.test(detail)
+        ? ' (pass `github-token` or leave it at its default workflow token)'
+        : '';
     throw new Error(
-      `build provenance attestation verification failed for ${path.basename(archivePath)}: ${detail}`,
+      `build provenance attestation verification failed for ${path.basename(archivePath)}: ${detail}${authHint}`,
     );
   }
 }
@@ -259,14 +263,33 @@ function buildCommands(binary, options) {
   }
 
   const commands = [];
-  const checkDirs = splitLines(options.check);
-  const againstMap = parseAgainst(options.against, checkDirs);
-  for (const directory of checkDirs) {
-    const args = [binary, 'check', directory];
-    const baseline = againstMap.get(directory);
-    if (baseline) args.push('--against', baseline);
+  const config = String(options.config || '').trim();
+  const project = String(options.project || '').trim();
+  const checkRaw = String(options.check || '').trim();
+  const checkLower = checkRaw.toLowerCase();
+  const checkUsesConfig = checkLower === 'true';
+  const checkEnabled = checkRaw && checkLower !== 'false';
+  if (checkUsesConfig) {
+    if (!config) {
+      throw new Error('check: true requires config, or pass WIT version directory or root paths');
+    }
+    if (String(options.against || '').trim()) {
+      throw new Error('against cannot be combined with check: true');
+    }
+    const args = [binary, 'check', '--config', config];
+    if (project) args.push('--project', project);
     if (format !== 'human') args.push('--format', format);
     commands.push(args);
+  } else {
+    const checkDirs = checkEnabled ? splitLines(checkRaw) : [];
+    const againstMap = parseAgainst(options.against, checkDirs);
+    for (const directory of checkDirs) {
+      const args = [binary, 'check', directory];
+      const baseline = againstMap.get(directory);
+      if (baseline) args.push('--against', baseline);
+      if (format !== 'human') args.push('--format', format);
+      commands.push(args);
+    }
   }
 
   const old = String(options.diffOld || '').trim();
@@ -288,8 +311,6 @@ function buildCommands(binary, options) {
     commands.push(args);
   }
 
-  const config = String(options.config || '').trim();
-  const project = String(options.project || '').trim();
   const freeze = String(options.freeze || '').trim();
   const freezeEnabled = freeze && freeze.toLowerCase() !== 'false';
   const freezeUsesConfig = freeze.toLowerCase() === 'true';
@@ -313,30 +334,47 @@ function buildCommands(binary, options) {
 
   if (config) {
     const generators = splitList(options.generators);
-    if (generators.length === 0 && !freezeUsesConfig) {
+    if (generators.length === 0 && !freezeUsesConfig && !checkUsesConfig) {
       throw new Error('config is set but generators is empty');
     }
-    for (const generator of generators) {
-      if (!GENERATORS.has(generator)) {
-        throw new Error(
-          `unknown generator \`${generator}\`; expected rust, proto, schema, or glue`,
-        );
+    if (generators.includes('all')) {
+      if (generators.length !== 1) {
+        throw new Error('generators: all cannot be combined with individual generator names');
       }
-      const args = [binary, generator, '--config', config, '--check'];
+      const args = [binary, 'generate', '--config', config, '--check'];
       if (project) args.push('--project', project);
       if (format !== 'human') args.push('--format', format);
       commands.push(args);
+    } else {
+      for (const generator of generators) {
+        if (!GENERATORS.has(generator)) {
+          throw new Error(
+            `unknown generator \`${generator}\`; expected rust, proto, schema, glue, or all`,
+          );
+        }
+        const args = [binary, generator, '--config', config, '--check'];
+        if (project) args.push('--project', project);
+        if (format !== 'human') args.push('--format', format);
+        commands.push(args);
+      }
     }
   } else if (
     String(options.generators || '').trim() &&
     String(options.generators || '').trim() !== 'rust'
   ) {
     // Validate explicitly listed generator names even when config is omitted, catching typos up front.
-    for (const generator of splitList(options.generators)) {
-      if (!GENERATORS.has(generator)) {
-        throw new Error(
-          `unknown generator \`${generator}\`; expected rust, proto, schema, or glue`,
-        );
+    const generators = splitList(options.generators);
+    if (generators.includes('all')) {
+      if (generators.length !== 1) {
+        throw new Error('generators: all cannot be combined with individual generator names');
+      }
+    } else {
+      for (const generator of generators) {
+        if (!GENERATORS.has(generator)) {
+          throw new Error(
+            `unknown generator \`${generator}\`; expected rust, proto, schema, glue, or all`,
+          );
+        }
       }
     }
   }

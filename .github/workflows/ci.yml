@@ -119,7 +119,7 @@ jobs:
       # step has just installed the same release on this runner, so an input regression, which
       # fails every run, is not hidden by a transient download failure in one of them. `W10-086`
       # replaces this with an assertion on the command that failed.
-      - name: Smoke the local Action
+      - name: Smoke the local Action (default github-token)
         uses: ./
         with:
           version: 0.7.0
@@ -127,7 +127,6 @@ jobs:
           diff-old: crates/witforge/tests/fixtures/versions/wit/v0.1
           diff-new: crates/witforge/tests/fixtures/versions/wit/v0.2
           diff-check: "false"
-          github-token: ${{ github.token }}
       - name: Run the local Action's diff gate on a breaking change (expected to fail)
         id: diff-gate
         continue-on-error: true
@@ -382,6 +381,14 @@ jobs:
           SARIF_FILE: ${{ steps.local-bin-action.outputs.sarif-file }}
         run: |
           jq -e '.version == "2.1.0" and (.runs | length) >= 6' "$SARIF_FILE" >/dev/null
+      - name: Smoke config-backed check and generators=all through the local Action
+        uses: ./
+        with:
+          binary: ${{ github.workspace }}/target/debug/witforge
+          check: "true"
+          config: examples/evolved/witforge.toml
+          generators: all
+          freeze: "true"
       # The release script's version-reference check runs here so drift in README/docs/Action
       # references fails a normal main/PR run, not only a tag release.
       - run: ci/check-release.sh
