@@ -12,7 +12,9 @@ Each `vX.Y.Z` release attaches one gzip-compressed tar archive per target:
 
 | Platform | Target | Archive |
 |---|---|---|
+| Linux x86_64 (static musl, from 0.8.0) | `x86_64-unknown-linux-musl` | `witforge-X.Y.Z-x86_64-unknown-linux-musl.tar.gz` |
 | Linux x86_64 (glibc >= 2.39) | `x86_64-unknown-linux-gnu` | `witforge-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 (static musl, from 0.8.0) | `aarch64-unknown-linux-musl` | `witforge-X.Y.Z-aarch64-unknown-linux-musl.tar.gz` |
 | Linux arm64 (glibc >= 2.39, from 0.7.0) | `aarch64-unknown-linux-gnu` | `witforge-X.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Intel | `x86_64-apple-darwin` | `witforge-X.Y.Z-x86_64-apple-darwin.tar.gz` |
 | macOS Apple silicon | `aarch64-apple-darwin` | `witforge-X.Y.Z-aarch64-apple-darwin.tar.gz` |
@@ -25,10 +27,13 @@ download. Each archive contains the executable (`witforge`, or `witforge.exe` on
 root alongside `LICENSE-APACHE`, `LICENSE-MIT`, and `README.md`.
 
 Linux binaries are built natively on Ubuntu 24.04 hosted runners (`ubuntu-latest` and
-`ubuntu-24.04-arm`, targeting glibc 2.39). Static `musl` Linux builds and Windows `arm64` builds
-are **not** provided; revisit if a consumer requests either target or reports the Action failing in
-an Alpine container. An unsupported platform/architecture combination fails with an error naming
-the detected platform/arch rather than running the wrong binary.
+`ubuntu-24.04-arm`). Starting in 0.8.0, static `musl` archives (`x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl`) are published alongside the `gnu` archives, and the Action selects
+the static `musl` archive on Linux for releases `>= 0.8.0` (retaining `gnu` for `<= 0.7.x`) so
+Linux containers and LTS distributions (Ubuntu 22.04, Debian 12, RHEL 9, Alpine) work without a
+glibc 2.39 floor. Windows `arm64` builds are **not** provided; revisit if a consumer requests them.
+An unsupported platform/architecture combination fails with an error naming the detected
+platform/arch rather than running the wrong binary.
 
 ## Installing a prebuilt archive
 

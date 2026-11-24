@@ -21,21 +21,23 @@ witforge --version
 ### Prebuilt archives
 
 Prebuilt archives are published on [GitHub Releases](https://github.com/asamarts/witforge/releases)
-for five native targets (each archive contains the executable beside `LICENSE-APACHE`,
+for native targets (each archive contains the executable beside `LICENSE-APACHE`,
 `LICENSE-MIT`, and `README.md`, plus a sibling `.sha256` file and, from 0.7.0, a SLSA build
 provenance attestation):
 
 | Platform | Target | Notes |
 |---|---|---|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` | glibc >= 2.39 (Ubuntu 24.04 runner) |
-| Linux arm64 | `aarch64-unknown-linux-gnu` | glibc >= 2.39, published from 0.7.0 |
+| Linux x86_64 (static) | `x86_64-unknown-linux-musl` | Portable across glibc/Alpine (from 0.8.0) |
+| Linux x86_64 (gnu) | `x86_64-unknown-linux-gnu` | glibc >= 2.39 (Ubuntu 24.04 runner) |
+| Linux arm64 (static) | `aarch64-unknown-linux-musl` | Portable across glibc/Alpine (from 0.8.0) |
+| Linux arm64 (gnu) | `aarch64-unknown-linux-gnu` | glibc >= 2.39, published from 0.7.0 |
 | macOS Intel | `x86_64-apple-darwin` | — |
 | macOS Apple silicon | `aarch64-apple-darwin` | — |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | — |
 
-Static Linux `musl` builds and Windows `arm64` builds are **not** provided; install from crates.io
-with `cargo install witforge-cli --locked` on those targets. `cargo binstall witforge-cli` is also
-configured via `[package.metadata.binstall]`.
+Windows `arm64` builds are **not** provided; install from crates.io with `cargo install
+witforge-cli --locked` on that target. `cargo binstall witforge-cli` is also configured via
+`[package.metadata.binstall]`.
 
 Download and verify a prebuilt archive before extracting it:
 

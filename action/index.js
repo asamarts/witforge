@@ -10,6 +10,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const REPOSITORY = 'asamarts/witforge';
 const RELEASE_SIGNER_WORKFLOW = `${REPOSITORY}/.github/workflows/release.yml`;
 const FIRST_ATTESTED_VERSION = [0, 7, 0];
+const FIRST_MUSL_VERSION = [0, 8, 0];
 const GENERATORS = new Set(['rust', 'proto', 'schema', 'glue']);
 const FORMATS = new Set(['human', 'json', 'sarif']);
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -111,16 +112,24 @@ function normalizeFormat(value) {
   return text;
 }
 
-function supportsAttestation(version) {
+function versionAtLeast(version, minParts) {
   const parts = String(version || '')
     .split('.')
     .map((part) => Number.parseInt(part, 10));
   if (parts.length !== 3 || parts.some(Number.isNaN)) return false;
   for (let i = 0; i < 3; i += 1) {
-    if (parts[i] > FIRST_ATTESTED_VERSION[i]) return true;
-    if (parts[i] < FIRST_ATTESTED_VERSION[i]) return false;
+    if (parts[i] > minParts[i]) return true;
+    if (parts[i] < minParts[i]) return false;
   }
   return true;
+}
+
+function supportsAttestation(version) {
+  return versionAtLeast(version, FIRST_ATTESTED_VERSION);
+}
+
+function supportsMusl(version) {
+  return versionAtLeast(version, FIRST_MUSL_VERSION);
 }
 
 function verifyAttestation(archivePath, version, options = {}) {
@@ -171,10 +180,11 @@ function verifyAttestation(archivePath, version, options = {}) {
   }
 }
 
-function assetTarget(platform = process.platform, arch = process.arch) {
+function assetTarget(platform = process.platform, arch = process.arch, version = '') {
+  const linuxLibc = supportsMusl(version) ? 'musl' : 'gnu';
   const targets = {
-    'linux/x64': 'x86_64-unknown-linux-gnu',
-    'linux/arm64': 'aarch64-unknown-linux-gnu',
+    'linux/x64': `x86_64-unknown-linux-${linuxLibc}`,
+    'linux/arm64': `aarch64-unknown-linux-${linuxLibc}`,
     'darwin/x64': 'x86_64-apple-darwin',
     'darwin/arm64': 'aarch64-apple-darwin',
     'win32/x64': 'x86_64-pc-windows-msvc',
@@ -501,7 +511,7 @@ async function install(options, runtime = {}) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
     throw new Error(`latest release advertised no usable version tag (${version || 'empty'})`);
   }
-  const target = assetTarget(runtime.platform, runtime.arch);
+  const target = assetTarget(runtime.platform, runtime.arch, version);
   const asset = archiveName(version, target);
   const base = `https://github.com/${REPOSITORY}/releases/download/v${version}`;
   const tempRoot = env.RUNNER_TEMP || os.tmpdir();
@@ -789,6 +799,7 @@ module.exports = {
   splitLines,
   splitList,
   supportsAttestation,
+  supportsMusl,
   validateInputs,
   verifyAttestation,
   versionFromRef,

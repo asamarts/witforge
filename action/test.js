@@ -28,6 +28,7 @@ const {
   runCommands,
   splitLines,
   supportsAttestation,
+  supportsMusl,
   validateInputs,
   verifyAttestation,
   workspaceVersion,
@@ -36,14 +37,27 @@ const {
 const WORKSPACE_VERSION = workspaceVersion();
 
 test('platform targets and archive names are stable', () => {
+  assert.equal(supportsMusl('0.7.0'), false);
+  assert.equal(supportsMusl('0.7.9'), false);
+  assert.equal(supportsMusl('0.8.0'), true);
+  assert.equal(supportsMusl('1.0.0'), true);
+
   assert.equal(assetTarget('linux', 'x64'), 'x86_64-unknown-linux-gnu');
+  assert.equal(assetTarget('linux', 'x64', '0.7.0'), 'x86_64-unknown-linux-gnu');
+  assert.equal(assetTarget('linux', 'x64', '0.8.0'), 'x86_64-unknown-linux-musl');
   assert.equal(assetTarget('linux', 'arm64'), 'aarch64-unknown-linux-gnu');
-  assert.equal(assetTarget('darwin', 'x64'), 'x86_64-apple-darwin');
-  assert.equal(assetTarget('darwin', 'arm64'), 'aarch64-apple-darwin');
-  assert.equal(assetTarget('win32', 'x64'), 'x86_64-pc-windows-msvc');
+  assert.equal(assetTarget('linux', 'arm64', '0.7.0'), 'aarch64-unknown-linux-gnu');
+  assert.equal(assetTarget('linux', 'arm64', '0.8.0'), 'aarch64-unknown-linux-musl');
+  assert.equal(assetTarget('darwin', 'x64', '0.8.0'), 'x86_64-apple-darwin');
+  assert.equal(assetTarget('darwin', 'arm64', '0.8.0'), 'aarch64-apple-darwin');
+  assert.equal(assetTarget('win32', 'x64', '0.8.0'), 'x86_64-pc-windows-msvc');
   assert.equal(
     archiveName('0.3.0', 'x86_64-unknown-linux-gnu'),
     'witforge-0.3.0-x86_64-unknown-linux-gnu.tar.gz',
+  );
+  assert.equal(
+    archiveName('0.8.0', 'x86_64-unknown-linux-musl'),
+    'witforge-0.8.0-x86_64-unknown-linux-musl.tar.gz',
   );
   assert.throws(() => assetTarget('linux', 'ia32'), /no prebuilt.*linux\/ia32/);
 });
@@ -533,6 +547,34 @@ test('install names `version` on 404, never retries checksum mismatch, and clean
       ['witforge'],
       'archive and checksum scratch files must be removed after extraction',
     );
+
+    // 4. Releases >= 0.8.0 select static musl archives on Linux.
+    const muslUrls = [];
+    await install(
+      { version: '0.8.0', binary: '', token: 'tok' },
+      {
+        env: { RUNNER_TEMP: runnerTemp, GITHUB_PATH: ghPath, GITHUB_ENV: ghEnv },
+        platform: 'linux',
+        arch: 'arm64',
+        download: async (url, dest) => {
+          muslUrls.push(url);
+          if (url.endsWith('.sha256')) {
+            fs.writeFileSync(dest, `${digest}  witforge-0.8.0-aarch64-unknown-linux-musl.tar.gz\n`);
+          } else {
+            fs.writeFileSync(dest, payload);
+          }
+        },
+        verifyExecFileSync: () => {},
+        execFileSync: (_cmd, args) => {
+          const destDir = args[args.indexOf('-C') + 1];
+          fs.writeFileSync(path.join(destDir, 'witforge'), '#!/bin/sh\n');
+        },
+      },
+    );
+    assert.deepEqual(muslUrls, [
+      'https://github.com/asamarts/witforge/releases/download/v0.8.0/witforge-0.8.0-aarch64-unknown-linux-musl.tar.gz',
+      'https://github.com/asamarts/witforge/releases/download/v0.8.0/witforge-0.8.0-aarch64-unknown-linux-musl.tar.gz.sha256',
+    ]);
   } finally {
     fs.rmSync(runnerTemp, { recursive: true, force: true });
   }
