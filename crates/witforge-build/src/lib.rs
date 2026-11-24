@@ -5,14 +5,16 @@
 //!
 //! `witforge-build` removes repetitive `build.rs` boilerplate:
 //!
-//! - Discovers every `.proto` file under `proto_dir` in deterministic sorted order.
-//! - Emits `cargo:rerun-if-changed` directives for `proto_dir` and every discovered `.proto` file.
+//! - Discovers every `.proto` file under `proto_dir` in deterministic sorted order while refusing
+//!   symlinks.
+//! - Emits `cargo:rerun-if-changed` directives for `proto_dir`, every subdirectory, and every
+//!   discovered `.proto` file.
 //! - Compiles descriptors with pure-Rust `protox` (no external `protoc` binary required) and
 //!   generates Rust types via `prost-build` (plus optional `pbjson-build` behind the `pbjson`
 //!   feature).
 //! - Writes a consistent `prost_include.rs` include file whose module layout matches
 //!   `witforge glue` for both standalone contracts (`v<major>::*`) and contracts with `deps/`
-//!   (`<namespace>::<package>::v<major>::*`).
+//!   (`<namespace>::<package>::v<major>::*`), without rewriting unchanged files.
 //!
 //! # Example
 //!
@@ -23,13 +25,11 @@
 //! }
 //! ```
 
-use std::collections::BTreeMap;
-#[cfg(feature = "pbjson")]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::{self, Write as _};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use protox::prost::Message as _;
 
@@ -51,8 +51,10 @@ pub enum Error {
     MissingOutDir,
     /// No `.proto` files were found under the given directory.
     NoProtoFiles(PathBuf),
-    /// Refused a symlink encountered while walking `proto_dir`.
+    /// Refused a symlink encountered as `proto_dir` or while walking `proto_dir`.
     SymlinkRefused(PathBuf),
+    /// Configured `include_file` is not a single plain filename inside `out_dir`.
+    InvalidIncludeFile(PathBuf),
     /// `protox` failed to compile the `.proto` files into a `FileDescriptorSet`.
     Protox(protox::Error),
     /// `prost-build` failed to emit Rust source files from the compiled descriptors.
@@ -80,6 +82,11 @@ impl fmt::Display for Error {
             Self::SymlinkRefused(path) => {
                 write!(f, "refusing to follow symlink {}", path.display())
             }
+            Self::InvalidIncludeFile(path) => write!(
+                f,
+                "include_file `{}` must be a single plain filename inside out_dir",
+                path.display()
+            ),
             Self::Protox(err) => write!(f, "protox failed to compile protobuf schema: {err}"),
             Self::Prost(err) => write!(f, "prost-build failed: {err}"),
             #[cfg(feature = "pbjson")]
@@ -95,7 +102,10 @@ impl std::error::Error for Error {
             Self::Protox(err) => Some(err),
             #[cfg(feature = "pbjson")]
             Self::Pbjson(err) => Some(err),
-            Self::MissingOutDir | Self::NoProtoFiles(_) | Self::SymlinkRefused(_) => None,
+            Self::MissingOutDir
+            | Self::NoProtoFiles(_)
+            | Self::SymlinkRefused(_)
+            | Self::InvalidIncludeFile(_) => None,
         }
     }
 }
@@ -112,12 +122,12 @@ pub struct BuildOutput {
     pub include_file: Option<PathBuf>,
     /// Whether dependency `.proto` files were present alongside root `v<major>.proto` files.
     pub has_dependencies: bool,
-    /// `cargo:rerun-if-changed=...` directives produced for `proto_dir` and each `.proto` file.
+    /// `cargo:rerun-if-changed=...` directives produced for `proto_dir`, subdirectories, and each
+    /// `.proto` file.
     pub rerun_directives: Vec<String>,
 }
 
 /// Builder configuring how `witforge`-generated `.proto` files are compiled.
-#[derive(Debug)]
 pub struct Config {
     prost: prost_build::Config,
     out_dir: Option<PathBuf>,
@@ -126,6 +136,22 @@ pub struct Config {
     emit_rerun_if_changed: bool,
     #[cfg(feature = "pbjson")]
     pbjson: bool,
+    #[cfg(feature = "pbjson")]
+    pbjson_builder: pbjson_build::Builder,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("Config");
+        s.field("prost", &self.prost)
+            .field("out_dir", &self.out_dir)
+            .field("include_file", &self.include_file)
+            .field("file_descriptor_set_path", &self.file_descriptor_set_path)
+            .field("emit_rerun_if_changed", &self.emit_rerun_if_changed);
+        #[cfg(feature = "pbjson")]
+        s.field("pbjson", &self.pbjson);
+        s.finish_non_exhaustive()
+    }
 }
 
 impl Default for Config {
@@ -136,7 +162,7 @@ impl Default for Config {
 
 impl Config {
     /// Create a default configuration that writes [`DEFAULT_INCLUDE_FILE`] to `OUT_DIR` and emits
-    /// per-file `cargo:rerun-if-changed` directives.
+    /// per-directory and per-file `cargo:rerun-if-changed` directives.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -147,6 +173,8 @@ impl Config {
             emit_rerun_if_changed: true,
             #[cfg(feature = "pbjson")]
             pbjson: false,
+            #[cfg(feature = "pbjson")]
+            pbjson_builder: pbjson_build::Builder::new(),
         }
     }
 
@@ -159,6 +187,8 @@ impl Config {
 
     /// Override the include filename written inside `out_dir` (defaults to
     /// [`DEFAULT_INCLUDE_FILE`]).
+    ///
+    /// Must be a single plain filename (no directory separators or `..` components).
     #[must_use]
     pub fn include_file(mut self, name: impl Into<PathBuf>) -> Self {
         self.include_file = Some(name.into());
@@ -187,11 +217,17 @@ impl Config {
     }
 
     /// Access the underlying [`prost_build::Config`] for custom codegen tweaks.
+    ///
+    /// Note that `out_dir` and `include_file` are managed by [`Config::out_dir`] and
+    /// [`Config::include_file`] and take precedence during [`Config::compile_protos`].
     pub fn prost_config(&mut self) -> &mut prost_build::Config {
         &mut self.prost
     }
 
     /// Configure the underlying [`prost_build::Config`] in builder style.
+    ///
+    /// Note that `out_dir` and `include_file` are managed by [`Config::out_dir`] and
+    /// [`Config::include_file`] and take precedence during [`Config::compile_protos`].
     #[must_use]
     pub fn with_prost_config(mut self, configure: impl FnOnce(&mut prost_build::Config)) -> Self {
         configure(&mut self.prost);
@@ -209,15 +245,44 @@ impl Config {
         self
     }
 
+    /// Access the underlying [`pbjson_build::Builder`] for custom proto3-JSON codegen options
+    /// (such as [`pbjson_build::Builder::ignore_unknown_fields`]).
+    ///
+    /// Calling this method does not automatically enable `pbjson`; pair it with
+    /// [`.pbjson(true)`](Self::pbjson) or use [`Self::with_pbjson_builder`].
+    #[cfg(feature = "pbjson")]
+    pub fn pbjson_builder(&mut self) -> &mut pbjson_build::Builder {
+        &mut self.pbjson_builder
+    }
+
+    /// Enable `pbjson` code generation and configure the underlying [`pbjson_build::Builder`] in
+    /// builder style (for example `.with_pbjson_builder(|b| { b.ignore_unknown_fields(); })`).
+    #[cfg(feature = "pbjson")]
+    #[must_use]
+    pub fn with_pbjson_builder(
+        mut self,
+        configure: impl FnOnce(&mut pbjson_build::Builder),
+    ) -> Self {
+        self.pbjson = true;
+        configure(&mut self.pbjson_builder);
+        self
+    }
+
     /// Discover and compile every `.proto` file under `proto_dir`.
     ///
     /// # Errors
     ///
     /// Returns [`Error`] if `proto_dir` cannot be read, contains symlinks or no `.proto` files,
-    /// `OUT_DIR` is unset, or `protox` / `prost-build` / `pbjson-build` fails.
+    /// `include_file` is invalid, `OUT_DIR` is unset, or `protox` / `prost-build` /
+    /// `pbjson-build` fails.
+    #[allow(clippy::too_many_lines)]
     pub fn compile_protos(mut self, proto_dir: impl AsRef<Path>) -> Result<BuildOutput, Error> {
         let proto_dir = proto_dir.as_ref();
-        let proto_files = discover_protos(proto_dir)?;
+        if let Some(include_name) = &self.include_file {
+            validate_include_file_name(include_name)?;
+        }
+
+        let (proto_files, visited_dirs) = discover_protos_and_dirs(proto_dir)?;
         let out_dir = match self.out_dir {
             Some(dir) => dir,
             None => PathBuf::from(env::var_os("OUT_DIR").ok_or(Error::MissingOutDir)?),
@@ -227,8 +292,10 @@ impl Config {
             source,
         })?;
 
-        let mut rerun_directives = Vec::with_capacity(proto_files.len() + 1);
-        rerun_directives.push(format!("cargo:rerun-if-changed={}", proto_dir.display()));
+        let mut rerun_directives = Vec::with_capacity(visited_dirs.len() + proto_files.len());
+        for dir in &visited_dirs {
+            rerun_directives.push(format!("cargo:rerun-if-changed={}", dir.display()));
+        }
         for file in &proto_files {
             rerun_directives.push(format!("cargo:rerun-if-changed={}", file.display()));
         }
@@ -249,12 +316,18 @@ impl Config {
                     source,
                 })?;
             }
-            fs::write(fds_path, &encoded_descriptors).map_err(|source| Error::Io {
-                path: Some(fds_path.clone()),
-                source,
-            })?;
+            write_if_changed(fds_path, &encoded_descriptors)?;
         }
 
+        let discovered_rel_files: BTreeSet<String> = proto_files
+            .iter()
+            .map(|path| {
+                path.strip_prefix(proto_dir)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
         let has_dependencies = proto_files
             .iter()
             .any(|path| !is_root_major_proto(proto_dir, path));
@@ -263,27 +336,13 @@ impl Config {
             .iter()
             .filter_map(|file| {
                 let name = file.name.as_deref()?;
-                let pkg = file.package.as_deref()?;
+                if !discovered_rel_files.contains(name) {
+                    return None;
+                }
+                let pkg = file.package.as_deref().unwrap_or_default();
                 Some((name.to_string(), pkg.to_string()))
             })
             .collect();
-
-        #[cfg(feature = "pbjson")]
-        let pbjson_prefixes = collect_pbjson_prefixes(&package_by_file);
-
-        self.prost.out_dir(&out_dir);
-        let include_path = if has_dependencies {
-            if let Some(include_name) = &self.include_file {
-                self.prost.include_file(include_name);
-                Some(out_dir.join(include_name))
-            } else {
-                None
-            }
-        } else {
-            self.include_file.as_ref().map(|name| out_dir.join(name))
-        };
-
-        self.prost.compile_fds(descriptors).map_err(Error::Prost)?;
 
         #[cfg(feature = "pbjson")]
         let pbjson_enabled = self.pbjson;
@@ -291,9 +350,34 @@ impl Config {
         let pbjson_enabled = false;
 
         #[cfg(feature = "pbjson")]
+        let pbjson_prefixes = collect_pbjson_prefixes(&package_by_file);
+
+        self.prost.out_dir(&out_dir);
+        let include_path = self.include_file.as_ref().map(|name| out_dir.join(name));
+        let raw_prost_include = if has_dependencies {
+            if let Some(include_name) = &self.include_file {
+                if pbjson_enabled {
+                    let scratch_name =
+                        PathBuf::from(format!(".{}.prost", include_name.to_string_lossy()));
+                    self.prost.include_file(&scratch_name);
+                    Some(out_dir.join(scratch_name))
+                } else {
+                    self.prost.include_file(include_name);
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        self.prost.compile_fds(descriptors).map_err(Error::Prost)?;
+
+        #[cfg(feature = "pbjson")]
         if pbjson_enabled {
             let prefix_refs: Vec<&str> = pbjson_prefixes.iter().map(String::as_str).collect();
-            pbjson_build::Builder::new()
+            self.pbjson_builder
                 .out_dir(&out_dir)
                 .register_descriptors(&encoded_descriptors)
                 .map_err(Error::Pbjson)?
@@ -303,9 +387,14 @@ impl Config {
 
         if let Some(include_path) = &include_path {
             if has_dependencies {
-                if pbjson_enabled {
-                    splice_pbjson_includes(&out_dir, include_path)?;
+                #[cfg(feature = "pbjson")]
+                if pbjson_enabled && let Some(raw_path) = &raw_prost_include {
+                    let spliced = splice_pbjson_includes(&out_dir, raw_path, &package_by_file)?;
+                    let _ = fs::remove_file(raw_path);
+                    write_if_changed(include_path, spliced.as_bytes())?;
                 }
+                #[cfg(not(feature = "pbjson"))]
+                let _ = raw_prost_include;
             } else {
                 write_standalone_include(
                     &proto_files,
@@ -332,16 +421,11 @@ impl Config {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if `proto_dir` cannot be read, [`Error::SymlinkRefused`] if any symlink
-/// is encountered inside `proto_dir`, or [`Error::NoProtoFiles`] if no `.proto` files exist.
+/// Returns [`Error::Io`] if `proto_dir` cannot be read, [`Error::SymlinkRefused`] if `proto_dir`
+/// itself or any entry inside it is a symlink, or [`Error::NoProtoFiles`] if no `.proto` files
+/// exist.
 pub fn discover_protos(proto_dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, Error> {
-    let proto_dir = proto_dir.as_ref();
-    let mut files = Vec::new();
-    collect_protos_recursive(proto_dir, &mut files)?;
-    files.sort();
-    if files.is_empty() {
-        return Err(Error::NoProtoFiles(proto_dir.to_path_buf()));
-    }
+    let (files, _) = discover_protos_and_dirs(proto_dir.as_ref())?;
     Ok(files)
 }
 
@@ -354,7 +438,40 @@ pub fn compile_protos(proto_dir: impl AsRef<Path>) -> Result<BuildOutput, Error>
     Config::new().compile_protos(proto_dir)
 }
 
-fn collect_protos_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
+fn validate_include_file_name(name: &Path) -> Result<(), Error> {
+    let mut components = name.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(part)), None) if !part.is_empty() => Ok(()),
+        _ => Err(Error::InvalidIncludeFile(name.to_path_buf())),
+    }
+}
+
+fn discover_protos_and_dirs(proto_dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Error> {
+    let normalized_root: PathBuf = proto_dir.components().collect();
+    let root_meta = fs::symlink_metadata(&normalized_root).map_err(|source| Error::Io {
+        path: Some(proto_dir.to_path_buf()),
+        source,
+    })?;
+    if root_meta.file_type().is_symlink() {
+        return Err(Error::SymlinkRefused(proto_dir.to_path_buf()));
+    }
+
+    let mut files = Vec::new();
+    let mut dirs = vec![proto_dir.to_path_buf()];
+    collect_protos_recursive(proto_dir, &mut files, &mut dirs)?;
+    files.sort();
+    dirs.sort();
+    if files.is_empty() {
+        return Err(Error::NoProtoFiles(proto_dir.to_path_buf()));
+    }
+    Ok((files, dirs))
+}
+
+fn collect_protos_recursive(
+    dir: &Path,
+    out_files: &mut Vec<PathBuf>,
+    out_dirs: &mut Vec<PathBuf>,
+) -> Result<(), Error> {
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .map_err(|source| Error::Io {
             path: Some(dir.to_path_buf()),
@@ -378,14 +495,15 @@ fn collect_protos_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Er
             return Err(Error::SymlinkRefused(path));
         }
         if meta.is_dir() {
-            collect_protos_recursive(&path, out)?;
+            out_dirs.push(path.clone());
+            collect_protos_recursive(&path, out_files, out_dirs)?;
         } else if meta.is_file()
             && path
                 .extension()
                 .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("proto"))
         {
-            out.push(path);
+            out_files.push(path);
         }
     }
     Ok(())
@@ -406,7 +524,11 @@ fn is_root_major_proto(proto_dir: &Path, path: &Path) -> bool {
 }
 
 fn parse_root_major(file_name: &str) -> Option<u64> {
-    let stem = file_name.strip_suffix(".proto")?;
+    let dot = file_name.rfind('.')?;
+    if !file_name[dot + 1..].eq_ignore_ascii_case("proto") {
+        return None;
+    }
+    let stem = &file_name[..dot];
     let digits = stem.strip_prefix('v')?;
     if digits.is_empty()
         || !digits.bytes().all(|b| b.is_ascii_digit())
@@ -415,6 +537,37 @@ fn parse_root_major(file_name: &str) -> Option<u64> {
         return None;
     }
     digits.parse().ok()
+}
+
+fn prost_file_name(pkg: &str) -> String {
+    prost_build::Module::from_protobuf_package_name(pkg).to_file_name_or("_")
+}
+
+#[cfg(feature = "pbjson")]
+fn pbjson_file_name(out_dir: &Path, pkg: &str) -> Option<String> {
+    let module = prost_build::Module::from_protobuf_package_name(pkg);
+    let prost_stem = if module.is_empty() {
+        "_".to_string()
+    } else {
+        module.parts().collect::<Vec<_>>().join(".")
+    };
+    let primary = format!("{prost_stem}.serde.rs");
+    if out_dir.join(&primary).is_file() {
+        return Some(primary);
+    }
+    // `pbjson-build` 0.9 does not escape Edition 2024 `gen` (whereas `prost-build` 0.14 emits
+    // `r#gen`), nor `_`. Check that compatibility spelling too so both 0.9 and newer versions work.
+    let compat_stem = module
+        .parts()
+        .map(|part| match part {
+            "r#gen" => "gen",
+            "__" => "_",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    let fallback = format!("{compat_stem}.serde.rs");
+    out_dir.join(&fallback).is_file().then_some(fallback)
 }
 
 #[cfg(feature = "pbjson")]
@@ -430,6 +583,18 @@ fn collect_pbjson_prefixes(package_by_file: &BTreeMap<String, String>) -> BTreeS
     prefixes
 }
 
+fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    if let Ok(existing) = fs::read(path)
+        && existing == bytes
+    {
+        return Ok(());
+    }
+    fs::write(path, bytes).map_err(|source| Error::Io {
+        path: Some(path.to_path_buf()),
+        source,
+    })
+}
+
 fn write_standalone_include(
     proto_files: &[PathBuf],
     proto_dir: &Path,
@@ -438,6 +603,9 @@ fn write_standalone_include(
     include_path: &Path,
     pbjson_enabled: bool,
 ) -> Result<(), Error> {
+    #[cfg(not(feature = "pbjson"))]
+    let _ = (out_dir, pbjson_enabled);
+
     let mut majors: BTreeMap<u64, String> = BTreeMap::new();
     for path in proto_files {
         let rel = path
@@ -447,57 +615,59 @@ fn write_standalone_include(
             .replace('\\', "/");
         if let Some(file_name) = path.file_name().and_then(std::ffi::OsStr::to_str)
             && let Some(major) = parse_root_major(file_name)
-            && let Some(pkg) = package_by_file.get(&rel)
         {
-            majors.insert(major, pkg.clone());
+            let pkg = package_by_file.get(&rel).cloned().unwrap_or_default();
+            majors.insert(major, pkg);
         }
     }
 
     let mut out = String::from("// @generated by witforge-build; do not edit.\n");
     for (major, pkg) in majors {
-        let rs_name = format!("{pkg}.rs");
-        let serde_name = format!("{pkg}.serde.rs");
+        let rs_name = prost_file_name(&pkg);
         let _ = writeln!(out);
         let _ = writeln!(out, "pub mod v{major} {{");
         let _ = writeln!(out, "    include!({rs_name:?});");
-        if pbjson_enabled && out_dir.join(&serde_name).is_file() {
+        #[cfg(feature = "pbjson")]
+        if pbjson_enabled && let Some(serde_name) = pbjson_file_name(out_dir, &pkg) {
             let _ = writeln!(out, "    include!({serde_name:?});");
         }
         let _ = writeln!(out, "}}");
     }
 
-    fs::write(include_path, out).map_err(|source| Error::Io {
-        path: Some(include_path.to_path_buf()),
-        source,
-    })
+    write_if_changed(include_path, out.as_bytes())
 }
 
-fn splice_pbjson_includes(out_dir: &Path, include_path: &Path) -> Result<(), Error> {
-    let mut text = fs::read_to_string(include_path).map_err(|source| Error::Io {
-        path: Some(include_path.to_path_buf()),
+#[cfg(feature = "pbjson")]
+fn splice_pbjson_includes(
+    out_dir: &Path,
+    raw_include_path: &Path,
+    package_by_file: &BTreeMap<String, String>,
+) -> Result<String, Error> {
+    let text = fs::read_to_string(raw_include_path).map_err(|source| Error::Io {
+        path: Some(raw_include_path.to_path_buf()),
         source,
     })?;
-    let mut serde_files: Vec<String> = fs::read_dir(out_dir)
-        .map_err(|source| Error::Io {
-            path: Some(out_dir.to_path_buf()),
-            source,
-        })?
-        .filter_map(|entry| {
-            let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-            name.ends_with(".serde.rs").then_some(name)
-        })
-        .collect();
-    serde_files.sort();
 
-    for serde_file in serde_files {
-        let stem = serde_file.trim_end_matches(".serde.rs");
-        let needle = format!("include!(\"{stem}.rs\");");
-        let replacement = format!("{needle}\ninclude!(\"{serde_file}\");");
-        text = text.replace(&needle, &replacement);
+    let mut serde_by_prost_file: BTreeMap<String, String> = BTreeMap::new();
+    for pkg in package_by_file.values() {
+        let prost_name = prost_file_name(pkg);
+        if let Some(serde_name) = pbjson_file_name(out_dir, pkg) {
+            serde_by_prost_file.insert(prost_name, serde_name);
+        }
     }
 
-    fs::write(include_path, text).map_err(|source| Error::Io {
-        path: Some(include_path.to_path_buf()),
-        source,
-    })
+    let mut out = String::with_capacity(text.len() + serde_by_prost_file.len() * 48);
+    for line in text.lines() {
+        out.push_str(line);
+        out.push('\n');
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
+        if let Some(rest) = trimmed.strip_prefix("include!(\"")
+            && let Some(prost_name) = rest.strip_suffix("\");")
+            && let Some(serde_name) = serde_by_prost_file.get(prost_name)
+        {
+            let _ = writeln!(out, "{indent}include!({serde_name:?});");
+        }
+    }
+    Ok(out)
 }

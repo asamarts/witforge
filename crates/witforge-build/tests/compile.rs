@@ -1,11 +1,13 @@
 //! Integration tests verifying `witforge-build` on standalone and `deps/` generated `.proto`
-//! trees (both default and with the optional `pbjson` feature).
+//! trees (both default and with the optional `pbjson` feature), uppercase/keyword packages,
+//! multi-major roots, `no_std`, and error/incremental guards.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use witforge::emit::{glue, proto, rust};
+use witforge::workflow::{Baseline, VersionOptions, lock as lock_contract};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -28,9 +30,26 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+fn rustc_version_key() -> String {
+    let out = Command::new("rustc").arg("-V").output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+fn lock_version_dir(version_dir: &Path) {
+    let mut opts = VersionOptions::new(version_dir.to_path_buf());
+    opts.baseline = Baseline::First;
+    let outcome = lock_contract(&opts).unwrap();
+    outcome.write().unwrap();
+}
+
 #[cfg(feature = "pbjson")]
 fn maybe_enable_pbjson(cfg: witforge_build::Config) -> witforge_build::Config {
-    cfg.pbjson(true)
+    cfg.with_pbjson_builder(|builder| {
+        builder.ignore_unknown_fields();
+    })
 }
 
 #[cfg(not(feature = "pbjson"))]
@@ -38,6 +57,7 @@ fn maybe_enable_pbjson(cfg: witforge_build::Config) -> witforge_build::Config {
     cfg
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn discovers_and_compiles_standalone_and_deps_proto_trees_with_rerun_directives() {
     let base = scratch("direct");
@@ -85,6 +105,19 @@ fn discovers_and_compiles_standalone_and_deps_proto_trees_with_rerun_directives(
         "{include_text}"
     );
 
+    // Repeating compilation with unchanged inputs preserves the include file content cleanly.
+    let second = maybe_enable_pbjson(
+        witforge_build::Config::new()
+            .out_dir(&standalone_out)
+            .emit_rerun_if_changed(false),
+    )
+    .compile_protos(&standalone_proto)
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(second.include_file.as_ref().unwrap()).unwrap(),
+        include_text
+    );
+
     // 2. Contract with `deps/`.
     let deps_wit = fixture("deps/wit");
     let deps_proto = base.join("deps-proto");
@@ -106,15 +139,72 @@ fn discovers_and_compiles_standalone_and_deps_proto_trees_with_rerun_directives(
     let deps_include = fs::read_to_string(deps_output.include_file.as_ref().unwrap()).unwrap();
     assert!(deps_include.contains("pub mod v0 {"), "{deps_include}");
     #[cfg(feature = "pbjson")]
-    assert!(deps_include.contains(".serde.rs\");"), "{deps_include}");
+    {
+        assert!(deps_include.contains(".serde.rs\");"), "{deps_include}");
+        // Verify indentation was preserved when splicing pbjson includes.
+        for line in deps_include.lines() {
+            if line.contains(".serde.rs\");") {
+                assert!(line.starts_with("    "), "lost indentation: {line:?}");
+            }
+        }
+    }
 
-    // 3. Empty directory returns `Error::NoProtoFiles`.
+    // 3. Subdirectory discovery emits `cargo:rerun-if-changed` for every subdirectory too.
+    let nested_proto = base.join("nested-proto");
+    fs::create_dir_all(nested_proto.join("sub")).unwrap();
+    fs::write(
+        nested_proto.join("sub/item.proto"),
+        "syntax = \"proto3\";\npackage ex.sub.v0;\nmessage Item { uint32 id = 1; }\n",
+    )
+    .unwrap();
+    let nested_out = base.join("nested-out");
+    let nested = witforge_build::Config::new()
+        .out_dir(&nested_out)
+        .no_include_file()
+        .emit_rerun_if_changed(false)
+        .compile_protos(&nested_proto)
+        .unwrap();
+    assert!(nested.include_file.is_none());
+    assert!(nested.rerun_directives.contains(&format!(
+        "cargo:rerun-if-changed={}",
+        nested_proto.join("sub").display()
+    )));
+
+    // 4. Error paths: empty dir, invalid include_file, and symlinks (Unix).
     let empty_dir = base.join("empty");
     fs::create_dir_all(&empty_dir).unwrap();
     assert!(matches!(
         witforge_build::discover_protos(&empty_dir),
         Err(witforge_build::Error::NoProtoFiles(_))
     ));
+    assert!(matches!(
+        witforge_build::Config::new()
+            .out_dir(&standalone_out)
+            .include_file("sub/prost_include.rs")
+            .emit_rerun_if_changed(false)
+            .compile_protos(&standalone_proto),
+        Err(witforge_build::Error::InvalidIncludeFile(_))
+    ));
+    #[cfg(unix)]
+    {
+        let root_link = base.join("link-proto");
+        std::os::unix::fs::symlink(&standalone_proto, &root_link).unwrap();
+        assert!(matches!(
+            witforge_build::discover_protos(&root_link),
+            Err(witforge_build::Error::SymlinkRefused(_))
+        ));
+        let child_dir = base.join("child-link-proto");
+        fs::create_dir_all(&child_dir).unwrap();
+        std::os::unix::fs::symlink(
+            standalone_proto.join("v0.proto"),
+            child_dir.join("v0.proto"),
+        )
+        .unwrap();
+        assert!(matches!(
+            witforge_build::discover_protos(&child_dir),
+            Err(witforge_build::Error::SymlinkRefused(_))
+        ));
+    }
 
     fs::remove_dir_all(&base).unwrap();
 }
@@ -128,9 +218,51 @@ fn scratch_consumer_crate_builds_and_roundtrips_standalone_and_deps_via_witforge
         .display()
         .to_string()
         .replace('\\', "\\\\");
-    let shared_target = std::env::temp_dir().join("wf-build-consumer-target");
+    let shared_target =
+        std::env::temp_dir().join(format!("wf-build-consumer-target-{}", rustc_version_key()));
 
     let pbjson_enabled = cfg!(feature = "pbjson");
+
+    // Synthetic standalone multi-major contract + uppercase & Rust-keyword package names
+    // (including Edition 2024 `gen`, `%type`, `HTTP:API`, `self:super`).
+    let upper_kw_wit = base.join("wit-upper-kw");
+    fs::create_dir_all(upper_kw_wit.join("v0.1")).unwrap();
+    fs::write(
+        upper_kw_wit.join("v0.1/contract.wit"),
+        "package HTTP:API@0.1.0;\ninterface api { record item { id: u32, label: string } }\n",
+    )
+    .unwrap();
+    lock_version_dir(&upper_kw_wit.join("v0.1"));
+    fs::create_dir_all(upper_kw_wit.join("v1.0")).unwrap();
+    fs::write(
+        upper_kw_wit.join("v1.0/contract.wit"),
+        "package HTTP:API@1.0.0;\ninterface api { record item { id: u64, label: string } }\n",
+    )
+    .unwrap();
+    lock_version_dir(&upper_kw_wit.join("v1.0"));
+
+    let gen_kw_wit = base.join("wit-gen-kw");
+    fs::create_dir_all(gen_kw_wit.join("v0.1")).unwrap();
+    fs::write(
+        gen_kw_wit.join("v0.1/contract.wit"),
+        "package example:gen@0.1.0;\ninterface api { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    lock_version_dir(&gen_kw_wit.join("v0.1"));
+
+    let gen_deps_wit = base.join("wit-gen-deps");
+    fs::create_dir_all(gen_deps_wit.join("v0.1/deps/dep")).unwrap();
+    fs::write(
+        gen_deps_wit.join("v0.1/deps/dep/types.wit"),
+        "package example:gen@0.1.0;\ninterface types { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        gen_deps_wit.join("v0.1/contract.wit"),
+        "package self:super@0.1.0;\ninterface api {\n  use example:gen/types@0.1.0.{item};\n  record box { inner: item }\n}\n",
+    )
+    .unwrap();
+    lock_version_dir(&gen_deps_wit.join("v0.1"));
 
     for (label, wit_root, proto_msg_path, roundtrip_body) in [
         (
@@ -169,6 +301,48 @@ fn scratch_consumer_crate_builds_and_roundtrips_standalone_and_deps_via_witforge
     assert_eq!(glue::v0::api::functions::put::from_request(decoded.clone()).unwrap(), item);
 "#,
         ),
+        (
+            "upper-multi-major",
+            upper_kw_wit,
+            "proto::v1::ApiItem",
+            r#"
+    let item0 = plain::v0_1::api::Item { id: 3, label: "v0".to_string() };
+    let w0 = glue::v0::api::item::to_proto(&item0);
+    assert_eq!(glue::v0::api::item::from_proto(w0).unwrap(), item0);
+    let item1 = plain::v1_0::api::Item { id: 9, label: "v1".to_string() };
+    let wire = glue::v1::api::item::to_proto(&item1);
+    let encoded = ::prost::Message::encode_to_vec(&wire);
+    let decoded = <proto::v1::ApiItem as ::prost::Message>::decode(encoded.as_slice()).unwrap();
+    assert_eq!(glue::v1::api::item::from_proto(decoded.clone()).unwrap(), item1);
+"#,
+        ),
+        (
+            "gen-keyword",
+            gen_kw_wit,
+            "proto::v0::ApiItem",
+            r"
+    let item = plain::v0_1::api::Item { id: 11 };
+    let wire = glue::v0::api::item::to_proto(&item);
+    let encoded = ::prost::Message::encode_to_vec(&wire);
+    let decoded = <proto::v0::ApiItem as ::prost::Message>::decode(encoded.as_slice()).unwrap();
+    assert_eq!(glue::v0::api::item::from_proto(decoded.clone()).unwrap(), item);
+",
+        ),
+        (
+            "gen-deps-keyword",
+            gen_deps_wit,
+            "proto::self_::super_::v0::ApiBox",
+            r"
+    let boxed = plain::v0_1::api::Box {
+        inner: plain::witforge_deps::example_gen::types::Item { id: 19 },
+    };
+    let wire = glue::v0::api::r#box::to_proto(&boxed);
+    let encoded = ::prost::Message::encode_to_vec(&wire);
+    let decoded =
+        <proto::self_::super_::v0::ApiBox as ::prost::Message>::decode(encoded.as_slice()).unwrap();
+    assert_eq!(glue::v0::api::r#box::from_proto(decoded.clone()).unwrap(), boxed);
+",
+        ),
     ] {
         let krate = base.join(label);
         fs::create_dir_all(krate.join("src")).unwrap();
@@ -196,10 +370,12 @@ fn scratch_consumer_crate_builds_and_roundtrips_standalone_and_deps_via_witforge
                 format!(
                     "witforge-build = {{ path = \"{witforge_build_path}\", features = [\"pbjson\"] }}"
                 ),
-                "    witforge_build::Config::new().pbjson(true).compile_protos(\"proto\")?;\n",
+                "    witforge_build::Config::new()\n        .with_pbjson_builder(|b| { b.ignore_unknown_fields(); })\n        .compile_protos(\"proto\")?;\n",
                 format!(
                     "    let json = ::serde_json::to_string(&decoded).unwrap();\n\
-                     let back_json: {proto_msg_path} = ::serde_json::from_str(&json).unwrap();\n\
+                     let mut obj: ::serde_json::Value = ::serde_json::from_str(&json).unwrap();\n\
+                     obj.as_object_mut().unwrap().insert(\"futureField\".to_string(), ::serde_json::json!(123));\n\
+                     let back_json: {proto_msg_path} = ::serde_json::from_value(obj).unwrap();\n\
                      assert_eq!(back_json, decoded);\n"
                 ),
             )
@@ -283,6 +459,91 @@ fn scratch_consumer_crate_builds_and_roundtrips_standalone_and_deps_via_witforge
         assert!(
             status.status.success(),
             "consumer `{label}` (pbjson={pbjson_enabled}) failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    // Also verify a `#![no_std]` + `alloc` consumer builds cleanly with `witforge-build`.
+    if !pbjson_enabled {
+        let nostd_krate = base.join("nostd");
+        fs::create_dir_all(nostd_krate.join("src")).unwrap();
+        let wit_root = workspace_root().join("examples/evolved/wit");
+        let mut rust_opts = rust::RustOptions::new();
+        rust_opts.no_std = true;
+        rust::plan_with_options(&wit_root, None, &rust_opts)
+            .unwrap()
+            .write(&nostd_krate.join("src/plain"))
+            .unwrap();
+        proto::plan(&wit_root)
+            .unwrap()
+            .write(&nostd_krate.join("proto"))
+            .unwrap();
+        let mut glue_opts = glue::GlueOptions::new();
+        glue_opts.no_std = true;
+        glue::plan_with_options(&wit_root, "crate::plain", "crate::proto", None, &glue_opts)
+            .unwrap()
+            .write(&nostd_krate.join("src/glue"))
+            .unwrap();
+        fs::copy(
+            workspace_root().join("Cargo.lock"),
+            nostd_krate.join("Cargo.lock"),
+        )
+        .unwrap();
+        fs::write(
+            nostd_krate.join("Cargo.toml"),
+            format!(
+                "[package]\n\
+                 name = \"wf-build-nostd\"\n\
+                 version = \"0.1.0\"\n\
+                 edition = \"2024\"\n\
+                 \n\
+                 [dependencies]\n\
+                 prost = {{ version = \"0.14\", default-features = false, features = [\"derive\"] }}\n\
+                 \n\
+                 [build-dependencies]\n\
+                 witforge-build = {{ path = \"{witforge_build_path}\" }}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            nostd_krate.join("build.rs"),
+            "fn main() -> Result<(), Box<dyn std::error::Error>> {\n\
+                 witforge_build::compile_protos(\"proto\")?;\n\
+                 Ok(())\n\
+             }\n",
+        )
+        .unwrap();
+        fs::write(
+            nostd_krate.join("src/lib.rs"),
+            "#![no_std]\n\
+             #![deny(missing_docs)]\n\
+             //! no_std consumer crate using `witforge-build`.\n\
+             extern crate alloc;\n\
+             /// Plain types.\n\
+             #[path = \"plain/mod.rs\"]\n\
+             pub mod plain;\n\
+             /// Proto types.\n\
+             #[allow(clippy::all, missing_docs)]\n\
+             pub mod proto {\n\
+                 include!(concat!(env!(\"OUT_DIR\"), \"/prost_include.rs\"));\n\
+             }\n\
+             /// Glue.\n\
+             #[path = \"glue/mod.rs\"]\n\
+             pub mod glue;\n",
+        )
+        .unwrap();
+        let status = Command::new(env!("CARGO"))
+            .args(["check", "--lib", "--offline", "--manifest-path"])
+            .arg(nostd_krate.join("Cargo.toml"))
+            .env("CARGO_TARGET_DIR", &shared_target)
+            .env("CARGO_TERM_COLOR", "never")
+            .env_remove("RUSTFLAGS")
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "no_std consumer failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&status.stdout),
             String::from_utf8_lossy(&status.stderr)
         );
