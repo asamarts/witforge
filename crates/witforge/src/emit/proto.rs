@@ -230,10 +230,12 @@ struct Emitter<'a> {
     wrappers: BTreeMap<String, String>,
     /// The source type that produced each synthesized wrapper, for collision diagnostics.
     wrapper_sources: BTreeMap<String, String>,
+    wrapper_docs: BTreeMap<String, String>,
     wrapper_stability: BTreeMap<String, Stability>,
     live_keys: BTreeSet<String>,
     /// Dependency `.proto` files referenced by at least one emitted cross-package type reference.
     used_imports: BTreeSet<String>,
+    recording_imports: bool,
 }
 
 #[derive(Clone)]
@@ -295,9 +297,11 @@ impl<'a> Emitter<'a> {
             enum_values: BTreeMap::new(),
             wrappers: BTreeMap::new(),
             wrapper_sources: BTreeMap::new(),
+            wrapper_docs: BTreeMap::new(),
             wrapper_stability: BTreeMap::new(),
             live_keys,
             used_imports: BTreeSet::new(),
+            recording_imports: true,
         })
     }
 
@@ -340,6 +344,9 @@ impl<'a> Emitter<'a> {
 
         for (name, wrapper) in &self.wrappers {
             writeln!(body)?;
+            if let Some(docs) = self.wrapper_docs.get(name) {
+                write_docs(&mut body, 0, docs)?;
+            }
             if let Some(stability) = self.wrapper_stability.get(name) {
                 write_stability_docs(&mut body, 0, stability)?;
                 if stability.deprecated().is_some() {
@@ -348,11 +355,11 @@ impl<'a> Emitter<'a> {
                         .context("wrapper message has no opening line")?;
                     body.push_str(&wrapper[..=line_end]);
                     write_deprecated_option(&mut body, 2, stability)?;
-                    body.push_str(&wrapper[line_end + 1..]);
+                    writeln!(body, "{}", &wrapper[line_end + 1..])?;
                     continue;
                 }
             }
-            body.push_str(wrapper);
+            writeln!(body, "{wrapper}")?;
         }
 
         let mut out = String::new();
@@ -391,7 +398,13 @@ impl<'a> Emitter<'a> {
             TypeDefKind::List(element) => {
                 // Glue covers every named type whether or not a member refers to it, so
                 // synthesize any wrappers the named list needs even when unreferenced.
-                let _ = self.direct(&TypeExpr::List(Box::new(element.clone())), true)?;
+                // Do not record imports for discarded top-level `repeated` spellings;
+                // `ensure_wrapper` re-enables import recording if a nested wrapper is emitted.
+                let prev = self.recording_imports;
+                self.recording_imports = false;
+                let res = self.direct(&TypeExpr::List(Box::new(element.clone())), true);
+                self.recording_imports = prev;
+                let _ = res?;
                 Ok(())
             }
             TypeDefKind::Option(payload) => {
@@ -399,16 +412,26 @@ impl<'a> Emitter<'a> {
                     interface: interface.to_string(),
                     name: def.name.clone(),
                 };
-                let wrapper = self.direct_named_option(&name, payload)?;
-                if self.wrappers.contains_key(&wrapper) {
+                if let Some(wrapper) = self.named_option_wrapper(&name, payload)? {
+                    self.wrapper_docs.insert(wrapper.clone(), def.docs.clone());
                     self.wrapper_stability
                         .insert(wrapper, def.stability.clone());
+                } else {
+                    let prev = self.recording_imports;
+                    self.recording_imports = false;
+                    let res = self.direct_option(payload);
+                    self.recording_imports = prev;
+                    let _ = res?;
                 }
                 Ok(())
             }
             TypeDefKind::Alias(target) => {
                 if !matches!(target, TypeExpr::Named(name) if name.is_foreign()) {
-                    let _ = self.direct(target, true)?;
+                    let prev = self.recording_imports;
+                    self.recording_imports = false;
+                    let res = self.direct(target, true);
+                    self.recording_imports = prev;
+                    let _ = res?;
                 }
                 Ok(())
             }
@@ -435,14 +458,23 @@ impl<'a> Emitter<'a> {
             .iter()
             .map(|(_, name)| ident::prost_field_ident(name))
             .collect();
+        let reserved_json: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::proto_json_name(name))
+            .collect();
         let mut field_names = BTreeSet::new();
         let mut prost_fields = BTreeMap::new();
+        let mut json_names = BTreeMap::new();
         let mut prost_accessors = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         for field in fields {
             let field_name = field_name(&field.name)?;
             let prost_field = ident::prost_field_ident(&field_name);
-            if reserved_names.contains(&field_name) || reserved_prost.contains(&prost_field) {
+            let json_name = ident::proto_json_name(&field_name);
+            if reserved_names.contains(&field_name)
+                || reserved_prost.contains(&prost_field)
+                || reserved_json.contains(&json_name)
+            {
                 contract_bail!(
                     "record `{interface}/{}`: field `{field_name}` collides with a reserved name",
                     def.name
@@ -452,6 +484,13 @@ impl<'a> Emitter<'a> {
                 contract_bail!(
                     "record `{interface}/{}`: duplicate proto field `{field_name}`",
                     def.name
+                );
+            }
+            if let Some(previous) = json_names.insert(json_name.clone(), field.name.clone()) {
+                contract_bail!(
+                    "record `{interface}/{}`: fields `{previous}` and `{}` both map to proto3 json_name `{json_name}`",
+                    def.name,
+                    field.name
                 );
             }
             if let Some(previous) = prost_fields.insert(prost_field.clone(), field.name.clone()) {
@@ -510,13 +549,22 @@ impl<'a> Emitter<'a> {
             .iter()
             .map(|(_, name)| ident::prost_oneof_variant(name))
             .collect();
+        let reserved_json: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::proto_json_name(name))
+            .collect();
         let mut field_names = BTreeSet::new();
         let mut prost_variants = BTreeMap::new();
+        let mut json_names = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         for case in cases {
             let case_name = field_name(&case.name)?;
             let prost_variant = ident::prost_oneof_variant(&case_name);
-            if reserved_names.contains(&case_name) || reserved_prost.contains(&prost_variant) {
+            let json_name = ident::proto_json_name(&case_name);
+            if reserved_names.contains(&case_name)
+                || reserved_prost.contains(&prost_variant)
+                || reserved_json.contains(&json_name)
+            {
                 contract_bail!(
                     "variant `{interface}/{}`: case `{case_name}` collides with a reserved name",
                     def.name
@@ -532,6 +580,13 @@ impl<'a> Emitter<'a> {
                 contract_bail!(
                     "variant `{interface}/{}`: duplicate proto field `{case_name}`",
                     def.name
+                );
+            }
+            if let Some(previous) = json_names.insert(json_name.clone(), case.name.clone()) {
+                contract_bail!(
+                    "variant `{interface}/{}`: cases `{previous}` and `{}` both map to proto3 json_name `{json_name}`",
+                    def.name,
+                    case.name
                 );
             }
             if let Some(previous) = prost_variants.insert(prost_variant.clone(), case.name.clone())
@@ -635,13 +690,22 @@ impl<'a> Emitter<'a> {
             .iter()
             .map(|(_, name)| ident::prost_field_ident(name))
             .collect();
+        let reserved_json: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::proto_json_name(name))
+            .collect();
         let mut field_names = BTreeSet::new();
         let mut prost_fields = BTreeMap::new();
+        let mut json_names = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         for flag in flags {
             let field_name = field_name(&flag.name)?;
             let prost_field = ident::prost_field_ident(&field_name);
-            if reserved_names.contains(&field_name) || reserved_prost.contains(&prost_field) {
+            let json_name = ident::proto_json_name(&field_name);
+            if reserved_names.contains(&field_name)
+                || reserved_prost.contains(&prost_field)
+                || reserved_json.contains(&json_name)
+            {
                 contract_bail!(
                     "flags `{interface}/{}`: field `{field_name}` collides with a reserved name",
                     def.name
@@ -651,6 +715,13 @@ impl<'a> Emitter<'a> {
                 contract_bail!(
                     "flags `{interface}/{}`: duplicate proto field `{field_name}`",
                     def.name
+                );
+            }
+            if let Some(previous) = json_names.insert(json_name.clone(), flag.name.clone()) {
+                contract_bail!(
+                    "flags `{interface}/{}`: flags `{previous}` and `{}` both map to proto3 json_name `{json_name}`",
+                    def.name,
+                    flag.name
                 );
             }
             if let Some(previous) = prost_fields.insert(prost_field.clone(), flag.name.clone()) {
@@ -719,6 +790,7 @@ impl<'a> Emitter<'a> {
         write_deprecated_option(out, 2, &function.stability)?;
         let mut field_names = BTreeSet::new();
         let mut prost_fields = BTreeMap::new();
+        let mut json_names = BTreeMap::new();
         let mut prost_accessors = BTreeMap::new();
         let mut numbers = BTreeSet::new();
         let reserved = self.reserved_params(interface, &function.name);
@@ -728,16 +800,29 @@ impl<'a> Emitter<'a> {
             .iter()
             .map(|(_, name)| ident::prost_field_ident(name))
             .collect();
+        let reserved_json: BTreeSet<String> = reserved
+            .iter()
+            .map(|(_, name)| ident::proto_json_name(name))
+            .collect();
         for param in &function.params {
             let name = field_name(&param.name)?;
             let prost_field = ident::prost_field_ident(&name);
+            let json_name = ident::proto_json_name(&name);
             if reserved_names.contains(&name)
                 || reserved_prost.contains(&prost_field)
+                || reserved_json.contains(&json_name)
                 || !field_names.insert(name.clone())
             {
                 contract_bail!(
                     "function `{interface}#{}`: proto field `{name}` collides with another or a reserved name",
                     function.name
+                );
+            }
+            if let Some(previous) = json_names.insert(json_name.clone(), param.name.clone()) {
+                contract_bail!(
+                    "function `{interface}#{}`: parameters `{previous}` and `{}` both map to proto3 json_name `{json_name}`",
+                    function.name,
+                    param.name
                 );
             }
             if let Some(previous) = prost_fields.insert(prost_field.clone(), param.name.clone()) {
@@ -1078,7 +1163,9 @@ impl<'a> Emitter<'a> {
             && (dependency.package.namespace != self.model.package.namespace
                 || dependency.package.name != self.model.package.name)
         {
-            self.used_imports.insert(self.dep_file_name(dependency));
+            if self.recording_imports {
+                self.used_imports.insert(self.dep_file_name(dependency));
+            }
             return Ok(format!(
                 ".{}.{}",
                 self.dep_proto_package(dependency),
@@ -1098,7 +1185,9 @@ impl<'a> Emitter<'a> {
         if dependency.package.namespace != self.model.package.namespace
             || dependency.package.name != self.model.package.name
         {
-            self.used_imports.insert(self.dep_file_name(dependency));
+            if self.recording_imports {
+                self.used_imports.insert(self.dep_file_name(dependency));
+            }
             format!(".{}.{wrapper}", self.dep_proto_package(dependency))
         } else {
             wrapper.to_string()
@@ -1918,39 +2007,53 @@ impl<'a> Emitter<'a> {
         let source = self.wrapper_source(None, &TypeExpr::Named(name.clone()))?;
         match self.shape(payload)? {
             Shape::List => {
-                let wrapper = Self::type_ident(&name.interface, &name.name)?;
-                if let Some((dep, _, TypeDefKind::List(element))) =
-                    self.resolve_foreign_named(payload)?
-                {
-                    let elem_ty = self.dependency_defined_singular(&dep, &element)?;
-                    self.ensure_wrapper(
-                        wrapper.clone(),
-                        WrapperKind::ListElement(elem_ty),
-                        source,
-                    )?;
-                } else {
-                    let element = self.list_element(payload)?;
-                    self.ensure_wrapper(wrapper.clone(), WrapperKind::List(element), source)?;
-                }
-                Ok(Some(wrapper))
+                let prev_recording = self.recording_imports;
+                self.recording_imports = true;
+                let res = (|| -> Result<String> {
+                    let wrapper = Self::type_ident(&name.interface, &name.name)?;
+                    if let Some((dep, _, TypeDefKind::List(element))) =
+                        self.resolve_foreign_named(payload)?
+                    {
+                        let elem_ty = self.dependency_defined_singular(&dep, &element)?;
+                        self.ensure_wrapper(
+                            wrapper.clone(),
+                            WrapperKind::ListElement(elem_ty),
+                            source,
+                        )?;
+                    } else {
+                        let element = self.list_element(payload)?;
+                        self.ensure_wrapper(wrapper.clone(), WrapperKind::List(element), source)?;
+                    }
+                    Ok(wrapper)
+                })();
+                self.recording_imports = prev_recording;
+                Ok(Some(res?))
             }
             Shape::Option => {
-                let wrapper = Self::type_ident(&name.interface, &name.name)?;
-                let some = if let Some((dep, foreign_name, TypeDefKind::Option(inner))) =
-                    self.resolve_foreign_named(payload)?
-                {
-                    match self.foreign_shape_ty(Some(&dep), &inner)? {
-                        Shape::List | Shape::Option => self.type_ref(Some(&dep), &foreign_name)?,
-                        Shape::Scalar | Shape::Bytes | Shape::Message => {
-                            self.dependency_defined_singular(&dep, &inner)?
+                let prev_recording = self.recording_imports;
+                self.recording_imports = true;
+                let res = (|| -> Result<String> {
+                    let wrapper = Self::type_ident(&name.interface, &name.name)?;
+                    let some = if let Some((dep, foreign_name, TypeDefKind::Option(inner))) =
+                        self.resolve_foreign_named(payload)?
+                    {
+                        match self.foreign_shape_ty(Some(&dep), &inner)? {
+                            Shape::List | Shape::Option => {
+                                self.type_ref(Some(&dep), &foreign_name)?
+                            }
+                            Shape::Scalar | Shape::Bytes | Shape::Message => {
+                                self.dependency_defined_singular(&dep, &inner)?
+                            }
                         }
-                    }
-                } else {
-                    let inner = self.option_payload(payload)?;
-                    self.singular(&inner)?
-                };
-                self.ensure_wrapper(wrapper.clone(), WrapperKind::OptionValue(some), source)?;
-                Ok(Some(wrapper))
+                    } else {
+                        let inner = self.option_payload(payload)?;
+                        self.singular(&inner)?
+                    };
+                    self.ensure_wrapper(wrapper.clone(), WrapperKind::OptionValue(some), source)?;
+                    Ok(wrapper)
+                })();
+                self.recording_imports = prev_recording;
+                Ok(Some(res?))
             }
             _ => Ok(None),
         }
@@ -2030,7 +2133,9 @@ impl<'a> Emitter<'a> {
             );
         }
         let has_oneof = matches!(kind, WrapperKind::OptionValue(_) | WrapperKind::Result(_));
-        let body = (|| -> Result<String> {
+        let prev_recording = self.recording_imports;
+        self.recording_imports = true;
+        let body_res = (|| -> Result<String> {
             Ok(match kind {
                 WrapperKind::List(element) => {
                     let ty = self.singular(&element)?;
@@ -2058,8 +2163,10 @@ impl<'a> Emitter<'a> {
                     )
                 }
             })
-        })()
-        .with_context(|| format!("synthesizing wrapper `{name}` for `{source}`"))?;
+        })();
+        self.recording_imports = prev_recording;
+        let body =
+            body_res.with_context(|| format!("synthesizing wrapper `{name}` for `{source}`"))?;
         if let Some(existing) = self.wrappers.get(&name) {
             if existing == &body {
                 return Ok(name);

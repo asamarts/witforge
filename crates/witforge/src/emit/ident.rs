@@ -178,6 +178,24 @@ pub(crate) fn proto_field_name(wit_name: &str) -> String {
     wit_name.replace('-', "_")
 }
 
+/// The default proto3 `json_name` (lowerCamelCase) derived from a `.proto` field name, matching
+/// `protoc` and `protox` (`ToJsonName`).
+pub(crate) fn proto_json_name(proto_field: &str) -> String {
+    let mut out = String::with_capacity(proto_field.len());
+    let mut capitalize_next = false;
+    for ch in proto_field.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            out.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// The `.proto` package/filename segment for a WIT namespace or package name.
 pub(crate) fn proto_package_segment(wit_name: &str) -> String {
     wit_name.replace('-', "_")

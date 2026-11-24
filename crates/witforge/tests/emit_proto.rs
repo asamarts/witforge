@@ -1061,3 +1061,117 @@ fn interface_and_package_docs_attach_to_the_right_proto_declarations() {
     compile_proto(&proto_path);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn wrapper_stability_docs_unused_imports_and_json_name_collisions() {
+    let base = std::env::temp_dir().join(format!(
+        "witforge-proto-wrapper-fixes-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let dir = base.join("wit/v0.1");
+    fs::create_dir_all(dir.join("deps/unused")).unwrap();
+    fs::write(
+        dir.join("deps/unused/types.wit"),
+        "package ex:unused@0.1.0;\ninterface shared { record item { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("contract.wit"),
+        "package ex:wrap@0.1.0;\n\
+         interface api {\n\
+           use ex:unused/shared@0.1.0.{item};\n\
+           /// Local alias to foreign type (unreferenced).\n\
+           type alias-one = item;\n\
+           type alias-two = alias-one;\n\
+           type list-alias = list<item>;\n\
+           type opt-alias = option<item>;\n\
+           @since(version = 0.1.0)\n\
+           @deprecated(version = 0.1.0)\n\
+           type old-opt = option<result<u32, string>>;\n\
+           /// Documented named option of list.\n\
+           @since(version = 0.1.0)\n\
+           type opt-list = option<list<string>>;\n\
+           /// Documented named option of option.\n\
+           type opt-opt = option<option<u32>>;\n\
+           record active {\n\
+             res: result<u32, string>,\n\
+             items: opt-list,\n\
+             nested: opt-opt,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    let model = model::build(&load(&dir).unwrap()).unwrap();
+    let lock = lock_for(&model);
+    let schema = proto::emit_major(&model, &lock).unwrap();
+
+    // 1. Unreferenced local aliases/lists/options pointing to foreign types emit no unused import.
+    assert!(
+        !schema.contains("import \"ex.unused.v0.proto\";"),
+        "unexpected unused import:\n{schema}"
+    );
+    // 2. Named `option<result<...>>` must NOT leak `@deprecated`/`@since` onto shared anonymous
+    //    `WitforgeResultOfU32AndString`.
+    let res_idx = schema
+        .find("message WitforgeResultOfU32AndString {")
+        .expect("shared result wrapper");
+    let before_res = &schema[..res_idx];
+    assert!(
+        before_res.ends_with("\n\n"),
+        "expected blank line before wrapper:\n{schema}"
+    );
+    let res_body = &schema[res_idx..];
+    let res_end = res_body.find("\n}").unwrap();
+    assert!(
+        !res_body[..res_end].contains("deprecated"),
+        "deprecated leaked onto shared result wrapper:\n{schema}"
+    );
+    // 3. Dedicated named `option<list/option>` wrappers carry their WIT docs and stability.
+    assert!(
+        schema.contains(
+            "\n\n// Documented named option of list.\n// Stable since WIT version 0.1.0.\nmessage ApiOptList {"
+        ),
+        "{schema}"
+    );
+    assert!(
+        schema.contains("\n\n// Documented named option of option.\nmessage ApiOptOpt {"),
+        "{schema}"
+    );
+
+    // 4. Proto3 `json_name` collision with a reserved field name (`foo-1` reserved -> `foo1`,
+    //    live `foo1` -> `foo1`) is refused by both `proto::emit_major` and `workflow::check`.
+    let json_dir = base.join("json-coll/v0.1");
+    fs::create_dir_all(&json_dir).unwrap();
+    fs::write(
+        json_dir.join("contract.wit"),
+        "package ex:jc@0.1.0;\ninterface api { record r { foo1: u32 } }\n",
+    )
+    .unwrap();
+    let json_model = model::build(&load(&json_dir).unwrap()).unwrap();
+    let mut json_lock = WireLock::parse(&format!(
+        "{}\nex:jc/api/r.foo-1 = 1 field u32 reserved\n",
+        witforge::lock::HEADER
+    ))
+    .unwrap();
+    json_lock.reconcile(&json_model.members().unwrap()).unwrap();
+    fs::write(json_dir.join("wire.lock"), json_lock.render()).unwrap();
+
+    let proto_err = proto::emit_major(&json_model, &json_lock).unwrap_err();
+    assert!(witforge::is_contract_error(&proto_err), "{proto_err:#}");
+    assert!(
+        format!("{proto_err:#}").contains("collides with a reserved name"),
+        "{proto_err:#}"
+    );
+
+    let check_report =
+        witforge::workflow::check(&witforge::workflow::VersionOptions::new(json_dir.clone()))
+            .unwrap();
+    assert!(
+        !check_report.is_ok(),
+        "check must refuse proto3 json_name collision with reserved field"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

@@ -2025,7 +2025,7 @@ fn push_let_else_err(
     let body_indent = indent + 4;
     let body_prefix = " ".repeat(body_indent);
     let err_prefix = "return ::core::result::Result::Err(";
-    let return_stmt = if body_indent + err_prefix.len() + err_path.len() + 2 > rustfmt::MAX_WIDTH {
+    let return_stmt = if body_indent + err_prefix.len() + err_path.len() + 2 >= rustfmt::MAX_WIDTH {
         let arg_indent = body_indent + 4;
         let arg_prefix = " ".repeat(arg_indent);
         let err_expr = rustfmt::fmt_struct_lit(arg_indent, err_path, err_fields, arg_indent, 1);
@@ -3471,6 +3471,12 @@ impl Emitter<'_> {
         if args.len() > 7 {
             writeln!(out, "{item_pad}#[allow(clippy::too_many_arguments)]")?;
         }
+        if param_types
+            .iter()
+            .any(|ty| rustfmt::needs_allow_type_complexity(ty))
+        {
+            writeln!(out, "{item_pad}#[allow(clippy::type_complexity)]")?;
+        }
         writeln!(
             out,
             "{}",
@@ -4109,7 +4115,7 @@ impl Emitter<'_> {
         let pad = " ".repeat(indent);
         let inner_indent = indent + 4;
         let inner_pad = " ".repeat(inner_indent);
-        let values = hoist_if_long(stmts, indent, temps, values, 4 + "values: ".len() + 1);
+        let values = hoist_if_long(stmts, indent, temps, values, 8 + "values: ".len() + 1);
         let lit = rustfmt::fmt_struct_lit(
             inner_indent,
             "Wrapper",

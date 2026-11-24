@@ -1373,3 +1373,78 @@ fn scratch_dir_honours_tmpdir_and_keeps_on_failure() {
     );
     fs::remove_dir_all(&dir_path).unwrap();
 }
+
+#[test]
+fn clippy_and_rustfmt_pass_for_dep_aliases_large_variants_and_deep_nesting() {
+    let entries = vec![
+        MatrixEntry {
+            name: "dep_clippy_and_deep_nesting",
+            deps: &[(
+                "shared",
+                "package ex:shared@0.1.0;\n\
+                 interface base {\n\
+                   type unit-res = result<u32>;\n\
+                   type aliased-res = unit-res;\n\
+                   record big {\n\
+                     a: string, b: string, c: string, d: string,\n\
+                     e: string, f: string, g: string, h: string,\n\
+                     i: string, j: string,\n\
+                   }\n\
+                   type aliased-big = big;\n\
+                 }\n",
+            )],
+            root_wit: "\
+package ex:quality@0.1.0;
+
+interface api {
+  use ex:shared/base@0.1.0.{aliased-res, aliased-big};
+
+  variant disparity {
+    small(u8),
+    huge(aliased-big),
+  }
+
+  record deep {
+    value: option<result<list<option<result<list<string>, list<u32>>>>, list<option<string>>>>,
+  }
+
+  check-unit: func() -> aliased-res;
+  roundtrip-deep: func(
+    input: option<result<list<option<result<list<string>, list<u32>>>>, list<option<string>>>>,
+  ) -> option<result<list<option<result<list<string>, list<u32>>>>, list<option<string>>>>;
+}
+"
+            .to_string(),
+            expected: Expected::Compiles {
+                pbjson: false,
+                roundtrip: r#"
+    use ::prost::Message as _;
+    use crate::dep_clippy_and_deep_nesting::{glue, plain, proto};
+
+    let sample = plain::v0_1::api::Deep {
+        value: Some(Ok(vec![
+            Some(Ok(vec!["a".to_string()])),
+            Some(Err(vec![1, 2])),
+            None,
+        ])),
+    };
+    let wire = glue::v0::api::deep::to_proto(&sample);
+    let bytes = wire.encode_to_vec();
+    let decoded = proto::ex::quality::v0::ApiDeep::decode(bytes.as_slice()).unwrap();
+    assert_eq!(glue::v0::api::deep::from_proto(decoded).unwrap(), sample);
+"#,
+            },
+        },
+        MatrixEntry {
+            name: "refused_reserved_proto_collision",
+            deps: &[],
+            root_wit: "package ex:jc@0.1.0;\ninterface api { record get-request { id: u32 } get: func() -> u32; }\n"
+                .to_string(),
+            expected: Expected::CheckRefuses {
+                code: "WF1003",
+                needle: "ApiGetRequest",
+            },
+        },
+    ];
+    run_matrix("w10-107-quality", &entries);
+}

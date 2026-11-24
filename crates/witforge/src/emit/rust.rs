@@ -646,7 +646,8 @@ fn emit_record(
         writeln!(out, "{prefix}pub struct {name} {{}}")?;
         return Ok(());
     }
-    writeln!(out, "{prefix}pub struct {name} {{")?;
+    let mut rendered_fields = Vec::with_capacity(fields.len());
+    let mut complex_type = false;
     let mut field_names = BTreeMap::new();
     for field in fields {
         let field_name = rust_ident(&snake_case(&field.name), "record field")?;
@@ -656,13 +657,23 @@ fn emit_record(
             &format!("field {}", field.name),
             &format!("{}/{}", interface.name, def.name),
         )?;
+        let ty = map_type(model, &interface.name, &field.ty, foreign_resolver)?;
+        if rustfmt::needs_allow_type_complexity(&ty) {
+            complex_type = true;
+        }
+        rendered_fields.push((field, field_name, ty));
+    }
+    if complex_type {
+        writeln!(out, "{prefix}#[allow(clippy::type_complexity)]")?;
+    }
+    writeln!(out, "{prefix}pub struct {name} {{")?;
+    for (field, field_name, ty) in rendered_fields {
         rustfmt::write_docs_or(
             out,
             indent + 4,
             &field.docs,
             &format!("Field `{}/{}.{}`.", interface.name, def.name, field.name),
         )?;
-        let ty = map_type(model, &interface.name, &field.ty, foreign_resolver)?;
         writeln!(
             out,
             "{}",
@@ -722,7 +733,8 @@ fn emit_type_def(
                 writeln!(out, "{prefix}pub enum {name} {{}}")?;
                 return Ok(());
             }
-            writeln!(out, "{prefix}pub enum {name} {{")?;
+            let mut rendered_cases = Vec::with_capacity(cases.len());
+            let mut complex_type = false;
             let mut case_names = BTreeMap::new();
             for case in cases {
                 let case_name = rust_ident(&pascal_case(&case.name), "variant case")?;
@@ -732,14 +744,31 @@ fn emit_type_def(
                     &format!("case {}", case.name),
                     &format!("{}/{}", interface.name, def.name),
                 )?;
+                let payload_ty = case
+                    .payload
+                    .as_ref()
+                    .map(|payload| map_type(model, &interface.name, payload, foreign_resolver))
+                    .transpose()?;
+                if payload_ty
+                    .as_deref()
+                    .is_some_and(rustfmt::needs_allow_type_complexity)
+                {
+                    complex_type = true;
+                }
+                rendered_cases.push((case, case_name, payload_ty));
+            }
+            if complex_type {
+                writeln!(out, "{prefix}#[allow(clippy::type_complexity)]")?;
+            }
+            writeln!(out, "{prefix}pub enum {name} {{")?;
+            for (case, case_name, payload_ty) in rendered_cases {
                 rustfmt::write_docs_or(
                     out,
                     indent + 4,
                     &case.docs,
                     &format!("Case `{}/{}.{}`.", interface.name, def.name, case.name),
                 )?;
-                if let Some(payload) = &case.payload {
-                    let ty = map_type(model, &interface.name, payload, foreign_resolver)?;
+                if let Some(ty) = payload_ty {
                     writeln!(
                         out,
                         "{}",
@@ -892,6 +921,7 @@ fn emit_trait(
         write_deprecated_attribute(out, indent + 4, &function.stability)?;
         let mut params = vec!["&self".to_string()];
         let mut param_names = BTreeMap::new();
+        let mut complex_type = false;
         for param in &function.params {
             let param_name = rust_ident(&snake_case(&param.name), "parameter")?;
             insert_name(
@@ -901,6 +931,9 @@ fn emit_trait(
                 &format!("function {}/{}", interface.name, function.name),
             )?;
             let ty = map_type(model, &interface.name, &param.ty, foreign_resolver)?;
+            if rustfmt::needs_allow_type_complexity(&ty) {
+                complex_type = true;
+            }
             params.push(format!("{param_name}: {ty}"));
         }
         let ret = function
@@ -908,6 +941,12 @@ fn emit_trait(
             .as_ref()
             .map(|result| map_type(model, &interface.name, result, foreign_resolver))
             .transpose()?;
+        if ret
+            .as_deref()
+            .is_some_and(rustfmt::needs_allow_type_complexity)
+        {
+            complex_type = true;
+        }
         let method_prefix = " ".repeat(indent + 4);
         if params.len() > 7 {
             writeln!(out, "{method_prefix}#[allow(clippy::too_many_arguments)]")?;
@@ -918,6 +957,9 @@ fn emit_trait(
             .is_some_and(|result| resolves_to_unit_err_result(model, result))
         {
             writeln!(out, "{method_prefix}#[allow(clippy::result_unit_err)]")?;
+        }
+        if complex_type {
+            writeln!(out, "{method_prefix}#[allow(clippy::type_complexity)]")?;
         }
         writeln!(
             out,
@@ -936,17 +978,21 @@ fn emit_trait(
 }
 
 fn resolves_to_unit_err_result(model: &Model, ty: &TypeExpr) -> bool {
+    let mut context = None;
     let mut current = ty;
     for _ in 0..=crate::model::MAX_ALIAS_CHAIN {
         match current {
             TypeExpr::Result(result) => return result.err.is_none(),
             TypeExpr::Named(name) => {
-                let Some(def) = model.type_def(name) else {
+                let Some((resolved_dep, def)) = model.type_def_in(context, name) else {
                     return false;
                 };
                 match &def.kind {
                     TypeDefKind::Result(result) => return result.err.is_none(),
-                    TypeDefKind::Alias(target) => current = target,
+                    TypeDefKind::Alias(target) => {
+                        context = resolved_dep;
+                        current = target;
+                    }
                     _ => return false,
                 }
             }
@@ -968,7 +1014,7 @@ fn has_large_variant_disparity(model: &Model, cases: &[crate::model::Case]) -> b
         .map(|case| {
             case.payload
                 .as_ref()
-                .map_or(0, |ty| estimate_type_size(model, ty, 0))
+                .map_or(0, |ty| estimate_type_size(model, None, ty, 0))
         })
         .collect();
     sizes.sort_unstable();
@@ -977,7 +1023,12 @@ fn has_large_variant_disparity(model: &Model, cases: &[crate::model::Case]) -> b
     largest.saturating_sub(second) >= 160
 }
 
-fn estimate_type_size(model: &Model, ty: &TypeExpr, depth: usize) -> usize {
+fn estimate_type_size(
+    model: &Model,
+    context: Option<&crate::model::Dependency>,
+    ty: &TypeExpr,
+    depth: usize,
+) -> usize {
     if depth > crate::model::MAX_TYPE_NESTING {
         return 24;
     }
@@ -987,25 +1038,27 @@ fn estimate_type_size(model: &Model, ty: &TypeExpr, depth: usize) -> usize {
         TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 => 4,
         TypeExpr::U64 | TypeExpr::S64 | TypeExpr::F64 => 8,
         TypeExpr::String | TypeExpr::List(_) => 24,
-        TypeExpr::Option(inner) => estimate_type_size(model, inner, depth + 1).saturating_add(8),
+        TypeExpr::Option(inner) => {
+            estimate_type_size(model, context, inner, depth + 1).saturating_add(8)
+        }
         TypeExpr::Result(result) => {
             let ok = result
                 .ok
                 .as_deref()
-                .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+                .map_or(0, |t| estimate_type_size(model, context, t, depth + 1));
             let err = result
                 .err
                 .as_deref()
-                .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+                .map_or(0, |t| estimate_type_size(model, context, t, depth + 1));
             ok.max(err).saturating_add(8)
         }
         TypeExpr::Named(name) => {
-            let Some(def) = model.type_def(name) else {
+            let Some((resolved_dep, def)) = model.type_def_in(context, name) else {
                 return 8;
             };
             match &def.kind {
                 TypeDefKind::Record(fields) => fields.iter().fold(0usize, |acc, field| {
-                    let fsz = estimate_type_size(model, &field.ty, depth + 1);
+                    let fsz = estimate_type_size(model, resolved_dep, &field.ty, depth + 1);
                     // Round up each field to at most 8-byte alignment for a safe upper bound.
                     acc.saturating_add(fsz.next_multiple_of(fsz.clamp(1, 8)))
                 }),
@@ -1014,27 +1067,29 @@ fn estimate_type_size(model: &Model, ty: &TypeExpr, depth: usize) -> usize {
                     .map(|case| {
                         case.payload
                             .as_ref()
-                            .map_or(0, |t| estimate_type_size(model, t, depth + 1))
+                            .map_or(0, |t| estimate_type_size(model, resolved_dep, t, depth + 1))
                     })
                     .max()
                     .unwrap_or(0)
                     .saturating_add(8),
                 TypeDefKind::Enum(_) => 4,
                 TypeDefKind::Flags(flags) => flags.len(),
-                TypeDefKind::Alias(target) => estimate_type_size(model, target, depth + 1),
+                TypeDefKind::Alias(target) => {
+                    estimate_type_size(model, resolved_dep, target, depth + 1)
+                }
                 TypeDefKind::List(_) => 24,
                 TypeDefKind::Option(inner) => {
-                    estimate_type_size(model, inner, depth + 1).saturating_add(8)
+                    estimate_type_size(model, resolved_dep, inner, depth + 1).saturating_add(8)
                 }
                 TypeDefKind::Result(result) => {
                     let ok = result
                         .ok
                         .as_deref()
-                        .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+                        .map_or(0, |t| estimate_type_size(model, resolved_dep, t, depth + 1));
                     let err = result
                         .err
                         .as_deref()
-                        .map_or(0, |t| estimate_type_size(model, t, depth + 1));
+                        .map_or(0, |t| estimate_type_size(model, resolved_dep, t, depth + 1));
                     ok.max(err).saturating_add(8)
                 }
             }

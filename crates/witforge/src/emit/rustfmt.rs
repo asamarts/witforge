@@ -20,6 +20,30 @@ const FN_CALL_WIDTH: usize = 60;
 /// Default `rustfmt` `array_width`.
 const ARRAY_WIDTH: usize = 60;
 
+/// Conservative check for whether a rendered Rust type expression may trigger
+/// `clippy::type_complexity` (default threshold 250).
+pub(crate) fn needs_allow_type_complexity(ty: &str) -> bool {
+    let mut depth = 0usize;
+    let mut max_depth = 0usize;
+    let mut generic_count = 0usize;
+    for ch in ty.chars() {
+        match ch {
+            '<' | '(' => {
+                depth += 1;
+                max_depth = max_depth.max(depth);
+                if ch == '<' {
+                    generic_count += 1;
+                }
+            }
+            '>' | ')' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    max_depth >= 4 || generic_count >= 5
+}
+
 /// Write outer Rust doc comments for `docs_text`, falling back to `fallback` so generated public
 /// items always pass `-D missing_docs`.
 pub(crate) fn write_docs_or(
@@ -299,14 +323,32 @@ pub(crate) fn fmt_tuple_expr(
     out
 }
 
-/// Format a `let` statement at `indent`, wrapping the RHS onto the next line if single-line
-/// exceeds `MAX_WIDTH`.
+/// Format a `let` statement at `indent`, wrapping the RHS onto the next line (and wrapping call
+/// arguments if needed) when single-line exceeds `MAX_WIDTH`.
 pub(crate) fn fmt_let_stmt(indent: usize, binding: &str, expr: &str) -> String {
     let prefix = " ".repeat(indent);
     if !expr.contains('\n') {
         let single = format!("{prefix}let {binding} = {expr};");
         if single.len() <= MAX_WIDTH {
             return single;
+        }
+        if indent + 4 + expr.len() < MAX_WIDTH {
+            return format!("{prefix}let {binding} =\n{prefix}    {expr};");
+        }
+        if expr.ends_with(')')
+            && let Some(open) = find_top_level_char(expr, '(')
+            && let Some(args) = split_top_level(&expr[open + 1..expr.len() - 1], ',')
+        {
+            let callee = &expr[..open];
+            let trimmed: Vec<String> = args
+                .into_iter()
+                .map(|arg| arg.trim().to_string())
+                .filter(|arg| !arg.is_empty())
+                .collect();
+            let rhs_indent = indent + 4;
+            let rhs_prefix = " ".repeat(rhs_indent);
+            let wrapped = fmt_call(rhs_indent, callee, &trimmed, rhs_indent, 1);
+            return format!("{prefix}let {binding} =\n{rhs_prefix}{wrapped};");
         }
         return format!("{prefix}let {binding} =\n{prefix}    {expr};");
     }

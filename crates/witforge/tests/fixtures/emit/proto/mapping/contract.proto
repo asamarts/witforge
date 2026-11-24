@@ -307,72 +307,86 @@ enum AliasMethod {
   ALIAS_METHOD_CALL = 1;
 }
 
+// A named option of a list.
 message TypesMaybeList {
   repeated TypesSmall values = 1;
 }
+
+// A named option of an option.
 message TypesMaybeMaybe {
   oneof value {
     Empty none = 1;
     string some = 2;
   }
 }
+
 message WitforgeListOfTypesSmall {
   repeated TypesSmall values = 1;
 }
+
 message WitforgeOptionOfListOfU8 {
   oneof value {
     Empty none = 1;
     bytes some = 2;
   }
 }
+
 message WitforgeOptionOfResultOfU8AndString {
   oneof value {
     Empty none = 1;
     WitforgeResultOfU8AndString some = 2;
   }
 }
+
 message WitforgeOptionOfString {
   oneof value {
     Empty none = 1;
     string some = 2;
   }
 }
+
 message WitforgeOptionOfTypesMaybeList {
   oneof value {
     Empty none = 1;
     TypesMaybeList some = 2;
   }
 }
+
 message WitforgeOptionOfTypesMaybeMaybe {
   oneof value {
     Empty none = 1;
     TypesMaybeMaybe some = 2;
   }
 }
+
 message WitforgeOptionOfTypesSmall {
   oneof value {
     Empty none = 1;
     TypesSmall some = 2;
   }
 }
+
 message WitforgeResultOfEmptyAndEmpty {
   oneof value {
     Empty ok = 1;
     Empty err = 2;
   }
 }
+
 message WitforgeResultOfListOfTypesSmallAndString {
   oneof value {
     WitforgeListOfTypesSmall ok = 1;
     string err = 2;
   }
 }
+
 message WitforgeResultOfTypesSmallAndString {
   oneof value {
     TypesSmall ok = 1;
     string err = 2;
   }
 }
+
 message WitforgeResultOfU8AndString {
   oneof value {
     uint32 ok = 1;

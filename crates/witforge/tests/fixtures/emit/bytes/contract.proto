@@ -69,9 +69,11 @@ enum TypesMethod {
 message WitforgeListOfListOfListOfU8 {
   repeated WitforgeListOfListOfU8 values = 1;
 }
+
 message WitforgeListOfListOfU8 {
   repeated bytes values = 1;
 }
+
 message WitforgeResultOfListOfU8AndString {
   oneof value {
     bytes ok = 1;
