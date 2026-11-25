@@ -291,3 +291,230 @@ fn check_against_compares_the_pinned_dependency_graph() {
     );
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn deps_sync_updates_only_unreleased_versions_per_major_checks_drift_and_refuses_symlinks() {
+    let base = std::env::temp_dir().join(format!("witforge-deps-sync-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit = base.join("wit");
+
+    // Layout:
+    // - v0.1 (released): deps/shared/types.wit -> u32
+    // - v0.2 (unreleased, drifted): deps/shared/types.wit -> u64, plus extra stale file
+    // - v0.3 (unreleased, missing deps/ entirely)
+    // - v1.0 (released, major upgrade): deps/shared/types.wit -> string (v1.0.0)
+    // - v1.1 (unreleased, drifted from v1.0): deps/shared/types.wit -> bool
+    let write_ver = |ver: &str, dep_ver: &str, dep_field: Option<&str>| {
+        let dir = wit.join(ver);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("contract.wit"),
+            format!(
+                "package example:sync@{}.0;\n\
+                 interface api {{\n\
+                   use example:shared/types@{dep_ver}.{{id}};\n\
+                   record r {{ a: id }}\n\
+                 }}\n",
+                &ver[1..]
+            ),
+        )
+        .unwrap();
+        if let Some(field) = dep_field {
+            let dep_dir = dir.join("deps/shared");
+            fs::create_dir_all(&dep_dir).unwrap();
+            fs::write(
+                dep_dir.join("types.wit"),
+                format!(
+                    "package example:shared@{dep_ver};\ninterface types {{ type id = {field}; }}\n"
+                ),
+            )
+            .unwrap();
+        }
+    };
+
+    write_ver("v0.1", "0.1.0", Some("u32"));
+    write_ver("v0.2", "0.1.0", Some("u64"));
+    fs::write(wit.join("v0.2/deps/shared/stale.wit"), "// stale\n").unwrap();
+    write_ver("v0.3", "0.1.0", None);
+    write_ver("v1.0", "1.0.0", Some("string"));
+    write_ver("v1.1", "1.0.0", Some("bool"));
+    for rel_ver in ["v0.1", "v1.0"] {
+        let locked = witforge()
+            .args(["lock"])
+            .arg(wit.join(rel_ver))
+            .arg("--first")
+            .output()
+            .unwrap();
+        assert!(locked.status.success(), "{rel_ver}: {locked:?}");
+    }
+    fs::write(wit.join("released"), "v0.1\nv1.0\n").unwrap();
+
+    let v01_before = fs::read_to_string(wit.join("v0.1/deps/shared/types.wit")).unwrap();
+    let v10_before = fs::read_to_string(wit.join("v1.0/deps/shared/types.wit")).unwrap();
+
+    // 1. `--check` reports drift across v0.2, v0.3, and v1.1 with WF1201 (exit 1) and writes nothing.
+    let check_drift = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .args(["--check", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(check_drift.status.code(), Some(1), "{check_drift:?}");
+    let drift_json: serde_json::Value = serde_json::from_slice(&check_drift.stdout).unwrap();
+    let diags = drift_json["diagnostics"].as_array().unwrap();
+    assert_eq!(diags.len(), 3, "{drift_json}");
+    for diag in diags {
+        assert_eq!(diag["code"], "WF1033", "{diag}");
+    }
+    assert!(!wit.join("v0.3/deps").exists(), "--check must not write");
+    assert!(wit.join("v0.2/deps/shared/stale.wit").exists());
+
+    // 2. `witforge deps sync wit` synchronizes v0.2 & v0.3 from v0.1 AND v1.1 from v1.0,
+    // preserving released v0.1 and v1.0 byte-for-byte without cross-major overwrite!
+    let sync_ok = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .output()
+        .unwrap();
+    assert!(sync_ok.status.success(), "{sync_ok:?}");
+    let sync_stdout = String::from_utf8_lossy(&sync_ok.stdout);
+    assert!(
+        sync_stdout.contains("synced v0.1/deps -> v0.2/deps"),
+        "{sync_stdout}"
+    );
+    assert!(
+        sync_stdout.contains("synced v0.1/deps -> v0.3/deps"),
+        "{sync_stdout}"
+    );
+    assert!(
+        sync_stdout.contains("synced v1.0/deps -> v1.1/deps"),
+        "{sync_stdout}"
+    );
+
+    assert_eq!(
+        fs::read_to_string(wit.join("v0.2/deps/shared/types.wit")).unwrap(),
+        v01_before
+    );
+    assert!(!wit.join("v0.2/deps/shared/stale.wit").exists());
+    assert_eq!(
+        fs::read_to_string(wit.join("v0.3/deps/shared/types.wit")).unwrap(),
+        v01_before
+    );
+    assert_eq!(
+        fs::read_to_string(wit.join("v1.1/deps/shared/types.wit")).unwrap(),
+        v10_before
+    );
+    assert_eq!(
+        fs::read_to_string(wit.join("v0.1/deps/shared/types.wit")).unwrap(),
+        v01_before
+    );
+    assert_eq!(
+        fs::read_to_string(wit.join("v1.0/deps/shared/types.wit")).unwrap(),
+        v10_before
+    );
+
+    // 3. `--check` now passes cleanly (exit 0)!
+    let check_clean = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(check_clean.status.success(), "{check_clean:?}");
+
+    // 4. `--from v0.2` after modifying v0.2/deps updates ONLY unreleased v0.3 (NEVER released v0.1,
+    // and NEVER major 1's v1.1)!
+    let custom_dep = "package example:shared@0.1.0;\ninterface types { type id = u16; }\n";
+    fs::write(wit.join("v0.2/deps/shared/types.wit"), custom_dep).unwrap();
+    let sync_from = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .args(["--from", "v0.2"])
+        .output()
+        .unwrap();
+    assert!(sync_from.status.success(), "{sync_from:?}");
+    assert_eq!(
+        fs::read_to_string(wit.join("v0.3/deps/shared/types.wit")).unwrap(),
+        custom_dep
+    );
+    assert_eq!(
+        fs::read_to_string(wit.join("v0.1/deps/shared/types.wit")).unwrap(),
+        v01_before,
+        "released v0.1 must NEVER be modified"
+    );
+    assert_eq!(
+        fs::read_to_string(wit.join("v1.1/deps/shared/types.wit")).unwrap(),
+        v10_before,
+        "major 1 must not be touched by --from v0.2"
+    );
+
+    // 5. Removing `deps/` in `--from v0.2` removes stale `deps/` in unreleased v0.3 cleanly.
+    fs::remove_dir_all(wit.join("v0.2/deps")).unwrap();
+    let sync_remove = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .args(["--from", "v0.2"])
+        .output()
+        .unwrap();
+    assert!(sync_remove.status.success(), "{sync_remove:?}");
+    assert!(!wit.join("v0.3/deps").exists());
+    assert!(wit.join("v0.1/deps").is_dir());
+
+    // 6. Config-file discovery works when WIT_ROOT is omitted.
+    fs::write(
+        base.join("witforge.toml"),
+        "version = 1\n[project.sync]\nroot = \"wit\"\n",
+    )
+    .unwrap();
+    let cfg_sync = witforge()
+        .current_dir(&base)
+        .args(["deps", "sync"])
+        .output()
+        .unwrap();
+    assert!(cfg_sync.status.success(), "{cfg_sync:?}");
+    assert_eq!(
+        fs::read_to_string(wit.join("v0.2/deps/shared/types.wit")).unwrap(),
+        v01_before
+    );
+    assert_eq!(
+        fs::read_to_string(wit.join("v0.3/deps/shared/types.wit")).unwrap(),
+        v01_before
+    );
+
+    // 7. Symlink guard (`WF9004`, exit 2) refuses symlinks inside target `deps/`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let link_path = wit.join("v0.3/deps/shared/evil.wit");
+        symlink("types.wit", &link_path).unwrap();
+        let sym_err = witforge()
+            .args(["deps", "sync"])
+            .arg(&wit)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(sym_err.status.code(), Some(2), "{sym_err:?}");
+        let sym_json: serde_json::Value = serde_json::from_slice(&sym_err.stdout).unwrap();
+        assert_eq!(sym_json["diagnostics"][0]["code"], "WF9004", "{sym_json}");
+        fs::remove_file(&link_path).unwrap();
+    }
+
+    // 8. Retired `--from` version is refused with WF9004 (exit 2).
+    fs::write(wit.join("released"), "v0.1 retired\nv1.0\n").unwrap();
+    let retired_err = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .args(["--from", "v0.1", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(retired_err.status.code(), Some(2), "{retired_err:?}");
+    let retired_json: serde_json::Value = serde_json::from_slice(&retired_err.stdout).unwrap();
+    assert_eq!(
+        retired_json["diagnostics"][0]["code"], "WF9004",
+        "{retired_json}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

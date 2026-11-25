@@ -1757,6 +1757,7 @@ witforge generate [--config witforge.toml | --no-config] [--project NAME] [--che
 witforge check    [<path>] [--config witforge.toml | --no-config] [--project NAME]
 witforge freeze   [<wit-root>] [--released PATH] [--config witforge.toml | --no-config] [--project NAME] [--base REV]
 witforge new-version [<wit-root>] [--major] [--from VERSION] [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
+witforge deps sync [<wit-root>] [--from VERSION] [--check] [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge release  <wit-dir> [--released PATH] [--forbid-unstable | --allow-unstable] [--config witforge.toml | --no-config] [--project NAME]
 witforge retire   <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge diff     <old> <new> [--json] [--check[=VIEWS]] [--config witforge.toml | --no-config] [--project NAME]

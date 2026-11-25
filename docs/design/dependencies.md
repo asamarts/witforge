@@ -1,7 +1,8 @@
 # WIT package dependencies
 
 Status: implemented 2026-11-06 (`W9-001`, `W9-004`, `W9-005`); one-version-per-graph and
-root-name refusal 2026-11-19 (`W10-047`).
+root-name refusal 2026-11-19 (`W10-047`); unreleased `deps/` sync helper and `wkg` workflow
+guidance 2026-11-25 (`W11-047`).
 
 witforge accepts the standard WIT dependency layout: a version directory may contain a `deps/`
 directory of WIT packages, and a local package may reference a named type from a dependency with
@@ -196,6 +197,52 @@ directory: changing it after release fails the release-freeze check. Dependencie
 the version directory (outside it) are not covered; keep them in the version directory. A
 multi-package workspace, root-level shared deps, registries, and dependency cache/pinning tools
 are explicitly later work, not part of this compatibility rule.
+
+## Synchronizing unreleased `deps/` trees (`witforge deps sync`) and `wkg`
+
+Because every version directory vendors its own `deps/` tree for release-freeze immutability while
+all live minors of one major must pin the identical dependency graph, witforge provides an explicit
+synchronization helper:
+
+```text
+witforge deps sync [<wit-root>] [--from <version>] [--check] [--released <path>]
+                   [--config <path> | --no-config] [--project <name>]
+```
+
+- **Strictly unreleased targets only:** `deps sync` reads the `released` manifest (validating it
+  against symlinks, cross-root paths, and malformed entries) and **never modifies any released or
+  retired version directory**.
+- **Per-major scoping:** when `--from v<major>.<minor>` is omitted, each major with at least two
+  live versions synchronizes from its highest released (non-retired) version — or its lowest live
+  version if none are released yet — into every other unreleased version of that same major. When
+  `--from v<major>.<minor>` is given, only unreleased versions of that same major are targeted
+  (retired `--from` versions are refused). Different majors stay independent so intentional major
+  dependency upgrades are never overwritten.
+- **Safety and drift checking:** symlinks and non-regular files anywhere in source or target
+  `deps/` trees are refused (`WF9004`, exit `2`). Writes stage the copy in a sibling temporary
+  directory before swapping so a partial copy never corrupts `deps/`; when the source has no
+  `deps/`, a stale target `deps/` is removed cleanly. Passing `--check` performs a dry run and
+  exits `1` (emitting `WF1033` diagnostics under `--format json|sarif`) if any unreleased version
+  differs.
+
+### Using `wkg` (`wasm-pkg-tools`) with witforge
+
+Teams fetching WIT dependencies from OCI/WArc registries with `wkg` can pair it directly with
+witforge's per-version vendoring model:
+
+1. **Initial or major-version vendoring:** run `wkg wit fetch` targeting the unreleased version
+   directory (for example inside `wit/v0.1` or `wit/v1.0` with a versioned `wkg.toml`/`wkg.lock`)
+   so `deps/` contains regular files (no symlinks), every dependency package declares a
+   `<major>.<minor>.0` version (`WF1012`), and at most one version of each `namespace:name` appears
+   in the graph. Then run `witforge lock` and `witforge check`.
+2. **Keeping unreleased minors in sync:** after updating dependencies in an unreleased baseline
+   minor (or preparing new draft minors alongside a released minor), run `witforge deps sync wit`
+   (and `witforge deps sync wit --check` in CI) so every unreleased minor in the major shares the
+   exact vendored `deps/` bytes without touching frozen released directories.
+3. **Upgrading dependencies on a new major:** run `witforge new-version wit --major`, fetch the
+   upgraded packages into `wit/v1.0/deps/` with `wkg wit fetch`, update `use` statements in
+   `wit/v1.0/contract.wit`, lock with `witforge lock wit/v1.0 --first`, and verify with
+   `witforge check wit` and `witforge freeze wit`.
 
 ## Refusals and tests
 

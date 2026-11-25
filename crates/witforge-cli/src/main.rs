@@ -18,6 +18,8 @@
 //! witforge init  [DIR] [--package NS:NAME] [--serde]
 //! witforge new-version [<wit-root>] [--major] [--from VERSION] [--released PATH]
 //!                      [--config PATH | --no-config] [--project NAME]
+//! witforge deps sync [<wit-root>] [--from VERSION] [--check] [--released PATH]
+//!                    [--config PATH | --no-config] [--project NAME]
 //! witforge release <wit-dir> [--released PATH] [--forbid-unstable | --allow-unstable]
 //!                  [--config PATH | --no-config] [--project NAME]
 //! witforge retire  <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
@@ -108,6 +110,8 @@ enum Command {
     /// Create the next minor or major version directory from the latest (or `--from`) version.
     #[command(name = "new-version")]
     NewVersion(NewVersionOptions),
+    /// Manage vendored `deps/` trees across unreleased version directories.
+    Deps(DepsOptions),
     /// Validate a version directory and append it to the `released` manifest.
     Release(ReleaseOptions),
     /// Mark a released version directory as `retired` in the `released` manifest.
@@ -384,6 +388,39 @@ struct NewVersionOptions {
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
     /// Configuration file; discovered upwards from the working directory when omitted.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct DepsOptions {
+    /// Dependency helper subcommand.
+    #[command(subcommand)]
+    command: DepsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum DepsCommand {
+    /// Synchronize `deps/` trees into unreleased version directories within each major.
+    Sync(DepsSyncOptions),
+}
+
+#[derive(Debug, Args)]
+struct DepsSyncOptions {
+    /// WIT root containing version directories; omit to use the configured project root.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Canonical source version directory (for example `v0.1`); defaults to the highest released
+    /// (or lowest live) version per major.
+    #[arg(long, value_name = "VERSION")]
+    from: Option<String>,
+    /// Report `deps/` drift without writing (exits 1 if any unreleased version differs).
+    #[arg(long)]
+    check: bool,
+    /// Path to the released-version manifest (defaults to `<WIT_ROOT>/released`).
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file; discovered upwards when `WIT_ROOT` is omitted.
     #[command(flatten)]
     config: ConfigArgs,
 }
@@ -1131,6 +1168,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Generate(options) => generate_command(&options, &mut reporter),
         Command::Init(options) => init_command(&options, &mut reporter),
         Command::NewVersion(options) => new_version_command(&options, &mut reporter),
+        Command::Deps(options) => deps_command(&options, &mut reporter),
         Command::Release(options) => release_command(&options, &mut reporter),
         Command::Retire(options) => retire_command(&options, &mut reporter),
         Command::Diff(options) => diff_command(&options, &mut reporter),
@@ -2829,6 +2867,108 @@ fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> 
             target_dir.display(),
             latest_dir.display()
         ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn deps_command(options: &DepsOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    match &options.command {
+        DepsCommand::Sync(sync_opts) => deps_sync_command(sync_opts, reporter),
+    }
+}
+
+fn deps_sync_command(options: &DepsSyncOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let (wit_root, configured_released) = if let Some(root) = &options.root {
+        if options.config.config.is_some() || options.config.project.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--config` and `--project` cannot be combined with a positional WIT_ROOT on \
+                 `deps sync`",
+                None,
+            ));
+        }
+        (root.clone(), None)
+    } else {
+        let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing WIT_ROOT (or use --config)",
+                None,
+            ));
+        };
+        let (config, base) = load_config_file(&config_path)?;
+        let (_, project) =
+            select_project_by_name(&config, &config_path, options.config.project.as_deref())?;
+        let root = resolve_config_path(&base, &project.root);
+        let released = project
+            .released
+            .as_deref()
+            .map(|p| resolve_config_path(&base, p));
+        (root, released)
+    };
+
+    let released_override = if let Some(explicit) = options.released.as_deref() {
+        Some((explicit, true))
+    } else {
+        configured_released
+            .as_deref()
+            .map(|configured| (configured, true))
+    };
+
+    let report = workflow::sync_deps(
+        &wit_root,
+        options.from.as_deref(),
+        options.check,
+        released_override,
+    )?;
+
+    if options.check {
+        if report.changed.is_empty() {
+            if reporter.human() && !reporter.is_quiet() {
+                reporter.write_stdout_line(&format!(
+                    "deps sync check passed ({} unreleased version(s) in sync)",
+                    report.checked
+                ));
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        for entry in &report.changed {
+            let deps_path = entry.target_dir.join("deps");
+            let message = format!(
+                "`{}/deps` differs from `{}/deps`: {} (run `witforge deps sync {}`)",
+                entry.target_version,
+                entry.source_version,
+                entry.diffs.join(", "),
+                shell_quote(&wit_root)
+            );
+            if reporter.human() {
+                diagnostics::write_stderr_line(&format!("error: {message}"));
+            } else {
+                let path = deps_path.display().to_string();
+                let diag = Diagnostic::error(codes::DEPENDENCY_GRAPH_MISMATCH, message)
+                    .with_path(path.clone());
+                reporter.push_located(LocatedDiagnostic::from_diagnostic(diag).with_file(path));
+            }
+        }
+        return Ok(ExitCode::from(1));
+    }
+
+    if reporter.human() && !reporter.is_quiet() {
+        if report.changed.is_empty() {
+            reporter.write_stdout_line(&format!(
+                "deps already in sync across {} unreleased version(s)",
+                report.checked
+            ));
+        } else {
+            for entry in &report.changed {
+                reporter.write_stdout_line(&format!(
+                    "synced {}/deps -> {}/deps ({} change(s))",
+                    entry.source_version,
+                    entry.target_version,
+                    entry.diffs.len()
+                ));
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -1,5 +1,7 @@
-//! Configuration discovery and workflow helpers (`init`, `new-version`, `release`, `retire`).
+//! Configuration discovery and workflow helpers (`init`, `new-version`, `release`, `retire`,
+//! `deps sync`).
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -743,6 +745,428 @@ pub(crate) fn create_new_version(
     }
 
     Ok((latest_dir, target_dir, !major_bump))
+}
+
+/// One unreleased version directory whose `deps/` tree was synchronized or found out of sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DepsSyncEntry {
+    /// Canonical source version directory name (e.g. `v0.1`).
+    pub(crate) source_version: String,
+    /// Target unreleased version directory name (e.g. `v0.2`).
+    pub(crate) target_version: String,
+    /// Full path to the target version directory.
+    pub(crate) target_dir: PathBuf,
+    /// Human-readable drift descriptions (relative paths inside `deps/`).
+    pub(crate) diffs: Vec<String>,
+}
+
+/// Summary returned by [`sync_deps`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DepsSyncReport {
+    /// Number of unreleased target version directories inspected.
+    pub(crate) checked: usize,
+    /// Target directories that drifted (modified when `check == false`, reported only when
+    /// `check == true`).
+    pub(crate) changed: Vec<DepsSyncEntry>,
+}
+
+type SyncTarget = (String, PathBuf);
+type SyncPlanItem = (String, PathBuf, Vec<SyncTarget>);
+
+/// Synchronize (or `--check`) `deps/` directories across unreleased version directories under
+/// `wit_root`, strictly within each major version and never modifying released or retired
+/// directories.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn sync_deps(
+    wit_root: &Path,
+    from_version: Option<&str>,
+    check_only: bool,
+    released_manifest: Option<(&Path, bool)>,
+) -> Result<DepsSyncReport> {
+    if !wit_root.is_dir() {
+        return Err(op_error(
+            codes::IO_ERROR,
+            format!("WIT root `{}` is not a directory", wit_root.display()),
+            Some(wit_root.display().to_string()),
+        ));
+    }
+    let versions = witforge::discover_version_directories(wit_root)?;
+
+    let canon_wit_root = fs::canonicalize(wit_root)
+        .with_context(|| format!("failed to resolve WIT root {}", wit_root.display()))?;
+    let (raw_manifest_path, explicit_manifest) = match released_manifest {
+        Some((path, explicit)) => (path.to_path_buf(), explicit),
+        None => (wit_root.join("released"), false),
+    };
+    let manifest_path: PathBuf = raw_manifest_path.components().collect();
+    let manifest_meta = match fs::symlink_metadata(&manifest_path) {
+        Ok(meta) => Some(meta),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if explicit_manifest {
+                return Err(op_error(
+                    codes::IO_ERROR,
+                    format!(
+                        "released manifest `{}` does not exist",
+                        raw_manifest_path.display()
+                    ),
+                    Some(raw_manifest_path.display().to_string()),
+                ));
+            }
+            None
+        }
+        Err(err) => {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "failed to inspect released manifest `{}`: {err}",
+                    raw_manifest_path.display()
+                ),
+                Some(raw_manifest_path.display().to_string()),
+            ));
+        }
+    };
+    if let Some(meta) = &manifest_meta
+        && meta.file_type().is_symlink()
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{}` is a symlink; commit a regular file",
+                raw_manifest_path.display()
+            ),
+            Some(raw_manifest_path.display().to_string()),
+        ));
+    }
+    if explicit_manifest || manifest_meta.is_some() {
+        ensure_manifest_belongs_to_wit_root(&manifest_path, &canon_wit_root)?;
+    }
+    let manifest = if manifest_meta.is_some() {
+        witforge::ReleasedManifest::load(&manifest_path)?
+    } else {
+        witforge::ReleasedManifest::default()
+    };
+
+    // Group live (non-retired) version directories by major in ascending `(major, minor)` order.
+    let mut by_major: BTreeMap<u64, Vec<(u64, String, PathBuf, bool)>> = BTreeMap::new();
+    for (major, minor, dir) in versions {
+        let name = format!("v{major}.{minor}");
+        if manifest.is_retired(&name) {
+            continue;
+        }
+        let is_released = manifest.contains(&name);
+        by_major
+            .entry(major)
+            .or_default()
+            .push((minor, name, dir, is_released));
+    }
+
+    // Build `(source_name, source_dir, targets)` sync plan.
+    let mut plan: Vec<SyncPlanItem> = Vec::new();
+    if let Some(raw_from) = from_version {
+        let Some((want_major, want_minor)) = parse_version_dir_name(raw_from) else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "invalid `--from` version `{raw_from}`; expected `v<major>.<minor>` (for \
+                     example `v0.1`)"
+                ),
+                None,
+            ));
+        };
+        if manifest.is_retired(raw_from) {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "source version `{raw_from}` is retired in {}; choose a live version",
+                    manifest_path.display()
+                ),
+                Some(manifest_path.display().to_string()),
+            ));
+        }
+        let Some(major_entries) = by_major.get(&want_major) else {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "source version `{raw_from}` was not found under `{}`",
+                    wit_root.display()
+                ),
+                Some(wit_root.display().to_string()),
+            ));
+        };
+        let Some((_, src_name, src_dir, _)) = major_entries
+            .iter()
+            .find(|(minor, _, _, _)| *minor == want_minor)
+        else {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "source version `{raw_from}` was not found under `{}`",
+                    wit_root.display()
+                ),
+                Some(wit_root.display().to_string()),
+            ));
+        };
+        let targets: Vec<(String, PathBuf)> = major_entries
+            .iter()
+            .filter(|(minor, _, _, is_rel)| *minor != want_minor && !*is_rel)
+            .map(|(_, name, dir, _)| (name.clone(), dir.clone()))
+            .collect();
+        plan.push((src_name.clone(), src_dir.clone(), targets));
+    } else {
+        for major_entries in by_major.values() {
+            if major_entries.len() < 2 {
+                continue;
+            }
+            // Prefer the highest released (non-retired) version in this major; if none are
+            // released yet, use the lowest live version as the canonical baseline.
+            let source = major_entries
+                .iter()
+                .rev()
+                .find(|(_, _, _, is_rel)| *is_rel)
+                .unwrap_or(&major_entries[0]);
+            let targets: Vec<(String, PathBuf)> = major_entries
+                .iter()
+                .filter(|(minor, _, _, is_rel)| *minor != source.0 && !*is_rel)
+                .map(|(_, name, dir, _)| (name.clone(), dir.clone()))
+                .collect();
+            if !targets.is_empty() {
+                plan.push((source.1.clone(), source.2.clone(), targets));
+            }
+        }
+    }
+
+    let mut report = DepsSyncReport::default();
+    for (src_name, src_dir, targets) in plan {
+        witforge::ensure_version_directory(&src_dir)?;
+        let src_deps = src_dir.join("deps");
+        let src_tree = snapshot_deps_tree(&src_deps)?;
+        for (target_name, target_dir) in targets {
+            witforge::ensure_version_directory(&target_dir)?;
+            let target_deps = target_dir.join("deps");
+            let target_tree = snapshot_deps_tree(&target_deps)?;
+            report.checked += 1;
+
+            let diffs = diff_deps_snapshots(src_tree.as_ref(), target_tree.as_ref());
+            if diffs.is_empty() {
+                continue;
+            }
+            if !check_only {
+                replace_deps_dir_atomic(&src_deps, src_tree.is_some(), &target_dir, &target_deps)?;
+            }
+            report.changed.push(DepsSyncEntry {
+                source_version: src_name.clone(),
+                target_version: target_name,
+                target_dir,
+                diffs,
+            });
+        }
+    }
+
+    Ok(report)
+}
+
+/// Snapshot a `deps/` directory as `Some(BTreeMap<rel_slash_path, bytes>)`, or `None` if `deps/`
+/// does not exist. Refuses symlinks and non-regular files anywhere under `deps/`.
+fn snapshot_deps_tree(deps_dir: &Path) -> Result<Option<BTreeMap<String, Vec<u8>>>> {
+    let meta = match fs::symlink_metadata(deps_dir) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!("failed to inspect `{}`: {err}", deps_dir.display()),
+                Some(deps_dir.display().to_string()),
+            ));
+        }
+    };
+    if meta.file_type().is_symlink() {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "`{}` is a symlink; `deps sync` refuses symlinks",
+                deps_dir.display()
+            ),
+            Some(deps_dir.display().to_string()),
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!("`{}` is not a directory", deps_dir.display()),
+            Some(deps_dir.display().to_string()),
+        ));
+    }
+    let mut files = BTreeMap::new();
+    collect_deps_snapshot(deps_dir, "", &mut files)?;
+    Ok(Some(files))
+}
+
+fn collect_deps_snapshot(
+    dir: &Path,
+    prefix: &str,
+    out: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .map(|entry| entry.map(|item| item.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("failed to read {}", dir.display()))?;
+    entries.sort();
+    for entry_path in entries {
+        let meta = fs::symlink_metadata(&entry_path)
+            .with_context(|| format!("failed to inspect {}", entry_path.display()))?;
+        if meta.file_type().is_symlink() {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "dependency tree contains symlink `{}`; `deps sync` refuses symlinks",
+                    entry_path.display()
+                ),
+                Some(entry_path.display().to_string()),
+            ));
+        }
+        let name = entry_path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| {
+                op_error(
+                    codes::IO_ERROR,
+                    format!(
+                        "dependency tree contains non-UTF-8 path `{}`",
+                        entry_path.display()
+                    ),
+                    Some(entry_path.display().to_string()),
+                )
+            })?;
+        let rel = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if meta.is_dir() {
+            collect_deps_snapshot(&entry_path, &rel, out)?;
+        } else if meta.is_file() {
+            let bytes = fs::read(&entry_path)
+                .with_context(|| format!("failed to read {}", entry_path.display()))?;
+            out.insert(rel, bytes);
+        } else {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "dependency tree contains non-regular file `{}`; `deps sync` refuses special \
+                     files",
+                    entry_path.display()
+                ),
+                Some(entry_path.display().to_string()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn diff_deps_snapshots(
+    source: Option<&BTreeMap<String, Vec<u8>>>,
+    target: Option<&BTreeMap<String, Vec<u8>>>,
+) -> Vec<String> {
+    match (source, target) {
+        (None, None) => Vec::new(),
+        (None, Some(_)) => vec!["extra `deps/` directory (source has no `deps/`)".to_string()],
+        (Some(src), None) => {
+            if src.is_empty() {
+                vec!["missing `deps/` directory".to_string()]
+            } else {
+                src.keys()
+                    .map(|path| format!("missing deps/{path}"))
+                    .collect()
+            }
+        }
+        (Some(src), Some(dst)) => {
+            let mut diffs = Vec::new();
+            for (path, src_bytes) in src {
+                match dst.get(path) {
+                    None => diffs.push(format!("missing deps/{path}")),
+                    Some(dst_bytes) if dst_bytes != src_bytes => {
+                        diffs.push(format!("changed deps/{path}"));
+                    }
+                    Some(_) => {}
+                }
+            }
+            for path in dst.keys() {
+                if !src.contains_key(path) {
+                    diffs.push(format!("extra deps/{path}"));
+                }
+            }
+            diffs
+        }
+    }
+}
+
+fn replace_deps_dir_atomic(
+    src_deps: &Path,
+    src_exists: bool,
+    target_version_dir: &Path,
+    target_deps: &Path,
+) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let pid = std::process::id();
+    let target_exists = fs::symlink_metadata(target_deps).is_ok();
+
+    if !src_exists {
+        if target_exists {
+            fs::remove_dir_all(target_deps)
+                .with_context(|| format!("failed to remove {}", target_deps.display()))?;
+        }
+        return Ok(());
+    }
+
+    let stage_seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let staged = target_version_dir.join(format!(".witforge-deps-stage-{pid}-{stage_seq}"));
+    if let Err(err) = copy_dir_no_symlinks(src_deps, &staged) {
+        let _ = fs::remove_dir_all(&staged);
+        return Err(err);
+    }
+
+    if !target_exists {
+        if let Err(err) = fs::rename(&staged, target_deps) {
+            let _ = fs::remove_dir_all(&staged);
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to move {} into {}",
+                    staged.display(),
+                    target_deps.display()
+                )
+            });
+        }
+        return Ok(());
+    }
+
+    let backup_seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let backup = target_version_dir.join(format!(".witforge-deps-old-{pid}-{backup_seq}"));
+    if let Err(err) = fs::rename(target_deps, &backup) {
+        let _ = fs::remove_dir_all(&staged);
+        return Err(err).with_context(|| {
+            format!(
+                "failed to back up {} to {}",
+                target_deps.display(),
+                backup.display()
+            )
+        });
+    }
+    if let Err(err) = fs::rename(&staged, target_deps) {
+        let _ = fs::rename(&backup, target_deps);
+        let _ = fs::remove_dir_all(&staged);
+        return Err(err).with_context(|| {
+            format!(
+                "failed to replace {} with {}",
+                target_deps.display(),
+                staged.display()
+            )
+        });
+    }
+    let _ = fs::remove_dir_all(&backup);
+    Ok(())
 }
 
 /// Rewrite `@<old_ver>` to `@<new_ver>` in top-level `package ...@<old_ver>;` declarations while

@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Unreleased `deps/` sync helper (`W11-047`):** Added `witforge deps sync [<WIT_ROOT>]
+  [--from VERSION] [--check] [--released PATH] [--config | --no-config] [--project NAME]` to
+  atomically synchronize vendored `deps/` trees across unreleased versions within each major while
+  never touching released or retired directories, refusing symlinks (`WF9004`), and reporting
+  drift with `--check` (exit `1`, `WF1033`). Documented `wkg` (`wasm-pkg-tools`) vendoring and
+  major-upgrade workflow guidance in `docs/design/dependencies.md`.
 - **Project governance policy table (`W11-042`):** Added opt-in `[project.<name>.policy]` in
   `witforge.toml` with `diff-check = ["wire", "decode", ...]` (default views for bare
   `witforge diff --check`, overridden by explicit `--check=<views>`) and
