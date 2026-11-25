@@ -16,10 +16,11 @@
 //! - [`lock`] reads, reconciles, and writes the `wire.lock` lockfile, and
 //!   [`ReleasedManifest`] reads the `released` manifest of frozen versions.
 //! - [`emit`] generates the [Rust](emit::rust) output (including version-to-version
-//!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema), and
-//!   [glue](emit::glue) output for a WIT root and checks committed output for drift.
-//! - [`diff`] compares two contract versions across wire, source, generated-API, and protobuf
-//!   binary decode compatibility views.
+//!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema),
+//!   [glue](emit::glue), and [Markdown documentation](emit::doc) output for a WIT root and checks
+//!   committed output for drift.
+//! - [`diff`] compares two contract versions (or a working-tree contract against a Git revision)
+//!   across wire, source, generated-API, and protobuf binary decode compatibility views.
 //! - [`inspect`] exports a versioned machine-readable JSON contract IR and human summaries.
 //! - [`freeze`] checks release-freeze immutability and retirement ordering against Git history.
 //! - [`diagnostic`] defines the stable machine-readable diagnostics shared by the CLI commands.
@@ -29,10 +30,11 @@
 //!   I/O, and parse errors.
 //!
 //! The `witforge` command-line interface (the `witforge-cli` crate) wraps these as the `check`,
-//! `lock`, `rust`, `proto`, `schema`, `glue`, `generate`, `init`, `new-version`, `release`,
-//! `retire`, `diff`, `inspect`, `freeze`, `completions`, and `explain` commands. For Rust
-//! `build.rs` integration, see the companion `witforge-build` crate. The normative specifications
-//! are in [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
+//! `lock`, `rust`, `proto`, `schema`, `glue`, `doc`, `generate`, `init`, `new-version`,
+//! `deps sync`, `release`, `retire`, `diff`, `inspect`, `freeze`, `completions`, and `explain`
+//! commands. For Rust `build.rs` integration, see the companion `witforge-build` crate. The
+//! normative specifications are in
+//! [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
 pub mod diagnostic;
 pub mod diff;
@@ -58,12 +60,12 @@ use wit_parser::{
 /// A contract, lockfile, or generated-output violation, as opposed to a usage, I/O, parse, or
 /// internal error.
 ///
-/// The generators ([`emit::rust`], [`emit::proto`], [`emit::json_schema`], and [`emit::glue`])
-/// and [`diff`] report a contract or lockfile violation as this type inside the returned
-/// [`anyhow::Error`], so callers can tell the two classes apart with [`is_contract_error`]; the
-/// `witforge` CLI does the same for `check` and `lock`, and exits with `1` for a violation and
-/// `2` for any other error. The lower-level
-/// [`lock::WireLock`] methods return plain errors, which their callers classify.
+/// The generators ([`emit::rust`], [`emit::proto`], [`emit::json_schema`], [`emit::glue`], and
+/// [`emit::doc`]) and [`diff`] report a contract or lockfile violation as this type inside the
+/// returned [`anyhow::Error`], so callers can tell the two classes apart with
+/// [`is_contract_error`]; the `witforge` CLI does the same for `check` and `lock`, and exits with
+/// `1` for a violation and `2` for any other error. The lower-level [`lock::WireLock`] methods
+/// return plain errors, which their callers classify.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractError {
     message: String,

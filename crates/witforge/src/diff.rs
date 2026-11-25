@@ -14,9 +14,9 @@
 //!   traits are exhaustive. Reordering named fields is not API-breaking; reordering function
 //!   parameters is.
 //!
-//! Added record fields whose type has a default (`option<T>`, `list<T>`, or an alias or named
-//! definition of one) are marked `defaulted`: the generated old-to-new conversion can fill them,
-//! but the source and generated API still change.
+//! Added record fields whose type has a default (`option<T>`, `list<T>`, `map<K, V>`, or an alias
+//! or named definition of one) are marked `defaulted`: the generated old-to-new conversion can fill
+//! them, but the source and generated API still change.
 //!
 //! Root-package docs are not compared. Stability changes are reported as non-breaking metadata
 //! changes; dependency docs and stability remain part of the exact pinned graph and are refused
@@ -38,8 +38,9 @@ use crate::model::{
     Dependency, Interface, Member, Model, TypeDef, TypeDefKind, TypeExpr, Version, WorldInterface,
 };
 use crate::{
-    ContractError, ensure_directory_version, ensure_version_directory, load, operational_error,
-    operational_error_at, subset,
+    ContractError, DiagnosticError, ensure_directory_version, ensure_version_directory,
+    error_diagnostics, error_located_diagnostics, is_contract_error, line_position, load,
+    operational_error, operational_error_at, parse_manifest_entry, subset,
 };
 
 /// One endpoint of a diff: the selected version directory and its identity.
@@ -474,6 +475,17 @@ pub fn compare_full(old: &Path, new: &Path) -> Result<FullDiff> {
     compare_report(old, new, true)
 }
 
+/// Internal variant of [`compare_full`] with pre-validated released flags for both endpoints
+/// (used by [`crate::emit::doc`] when an explicit `--released` manifest was already loaded).
+pub(crate) fn compare_full_with_released_flags(
+    old: &Path,
+    old_released: bool,
+    new: &Path,
+    new_released: bool,
+) -> Result<FullDiff> {
+    compare_report_with_options(old, None, Some(old_released), new, Some(new_released), true)
+}
+
 /// Compare a version directory or WIT root on disk (`target`) against its committed Git tree at
 /// revision `git_base`.
 ///
@@ -614,30 +626,56 @@ pub fn compare_git_base(git_base: &str, target: &Path) -> Result<FullDiff> {
     })?;
 
     let mut blobs = collect_git_tree_blobs(&repo, &tree_spec, &display_base, rel_git.is_empty())?;
-    // When diffing a single version directory (`wit/v0.2`), also materialize any sibling
-    // `released` manifest beside it at `git_base` (refusing a symlink) so `load_endpoint` checks
-    // release metadata consistently.
-    let sibling_released = if rel_git.is_empty() {
-        None
-    } else {
-        let parent_released = match rel_git.rsplit_once('/') {
-            Some((parent, _)) => format!("{parent}/released"),
-            None => "released".to_string(),
-        };
-        inspect_git_sibling_released(&repo, &commit, git_base, &parent_released)?
-    };
-
-    let mut writes: Vec<(PathBuf, String)> = blobs
+    let writes: Vec<(PathBuf, String)> = blobs
         .drain(..)
         .map(|(rel, oid)| (materialized_dir.join(rel), oid))
         .collect();
-    if let Some(released_oid) = sibling_released {
-        writes.push((temp_guard.path().join("released"), released_oid));
-    }
     materialize_git_blobs(&repo, &writes)?;
 
-    let mut full =
-        compare_report_with_labels(&materialized_dir, Some(&display_base), target, true)?;
+    // When diffing a single version directory (`wit/v0.2`), validate any sibling `released`
+    // manifest directly against `<commit>` in Git (rather than writing a partial `<temp>/released`
+    // beside a lone `<temp>/v0.2` where sibling entries like `v0.1` are absent) and pass the
+    // resulting released flag directly into `load_endpoint`.
+    let old_released_override = if !rel_git.is_empty()
+        && (materialized_dir.join("wire.lock").is_file()
+            || looks_like_version_directory(&materialized_dir))
+    {
+        let (parent_dir_git, parent_released) = match rel_git.rsplit_once('/') {
+            Some((parent, _)) => (Some(parent), format!("{parent}/released")),
+            None => (None, "released".to_string()),
+        };
+        let is_rel = validate_git_sibling_released(
+            &repo,
+            &commit,
+            git_base,
+            parent_dir_git,
+            &parent_released,
+            dir_name,
+        )?;
+        Some(is_rel)
+    } else {
+        None
+    };
+
+    let mut full = match compare_report_with_options(
+        &materialized_dir,
+        Some(&display_base),
+        old_released_override,
+        target,
+        None,
+        true,
+    ) {
+        Ok(full) => full,
+        Err(err) => {
+            return Err(redact_git_base_error(
+                &err,
+                &materialized_dir,
+                temp_guard.path(),
+                git_base,
+                &rel_git,
+            ));
+        }
+    };
     if let Some(rewritten) = rewrite_git_display_path(
         &full.analysis.report.old.path,
         &materialized_dir,
@@ -659,20 +697,22 @@ pub fn compare_git_base(git_base: &str, target: &Path) -> Result<FullDiff> {
 /// Build the report, optionally collecting conversion-impact notes, cross-major omissions, and
 /// source locations.
 fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Result<FullDiff> {
-    compare_report_with_labels(old_arg, None, new_arg, collect_impacts)
+    compare_report_with_options(old_arg, None, None, new_arg, None, collect_impacts)
 }
 
 #[allow(clippy::too_many_lines)]
-fn compare_report_with_labels(
+fn compare_report_with_options(
     old_arg: &Path,
     old_label: Option<&str>,
+    old_released_override: Option<bool>,
     new_arg: &Path,
+    new_released_override: Option<bool>,
     collect_impacts: bool,
 ) -> Result<FullDiff> {
     let old_display = old_label.map_or_else(|| old_arg.display().to_string(), str::to_string);
-    let old = load_endpoint(old_arg)
+    let old = load_endpoint_with_options(old_arg, old_released_override)
         .with_context(|| format!("failed to read the old contract {old_display}"))?;
-    let new = load_endpoint(new_arg)
+    let new = load_endpoint_with_options(new_arg, new_released_override)
         .with_context(|| format!("failed to read the new contract {}", new_arg.display()))?;
     if old.endpoint.package != new.endpoint.package {
         let mut diag = Diagnostic::error(
@@ -1196,11 +1236,11 @@ fn lock_remedy(path: &Path, released: bool) -> String {
     format!("run `witforge lock {}`", crate::shell_quote(path))
 }
 
-fn load_endpoint(path: &Path) -> Result<Loaded> {
+fn load_endpoint_with_options(path: &Path, released_override: Option<bool>) -> Result<Loaded> {
     let lock_path = path.join("wire.lock");
     crate::ensure_lockfile_not_symlink(&lock_path)?;
     if lock_path.is_file() {
-        return load_version(path);
+        return load_version(path, released_override);
     }
     if looks_like_version_directory(path) {
         let lock_path = path.join("wire.lock");
@@ -1244,7 +1284,10 @@ fn load_endpoint(path: &Path) -> Result<Loaded> {
             path.display()
         )
     })?;
-    let released = crate::is_released(&version.directory, None)?;
+    let released = match released_override {
+        Some(flag) => flag,
+        None => crate::is_released(&version.directory, None)?,
+    };
     let lock_text = fs::read_to_string(version.directory.join("wire.lock")).unwrap_or_default();
     let lock_positions = WireLock::entry_positions(&lock_text);
     Loaded::new(
@@ -1285,12 +1328,14 @@ fn looks_like_version_directory(path: &Path) -> bool {
     })
 }
 
-fn load_version(path: &Path) -> Result<Loaded> {
+fn load_version(path: &Path, released_override: Option<bool>) -> Result<Loaded> {
     ensure_version_directory(path)?;
-    // `diff` reads the manifest beside the endpoint, as `check` does by default. This validates
-    // a released directory and its contents, including a symlinked contract, lockfile, or
-    // dependency entry; it does not otherwise change the comparison.
-    let released = crate::is_released(path, None)?;
+    // `diff` reads the manifest beside the endpoint unless a caller (`compare_git_base` or
+    // `emit::doc::plan_with_released`) has already validated the applicable manifest.
+    let released = match released_override {
+        Some(flag) => flag,
+        None => crate::is_released(path, None)?,
+    };
     let contract = load(path)?;
     let violations = subset::check_located_diagnostics(&contract);
     if !violations.is_empty() {
@@ -2682,6 +2727,153 @@ fn collect_git_tree_blobs(
     Ok(entries)
 }
 
+#[allow(clippy::too_many_lines)]
+fn validate_git_sibling_released(
+    repo: &Path,
+    commit: &str,
+    git_base: &str,
+    parent_dir_git: Option<&str>,
+    released_rel: &str,
+    target_dir_name: &str,
+) -> Result<bool> {
+    let Some(oid) = inspect_git_sibling_released(repo, commit, git_base, released_rel)? else {
+        return Ok(false);
+    };
+    let manifest_label = format!("{git_base}:{released_rel}");
+    let out = run_git_diff(repo, &["cat-file", "blob", &oid])?;
+    if !out.status.success() {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: failed to read released manifest `{manifest_label}`: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Some(manifest_label),
+        ));
+    }
+    let text = String::from_utf8(out.stdout).map_err(|_| {
+        operational_error(
+            codes::PARSE_ERROR,
+            format!("diff --git-base: released manifest `{manifest_label}` is not valid UTF-8"),
+            Some(manifest_label.clone()),
+        )
+    })?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let mut seen = BTreeSet::new();
+    let mut target_is_released = false;
+    for (index, raw) in text.lines().enumerate() {
+        let line_no = index + 1;
+        let line = raw.trim_matches([' ', '\t', '\r', '\x0b', '\x0c']);
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((entry_name, _is_retired)) = parse_manifest_entry(line) else {
+            return Err(operational_error_at(
+                codes::PARSE_ERROR,
+                format!(
+                    "line {line_no}: released entry `{line}` is not a plain directory name \
+                     (expected `<name>` or `<name> retired` where `<name>` matches \
+                     `^[A-Za-z0-9][A-Za-z0-9._-]*$`)"
+                ),
+                manifest_label,
+                Some(line_position(line_no, raw)),
+            ));
+        };
+        if !seen.insert(entry_name.to_string()) {
+            return Err(operational_error_at(
+                codes::PARSE_ERROR,
+                format!("line {line_no}: duplicate released entry `{entry_name}`"),
+                manifest_label,
+                Some(line_position(line_no, raw)),
+            ));
+        }
+        let entry_rel = match parent_dir_git {
+            Some(parent) => format!("{parent}/{entry_name}"),
+            None => entry_name.to_string(),
+        };
+        let entry_label = format!("{git_base}:{entry_rel}");
+        validate_git_released_directory(
+            repo,
+            commit,
+            &entry_rel,
+            &entry_label,
+            entry_name,
+            line_no,
+        )?;
+        if entry_name == target_dir_name {
+            target_is_released = true;
+        }
+    }
+    Ok(target_is_released)
+}
+
+fn validate_git_released_directory(
+    repo: &Path,
+    commit: &str,
+    entry_rel: &str,
+    entry_label: &str,
+    entry_name: &str,
+    line_no: usize,
+) -> Result<()> {
+    let top = run_git_diff(repo, &["ls-tree", "-z", commit, "--", entry_rel])?;
+    if !top.status.success() {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!("line {line_no}: released directory `{entry_name}` does not exist"),
+            Some(entry_label.to_string()),
+        ));
+    }
+    let mut found_tree = false;
+    for raw in top.stdout.split(|&byte| byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(raw) else {
+            continue;
+        };
+        let Some((meta, path)) = text.split_once('\t') else {
+            continue;
+        };
+        if path != entry_rel {
+            continue;
+        }
+        let mut parts = meta.split(' ');
+        let mode = parts.next().unwrap_or_default();
+        let kind = parts.next().unwrap_or_default();
+        if mode == "120000" {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "line {line_no}: released directory `{entry_name}` is a symlink; witforge \
+                     refuses symlinked version directories"
+                ),
+                Some(entry_label.to_string()),
+            ));
+        }
+        if kind == "tree" {
+            found_tree = true;
+        }
+    }
+    if !found_tree {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!("line {line_no}: released directory `{entry_name}` does not exist"),
+            Some(entry_label.to_string()),
+        ));
+    }
+    let spec = format!("{commit}:{entry_rel}");
+    let blobs = collect_git_tree_blobs(repo, &spec, entry_label, false)?;
+    let has_lock = blobs.iter().any(|(rel, _)| rel == Path::new("wire.lock"));
+    if !has_lock {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!("line {line_no}: released directory `{entry_name}` has no wire.lock"),
+            Some(format!("{entry_label}/wire.lock")),
+        ));
+    }
+    Ok(())
+}
+
 fn inspect_git_sibling_released(
     repo: &Path,
     commit: &str,
@@ -2870,4 +3062,102 @@ fn rewrite_git_display_path(
         (false, true) => format!("{git_base}:{rel_git}"),
         (false, false) => format!("{git_base}:{rel_git}/{tail_git}"),
     })
+}
+
+fn redact_git_base_string(
+    text: &str,
+    materialized_dir: &Path,
+    temp_root: &Path,
+    git_base: &str,
+    rel_git: &str,
+) -> String {
+    let display_base = if rel_git.is_empty() {
+        format!("{git_base}:.")
+    } else {
+        format!("{git_base}:{rel_git}")
+    };
+    let mat_str = materialized_dir.display().to_string();
+    let mat_slash = format!("{mat_str}/");
+    let mat_back = format!("{mat_str}\\");
+    let prefix_with_sep = if rel_git.is_empty() {
+        format!("{git_base}:")
+    } else {
+        format!("{git_base}:{rel_git}/")
+    };
+    let mut out = text
+        .replace(&mat_slash, &prefix_with_sep)
+        .replace(&mat_back, &prefix_with_sep)
+        .replace(&mat_str, &display_base);
+    let temp_str = temp_root.display().to_string();
+    if out.contains(&temp_str) {
+        let temp_slash = format!("{temp_str}/");
+        let temp_back = format!("{temp_str}\\");
+        out = out
+            .replace(&temp_slash, &format!("{git_base}:"))
+            .replace(&temp_back, &format!("{git_base}:"))
+            .replace(&temp_str, git_base);
+    }
+    out
+}
+
+fn redact_git_base_error(
+    err: &anyhow::Error,
+    materialized_dir: &Path,
+    temp_root: &Path,
+    git_base: &str,
+    rel_git: &str,
+) -> anyhow::Error {
+    let redact_str =
+        |s: &str| redact_git_base_string(s, materialized_dir, temp_root, git_base, rel_git);
+    let redact_path = |p: &str| {
+        rewrite_git_display_path(Path::new(p), materialized_dir, git_base, rel_git)
+            .unwrap_or_else(|| redact_str(p))
+    };
+    let redact_located = |item: &LocatedDiagnostic| {
+        let mut copy = item.clone();
+        copy.file = copy.file.as_deref().map(redact_path);
+        copy.diagnostic.message = redact_str(&copy.diagnostic.message);
+        copy.diagnostic.path = copy.diagnostic.path.as_deref().map(redact_path);
+        for rel in &mut copy.related {
+            rel.file = redact_path(&rel.file);
+            rel.message = redact_str(&rel.message);
+        }
+        copy
+    };
+    let redact_diag = |diag: &Diagnostic| {
+        let mut copy = diag.clone();
+        copy.message = redact_str(&copy.message);
+        copy.path = copy.path.as_deref().map(redact_path);
+        copy
+    };
+
+    let redacted_msg = redact_str(&format!("{err:#}"));
+    if is_contract_error(err) {
+        if let Some(located) = error_located_diagnostics(err) {
+            let items: Vec<LocatedDiagnostic> = located.iter().map(redact_located).collect();
+            return anyhow::Error::new(ContractError::with_located_diagnostics(
+                redacted_msg,
+                items,
+            ));
+        }
+        if let Some(diags) = error_diagnostics(err) {
+            let items: Vec<Diagnostic> = diags.iter().map(redact_diag).collect();
+            return anyhow::Error::new(ContractError::with_diagnostics(redacted_msg, items));
+        }
+        return anyhow::Error::new(ContractError::new(redacted_msg));
+    }
+    if err
+        .chain()
+        .any(<dyn std::error::Error>::is::<DiagnosticError>)
+    {
+        if let Some(located) = error_located_diagnostics(err) {
+            let items: Vec<LocatedDiagnostic> = located.iter().map(redact_located).collect();
+            return anyhow::Error::new(DiagnosticError::with_located(redacted_msg, items));
+        }
+        if let Some(diags) = error_diagnostics(err) {
+            let items: Vec<Diagnostic> = diags.iter().map(redact_diag).collect();
+            return anyhow::Error::new(DiagnosticError::new(redacted_msg, items));
+        }
+    }
+    anyhow::anyhow!(redacted_msg)
 }

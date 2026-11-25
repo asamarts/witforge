@@ -17,7 +17,8 @@
 //! witforge doc   [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
 //! witforge generate [--config PATH | --no-config] [--project NAME] [--check] [--diff]
-//!                   [--serde | --no-serde] [--no-std | --std] [--draft 7|2020-12] [--released PATH]
+//!                   [--serde | --no-serde] [--no-std | --std] [--eq-hash | --no-eq-hash]
+//!                   [--try-from | --no-try-from] [--draft 7|2020-12] [--released PATH]
 //! witforge init  [DIR] [--package NS:NAME] [--serde]
 //! witforge new-version [<wit-root>] [--major] [--from VERSION] [--released PATH]
 //!                      [--config PATH | --no-config] [--project NAME]
@@ -2074,6 +2075,18 @@ fn match_discovered_project_for_path<'a>(
     matched
 }
 
+fn config_dir_encloses_target(config_path: &Path, target: &Path) -> bool {
+    let Some(config_dir) = config_path.parent() else {
+        return false;
+    };
+    let (Ok(canon_dir), Ok(canon_target)) =
+        (fs::canonicalize(config_dir), fs::canonicalize(target))
+    else {
+        return false;
+    };
+    canon_target == canon_dir || canon_target.starts_with(&canon_dir)
+}
+
 fn resolve_diff_policy_views(
     options: &DiffOptions,
     target_for_discovery: &Path,
@@ -2101,19 +2114,22 @@ fn resolve_diff_policy_views(
     }
     if !options.config.no_config
         && let Some(found) = workflow::discover_config()
-        && let Ok((config, base)) = load_config_file(&found)
-        && let Some(project) =
-            match_discovered_project_for_path(&config, &base, target_for_discovery, false)
-        && let Some(views) = project
-            .policy
-            .as_ref()
-            .and_then(|policy| policy.diff_check.as_deref())
+        && config_dir_encloses_target(&found, target_for_discovery)
     {
-        return Ok(Some(parse_policy_diff_check(
-            views,
-            "policy.diff-check",
-            Some(found.display().to_string()),
-        )?));
+        let (config, base) = load_config_file(&found)?;
+        if let Some(project) =
+            match_discovered_project_for_path(&config, &base, target_for_discovery, false)
+            && let Some(views) = project
+                .policy
+                .as_ref()
+                .and_then(|policy| policy.diff_check.as_deref())
+        {
+            return Ok(Some(parse_policy_diff_check(
+                views,
+                "policy.diff-check",
+                Some(found.display().to_string()),
+            )?));
+        }
     }
     Ok(Some(CheckViews::DEFAULT))
 }
@@ -3096,6 +3112,7 @@ fn deps_command(options: &DepsOptions, reporter: &mut Reporter) -> Result<ExitCo
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn deps_sync_command(options: &DepsSyncOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     let (wit_root, configured_released) = if let Some(root) = &options.root {
         if options.config.config.is_some() || options.config.project.is_some() {
@@ -3151,14 +3168,29 @@ fn deps_sync_command(options: &DepsSyncOptions, reporter: &mut Reporter) -> Resu
             }
             return Ok(ExitCode::SUCCESS);
         }
+        let mut fix_cmd = String::from("witforge deps sync");
+        if let Some(root) = &options.root {
+            let _ = write!(fix_cmd, " {}", shell_quote(root));
+        }
+        if let Some(from) = &options.from {
+            let _ = write!(fix_cmd, " --from {}", shell_quote(Path::new(from)));
+        }
+        if let Some(released) = &options.released {
+            let _ = write!(fix_cmd, " --released {}", shell_quote(released));
+        }
+        if let Some(config) = &options.config.config {
+            let _ = write!(fix_cmd, " --config {}", shell_quote(config));
+        }
+        if let Some(project) = &options.config.project {
+            let _ = write!(fix_cmd, " --project {}", shell_quote(Path::new(project)));
+        }
         for entry in &report.changed {
             let deps_path = entry.target_dir.join("deps");
             let message = format!(
-                "`{}/deps` differs from `{}/deps`: {} (run `witforge deps sync {}`)",
+                "`{}/deps` differs from `{}/deps`: {} (run `{fix_cmd}`)",
                 entry.target_version,
                 entry.source_version,
                 entry.diffs.join(", "),
-                shell_quote(&wit_root)
             );
             if reporter.human() {
                 diagnostics::write_stderr_line(&format!("error: {message}"));
@@ -3282,14 +3314,16 @@ fn resolve_release_policy_forbid_unstable(
     }
     if !options.config.no_config
         && let Some(found) = workflow::discover_config()
-        && let Ok((config, base)) = load_config_file(&found)
-        && let Some(project) = match_discovered_project_for_path(&config, &base, wit_root, true)
+        && config_dir_encloses_target(&found, wit_root)
     {
-        return Ok(project
-            .policy
-            .as_ref()
-            .and_then(|policy| policy.forbid_unstable_in_release)
-            .unwrap_or(false));
+        let (config, base) = load_config_file(&found)?;
+        if let Some(project) = match_discovered_project_for_path(&config, &base, wit_root, true) {
+            return Ok(project
+                .policy
+                .as_ref()
+                .and_then(|policy| policy.forbid_unstable_in_release)
+                .unwrap_or(false));
+        }
     }
     Ok(false)
 }
@@ -3984,6 +4018,43 @@ mod reference_doc_tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    fn check_subcommand_docs(
+        doc: &str,
+        prefix: &str,
+        sub: &clap::Command,
+        global_longs: &BTreeSet<String>,
+    ) {
+        let name = sub.get_name();
+        if name == "help" {
+            return;
+        }
+        let full = format!("{prefix} {name}");
+        let heading = format!("### `{full}`");
+        let (_, after) = doc
+            .split_once(&heading)
+            .unwrap_or_else(|| panic!("docs/guide/reference.md missing section `{heading}`"));
+        let section = after
+            .split("\n### ")
+            .next()
+            .and_then(|s| s.split("\n## ").next())
+            .unwrap_or(after);
+        for arg in sub.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                if global_longs.contains(long) || long == "help" || long == "version" {
+                    continue;
+                }
+                let needle = format!("`--{long}");
+                assert!(
+                    section.contains(&needle),
+                    "docs/guide/reference.md section `{heading}` does not document `--{long}`"
+                );
+            }
+        }
+        for nested in sub.get_subcommands() {
+            check_subcommand_docs(doc, &full, nested, global_longs);
+        }
+    }
+
     #[test]
     fn reference_guide_documents_every_cli_command_option_and_config_key() {
         let doc_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/guide/reference.md");
@@ -4009,37 +4080,14 @@ mod reference_doc_tests {
             }
         }
 
-        // Every subcommand and every one of its non-global options must appear under its section.
+        // Every subcommand (including nested subcommands like `witforge deps sync`) and every one
+        // of its non-global options must appear under its section.
         let global_longs: BTreeSet<String> = root
             .get_arguments()
             .filter_map(|a| a.get_long().map(str::to_string))
             .collect();
         for sub in root.get_subcommands() {
-            let name = sub.get_name();
-            if name == "help" {
-                continue;
-            }
-            let heading = format!("### `witforge {name}`");
-            let (_, after) = doc
-                .split_once(&heading)
-                .unwrap_or_else(|| panic!("docs/guide/reference.md missing section `{heading}`"));
-            let section = after
-                .split("\n### ")
-                .next()
-                .and_then(|s| s.split("\n## ").next())
-                .unwrap_or(after);
-            for arg in sub.get_arguments() {
-                if let Some(long) = arg.get_long() {
-                    if global_longs.contains(long) || long == "help" || long == "version" {
-                        continue;
-                    }
-                    let needle = format!("`--{long}");
-                    assert!(
-                        section.contains(&needle),
-                        "docs/guide/reference.md section `{heading}` does not document `--{long}`"
-                    );
-                }
-            }
+            check_subcommand_docs(&doc, "witforge", sub, &global_longs);
         }
 
         // Every `witforge.toml` key supported by `ConfigFile` / `ProjectConfig` / emitter structs.
@@ -4052,6 +4100,8 @@ mod reference_doc_tests {
             "`project.<name>.rust.out`",
             "`project.<name>.rust.serde`",
             "`project.<name>.rust.no-std`",
+            "`project.<name>.rust.eq-hash`",
+            "`project.<name>.rust.try-from`",
             "`[project.<name>.proto]`",
             "`project.<name>.proto.out`",
             "`[project.<name>.schema]`",
@@ -4062,6 +4112,11 @@ mod reference_doc_tests {
             "`project.<name>.glue.plain-root`",
             "`project.<name>.glue.proto-root`",
             "`project.<name>.glue.no-std`",
+            "`[project.<name>.doc]`",
+            "`project.<name>.doc.out`",
+            "`[project.<name>.policy]`",
+            "`project.<name>.policy.diff-check`",
+            "`project.<name>.policy.forbid-unstable-in-release`",
         ] {
             assert!(
                 doc.contains(key),

@@ -865,14 +865,39 @@ fn emit_try_from_impl(
 ) -> Result<()> {
     writeln!(out)?;
     let single = format!("        impl ::core::convert::TryFrom<{from_type}> for {target_type} {{");
-    let trait_line = format!("        impl ::core::convert::TryFrom<{from_type}>");
+    let trait_on_impl = format!("        impl ::core::convert::TryFrom<{from_type}>");
+    let indented_trait = format!("            ::core::convert::TryFrom<{from_type}>");
+    let inner_from = format!("                {from_type},");
     let for_line = format!("            for {target_type}");
-    if single.len() <= 100 || trait_line.len() > 100 || for_line.len() > 100 {
+    let close_for_line = format!("            > for {target_type}");
+    if single.len() <= rustfmt::MAX_WIDTH + 8 {
         writeln!(out, "{single}")?;
-    } else {
-        writeln!(out, "{trait_line}")?;
+    } else if trait_on_impl.len() <= rustfmt::MAX_WIDTH && for_line.len() <= rustfmt::MAX_WIDTH {
+        writeln!(out, "{trait_on_impl}")?;
         writeln!(out, "{for_line}")?;
         writeln!(out, "        {{")?;
+    } else if indented_trait.len() <= rustfmt::MAX_WIDTH && for_line.len() <= rustfmt::MAX_WIDTH {
+        writeln!(out, "        impl")?;
+        writeln!(out, "{indented_trait}")?;
+        writeln!(out, "{for_line}")?;
+        writeln!(out, "        {{")?;
+    } else if inner_from.len() <= rustfmt::MAX_WIDTH
+        && close_for_line.len() + 2 <= rustfmt::MAX_WIDTH
+    {
+        writeln!(out, "        impl")?;
+        writeln!(out, "            ::core::convert::TryFrom<")?;
+        writeln!(out, "{inner_from}")?;
+        writeln!(out, "{close_for_line}")?;
+        writeln!(out, "        {{")?;
+    } else if inner_from.len() <= rustfmt::MAX_WIDTH && for_line.len() <= rustfmt::MAX_WIDTH {
+        writeln!(out, "        impl")?;
+        writeln!(out, "            ::core::convert::TryFrom<")?;
+        writeln!(out, "{inner_from}")?;
+        writeln!(out, "            >")?;
+        writeln!(out, "{for_line}")?;
+        writeln!(out, "        {{")?;
+    } else {
+        writeln!(out, "{single}")?;
     }
     writeln!(out, "            type Error = {ERROR};")?;
     writeln!(out)?;
@@ -884,7 +909,15 @@ fn emit_try_from_impl(
         " {",
     );
     writeln!(out, "{fn_sig}")?;
-    writeln!(out, "                {function}({arg_expr})")?;
+    let call_single = format!("                {function}({arg_expr})");
+    let call_head = format!("                {function}(");
+    if call_single.len() <= rustfmt::MAX_WIDTH || call_head.len() > rustfmt::MAX_WIDTH {
+        writeln!(out, "{call_single}")?;
+    } else {
+        writeln!(out, "{call_head}")?;
+        writeln!(out, "                    {arg_expr},")?;
+        writeln!(out, "                )")?;
+    }
     writeln!(out, "            }}")?;
     writeln!(out, "        }}")?;
     Ok(())
@@ -1159,8 +1192,8 @@ fn record_body(
             Direction::Forward => convert_bail!(
                 format!("{type_path}.{}", missing.name),
                 "conversion {from_ver} -> {to_ver}: {type_path}.{} is required in {to_ver} but \
-                 absent from {from_ver}; make it `option<T>` or `list<T>` so an older value can \
-                 be defaulted, or add a new member instead of changing this one",
+                 absent from {from_ver}; make it `option<T>`, `list<T>`, or `map<K, V>` so an \
+                 older value can be defaulted, or add a new member instead of changing this one",
                 missing.name,
             ),
             Direction::Reverse => {

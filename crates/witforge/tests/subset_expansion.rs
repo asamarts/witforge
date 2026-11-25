@@ -1066,3 +1066,153 @@ fn subset_expansion_no_std_with_serde_and_btree_map_glue_compiles_and_roundtrips
 
     stage.finish();
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn eighth_wave_audit_serde_option_large_array_defaults_and_convert_map_hint() {
+    let stage = ScratchDir::new("serde-opt-large-arr");
+    let wit_root = stage.path().join("wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:evol@0.1.0;\n\
+         interface types {\n\
+           record item { id: u32 }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:evol@0.2.0;\n\
+         interface types {\n\
+           type opt-buf = option<list<u8, 64>>;\n\
+           record item {\n\
+             id: u32,\n\
+             direct-opt: option<list<u8, 64>>,\n\
+             aliased-opt: opt-buf,\n\
+             required-buf: list<u8, 64>,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    ensure_lock(&v01);
+    let mut v02_lock =
+        WireLock::parse(&fs::read_to_string(v01.join("wire.lock")).unwrap()).unwrap();
+    let v02_model = model::build(&load(&v02).unwrap()).unwrap();
+    v02_lock.reconcile(&v02_model.members().unwrap()).unwrap();
+    v02_lock.write_atomic(&v02.join("wire.lock")).unwrap();
+
+    // 1. Missing required field in forward conversion mentions `map<K, V>` in its error hint.
+    let err = rust::plan_with_options(&wit_root, None, &rust::RustOptions::new().with_serde(true))
+        .unwrap_err();
+    let err_msg = format!("{err:#}");
+    assert!(
+        err_msg.contains("make it `option<T>`, `list<T>`, or `map<K, V>`"),
+        "expected map<K, V> in convert error hint: {err_msg}"
+    );
+
+    // 2. Remove `required-buf` and verify `#[serde(default, with = ...)]` lets v0.1 JSON missing
+    // `direct_opt` and `aliased_opt` deserialize as `None`!
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:evol@0.2.0;\n\
+         interface types {\n\
+           type opt-buf = option<list<u8, 64>>;\n\
+           record item {\n\
+             id: u32,\n\
+             direct-opt: option<list<u8, 64>>,\n\
+             aliased-opt: opt-buf,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    let mut v02_lock_b =
+        WireLock::parse(&fs::read_to_string(v01.join("wire.lock")).unwrap()).unwrap();
+    let v02_model_b = model::build(&load(&v02).unwrap()).unwrap();
+    v02_lock_b
+        .reconcile(&v02_model_b.members().unwrap())
+        .unwrap();
+    v02_lock_b.write_atomic(&v02.join("wire.lock")).unwrap();
+
+    let rust_files =
+        rust::plan_with_options(&wit_root, None, &rust::RustOptions::new().with_serde(true))
+            .unwrap();
+    let v02_rs = rust_files.files().get("v0_2.rs").unwrap();
+    assert_eq!(
+        v02_rs.matches("#[serde(default, with = ").count(),
+        2,
+        "both direct and aliased Option<[u8; 64]> fields must emit #[serde(default, with = ...)]:\n{v02_rs}"
+    );
+
+    let krate = stage.path().join("evol-crate");
+    fs::create_dir_all(krate.join("src")).unwrap();
+    rust_files.write(&krate.join("src/plain")).unwrap();
+    for edition in ["2021", "2024"] {
+        let fmt = Command::new("rustfmt")
+            .args(["--edition", edition, "--check"])
+            .arg(krate.join("src/plain/v0_2.rs"))
+            .output()
+            .unwrap();
+        assert!(fmt.status.success(), "rustfmt {edition} failed: {fmt:?}");
+    }
+    fs::copy(
+        workspace_root().join("Cargo.lock"),
+        krate.join("Cargo.lock"),
+    )
+    .unwrap();
+    fs::write(
+        krate.join("Cargo.toml"),
+        "[package]\n\
+         name = \"witforge-opt-large-arr-default\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2024\"\n\
+         \n\
+         [dependencies]\n\
+         serde = { version = \"1\", features = [\"derive\"] }\n\
+         serde_json = \"1\"\n\
+         \n\
+         [workspace]\n",
+    )
+    .unwrap();
+    fs::write(
+        krate.join("src/lib.rs"),
+        "#![deny(warnings, missing_docs)]\n\
+         //! Verify missing-field JSON evolution for Option<[u8; 64]>.\n\
+         /// Generated plain bindings.\n\
+         #[path = \"plain/mod.rs\"]\n\
+         pub mod plain;\n\
+         \n\
+         #[cfg(test)]\n\
+         mod tests {\n\
+             use super::plain;\n\
+             #[test]\n\
+             fn missing_option_large_array_fields_default_to_none() {\n\
+                 let v1_json = serde_json::to_string(&plain::v0_1::types::Item { id: 7 }).unwrap();\n\
+                 let decoded: plain::v0_2::types::Item = serde_json::from_str(&v1_json).unwrap();\n\
+                 assert_eq!(decoded.id, 7);\n\
+                 assert_eq!(decoded.direct_opt, None);\n\
+                 assert_eq!(decoded.aliased_opt, None);\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+    let target_dir = support::shared_target_dir();
+    let test = Command::new("cargo")
+        .current_dir(&krate)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .args(["test", "--lib", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        test.status.success(),
+        "serde Option<[u8; 64]> evolution test failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
+    );
+
+    stage.finish();
+}

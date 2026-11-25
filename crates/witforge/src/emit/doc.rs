@@ -187,7 +187,22 @@ fn render_index(
         for pair in versions.windows(2) {
             let old = &pair[0];
             let new = &pair[1];
-            let full = diff::compare_full(&old.directory, &new.directory)?;
+            let old_released = old
+                .directory
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| manifest.contains(name));
+            let new_released = new
+                .directory
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| manifest.contains(name));
+            let full = diff::compare_full_with_released_flags(
+                &old.directory,
+                old_released,
+                &new.directory,
+                new_released,
+            )?;
             let report = &full.analysis.report;
             writeln!(out)?;
             writeln!(
@@ -201,13 +216,16 @@ fn render_index(
             } else {
                 writeln!(
                     out,
-                    "Summary: {} change(s), {} breaking (wire: {}, source: {}, api: {}, decode: {}).",
+                    "Summary: {} change(s), {} breaking (wire: {}, source: {}, api: {}); decode: \
+                     {} (new<-old: {}, old<-new: {}).",
                     report.summary.changes,
                     report.summary.breaking,
                     report.summary.wire_breaking,
                     report.summary.source_breaking,
                     report.summary.api_breaking,
-                    full.decode_summary.breaking
+                    full.decode_summary.breaking,
+                    full.decode_summary.new_reads_old_breaking,
+                    full.decode_summary.old_reads_new_breaking,
                 )?;
                 writeln!(out)?;
                 writeln!(
@@ -619,7 +637,24 @@ fn inline_doc_cell(docs: &str) -> String {
 }
 
 fn escape_table_cell(text: &str) -> String {
-    text.replace('|', "\\|")
+    let mut out = String::with_capacity(text.len());
+    let mut backslashes = 0usize;
+    for ch in text.chars() {
+        if ch == '\\' {
+            backslashes += 1;
+            out.push(ch);
+        } else if ch == '|' {
+            if backslashes & 1 == 0 {
+                out.push('\\');
+            }
+            backslashes = 0;
+            out.push('|');
+        } else {
+            backslashes = 0;
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn change_summary(change: &diff::Change) -> (&'static str, String) {

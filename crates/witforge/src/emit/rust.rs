@@ -1,6 +1,6 @@
 //! Deterministic Rust source generation from the owned model.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -513,6 +513,7 @@ fn emit_interface(
         )?;
     }
     let mut first = true;
+    let mut float_free_cache = HashMap::new();
     for def in &interface.types {
         if !first {
             writeln!(out)?;
@@ -528,6 +529,7 @@ fn emit_interface(
             foreign_resolver,
             serde_registry,
             serde_mod_prefix,
+            &mut float_free_cache,
         )?;
     }
     if let Some(trait_name) = trait_name {
@@ -773,51 +775,59 @@ fn is_float_free_def(
     model: &Model,
     context: Option<&crate::model::Dependency>,
     def: &TypeDef,
-    depth: usize,
+    cache: &mut HashMap<*const TypeDef, bool>,
+    visiting: &mut HashSet<*const TypeDef>,
 ) -> bool {
-    if depth > 64 {
+    let key = std::ptr::from_ref(def);
+    if let Some(&cached) = cache.get(&key) {
+        return cached;
+    }
+    if !visiting.insert(key) {
         return false;
     }
-    match &def.kind {
+    let result = match &def.kind {
         TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => true,
         TypeDefKind::Record(fields) => fields
             .iter()
-            .all(|field| is_float_free_expr(model, context, &field.ty, depth + 1)),
+            .all(|field| is_float_free_expr(model, context, &field.ty, cache, visiting)),
         TypeDefKind::Variant(cases) => cases.iter().all(|case| {
             case.payload
                 .as_ref()
-                .is_none_or(|payload| is_float_free_expr(model, context, payload, depth + 1))
+                .is_none_or(|payload| is_float_free_expr(model, context, payload, cache, visiting))
         }),
         TypeDefKind::Alias(target)
         | TypeDefKind::List(target)
         | TypeDefKind::FixedLengthList(target, _)
-        | TypeDefKind::Option(target) => is_float_free_expr(model, context, target, depth + 1),
-        TypeDefKind::Map(key, value) => {
-            is_float_free_expr(model, context, key, depth + 1)
-                && is_float_free_expr(model, context, value, depth + 1)
+        | TypeDefKind::Option(target) => {
+            is_float_free_expr(model, context, target, cache, visiting)
+        }
+        TypeDefKind::Map(key_ty, value_ty) => {
+            is_float_free_expr(model, context, key_ty, cache, visiting)
+                && is_float_free_expr(model, context, value_ty, cache, visiting)
         }
         TypeDefKind::Result(result) => {
             result
                 .ok
                 .as_ref()
-                .is_none_or(|ok| is_float_free_expr(model, context, ok, depth + 1))
+                .is_none_or(|ok| is_float_free_expr(model, context, ok, cache, visiting))
                 && result
                     .err
                     .as_ref()
-                    .is_none_or(|err| is_float_free_expr(model, context, err, depth + 1))
+                    .is_none_or(|err| is_float_free_expr(model, context, err, cache, visiting))
         }
-    }
+    };
+    visiting.remove(&key);
+    cache.insert(key, result);
+    result
 }
 
 fn is_float_free_expr(
     model: &Model,
     context: Option<&crate::model::Dependency>,
     expr: &TypeExpr,
-    depth: usize,
+    cache: &mut HashMap<*const TypeDef, bool>,
+    visiting: &mut HashSet<*const TypeDef>,
 ) -> bool {
-    if depth > 64 {
-        return false;
-    }
     match expr {
         TypeExpr::F32 | TypeExpr::F64 => false,
         TypeExpr::Bool
@@ -832,28 +842,55 @@ fn is_float_free_expr(
         | TypeExpr::Char
         | TypeExpr::String => true,
         TypeExpr::List(elem) | TypeExpr::FixedLengthList(elem, _) | TypeExpr::Option(elem) => {
-            is_float_free_expr(model, context, elem, depth + 1)
+            is_float_free_expr(model, context, elem, cache, visiting)
         }
         TypeExpr::Map(key, value) => {
-            is_float_free_expr(model, context, key, depth + 1)
-                && is_float_free_expr(model, context, value, depth + 1)
+            is_float_free_expr(model, context, key, cache, visiting)
+                && is_float_free_expr(model, context, value, cache, visiting)
         }
         TypeExpr::Result(result) => {
             result
                 .ok
                 .as_ref()
-                .is_none_or(|ok| is_float_free_expr(model, context, ok, depth + 1))
+                .is_none_or(|ok| is_float_free_expr(model, context, ok, cache, visiting))
                 && result
                     .err
                     .as_ref()
-                    .is_none_or(|err| is_float_free_expr(model, context, err, depth + 1))
+                    .is_none_or(|err| is_float_free_expr(model, context, err, cache, visiting))
         }
         TypeExpr::Named(name) => {
             let Some((resolved_ctx, def)) = model.type_def_in(context, name) else {
                 return false;
             };
-            is_float_free_def(model, resolved_ctx, def, depth + 1)
+            is_float_free_def(model, resolved_ctx, def, cache, visiting)
         }
+    }
+}
+
+fn resolves_to_option(
+    model: &Model,
+    context: Option<&crate::model::Dependency>,
+    expr: &TypeExpr,
+    depth: usize,
+) -> bool {
+    if depth > crate::model::MAX_ALIAS_CHAIN {
+        return false;
+    }
+    match expr {
+        TypeExpr::Option(_) => true,
+        TypeExpr::Named(name) => {
+            let Some((resolved_ctx, def)) = model.type_def_in(context, name) else {
+                return false;
+            };
+            match &def.kind {
+                TypeDefKind::Option(_) => true,
+                TypeDefKind::Alias(target) => {
+                    resolves_to_option(model, resolved_ctx, target, depth + 1)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
     }
 }
 
@@ -888,10 +925,12 @@ fn emit_record(
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
     serde_registry: &mut SerdeArrayRegistry,
     serde_mod_prefix: &str,
+    float_free_cache: &mut HashMap<*const TypeDef, bool>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     let field_prefix = " ".repeat(indent + 4);
-    let eq_hash = options.eq_hash && is_float_free_def(model, None, def, 0);
+    let eq_hash = options.eq_hash
+        && is_float_free_def(model, None, def, float_free_cache, &mut HashSet::new());
     write_derives(out, indent, options.serde, eq_hash)?;
     if fields.is_empty() {
         writeln!(out, "{prefix}pub struct {name} {{}}")?;
@@ -923,13 +962,14 @@ fn emit_record(
         } else {
             None
         };
-        rendered_fields.push((field, field_name, ty, serde_with));
+        let is_option = serde_with.is_some() && resolves_to_option(model, None, &field.ty, 0);
+        rendered_fields.push((field, field_name, ty, serde_with, is_option));
     }
     if complex_type {
         writeln!(out, "{prefix}#[allow(clippy::type_complexity)]")?;
     }
     writeln!(out, "{prefix}pub struct {name} {{")?;
-    for (field, field_name, ty, serde_with) in rendered_fields {
+    for (field, field_name, ty, serde_with, is_option) in rendered_fields {
         rustfmt::write_docs_or(
             out,
             indent + 4,
@@ -937,7 +977,14 @@ fn emit_record(
             &format!("Field `{}/{}.{}`.", interface.name, def.name, field.name),
         )?;
         if let Some(with_path) = serde_with {
-            writeln!(out, "{field_prefix}#[serde(with = \"{with_path}\")]")?;
+            if is_option {
+                writeln!(
+                    out,
+                    "{field_prefix}#[serde(default, with = \"{with_path}\")]"
+                )?;
+            } else {
+                writeln!(out, "{field_prefix}#[serde(with = \"{with_path}\")]")?;
+            }
         }
         writeln!(
             out,
@@ -960,6 +1007,7 @@ fn emit_type_def(
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
     serde_registry: &mut SerdeArrayRegistry,
     serde_mod_prefix: &str,
+    float_free_cache: &mut HashMap<*const TypeDef, bool>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     let member_prefix = " ".repeat(indent + 4);
@@ -993,10 +1041,12 @@ fn emit_type_def(
                 foreign_resolver,
                 serde_registry,
                 serde_mod_prefix,
+                float_free_cache,
             )?;
         }
         TypeDefKind::Variant(cases) => {
-            let eq_hash = options.eq_hash && is_float_free_def(model, None, def, 0);
+            let eq_hash = options.eq_hash
+                && is_float_free_def(model, None, def, float_free_cache, &mut HashSet::new());
             write_derives(out, indent, options.serde, eq_hash)?;
             if has_large_variant_disparity(model, cases) {
                 writeln!(out, "{prefix}#[allow(clippy::large_enum_variant)]")?;

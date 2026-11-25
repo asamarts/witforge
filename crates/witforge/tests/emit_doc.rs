@@ -247,3 +247,71 @@ fn doc_emitter_renders_versions_stability_wire_numbers_reserved_diffs_and_enforc
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn eighth_wave_audit_doc_custom_released_decode_summary_and_escaped_pipe() {
+    let root = scratch_dir("audit-doc");
+    let wit = root.join("wit");
+    fs::create_dir_all(wit.join("v0.1")).unwrap();
+    fs::create_dir_all(wit.join("v0.2")).unwrap();
+
+    // Decode-only change (new interface with function) + doc comment with `|`, `\|`, and `\\|`.
+    fs::write(
+        wit.join("v0.1/contract.wit"),
+        "package example:docaudit@0.1.0;\n\
+         interface api {\n\
+           record item {\n\
+             /// Pipe a | b, pre-escaped c \\| d, literal backslash before pipe e \\\\| f.\n\
+             id: u64,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        wit.join("v0.2/contract.wit"),
+        "package example:docaudit@0.2.0;\n\
+         interface api {\n\
+           record item {\n\
+             /// Pipe a | b, pre-escaped c \\| d, literal backslash before pipe e \\\\| f.\n\
+             id: u64,\n\
+           }\n\
+         }\n\
+         interface extra {\n\
+           ping: func();\n\
+         }\n",
+    )
+    .unwrap();
+    lock_ver(&wit.join("v0.1"), None);
+    fs::copy(wit.join("v0.1/wire.lock"), wit.join("v0.2/wire.lock")).unwrap();
+    lock_ver(&wit.join("v0.2"), Some(&wit.join("v0.1/wire.lock")));
+
+    // Explicit `--released` manifest at custom filename inside `wit/` while default `wit/released`
+    // has invalid syntax — `plan_with_released` MUST use the explicit manifest (including during
+    // adjacent version diffing) instead of failing on default `wit/released`!
+    fs::write(wit.join("released"), "bad/entry/syntax\n").unwrap();
+    let custom_released = wit.join("custom-released");
+    fs::write(&custom_released, "v0.1\n").unwrap();
+
+    let planned = doc::plan_with_released(&wit, Some(&custom_released)).unwrap();
+    let index = planned.files().get("index.md").unwrap();
+    assert!(
+        index.contains("| [0.1.0](v0_1.md) | `v0.1` | released |"),
+        "{index}"
+    );
+    assert!(
+        index.contains(
+            "Summary: 1 change(s), 0 breaking (wire: 0, source: 0, api: 0); decode: 1 (new<-old: 0, old<-new: 1)."
+        ),
+        "decode count must be separated from breaking parens:\n{index}"
+    );
+
+    let v01_md = planned.files().get("v0_1.md").unwrap();
+    assert!(
+        v01_md.contains(
+            "Pipe a \\| b, pre-escaped c \\| d, literal backslash before pipe e \\\\\\| f."
+        ),
+        "already-escaped \\| must not become \\\\|:\n{v01_md}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

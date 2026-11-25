@@ -72,6 +72,10 @@ Generate or check plain Rust types, interface traits, `worlds.rs`, `witforge_dep
 | `--no-serde` | Disable Serde derives, overriding `witforge.toml` (conflicts with `--serde`). |
 | `--no-std` | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`), overriding `witforge.toml` (conflicts with `--std`). |
 | `--std` | Emit default `std` paths, overriding `no-std = true` in `witforge.toml` (conflicts with `--no-std`). |
+| `--eq-hash` | Derive `Eq` and `Hash` on generated float-free records, variants, enums, and flags, overriding `witforge.toml` (conflicts with `--no-eq-hash`). |
+| `--no-eq-hash` | Disable `Eq`/`Hash` derives, overriding `eq-hash = true` in `witforge.toml` (conflicts with `--eq-hash`). |
+| `--try-from` | Emit `TryFrom` impls in `convert.rs` for converted nominal types, overriding `witforge.toml` (conflicts with `--no-try-from`). |
+| `--no-try-from` | Disable `TryFrom` impls in `convert.rs`, overriding `try-from = true` in `witforge.toml` (conflicts with `--try-from`). |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
@@ -128,6 +132,22 @@ Generate or check Rust/prost conversion glue (`v<major>.rs`, `mod.rs`, `witforge
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Project name in `witforge.toml`. |
 
+### `witforge doc`
+
+Generate or check deterministic Markdown contract reference pages (`index.md` and one
+`v<major>_<minor>.md` per live version).
+
+| Option / Argument | Description |
+|---|---|
+| `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
+| `--out <DIR>` | Output directory for generated Markdown reference files. |
+| `--check` | Verify existing files match without writing; exits `1` on drift. |
+| `--diff` | Print a unified diff of output changes without changing the exit status. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Project name in `witforge.toml`. |
+
 ### `witforge generate`
 
 Run every generator configured in `witforge.toml` across all projects or `--project`.
@@ -140,6 +160,10 @@ Run every generator configured in `witforge.toml` across all projects or `--proj
 | `--no-serde` | Disable Serde derives across configured Rust outputs (conflicts with `--serde`). |
 | `--no-std` | Emit `#![no_std]` + `alloc` compatible paths across configured Rust and glue outputs (conflicts with `--std`). |
 | `--std` | Emit default `std` paths across configured Rust and glue outputs, overriding config (conflicts with `--no-std`). |
+| `--eq-hash` | Derive `Eq` and `Hash` on float-free generated Rust types, overriding config (conflicts with `--no-eq-hash`). |
+| `--no-eq-hash` | Disable `Eq`/`Hash` derives on generated Rust types, overriding config (conflicts with `--eq-hash`). |
+| `--try-from` | Emit `TryFrom` impls in `convert.rs` for converted nominal types, overriding config (conflicts with `--no-try-from`). |
+| `--no-try-from` | Disable `TryFrom` impls in `convert.rs`, overriding config (conflicts with `--try-from`). |
 | `--draft <DRAFT>` | Override the JSON Schema dialect for configured schema outputs (`7` or `2020-12`). |
 | `--released <PATH>` | Override the released-version manifest path for the run. |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
@@ -172,6 +196,28 @@ explicit `--from` version.
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Select a single project from `witforge.toml`. |
 
+### `witforge deps`
+
+Manage vendored `deps/` trees across unreleased version directories. Subcommands:
+
+- `witforge deps sync` — synchronize `deps/` trees within each major without modifying released or retired directories.
+
+### `witforge deps sync`
+
+Synchronize vendored `deps/` trees from the canonical source version of each major into unreleased
+version directories of the same major, refusing symlinks and never modifying released or retired
+directories.
+
+| Option / Argument | Description |
+|---|---|
+| `[WIT_ROOT]` | WIT root containing version directories; omit to use the configured project root. |
+| `--from <VERSION>` | Canonical source version directory (for example `v0.1`); defaults to the highest released (or lowest live) version per major. |
+| `--check` | Report `deps/` drift without writing; exits `1` (`WF1033`) if any unreleased version differs. |
+| `--released <PATH>` | Path to the released-version manifest (defaults to `<WIT_ROOT>/released` or `project.<name>.released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Select a single project from `witforge.toml`. |
+
 ### `witforge release`
 
 Validate a version directory and append it to the `released` manifest.
@@ -180,6 +226,8 @@ Validate a version directory and append it to the `released` manifest.
 |---|---|
 | `<WIT_DIR>` | WIT version directory to validate and record as released. |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_DIR>/../released`). |
+| `--forbid-unstable` | Refuse releasing a version containing any `@unstable` declaration, overriding config (conflicts with `--allow-unstable`). |
+| `--allow-unstable` | Allow releasing a version containing `@unstable` declarations, overriding `policy.forbid-unstable-in-release = true` (conflicts with `--forbid-unstable`). |
 | `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Select a single project from `witforge.toml`. |
@@ -199,15 +247,20 @@ oldest-prefix retirement order and requiring at least one remaining live version
 
 ### `witforge diff`
 
-Compare two version directories or WIT roots and classify wire, source, API, and protobuf binary
-decode compatibility.
+Compare two version directories or WIT roots (or compare a working-tree target against its Git
+revision via `--git-base`) and classify wire, source, API, and protobuf binary decode
+compatibility.
 
 | Option / Argument | Description |
 |---|---|
-| `<OLD>` | Older version directory or WIT root. |
-| `<NEW>` | Newer version directory or WIT root. |
+| `[OLD]` | Older version directory or WIT root (or target directory when `--git-base` is given; omit with `--git-base` to use the configured project root). |
+| `[NEW]` | Newer version directory or WIT root (omit when `--git-base` is given). |
+| `--git-base <REV>` | Compare the target version directory or WIT root against its committed Git tree at `<REV>`. |
 | `--json` | Emit the full diff report as JSON on stdout (takes precedence over `--format`). |
-| `--check[=VIEWS]` | Exit `1` when any breaking change hits the selected views: comma-separated subset of `wire`, `source`, `api`, `decode` (bare `--check` defaults to `wire,source,api`, excluding `decode`). |
+| `--check[=VIEWS]` | Exit `1` when any breaking change hits the selected views: comma-separated subset of `wire`, `source`, `api`, `decode` (bare `--check` defaults to `[project.<name>.policy].diff-check` when configured, otherwise `wire,source,api` without `decode`). |
+| `--config <PATH>` | Explicit `witforge.toml` path supplying `[project.<name>.policy].diff-check` and `root` for `--git-base` (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Select a single project from `witforge.toml`. |
 
 ### `witforge inspect`
 
@@ -270,6 +323,8 @@ expansion.
 | `project.<name>.rust.out` | yes (if section set) | path | Output directory for generated Rust files. |
 | `project.<name>.rust.serde` | no | boolean | Enable `serde::Serialize`/`Deserialize` derives (default `false`). |
 | `project.<name>.rust.no-std` | no | boolean | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`) (default `false`). |
+| `project.<name>.rust.eq-hash` | no | boolean | Derive `Eq` and `Hash` on generated float-free records, variants, enums, and flags (default `false`). |
+| `project.<name>.rust.try-from` | no | boolean | Emit `TryFrom` impls in `convert.rs` for converted nominal types (default `false`). |
 | `[project.<name>.proto]` | no | table | Protobuf generator configuration. |
 | `project.<name>.proto.out` | yes (if section set) | path | Output directory for generated `.proto` files. |
 | `[project.<name>.schema]` | no | table | JSON Schema generator configuration. |
@@ -280,3 +335,8 @@ expansion.
 | `project.<name>.glue.plain-root` | yes (if section set) | string | Absolute Rust module path to generated plain modules (`crate::...` or `::ext::...`). |
 | `project.<name>.glue.proto-root` | yes (if section set) | string | Absolute Rust module path to prost modules (`crate::...` or `::ext::...`). |
 | `project.<name>.glue.no-std` | no | boolean | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`) (default `false`). |
+| `[project.<name>.doc]` | no | table | Markdown contract reference documentation generator configuration. |
+| `project.<name>.doc.out` | yes (if section set) | path | Output directory for generated Markdown reference files. |
+| `[project.<name>.policy]` | no | table | Project governance policy table. |
+| `project.<name>.policy.diff-check` | no | array of strings | Default compatibility views for bare `witforge diff --check` (non-empty subset of `"wire"`, `"source"`, `"api"`, `"decode"`). |
+| `project.<name>.policy.forbid-unstable-in-release` | no | boolean | Refuse `witforge release` when any `@unstable` declaration is present (default `false`). |

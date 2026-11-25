@@ -518,3 +518,110 @@ fn deps_sync_updates_only_unreleased_versions_per_major_checks_drift_and_refuses
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn eighth_wave_audit_deps_sync_empty_subdir_preflight_and_fix_hint() {
+    let base =
+        std::env::temp_dir().join(format!("witforge-deps-sync-audit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit = base.join("wit");
+
+    for (ver, field) in [("v0.1", "u32"), ("v0.2", "u32"), ("v0.3", "u32")] {
+        let dir = wit.join(ver);
+        let dep_dir = dir.join("deps/shared");
+        fs::create_dir_all(&dep_dir).unwrap();
+        fs::write(
+            dir.join("contract.wit"),
+            format!(
+                "package example:syncaudit@{}.0;\n\
+                 interface api {{\n\
+                   use example:shared/types@0.1.0.{{id}};\n\
+                   record r {{ a: id }}\n\
+                 }}\n",
+                &ver[1..]
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dep_dir.join("types.wit"),
+            format!("package example:shared@0.1.0;\ninterface types {{ type id = {field}; }}\n"),
+        )
+        .unwrap();
+    }
+    let locked = witforge()
+        .args(["lock"])
+        .arg(wit.join("v0.1"))
+        .arg("--first")
+        .output()
+        .unwrap();
+    assert!(locked.status.success(), "{locked:?}");
+    let custom_rel = wit.join("custom-released");
+    fs::write(&custom_rel, "v0.1\n").unwrap();
+
+    // 1. Stale empty subdirectory `v0.2/deps/old-pkg/` is detected by `--check` AND cleaned up by
+    // `deps sync`, and `--check` fix-it hint preserves `--from` and `--released`!
+    fs::create_dir_all(wit.join("v0.2/deps/old-pkg")).unwrap();
+    let check_empty = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .args(["--from", "v0.1", "--released"])
+        .arg(&custom_rel)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert_eq!(check_empty.status.code(), Some(1), "{check_empty:?}");
+    let stderr = String::from_utf8_lossy(&check_empty.stderr);
+    assert!(
+        stderr.contains("extra deps/old-pkg/"),
+        "expected empty subdir drift in stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--from v0.1") && stderr.contains("--released"),
+        "expected --from and --released preserved in fix-it hint:\n{stderr}"
+    );
+
+    let sync_clean = witforge()
+        .args(["deps", "sync"])
+        .arg(&wit)
+        .args(["--from", "v0.1", "--released"])
+        .arg(&custom_rel)
+        .output()
+        .unwrap();
+    assert!(sync_clean.status.success(), "{sync_clean:?}");
+    assert!(
+        !wit.join("v0.2/deps/old-pkg").exists(),
+        "stale empty subdir must be removed on sync"
+    );
+
+    // 2. Two-phase preflight: drift in v0.2 + symlink in v0.3 MUST fail with WF9004 without
+    // modifying v0.2!
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let drifted = "package example:shared@0.1.0;\ninterface types { type id = u64; }\n";
+        fs::write(wit.join("v0.2/deps/shared/types.wit"), drifted).unwrap();
+        let bad_link = wit.join("v0.3/deps/shared/evil.wit");
+        symlink("types.wit", &bad_link).unwrap();
+
+        let preflight_err = witforge()
+            .args(["deps", "sync"])
+            .arg(&wit)
+            .args(["--released"])
+            .arg(&custom_rel)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(preflight_err.status.code(), Some(2), "{preflight_err:?}");
+        let err_json: serde_json::Value = serde_json::from_slice(&preflight_err.stdout).unwrap();
+        assert_eq!(err_json["diagnostics"][0]["code"], "WF9004");
+        assert_eq!(
+            fs::read_to_string(wit.join("v0.2/deps/shared/types.wit")).unwrap(),
+            drifted,
+            "preflight failure on later target v0.3 must not have mutated earlier target v0.2"
+        );
+        fs::remove_file(&bad_link).unwrap();
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

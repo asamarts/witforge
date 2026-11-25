@@ -4476,7 +4476,8 @@ fn build_identity_quiet_mode_completions_and_explain() {
         .unwrap();
     assert_eq!(diff_sarif_quiet.stdout, diff_sarif_loud.stdout);
 
-    // 3. `witforge completions bash|zsh|fish` covers all commands, global flags, and enum values.
+    // 3. `witforge completions bash|zsh|fish` covers all commands (including nested `deps sync`),
+    // global flags, and enum values.
     let expected_subcommands = [
         "check",
         "lock",
@@ -4484,10 +4485,16 @@ fn build_identity_quiet_mode_completions_and_explain() {
         "proto",
         "schema",
         "glue",
+        "doc",
         "generate",
+        "init",
         "new-version",
+        "deps",
+        "sync",
         "release",
+        "retire",
         "diff",
+        "inspect",
         "freeze",
         "completions",
         "explain",
@@ -4505,7 +4512,19 @@ fn build_identity_quiet_mode_completions_and_explain() {
             );
         }
         for token in [
-            "format", "quiet", "human", "json", "sarif", "bash", "zsh", "fish",
+            "format",
+            "quiet",
+            "human",
+            "json",
+            "sarif",
+            "bash",
+            "zsh",
+            "fish",
+            "from",
+            "eq-hash",
+            "try-from",
+            "git-base",
+            "forbid-unstable",
         ] {
             assert!(
                 script.contains(token),

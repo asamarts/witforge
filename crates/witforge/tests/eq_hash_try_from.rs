@@ -446,3 +446,109 @@ fn eq_hash_and_try_from_compile_format_and_roundtrip_in_std_and_no_std() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn eighth_wave_audit_try_from_rustfmt_long_identifiers_and_float_free_diamond_dag() {
+    use std::fmt::Write as _;
+
+    let root = scratch_dir("audit-long-dag");
+    let wit = root.join("wit");
+    fs::create_dir_all(wit.join("v0.1")).unwrap();
+    fs::create_dir_all(wit.join("v0.2")).unwrap();
+
+    // 1. Long interface/record identifiers across every `emit_try_from_impl` formatting regime
+    // (`single <= 108`, `trait_on_impl <= 100`, `indented_trait <= 100`, `inner_from <= 100`,
+    // `inner_from > 100`, and conversion function name `> 76` chars) PLUS a 30-level diamond DAG
+    // exercising memoized `is_float_free_def`.
+    let mut dag_defs = String::from("  record d0 { a: u32 }\n  record f0 { x: f64 }\n");
+    for level in 1..=30 {
+        let prev = level - 1;
+        let _ = writeln!(
+            dag_defs,
+            "  record d{level} {{ left: d{prev}, right: d{prev} }}"
+        );
+        let _ = writeln!(
+            dag_defs,
+            "  record f{level} {{ left: f{prev}, right: f{prev} }}"
+        );
+    }
+
+    let make_contract = |ver: &str| {
+        format!(
+            "package example:longnames@{ver};\n\
+             interface m {{\n\
+               record a {{ id: u32 }}\n\
+               record aaaaa {{ id: u32 }}\n\
+               record aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {{ id: u32 }}\n\
+               record aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {{ id: u32 }}\n\
+               record aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {{ id: u32 }}\n\
+               record a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p-q-r-s-t-u-v-w-x-y-z-a-b-c-d-e-f-g-h-i-j-k-l-m-n {{ id: u32 }}\n\
+             }}\n\
+             interface payment-processing {{\n\
+               record credit-card-billing-statement {{ id: u32 }}\n\
+             }}\n\
+             interface dag {{\n\
+             {dag_defs}\
+             }}\n"
+        )
+    };
+    fs::write(wit.join("v0.1/contract.wit"), make_contract("0.1.0")).unwrap();
+    fs::write(wit.join("v0.2/contract.wit"), make_contract("0.2.0")).unwrap();
+    lock_version(&wit.join("v0.1"), None);
+    fs::copy(wit.join("v0.1/wire.lock"), wit.join("v0.2/wire.lock")).unwrap();
+    lock_version(&wit.join("v0.2"), Some(&wit.join("v0.1/wire.lock")));
+
+    let started = std::time::Instant::now();
+    let opts = RustOptions::new().with_eq_hash(true).with_try_from(true);
+    let files = witforge::emit::rust::plan_with_options(&wit, None, &opts).unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_secs() < 5,
+        "memoized float-free check on 30-level diamond DAG should finish immediately, took {elapsed:?}"
+    );
+
+    let v01 = files.files().get("v0_1.rs").unwrap();
+    assert!(
+        v01.contains("#[derive(Debug, Clone, PartialEq, Eq, Hash)]\n    pub struct D30"),
+        "D30 must derive Eq, Hash"
+    );
+    assert!(
+        v01.contains("#[derive(Debug, Clone, PartialEq)]\n    pub struct F30"),
+        "F30 must NOT derive Eq, Hash"
+    );
+
+    let out_dir = root.join("crate/src/generated");
+    files.write(&out_dir).unwrap();
+    let rs_files: Vec<PathBuf> = files.files().keys().map(|rel| out_dir.join(rel)).collect();
+    check_rustfmt_both_editions(&rs_files);
+
+    // Also compile with rustc to be 100% certain all generated impls typecheck cleanly.
+    let crate_dir = root.join("crate");
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"long-tryfrom-test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        crate_dir.join("src/lib.rs"),
+        "#![deny(warnings, missing_docs)]\n\
+         //! Verify long-name TryFrom formatting and compilation.\n\
+         /// Generated contract bindings.\n\
+         pub mod generated;\n",
+    )
+    .unwrap();
+    let check = Command::new("cargo")
+        .current_dir(&crate_dir)
+        .args(["check", "--offline", "--lib"])
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "cargo check failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr),
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

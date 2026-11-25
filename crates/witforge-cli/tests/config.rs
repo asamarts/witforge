@@ -1651,3 +1651,64 @@ out = "generated/docs"
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn eighth_wave_audit_malformed_enclosing_config_fails_closed_for_policy() {
+    let base = std::env::temp_dir().join(format!(
+        "witforge-policy-fail-closed-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let repo = base.join("repo");
+    let external = base.join("external");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    copy_tree(&source_tree(), &repo.join("wit"));
+    copy_tree(&source_tree(), &external.join("wit"));
+
+    // Write a malformed `witforge.toml` enclosing `repo/wit`.
+    fs::write(repo.join("witforge.toml"), "version = [malformed\n").unwrap();
+
+    // 1. `witforge diff wit/v0.1 wit/v0.2 --check` inside `repo` MUST fail closed (exit 2, WF9003).
+    let diff_fail = witforge()
+        .current_dir(&repo)
+        .args([
+            "diff", "wit/v0.1", "wit/v0.2", "--check", "--format", "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(diff_fail.status.code(), Some(2), "{diff_fail:?}");
+    let diff_json: serde_json::Value = serde_json::from_slice(&diff_fail.stdout).unwrap();
+    assert_eq!(diff_json["diagnostics"][0]["code"], "WF9003");
+
+    // `--no-config` bypasses the malformed config and runs default `--check` (exits 1 on API add).
+    let diff_bypass = witforge()
+        .current_dir(&repo)
+        .args(["diff", "wit/v0.1", "wit/v0.2", "--check", "--no-config"])
+        .output()
+        .unwrap();
+    assert_eq!(diff_bypass.status.code(), Some(1), "{diff_bypass:?}");
+
+    // 2. `witforge release wit/v0.1` inside `repo` MUST fail closed (exit 2, WF9003).
+    let rel_fail = witforge()
+        .current_dir(&repo)
+        .args(["release", "wit/v0.1", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(rel_fail.status.code(), Some(2), "{rel_fail:?}");
+    let rel_json: serde_json::Value = serde_json::from_slice(&rel_fail.stdout).unwrap();
+    assert_eq!(rel_json["diagnostics"][0]["code"], "WF9003");
+
+    // 3. Diffing an external tree OUTSIDE `repo` from cwd inside `repo` ignores the unrelated
+    // malformed `repo/witforge.toml` cleanly.
+    let ext_diff = witforge()
+        .current_dir(&repo)
+        .args(["diff"])
+        .arg(external.join("wit/v0.1"))
+        .arg(external.join("wit/v0.2"))
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert_eq!(ext_diff.status.code(), Some(1), "{ext_diff:?}");
+
+    fs::remove_dir_all(&base).unwrap();
+}

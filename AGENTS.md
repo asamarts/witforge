@@ -10,19 +10,21 @@ JSON Schema, and protobuf glue.
 - The latest release is the top dated section of [`CHANGELOG.md`](CHANGELOG.md).
   `main` can be ahead of it: the `[Unreleased]` section lists what no release
   has yet.
-- Implemented: package loading with standard `deps/` dependencies, the
-  restricted-subset checker, the append-only lockfile (v2, with
-  declaration-order fingerprints), the Rust emitter (opt-in Serde derives,
-  opt-in `no_std` + `alloc`, `convert.rs` version adapters, `worlds.rs`), the
-  protobuf, JSON Schema (Draft 7 default, opt-in Draft 2020-12), and glue
-  emitters, versioned JSON contract IR (`inspect`), contract `diff`,
-  release-freeze enforcement, structured diagnostics
-  (`--format human|json|sarif`), `witforge.toml` projects, the optional
-  `witforge-build` helper crate, static `musl` Linux release archives, and the
-  GitHub Action.
+- Implemented: package loading with standard `deps/` dependencies and `deps sync`,
+  the restricted-subset checker (including `char`, fixed-length `list<T, N>`, and
+  `map<K, V>`), the append-only lockfile (v2, with declaration-order
+  fingerprints), the Rust emitter (opt-in Serde derives, opt-in `no_std` +
+  `alloc`, opt-in float-free `Eq`/`Hash` derives, `convert.rs` version adapters
+  with opt-in `TryFrom` impls, `worlds.rs`), the protobuf, JSON Schema (Draft 7
+  default, opt-in Draft 2020-12), glue, and Markdown documentation (`doc`)
+  emitters, versioned JSON contract IR (`inspect`), contract `diff` (including
+  `--git-base <REV>`), release-freeze enforcement, structured diagnostics
+  (`--format human|json|sarif`), `witforge.toml` projects (including
+  `[project.<name>.policy]`), the optional `witforge-build` helper crate, static
+  `musl` Linux release archives, and the GitHub Action.
 - The commands are `witforge check`, `lock`, `rust`, `proto`, `schema`, `glue`,
-  `generate`, `init`, `new-version`, `release`, `retire`, `diff`, `inspect`,
-  `freeze`, `completions`, and `explain`.
+  `doc`, `generate`, `init`, `new-version`, `deps sync`, `release`, `retire`,
+  `diff`, `inspect`, `freeze`, `completions`, and `explain`.
 - The normative specifications are [`docs/design/model.md`](docs/design/model.md),
   [`docs/design/lockfile.md`](docs/design/lockfile.md), and
   [`docs/design/emitters.md`](docs/design/emitters.md) (Rust, protobuf, glue,

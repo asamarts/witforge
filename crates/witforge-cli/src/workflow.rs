@@ -1,7 +1,7 @@
 //! Configuration discovery and workflow helpers (`init`, `new-version`, `release`, `retire`,
 //! `deps sync`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -713,7 +713,7 @@ pub(crate) fn create_new_version(
                     format!("failed to write {}", target_dir.join(name).display())
                 })?;
             } else if meta.is_dir() && name == "deps" {
-                copy_dir_no_symlinks(&entry_path, &target_dir.join("deps"))?;
+                copy_dir_no_symlinks(&entry_path, &target_dir.join("deps"), "new-version")?;
             }
         }
         if rewritten_headers == 0 {
@@ -935,7 +935,11 @@ pub(crate) fn sync_deps(
         }
     }
 
+    // Phase 1: preflight-validate and snapshot EVERY source and target across all majors before
+    // mutating any directory on disk, so a symlink or I/O error in a later target never leaves an
+    // earlier target partially modified.
     let mut report = DepsSyncReport::default();
+    let mut pending = Vec::new();
     for (src_name, src_dir, targets) in plan {
         witforge::ensure_version_directory(&src_dir)?;
         let src_deps = src_dir.join("deps");
@@ -947,27 +951,60 @@ pub(crate) fn sync_deps(
             report.checked += 1;
 
             let diffs = diff_deps_snapshots(src_tree.as_ref(), target_tree.as_ref());
-            if diffs.is_empty() {
-                continue;
+            if !diffs.is_empty() {
+                pending.push(PendingSync {
+                    source_version: src_name.clone(),
+                    src_deps: src_deps.clone(),
+                    src_exists: src_tree.is_some(),
+                    target_version: target_name,
+                    target_dir,
+                    target_deps,
+                    diffs,
+                });
             }
-            if !check_only {
-                replace_deps_dir_atomic(&src_deps, src_tree.is_some(), &target_dir, &target_deps)?;
-            }
-            report.changed.push(DepsSyncEntry {
-                source_version: src_name.clone(),
-                target_version: target_name,
-                target_dir,
-                diffs,
-            });
         }
+    }
+
+    // Phase 2: apply atomic `deps/` replacements only after every guard and snapshot succeeded.
+    for item in pending {
+        if !check_only {
+            replace_deps_dir_atomic(
+                &item.src_deps,
+                item.src_exists,
+                &item.target_dir,
+                &item.target_deps,
+            )?;
+        }
+        report.changed.push(DepsSyncEntry {
+            source_version: item.source_version,
+            target_version: item.target_version,
+            target_dir: item.target_dir,
+            diffs: item.diffs,
+        });
     }
 
     Ok(report)
 }
 
-/// Snapshot a `deps/` directory as `Some(BTreeMap<rel_slash_path, bytes>)`, or `None` if `deps/`
+struct PendingSync {
+    source_version: String,
+    src_deps: PathBuf,
+    src_exists: bool,
+    target_version: String,
+    target_dir: PathBuf,
+    target_deps: PathBuf,
+    diffs: Vec<String>,
+}
+
+#[derive(Default)]
+struct DepsSnapshot {
+    dirs: BTreeSet<String>,
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+/// Snapshot a `deps/` directory (both subdirectories and regular files), or `None` if `deps/`
 /// does not exist. Refuses symlinks and non-regular files anywhere under `deps/`.
-fn snapshot_deps_tree(deps_dir: &Path) -> Result<Option<BTreeMap<String, Vec<u8>>>> {
+fn snapshot_deps_tree(deps_dir: &Path) -> Result<Option<DepsSnapshot>> {
     let meta = match fs::symlink_metadata(deps_dir) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -996,16 +1033,12 @@ fn snapshot_deps_tree(deps_dir: &Path) -> Result<Option<BTreeMap<String, Vec<u8>
             Some(deps_dir.display().to_string()),
         ));
     }
-    let mut files = BTreeMap::new();
-    collect_deps_snapshot(deps_dir, "", &mut files)?;
-    Ok(Some(files))
+    let mut snapshot = DepsSnapshot::default();
+    collect_deps_snapshot(deps_dir, "", &mut snapshot)?;
+    Ok(Some(snapshot))
 }
 
-fn collect_deps_snapshot(
-    dir: &Path,
-    prefix: &str,
-    out: &mut BTreeMap<String, Vec<u8>>,
-) -> Result<()> {
+fn collect_deps_snapshot(dir: &Path, prefix: &str, out: &mut DepsSnapshot) -> Result<()> {
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .with_context(|| format!("failed to read {}", dir.display()))?
         .map(|entry| entry.map(|item| item.path()))
@@ -1044,11 +1077,12 @@ fn collect_deps_snapshot(
             format!("{prefix}/{name}")
         };
         if meta.is_dir() {
+            out.dirs.insert(rel.clone());
             collect_deps_snapshot(&entry_path, &rel, out)?;
         } else if meta.is_file() {
             let bytes = fs::read(&entry_path)
                 .with_context(|| format!("failed to read {}", entry_path.display()))?;
-            out.insert(rel, bytes);
+            out.files.insert(rel, bytes);
         } else {
             return Err(op_error(
                 codes::GUARD_REFUSED,
@@ -1064,26 +1098,39 @@ fn collect_deps_snapshot(
     Ok(())
 }
 
+fn dir_has_files_under(files: &BTreeMap<String, Vec<u8>>, dir: &str) -> bool {
+    let prefix = format!("{dir}/");
+    files.keys().any(|path| path.starts_with(&prefix))
+}
+
 fn diff_deps_snapshots(
-    source: Option<&BTreeMap<String, Vec<u8>>>,
-    target: Option<&BTreeMap<String, Vec<u8>>>,
+    source: Option<&DepsSnapshot>,
+    target: Option<&DepsSnapshot>,
 ) -> Vec<String> {
     match (source, target) {
         (None, None) => Vec::new(),
         (None, Some(_)) => vec!["extra `deps/` directory (source has no `deps/`)".to_string()],
         (Some(src), None) => {
-            if src.is_empty() {
+            if src.files.is_empty() && src.dirs.is_empty() {
                 vec!["missing `deps/` directory".to_string()]
             } else {
-                src.keys()
+                let mut diffs: Vec<String> = src
+                    .files
+                    .keys()
                     .map(|path| format!("missing deps/{path}"))
-                    .collect()
+                    .collect();
+                for dir in &src.dirs {
+                    if !dir_has_files_under(&src.files, dir) {
+                        diffs.push(format!("missing deps/{dir}/"));
+                    }
+                }
+                diffs
             }
         }
         (Some(src), Some(dst)) => {
             let mut diffs = Vec::new();
-            for (path, src_bytes) in src {
-                match dst.get(path) {
+            for (path, src_bytes) in &src.files {
+                match dst.files.get(path) {
                     None => diffs.push(format!("missing deps/{path}")),
                     Some(dst_bytes) if dst_bytes != src_bytes => {
                         diffs.push(format!("changed deps/{path}"));
@@ -1091,9 +1138,19 @@ fn diff_deps_snapshots(
                     Some(_) => {}
                 }
             }
-            for path in dst.keys() {
-                if !src.contains_key(path) {
+            for path in dst.files.keys() {
+                if !src.files.contains_key(path) {
                     diffs.push(format!("extra deps/{path}"));
+                }
+            }
+            for dir in &src.dirs {
+                if !dst.dirs.contains(dir) && !dir_has_files_under(&src.files, dir) {
+                    diffs.push(format!("missing deps/{dir}/"));
+                }
+            }
+            for dir in &dst.dirs {
+                if !src.dirs.contains(dir) && !dir_has_files_under(&dst.files, dir) {
+                    diffs.push(format!("extra deps/{dir}/"));
                 }
             }
             diffs
@@ -1123,7 +1180,7 @@ fn replace_deps_dir_atomic(
 
     let stage_seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let staged = target_version_dir.join(format!(".witforge-deps-stage-{pid}-{stage_seq}"));
-    if let Err(err) = copy_dir_no_symlinks(src_deps, &staged) {
+    if let Err(err) = copy_dir_no_symlinks(src_deps, &staged, "deps sync") {
         let _ = fs::remove_dir_all(&staged);
         return Err(err);
     }
@@ -1313,7 +1370,7 @@ pub(crate) fn rewrite_package_version_with_count(
     (out, count)
 }
 
-fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
+fn copy_dir_no_symlinks(source: &Path, destination: &Path, caller: &str) -> Result<()> {
     fs::create_dir_all(destination)
         .with_context(|| format!("failed to create {}", destination.display()))?;
     let mut entries: Vec<PathBuf> = fs::read_dir(source)
@@ -1329,7 +1386,7 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
             return Err(op_error(
                 codes::GUARD_REFUSED,
                 format!(
-                    "dependency tree contains symlink `{}`; new-version refuses to copy symlinks",
+                    "dependency tree contains symlink `{}`; {caller} refuses to copy symlinks",
                     entry_path.display()
                 ),
                 Some(entry_path.display().to_string()),
@@ -1341,7 +1398,7 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
                 .context("directory entry missing file name")?,
         );
         if meta.is_dir() {
-            copy_dir_no_symlinks(&entry_path, &target)?;
+            copy_dir_no_symlinks(&entry_path, &target, caller)?;
         } else if meta.is_file() {
             fs::copy(&entry_path, &target).with_context(|| {
                 format!(
@@ -1354,7 +1411,8 @@ fn copy_dir_no_symlinks(source: &Path, destination: &Path) -> Result<()> {
             return Err(op_error(
                 codes::GUARD_REFUSED,
                 format!(
-                    "dependency tree contains non-regular file `{}`; new-version refuses to copy special files",
+                    "dependency tree contains non-regular file `{}`; {caller} refuses to copy \
+                     special files",
                     entry_path.display()
                 ),
                 Some(entry_path.display().to_string()),

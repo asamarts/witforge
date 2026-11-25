@@ -2375,3 +2375,129 @@ fn diff_git_base_compares_working_tree_respects_tmpdir_and_enforces_guards() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn eighth_wave_audit_git_base_sibling_released_and_error_path_redaction() {
+    let root = workspace("git-base-audit");
+    let repo = root.join("repo");
+    let private_tmp = root.join("tmp");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir_all(&private_tmp).unwrap();
+
+    run_git_cmd(&repo, &["init", "-q"]);
+    run_git_cmd(&repo, &["config", "user.email", "test@example.com"]);
+    run_git_cmd(&repo, &["config", "user.name", "Test"]);
+
+    // Commit v0.1, v0.2, and `wit/released` listing `v0.1` (sibling of `v0.2`).
+    contract(
+        &repo,
+        "wit/v0.1",
+        "package example:relbase@0.1.0;\ninterface types { record item { id: u32 } }\n",
+    );
+    lock(&repo, "wit/v0.1");
+    contract(
+        &repo,
+        "wit/v0.2",
+        "package example:relbase@0.2.0;\ninterface types { record item { id: u32, tag: option<string> } }\n",
+    );
+    fs::copy(
+        repo.join("wit/v0.1/wire.lock"),
+        repo.join("wit/v0.2/wire.lock"),
+    )
+    .unwrap();
+    let lock_v02 = witforge()
+        .args(["lock"])
+        .arg(repo.join("wit/v0.2"))
+        .args(["--against"])
+        .arg(repo.join("wit/v0.1/wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_v02.status.success(), "{lock_v02:?}");
+    fs::write(repo.join("wit/released"), "v0.1\n").unwrap();
+    run_git_cmd(&repo, &["add", "."]);
+    run_git_cmd(&repo, &["commit", "-m", "v0.1 released + v0.2 draft"]);
+
+    // 1. Single-version `diff --git-base HEAD wit/v0.2` MUST succeed when sibling `wit/released`
+    // lists `v0.1` (not fail with `WF9002: released directory 'v0.1' does not exist`)!
+    contract(
+        &repo,
+        "wit/v0.2",
+        "package example:relbase@0.2.0;\ninterface types { record item { id: u32, tag: option<string>, note: option<string> } }\n",
+    );
+    let lock_v02_b = witforge()
+        .args(["lock"])
+        .arg(repo.join("wit/v0.2"))
+        .args(["--against"])
+        .arg(repo.join("wit/v0.1/wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_v02_b.status.success(), "{lock_v02_b:?}");
+
+    let single_ok = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&repo)
+        .args(["diff", "--git-base", "HEAD", "wit/v0.2", "--json"])
+        .output()
+        .unwrap();
+    assert!(single_ok.status.success(), "{single_ok:?}");
+    let single_json: serde_json::Value = serde_json::from_slice(&single_ok.stdout).unwrap();
+    assert_eq!(single_json["old"]["path"], "HEAD:wit/v0.2");
+    assert_eq!(single_json["summary"]["changes"], 1);
+    assert_eq!(fs::read_dir(&private_tmp).unwrap().count(), 0);
+
+    // 2. When `HEAD:wit/v0.2` itself has a contract/lockfile error (stale lockfile missing field),
+    // human stderr, `--format json`, and `--format sarif` MUST NOT leak `witforge-git-base`!
+    fs::write(
+        repo.join("wit/v0.2/contract.wit"),
+        "package example:relbase@0.2.0;\ninterface types { record item { id: u32, tag: option<string>, unlocked: u32 } }\n",
+    )
+    .unwrap();
+    run_git_cmd(&repo, &["add", "wit/v0.2/contract.wit"]);
+    run_git_cmd(&repo, &["commit", "-m", "commit unlocked field"]);
+
+    for (mode, extra_args) in [
+        ("human", &[][..]),
+        ("json", &["--format", "json"][..]),
+        ("sarif", &["--format", "sarif"][..]),
+    ] {
+        let mut cmd = witforge();
+        cmd.env("TMPDIR", &private_tmp)
+            .current_dir(&repo)
+            .args(["diff", "--git-base", "HEAD", "wit/v0.2"])
+            .args(extra_args);
+        let out = cmd.output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{mode}: {out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stdout.contains("witforge-git-base") && !stderr.contains("witforge-git-base"),
+            "{mode} leaked temp path!\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let combined = format!("{stdout}\n{stderr}");
+        assert!(
+            combined.contains("HEAD:wit/v0.2") || combined.contains("HEAD%3Awit/v0.2"),
+            "{mode} missing rewritten git_base path:\n{combined}"
+        );
+    }
+    assert_eq!(fs::read_dir(&private_tmp).unwrap().count(), 0);
+
+    // 3. Invalid/missing directory listed in sibling `wit/released` at `HEAD` fails with WF9002
+    // and clean `HEAD:wit/v9.9` path.
+    fs::write(repo.join("wit/released"), "v0.1\nv9.9\n").unwrap();
+    run_git_cmd(&repo, &["add", "wit/released"]);
+    run_git_cmd(&repo, &["commit", "-m", "broken released entry"]);
+    let bad_rel = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&repo)
+        .args(["diff", "--git-base", "HEAD", "wit/v0.2", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(bad_rel.status.code(), Some(2), "{bad_rel:?}");
+    let bad_rel_json: serde_json::Value = serde_json::from_slice(&bad_rel.stdout).unwrap();
+    assert_eq!(bad_rel_json["diagnostics"][0]["code"], "WF9002");
+    assert_eq!(bad_rel_json["diagnostics"][0]["path"], "HEAD:wit/v9.9");
+    assert_eq!(fs::read_dir(&private_tmp).unwrap().count(), 0);
+
+    fs::remove_dir_all(&root).unwrap();
+}

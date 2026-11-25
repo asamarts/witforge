@@ -67,6 +67,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **Eighth-wave pre-0.9.0 audit hardening (`W10-130`):** Validated sibling `released` manifests
+  directly against `<commit>` in `diff::compare_git_base` (fixing `WF9002` failures on
+  single-version diffs when sibling released directories exist) and redacted ephemeral temporary
+  directory paths on error paths across stderr, JSON, and SARIF diagnostics; updated
+  `docs/guide/reference.md`, top-level docs, and nested 2-level shell completions
+  (`witforge deps sync`) for bash, zsh, and fish; aligned `convert.rs` `TryFrom` impl emission with
+  `rustfmt` (Editions 2021 and 2024) across long trait headers and long conversion function names;
+  emitted `#[serde(default, with = "...")]` on record fields resolving to `Option<...>` containing
+  large fixed-length arrays (`N > 32`) to preserve missing-field JSON evolution parity; forwarded
+  explicit `--released` manifests into adjacent version diffs in `emit::doc::plan_with_released`,
+  separated decode counts from breaking totals in `index.md` summaries, and stopped double-escaping
+  already-escaped `\|` in Markdown table cells; tracked empty subdirectories and added two-phase
+  preflight validation in `witforge deps sync` (plus full flag preservation in `--check` fix-it
+  hints and accurate `deps sync` error messages); memoized float-free `Eq`/`Hash` traversal to
+  prevent exponential blowup on diamond DAGs; failed closed when an enclosing upward-discovered
+  `witforge.toml` is malformed during `diff --check` and `release` policy resolution; and updated
+  missing-required-field conversion error hints to mention `map<K, V>`.
 - **Seventh-wave audit hardening (`W10-128`):** Closed seven remaining CommonMark doctest and
   escaping defects in `docs.rs` (`FirstLineFence`/`FirstLineBlockquote` `list_stack` sync for
   `ws_width` 2..=4, list-nested fence container breakout on `col < lc`, `content_col >= 4`
