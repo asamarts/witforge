@@ -16,7 +16,7 @@ pub(crate) const MAX_WIDTH: usize = 100;
 /// Default `rustfmt` `struct_lit_width`.
 const STRUCT_LIT_WIDTH: usize = 18;
 /// Default `rustfmt` `fn_call_width`.
-const FN_CALL_WIDTH: usize = 60;
+pub(crate) const FN_CALL_WIDTH: usize = 60;
 /// Default `rustfmt` `array_width`.
 const ARRAY_WIDTH: usize = 60;
 
@@ -258,14 +258,40 @@ pub(crate) fn fmt_struct_lit(
             return format!("{path} {{ {joined} }}");
         }
     }
-    let inner_prefix = " ".repeat(indent + 4);
+    let inner_indent = indent + 4;
+    let inner_prefix = " ".repeat(inner_indent);
     let close_prefix = " ".repeat(indent);
     let mut out = format!("{path} {{\n");
-    for field in rendered_fields {
-        let _ = writeln!(out, "{inner_prefix}{field},");
+    for (k, v) in fields {
+        if k == v {
+            let _ = writeln!(out, "{inner_prefix}{k},");
+        } else if !v.contains('\n')
+            && inner_indent + k.len() + 2 + v.len() >= MAX_WIDTH
+            && inner_indent + 4 + v.len() < MAX_WIDTH
+        {
+            let _ = writeln!(out, "{inner_prefix}{k}:\n{inner_prefix}    {v},");
+        } else {
+            let _ = writeln!(out, "{inner_prefix}{k}: {v},");
+        }
     }
     let _ = write!(out, "{close_prefix}}}");
     out
+}
+
+/// Wrap a single-dot argument expression (`&value.<field>` or `value.<field>`) on its own line
+/// inside a multi-line call or tuple when `rustfmt` would break at `.`.
+fn fmt_multiline_arg(inner_indent: usize, arg: &str) -> String {
+    if !arg.contains('\n')
+        && inner_indent + arg.len() + 1 > MAX_WIDTH
+        && let Some((recv, field)) = arg.split_once('.')
+        && !field.contains('.')
+        && !recv.contains(' ')
+        && inner_indent + 4 + 1 + field.len() < MAX_WIDTH
+    {
+        let child_prefix = " ".repeat(inner_indent + 4);
+        return format!("{recv}\n{child_prefix}.{field}");
+    }
+    arg.to_string()
 }
 
 /// Format a function call `callee(arg0, arg1)` matching `rustfmt`'s `fn_call_width` (60) and
@@ -289,11 +315,13 @@ pub(crate) fn fmt_call(
             return format!("{callee}({joined})");
         }
     }
-    let inner_prefix = " ".repeat(indent + 4);
+    let inner_indent = indent + 4;
+    let inner_prefix = " ".repeat(inner_indent);
     let close_prefix = " ".repeat(indent);
     let mut out = format!("{callee}(\n");
     for arg in args {
-        let _ = writeln!(out, "{inner_prefix}{arg},");
+        let rendered = fmt_multiline_arg(inner_indent, arg);
+        let _ = writeln!(out, "{inner_prefix}{rendered},");
     }
     let _ = write!(out, "{close_prefix})");
     out
@@ -313,14 +341,46 @@ pub(crate) fn fmt_tuple_expr(
             return format!("({joined})");
         }
     }
-    let inner_prefix = " ".repeat(indent + 4);
+    let inner_indent = indent + 4;
+    let inner_prefix = " ".repeat(inner_indent);
     let close_prefix = " ".repeat(indent);
     let mut out = String::from("(\n");
     for elem in elems {
-        let _ = writeln!(out, "{inner_prefix}{elem},");
+        let rendered = fmt_multiline_arg(inner_indent, elem);
+        let _ = writeln!(out, "{inner_prefix}{rendered},");
     }
     let _ = write!(out, "{close_prefix})");
     out
+}
+
+/// Format a single-expression `pat => ::core::result::Result::Ok(inner),` match arm matching
+/// `rustfmt`: single line when `<= MAX_WIDTH`, block `{ Ok(inner) }` when `Ok(inner)` fits on one
+/// line inside the block (`inner.len() <= FN_CALL_WIDTH`), and block-free multi-line
+/// `Ok(\n    inner,\n),` when `Ok(inner)` itself must wrap.
+pub(crate) fn fmt_match_arm_ok(arm_indent: usize, pat: &str, inner: &str) -> String {
+    let prefix = " ".repeat(arm_indent);
+    let ok_single = format!("::core::result::Result::Ok({inner})");
+    let single = format!("{prefix}{pat} => {ok_single},");
+    if !pat.contains('\n') && !inner.contains('\n') && single.len() <= MAX_WIDTH {
+        return single;
+    }
+    let body_indent = arm_indent + 4;
+    let body_prefix = " ".repeat(body_indent);
+    if !inner.contains('\n')
+        && inner.len() <= FN_CALL_WIDTH
+        && body_indent + ok_single.len() <= MAX_WIDTH
+    {
+        return format!("{prefix}{pat} => {{\n{body_prefix}{ok_single}\n{prefix}}}");
+    }
+    let ok_header = format!("{prefix}{pat} => ::core::result::Result::Ok(");
+    if !pat.contains('\n') && ok_header.len() <= MAX_WIDTH {
+        let inner_prefix = " ".repeat(arm_indent + 4);
+        return format!("{ok_header}\n{inner_prefix}{inner},\n{prefix}),");
+    }
+    let inner_prefix = " ".repeat(body_indent + 4);
+    format!(
+        "{prefix}{pat} => {{\n{body_prefix}::core::result::Result::Ok(\n{inner_prefix}{inner},\n{body_prefix})\n{prefix}}}"
+    )
 }
 
 /// Format a `let` statement at `indent`, wrapping the RHS onto the next line (and wrapping call

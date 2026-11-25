@@ -2493,7 +2493,7 @@ fn new_version_command(options: &NewVersionOptions, reporter: &mut Reporter) -> 
     } else {
         configured_released
             .as_deref()
-            .map(|configured| (configured, false))
+            .map(|configured| (configured, true))
     };
 
     let (latest_dir, target_dir, copied_lock) = workflow::create_new_version(
@@ -2579,33 +2579,7 @@ fn resolve_manifest_for_version_dir(
 }
 
 fn ensure_manifest_belongs_to_wit_root(manifest_path: &Path, wit_root: &Path) -> Result<()> {
-    let manifest_file = manifest_path.display().to_string();
-    let parent = manifest_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let canon_parent = fs::canonicalize(parent).map_err(|err| {
-        op_error(
-            codes::GUARD_REFUSED,
-            format!(
-                "released manifest `{manifest_file}` parent `{}` cannot be resolved: {err}",
-                parent.display()
-            ),
-            Some(manifest_file.clone()),
-        )
-    })?;
-    if canon_parent != wit_root {
-        return Err(op_error(
-            codes::GUARD_REFUSED,
-            format!(
-                "released manifest `{manifest_file}` belongs to `{}`, not `{}`",
-                canon_parent.display(),
-                wit_root.display()
-            ),
-            Some(manifest_file),
-        ));
-    }
-    Ok(())
+    workflow::ensure_manifest_belongs_to_wit_root(manifest_path, wit_root)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2649,7 +2623,8 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
         &options.config,
     )?;
 
-    if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+    let normalized_manifest: PathBuf = manifest_path.components().collect();
+    if fs::symlink_metadata(&normalized_manifest).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(op_error(
             codes::GUARD_REFUSED,
             format!(
@@ -2778,7 +2753,8 @@ fn retire_command(options: &RetireOptions, reporter: &mut Reporter) -> Result<Ex
     )?;
     let manifest_file = manifest_path.display().to_string();
 
-    if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+    let normalized_manifest: PathBuf = manifest_path.components().collect();
+    if fs::symlink_metadata(&normalized_manifest).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(op_error(
             codes::GUARD_REFUSED,
             format!("released manifest `{manifest_file}` is a symlink; commit a regular file"),

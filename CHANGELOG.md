@@ -132,42 +132,51 @@ Generated output changes:
   public-api-inventory.txt}`, `docs/guide/{ci,wiring,reference,generated-output,
   json-projections}.md`, `docs/quickstart.md`, `ci/{README,release-checklist}.md`,
   `.github/workflows/ci.yml`, and `README.md`.
-- **Adversarial audit hardening (`W10-115`–`W10-120`, `W10-122`):**
+- **Adversarial audit hardening (`W10-115`–`W10-120`, `W10-122`, `W10-124`):**
   - Derived protobuf `import` statements from actual non-comment body references so transitive
     dependency imports are never dropped (`W10-115`).
   - Hardened `.github/workflows/{ci,release}.yml`, `action/index.js` (strict version regex,
     attestation timeout, UNC/Windows SARIF URI normalization, explicit `config` validation,
-    `failed-command` and SARIF flushing on spawn errors, 64 MiB `maxBuffer`),
+    `failed-command` and SARIF flushing on spawn errors without masking failures, skipping JSON
+    probes on signal-killed children, escaped multi-line `::error::` output, 64 MiB `maxBuffer`),
     `crates/witforge-cli/Cargo.toml` (Linux static `musl` `cargo-binstall` overrides), and
-    `ci/check-release.sh` (`fuzz/Cargo.lock` alignment) / `ci/check-version-references.sh` /
-    `ci/test-publish.sh` (`W10-116`, `W10-122`).
+    `ci/check-release.sh` (offline `fuzz/Cargo.lock` alignment) / `ci/check-version-references.sh`
+    / `ci/test-publish.sh` (`W10-116`, `W10-122`, `W10-124`).
   - Fixed `witforge-build` module filename resolution for uppercase and Rust-keyword proto packages,
-    trailing-separator `include_file` validation, incremental `pbjson` generation and stale
-    `.serde.rs` cleanup without disk probing, error-path scratch cleanup, incremental
-    `prost_include.rs` writes, and pbjson prefix scoping (`W10-117`, `W10-122`).
+    cross-platform backslash/trailing-separator `include_file` validation, empty standalone `.proto`
+    include emission and stale `.rs`/`.serde.rs` cleanup, exact full-package `pbjson` prefixes and
+    package-less `.proto` error reporting (no panic), error-path scratch cleanup, and incremental
+    `prost_include.rs` writes (`W10-117`, `W10-122`, `W10-124`).
   - Populated dependency member wire numbers and aligned single-version validation (`WF1031`,
     `WF1002`, `WF1103`/`WF1105`, symlink refusal, canonical `retired` sorting, `--released` guard)
     in `witforge inspect` (`W10-118`).
   - Hardened `init` (all 44 WIT keywords, non-empty/symlink checks, atomic rollback), `new-version`
     (UTF-8 char-boundary safety, string-literal and nested-package lexing, `--from` gap/retired
-    checks, `--released` and `project.released` support with symlink/parse-error propagation,
-    special-file refusal), `release` and `retire` (BOM handling, cross-root `--released` guard
-    including bare filenames, exit codes, retirement-order validation on already-retired entries,
-    diagnostic file paths), `freeze` (symlink refusal on `--released`, retirement order with invalid
-    entries, deleted manifest parent dir, case-insensitive index/`HEAD` reconciliation, staged-index
-    tampering, un-retire line positions), `diff` (`preserves` kind/type check,
-    dropped-reserved-number decode reuse, human `result:` line matching `--check` views), `workflow`
-    (zero-member missing lockfile, explicit `--released` isolation in `check_root`, `check_release`
-    symlink refusal and predecessor lockfile error reporting, `lock` proto validation), `subset`
-    (world-owned `use` stability), `SinceHistory`, `load_sources` cross-platform `/` virtual `deps/`
-    paths and in-memory package header location, and Windows SARIF URI handling (`W10-119`,
-    `W10-122`).
-  - Fixed emitter `clippy::type_complexity`, alignment/alias/niche-aware `clippy::large_enum_variant`,
-    Editions 2021/2024 `rustfmt` wrapping (`fmt_let_stmt`, `fmt_let_call`, `push_let_else_err`,
-    long option `if let` and `for` list loops, defaulted `convert.rs` fields), `proto.rs`
-    named-option wrapper ownership collisions and enum/method `reserved_prost` checks, `docs.rs`
-    real `wit-parser` block-comment gutter/banner normalization while preserving Markdown bullet
-    lists, and `#![no_std]` + `serde` header/test coverage (`W10-120`, `W10-122`).
+    checks, unconditional `--released` and `project.released` validation including on `--major`
+    with cross-root/symlink/missing/parse-error enforcement, special-file refusal), `release` and
+    `retire` (BOM handling, cross-root `--released` guard including bare/root filenames, trailing-
+    separator symlink checks, exit codes, retirement-order validation on already-retired entries,
+    diagnostic file paths), `freeze` (symlink refusal on `--released`, OS ancestor resolution
+    without `<symlink>/..` lexical collapse, repo-root pathspec guard, full case-insensitive
+    history/index/default-manifest reconciliation, retirement order with invalid entries, deleted
+    manifest parent dir, staged-index tampering, un-retire line positions), `diff` (`preserves`
+    kind/type check, dropped-reserved-number decode reuse, human `result:` line matching `--check`
+    views), `workflow` (zero-member missing lockfile, explicit `--released` isolation in
+    `check_root`, `check_release` and `check_root` predecessor lockfile error classification
+    preserving `WF9003`/`WF9002` exit `2`, symlinked/dangling manifest refusal across all
+    commands, `lock` proto validation), `subset` (world-owned `use` stability), `SinceHistory`,
+    `load_sources` cross-platform `/` virtual `deps/` paths and multi-file package header location,
+    and Windows SARIF URI handling (`W10-119`, `W10-122`, `W10-124`).
+  - Fixed emitter `clippy::type_complexity`, `clippy::enum_variant_names`, memoized cycle-safe
+    alignment/alias/niche-aware `clippy::large_enum_variant` sizing (eliminating exponential DAG
+    recursion and depth-32 nominal truncation), Editions 2021/2024 `rustfmt` wrapping across
+    `rust.rs`/`convert.rs`/`glue.rs`/`rustfmt.rs` (long names, flags, single-dot call/tuple args,
+    `match` scrutinees, variant/enum arms, deep nesting, `fmt_let_stmt`, `fmt_let_call`,
+    `push_let_else_err`, long option `if let` and `for` list loops, defaulted `convert.rs` fields),
+    `proto.rs` named-option wrapper ownership collisions and enum/method `reserved_prost` checks,
+    `docs.rs` aligned block-comment banner normalization without corrupting single-line ` *` prose
+    or Markdown bullet lists, and `#![no_std]` + `serde` header/test coverage (`W10-120`,
+    `W10-122`, `W10-124`).
 
 ## [0.7.0] - 2026-11-23
 

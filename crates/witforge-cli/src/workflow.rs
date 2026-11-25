@@ -410,6 +410,47 @@ fn parse_version_dir_name(raw: &str) -> Option<(u64, u64)> {
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
+pub(crate) fn ensure_manifest_belongs_to_wit_root(
+    manifest_path: &Path,
+    wit_root: &Path,
+) -> Result<()> {
+    let manifest_file = manifest_path.display().to_string();
+    let normalized: PathBuf = manifest_path.components().collect();
+    if normalized.file_name().is_none() {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!("released manifest `{manifest_file}` is not a file path"),
+            Some(manifest_file),
+        ));
+    }
+    let parent = normalized
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canon_parent = fs::canonicalize(parent).map_err(|err| {
+        op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{manifest_file}` parent `{}` cannot be resolved: {err}",
+                parent.display()
+            ),
+            Some(manifest_file.clone()),
+        )
+    })?;
+    if canon_parent != wit_root {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{manifest_file}` belongs to `{}`, not `{}`",
+                canon_parent.display(),
+                wit_root.display()
+            ),
+            Some(manifest_file),
+        ));
+    }
+    Ok(())
+}
+
 /// Create the next minor (`v<major>.<minor+1>`) or next major (`v<major+1>.0`) version directory
 /// under `wit_root` by copying WIT files, `deps/`, and (for a minor only) `wire.lock`, rewriting
 /// the `package ...@<old>;` version header in every root `.wit` file.
@@ -470,6 +511,63 @@ pub(crate) fn create_new_version(
         .max()
         .expect("discover_version_directories never returns empty");
 
+    // Validate the released manifest unconditionally (including on `--major`) so a missing
+    // explicit/configured manifest, symlink, cross-root manifest, or malformed manifest is never
+    // silently ignored.
+    let canon_wit_root = fs::canonicalize(wit_root)
+        .with_context(|| format!("failed to resolve WIT root {}", wit_root.display()))?;
+    let (manifest_path, explicit_manifest) = match released_manifest {
+        Some((path, explicit)) => (path.to_path_buf(), explicit),
+        None => (wit_root.join("released"), false),
+    };
+    let normalized_manifest: PathBuf = manifest_path.components().collect();
+    let manifest_meta = match fs::symlink_metadata(&normalized_manifest) {
+        Ok(meta) => Some(meta),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if explicit_manifest {
+                return Err(op_error(
+                    codes::IO_ERROR,
+                    format!(
+                        "released manifest `{}` does not exist",
+                        manifest_path.display()
+                    ),
+                    Some(manifest_path.display().to_string()),
+                ));
+            }
+            None
+        }
+        Err(err) => {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "failed to inspect released manifest `{}`: {err}",
+                    manifest_path.display()
+                ),
+                Some(manifest_path.display().to_string()),
+            ));
+        }
+    };
+    if let Some(meta) = &manifest_meta
+        && meta.file_type().is_symlink()
+    {
+        return Err(op_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{}` is a symlink; commit a regular file",
+                manifest_path.display()
+            ),
+            Some(manifest_path.display().to_string()),
+        ));
+    }
+    if explicit_manifest || manifest_meta.is_some() {
+        ensure_manifest_belongs_to_wit_root(&manifest_path, &canon_wit_root)?;
+    }
+    let loaded_manifest = if manifest_meta.is_some() {
+        Some(witforge::ReleasedManifest::load(&manifest_path)?)
+    } else {
+        None
+    };
+
     if !major_bump {
         let highest_in_major = versions
             .iter()
@@ -489,48 +587,7 @@ pub(crate) fn create_new_version(
             ));
         }
         // Refuse resurrecting a completely retired major line.
-        let (manifest_path, explicit_cli_manifest) = match released_manifest {
-            Some((path, explicit)) => (path.to_path_buf(), explicit),
-            None => (wit_root.join("released"), false),
-        };
-        let manifest_meta = match fs::symlink_metadata(&manifest_path) {
-            Ok(meta) => Some(meta),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                if explicit_cli_manifest {
-                    return Err(op_error(
-                        codes::IO_ERROR,
-                        format!(
-                            "released manifest `{}` does not exist",
-                            manifest_path.display()
-                        ),
-                        Some(manifest_path.display().to_string()),
-                    ));
-                }
-                None
-            }
-            Err(err) => {
-                return Err(op_error(
-                    codes::IO_ERROR,
-                    format!(
-                        "failed to inspect released manifest `{}`: {err}",
-                        manifest_path.display()
-                    ),
-                    Some(manifest_path.display().to_string()),
-                ));
-            }
-        };
-        if let Some(meta) = &manifest_meta {
-            if meta.file_type().is_symlink() {
-                return Err(op_error(
-                    codes::GUARD_REFUSED,
-                    format!(
-                        "released manifest `{}` is a symlink; commit a regular file",
-                        manifest_path.display()
-                    ),
-                    Some(manifest_path.display().to_string()),
-                ));
-            }
-            let manifest = witforge::ReleasedManifest::load(&manifest_path)?;
+        if let Some(manifest) = &loaded_manifest {
             let all_major_retired = versions
                 .iter()
                 .filter(|(major, _, _)| *major == latest_major)

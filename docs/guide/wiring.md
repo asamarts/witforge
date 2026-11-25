@@ -303,11 +303,11 @@ and include proto3-JSON `serde` implementations via `pbjson-build`.
   lockfile path instead of the default `<WIT_DIR>/wire.lock`. `witforge lock` still refuses any
   `--lock` path located inside a released directory.
 - **`--released <PATH>`** (on `check`, `lock`, `rust`, `proto`, `schema`, `glue`, `generate`,
-  `release`, `retire`, `inspect`, and `freeze`): overrides the released-version manifest path. The
+  `new-version`, `release`, `retire`, `inspect`, and `freeze`): overrides the released-version manifest path. The
   defaults are:
   - `<WIT_DIR>/../released` for single-version commands (`check <dir>`, `lock <dir>`,
     `release <dir>`, `retire <dir>`);
-  - `<WIT_ROOT>/released` for whole-root `check`, `inspect` (refused on single version directories),
+  - `<WIT_ROOT>/released` for whole-root `check`, `new-version`, `inspect` (refused on single version directories),
     generators, and `freeze`.
   A missing default manifest means no versions are released; an explicitly passed missing manifest
   exits `2`. For `lock`, an explicit `--released` manifest is checked **in addition to** the

@@ -49,10 +49,15 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   (the `generated` job fetches them). `cargo test` runs the reference-check cases and the
   Action's unit tests too (`crates/witforge-cli/tests/tooling.rs`), which gives both suites a
   test name that a plan task can cite.
-- **published Action**: invokes the pinned remote release ref on Linux x86_64, macOS arm64,
-  macOS Intel, and Windows x86_64. Each job downloads its platform archive, verifies its checksum,
-  extracts it, adds it to `PATH`, and runs a real contract check. The workflows job separately
-  executes `uses: ./` so Action changes are covered before a release exists.
+- **published Action**: invokes the pinned remote release ref on Linux x86_64, Linux arm64
+  (`ubuntu-24.04-arm`), macOS arm64, macOS Intel, and Windows x86_64. Each job downloads its
+  platform archive, verifies its checksum, extracts it, adds it to `PATH`, and runs a real
+  contract check. The workflows job separately executes `uses: ./` so Action changes are covered
+  before a release exists.
+- **static musl binary**: builds and verifies static Linux release binaries on
+  `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` (`-C target-feature=+crt-static`),
+  confirming via `readelf` that neither binary has an `INTERP` header or `NEEDED` shared-library
+  dependencies, and runs CLI smoke checks.
 - **generated**: builds the CLI and runs `ci/check-generated.sh`, which generates all four
   emitters' output for the versions fixture into a temporary tree and runs `--check` on each
   against it, so generation must succeed and reproduce itself byte for byte (the golden tests
@@ -123,6 +128,8 @@ cargo +nightly-2026-09-11 fuzz run wit-package \
   --target x86_64-unknown-linux-gnu -- -runs=100
 cargo +nightly-2026-09-11 fuzz run lockfile \
   --target x86_64-unknown-linux-gnu -- -runs=100
+cargo +nightly-2026-09-11 fuzz run structured-contract \
+  --target x86_64-unknown-linux-gnu -- -runs=100
 ```
 
 Use the GNU target on Linux: cargo-fuzz's default musl target is incompatible with the address
@@ -130,7 +137,9 @@ sanitizer unless static linking is disabled.
 
 `wit-package` writes the input as a temporary `v0.1/contract.wit`, runs `load`, the subset
 checker, model construction, lockfile reconciliation, and all four emitters. `lockfile` parses
-arbitrary lockfile text and re-renders anything that parses. A discovered crash should become a
+arbitrary lockfile text and re-renders anything that parses. `structured-contract` synthesizes
+valid grammar-guided multi-version WIT contracts through `arbitrary` and runs the full check,
+lock, emitter, and `diff` pipeline. A discovered crash should become a
 committed regression fixture under the relevant test suite, not only an artifact in
 `fuzz/artifacts/`.
 

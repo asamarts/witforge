@@ -410,7 +410,7 @@ pub const CATALOG: &[CodeInfo] = &[
     CodeInfo {
         code: codes::DIFF_BREAKING,
         severity: Severity::Error,
-        summary: "`diff` found a wire-, source-, or generated-API-breaking change.",
+        summary: "`diff` found a wire-, source-, generated-API-, or decode-breaking change.",
         supersedes: None,
     },
     CodeInfo {
@@ -601,7 +601,7 @@ pub fn explanation(code: &str) -> Option<&'static str> {
              between adjacent versions.",
         ),
         codes::DIFF_BREAKING => {
-            Some("`diff` found a wire-, source-, or generated-API-breaking change.")
+            Some("`diff` found a wire-, source-, generated-API-, or decode-breaking change.")
         }
         codes::DIFF_COMPATIBLE => Some("`diff` found a compatible change."),
         codes::DIFF_CONVERSION_IMPACT => Some(

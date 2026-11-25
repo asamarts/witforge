@@ -165,6 +165,18 @@ This is a summary of what tag `v0.7.0` contains; the changelog's 0.7.0 section i
       fuzzing, and release gates.
 - [x] Release 0.7.0 (2026-11-23, `W10-099`) as the final planned pre-1.0 Rust-library break.
 
+## 0.8.0: lifecycle CLI, contract IR, `no_std`, `witforge-build`, Draft 2020-12, and static `musl`
+
+Strictly additive pre-1.0 minor release over 0.7.0's public API; the changelog's 0.8.0 section
+has the full list, and release tracking lives in `W10-123`:
+
+- [x] Lifecycle CLI (`witforge init`, `witforge retire`, `witforge new-version --from`/`--released`),
+      versioned JSON contract IR (`witforge inspect` / `witforge::inspect`), opt-in `no_std` +
+      `alloc` Rust/convert/glue output, optional `witforge-build` helper crate, JSON Schema
+      Draft 2020-12 and member descriptions, static `musl` Linux archives alongside `gnu`, and
+      Action `check: true` / `generators: all` / default `github-token` (`W10-102`–`W10-122`,
+      `W10-124`).
+
 ## 1.0 and beyond
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is

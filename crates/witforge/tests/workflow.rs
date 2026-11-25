@@ -792,20 +792,31 @@ fn second_wave_audit_freeze_and_check_release_regressions() {
         "clean already-listed v0.2 must pass check_release"
     );
 
-    // Corrupt predecessor wire.lock and verify `check_release` fails instead of silently skipping.
+    // Corrupt predecessor wire.lock must propagate operational PARSE_ERROR (`WF9003`, exit 2),
+    // while a missing predecessor wire.lock is reported as `LOCKFILE_ERROR` (`WF1100`) in `Report`.
     fs::write(v01.join("wire.lock"), "not a valid lockfile\n").unwrap();
-    let corrupt_pred = workflow::check_release(&v02, None).unwrap();
+    let corrupt_pred = workflow::check_release(&v02, None).unwrap_err();
+    let corrupt_diags = witforge::error_diagnostics(&corrupt_pred).unwrap();
+    assert_eq!(
+        corrupt_diags[0].code,
+        witforge::diagnostic::codes::PARSE_ERROR,
+        "expected PARSE_ERROR on corrupt predecessor lock: {corrupt_diags:?}"
+    );
+
+    fs::write(rel_root.join("released"), "v0.2\n").unwrap();
+    fs::remove_file(v01.join("wire.lock")).unwrap();
+    let missing_pred = workflow::check_release(&v02, None).unwrap();
     assert!(
-        !corrupt_pred.is_ok(),
-        "corrupt predecessor wire.lock must fail check_release on already-listed version"
+        !missing_pred.is_ok(),
+        "missing predecessor wire.lock must fail check_release on already-listed version"
     );
     assert!(
-        corrupt_pred.findings.iter().any(|f| f
+        missing_pred.findings.iter().any(|f| f
             .diagnostic
             .as_ref()
             .is_some_and(|d| d.diagnostic.code == witforge::diagnostic::codes::LOCKFILE_ERROR)),
         "expected LOCKFILE_ERROR finding: {:?}",
-        corrupt_pred.findings
+        missing_pred.findings
     );
 
     // 2. `freeze` case-insensitive manifest reconciliation (`core.ignorecase=true`) must catch
@@ -898,6 +909,183 @@ fn second_wave_audit_freeze_and_check_release_regressions() {
                 .any(|v| v.diagnostic.message.contains("symlink")),
             "expected symlink violation: {:?}",
             sym_report.violations
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn third_wave_audit_freeze_manifest_and_package_location_regressions() {
+    use std::process::Command;
+
+    let base = std::env::temp_dir().join(format!(
+        "witforge-third-wave-workflow-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. Multi-file package where the first interface is in a file without a `package` header
+    //    still resolves `package_location` to the file carrying the `package` declaration.
+    let mem_contract = witforge::load_sources(vec![
+        witforge::SourceFile::new(
+            "a.wit".to_string(),
+            "interface alpha { record r { id: u32 } }\n".to_string(),
+        ),
+        witforge::SourceFile::new(
+            "b.wit".to_string(),
+            "// comment\npackage ex:multifile@0.1.0;\n".to_string(),
+        ),
+    ])
+    .unwrap();
+    let locs = mem_contract.member_locations();
+    let (pkg_file, pkg_pos) = locs.get("ex:multifile").expect("package location");
+    assert_eq!(pkg_file, "b.wit");
+    assert_eq!(pkg_pos.line, 2);
+
+    // 2. `freeze` case-insensitive manifest bypasses (staged/committed case-swap, committed `git rm`
+    //    + untracked alternate-case file) and repo-root `--released` pathspec refusal.
+    let git_repo = base.join("git-repo");
+    let git_wit = git_repo.join("wit");
+    let git_v01 = git_wit.join("v0.1");
+    fs::create_dir_all(&git_v01).unwrap();
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&git_repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.name", "Test"]);
+    run_git(&["config", "user.email", "test@example.invalid"]);
+    run_git(&["config", "commit.gpgsign", "false"]);
+    fs::write(
+        git_v01.join("contract.wit"),
+        "package ex:frz3@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    let rg = workflow::lock(
+        &workflow::VersionOptions::new(git_v01.clone()).with_baseline(Baseline::First),
+    )
+    .unwrap();
+    fs::write(&rg.lockfile, rg.rendered.unwrap()).unwrap();
+    fs::write(git_wit.join("released"), "v0.1\n").unwrap();
+    run_git(&["add", "."]);
+    run_git(&["commit", "-q", "-m", "initial release"]);
+
+    // Repo root passed as `--released` returns clean `IO_ERROR` instead of raw git empty-pathspec.
+    let root_err = witforge::freeze::check_root_with_manifest(
+        &git_wit,
+        Some(&git_repo),
+        &witforge::freeze::FreezeOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        witforge::error_diagnostics(&root_err).unwrap()[0].code,
+        witforge::diagnostic::codes::IO_ERROR
+    );
+
+    // 2a. Staged case-swap (`git rm wit/released && : > wit/RELEASED && git add wit/RELEASED`).
+    run_git(&["config", "core.ignorecase", "true"]);
+    run_git(&["rm", "-q", "wit/released"]);
+    fs::write(git_wit.join("RELEASED"), "").unwrap();
+    run_git(&["add", "wit/RELEASED"]);
+    let staged_swap = witforge::freeze::check_root_with_manifest(
+        &git_wit,
+        Some(&git_wit.join("RELEASED")),
+        &witforge::freeze::FreezeOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        !staged_swap.is_ok(),
+        "staged case-swap must fail freeze: {staged_swap:?}"
+    );
+
+    // 2b. Committed case-swap with empty `wit/RELEASED`.
+    run_git(&["commit", "-q", "-m", "case swap"]);
+    let committed_swap = witforge::freeze::check_root_with_manifest(
+        &git_wit,
+        Some(&git_wit.join("RELEASED")),
+        &witforge::freeze::FreezeOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        !committed_swap.is_ok(),
+        "committed case-swap must fail freeze: {committed_swap:?}"
+    );
+
+    // 2c. Committed `git rm wit/RELEASED` + untracked empty `wit/Released`.
+    run_git(&["rm", "-q", "wit/RELEASED"]);
+    run_git(&["commit", "-q", "-m", "drop manifest"]);
+    fs::write(git_wit.join("Released"), "").unwrap();
+    let dropped_swap = witforge::freeze::check_root_with_manifest(
+        &git_wit,
+        Some(&git_wit.join("Released")),
+        &witforge::freeze::FreezeOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        !dropped_swap.is_ok(),
+        "committed git rm + untracked alternate-case manifest must fail freeze: {dropped_swap:?}"
+    );
+
+    // 3. Symlinked and dangling-symlinked `released` manifests are refused by `load_root_released_manifest`
+    //    and `ensure_not_released`, and `<symlink>/..` in `--released` does not lexically collapse.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let sym_root = base.join("sym-root");
+        let sym_v01 = sym_root.join("v0.1");
+        fs::create_dir_all(&sym_v01).unwrap();
+        fs::write(
+            sym_v01.join("contract.wit"),
+            "package ex:sym@0.1.0;\ninterface api { record item { id: u64 } }\n",
+        )
+        .unwrap();
+        let rs = workflow::lock(
+            &workflow::VersionOptions::new(sym_v01.clone()).with_baseline(Baseline::First),
+        )
+        .unwrap();
+        fs::write(&rs.lockfile, rs.rendered.unwrap()).unwrap();
+
+        // Dangling symlink default manifest refused by both `load_root_released_manifest` and
+        // `ensure_not_released`.
+        symlink(sym_root.join("missing-target"), sym_root.join("released")).unwrap();
+        let err_load = witforge::load_root_released_manifest(&sym_root, None).unwrap_err();
+        assert_eq!(
+            witforge::error_diagnostics(&err_load).unwrap()[0].code,
+            witforge::diagnostic::codes::GUARD_REFUSED
+        );
+        let err_lock = witforge::ensure_not_released(&sym_v01, None).unwrap_err();
+        assert_eq!(
+            witforge::error_diagnostics(&err_lock).unwrap()[0].code,
+            witforge::diagnostic::codes::GUARD_REFUSED
+        );
+
+        // `<symlink>/..` pointing outside the repo must be refused as outside repo instead of
+        // lexically cancelling into the repo.
+        let outside = base.join("outside/deep/sub");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(base.join("outside/deep/released"), "v0.1\n").unwrap();
+        symlink(&outside, git_repo.join("sub_link")).unwrap();
+        let escape_err = witforge::freeze::check_root_with_manifest(
+            &git_wit,
+            Some(&git_repo.join("sub_link/../released")),
+            &witforge::freeze::FreezeOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            witforge::error_diagnostics(&escape_err).unwrap()[0].code,
+            witforge::diagnostic::codes::GUARD_REFUSED
         );
     }
 

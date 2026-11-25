@@ -322,7 +322,7 @@ between adjacent versions (such as adding a non-defaulted record field or retypi
 
 **Severity:** `error` (breaking a gated view under `--check[=<views>]`) or `warning` (un-gated)
 
-`witforge diff` found a wire-, source-, or generated-API-breaking change. Without `--check`,
+`witforge diff` found a wire-, source-, generated-API-, or decode-breaking change. Without `--check`,
 `diff` exits `0` and emits `WF3001` at level `warning`; with `--check` or `--check=<views>`,
 `diff` exits `1` and emits `WF3001` at level `error` for changes breaking a gated view (and
 `warning` for breaking changes outside the gated views).
@@ -344,8 +344,8 @@ the older version requires a member removed in the newer version.
 
 **Severity:** `note`
 
-`witforge diff` found a non-defaulted record field addition or retyped member that will cause
-`convert.rs` generation to refuse.
+`witforge diff` found a non-defaulted record field addition, retyped member, or cross-major
+conversion omission that will cause `convert.rs` generation to refuse or omit that item.
 
 ## Operational and internal codes (`WF9000`–`WF9004`)
 

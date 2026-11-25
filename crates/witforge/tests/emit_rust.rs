@@ -1972,3 +1972,236 @@ fn second_wave_audit_emitter_niche_and_rustfmt_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn third_wave_audit_dag_memo_enum_names_and_rustfmt_regressions() {
+    use std::fmt::Write as _;
+    use std::process::Command;
+
+    let base = std::env::temp_dir().join(format!(
+        "witforge-third-wave-emitter-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+
+    // 1. 30-deep binary DAG (`r0 -> r1 -> ... -> r30`) must memoize in microseconds instead of
+    //    2^30 exponential recursion, AND a 35-deep nominal chain (`c0 -> ... -> c34`) wrapping a
+    //    large record must still emit `#[allow(clippy::large_enum_variant)]`.
+    let mut dag_wit = String::from(
+        "package ex:dag@0.1.0;\n\
+         interface dag {\n\
+             record r0 { x: u8 }\n",
+    );
+    for i in 1..=30 {
+        let _ = writeln!(
+            dag_wit,
+            "    record r{i} {{ a: r{}, b: r{} }}",
+            i - 1,
+            i - 1
+        );
+    }
+    dag_wit.push_str("    variant dag-var { small, big(r30) }\n}\n");
+    let dag_contract = witforge::load_sources(vec![witforge::SourceFile::new(
+        "dag.wit".to_string(),
+        dag_wit,
+    )])
+    .unwrap();
+    let dag_model = witforge::model::build(&dag_contract).unwrap();
+    let dag_rs = witforge::emit::rust::emit_version(&dag_model).unwrap();
+    assert!(
+        dag_rs.contains("#[allow(clippy::large_enum_variant)]"),
+        "DAG large variant must carry allow(clippy::large_enum_variant)"
+    );
+
+    // 2. Full two-version contract testing:
+    //    - 35-deep nominal chain wrapping 10 strings (240 B) in a variant
+    //    - `clippy::enum_variant_names` triggers (shared prefix + enum-name prefix)
+    //    - long interface/type/case/flag names in `plain`, `convert.rs`, and `glue`
+    //    - 77-char single-dot field arguments in calls & multi-param tuples
+    //    - long `match` scrutinees on `result` fields in `convert.rs` and `glue`
+    //    - 5-deep nested `option<...>` in `glue`
+    let long_iface = "very-long-contract-interface";
+    let long_rec = "very-long-record-type-name-audit";
+    let long_var = "very-long-variant-type-name-audit";
+    let long_case_a = "very-long-variant-case-name-alpha-payload-check";
+    let long_case_b = "very-long-variant-case-name-beta-unit-check";
+    let long_enum = "very-long-enum-type-name-audit";
+    let long_flag_a =
+        "extremely-long-boolean-flag-member-name-crossing-normal-rustfmt-struct-wrap-column-limit";
+    let long_flag_b = "medium-long-boolean-flag-member-name-for-hoist-test";
+    let field_77 = "a-field-with-seventy-seven-characters-for-single-dot-rustfmt-argument-testing";
+    let mut chain_defs = String::from(
+        "    record c0 {\n\
+             f1: string, f2: string, f3: string, f4: string, f5: string,\n\
+             f6: string, f7: string, f8: string, f9: string, f10: string,\n\
+         }\n",
+    );
+    for i in 1..=34 {
+        let _ = writeln!(chain_defs, "    record c{i} {{ inner: c{} }}", i - 1);
+    }
+
+    let make_wit = |ver: &str, extra_field: &str| {
+        format!(
+            "package ex:wave3@{ver};\n\
+             interface {long_iface} {{\n\
+             {chain_defs}\
+                 variant deep-chain {{\n\
+                     unit-case,\n\
+                     deep(c34),\n\
+                 }}\n\
+                 enum error-kind {{\n\
+                     error-io,\n\
+                     error-parse,\n\
+                     error-eof,\n\
+                 }}\n\
+                 variant status {{\n\
+                     status-ok(u32),\n\
+                     status-err(string),\n\
+                 }}\n\
+                 record inner {{ id: u32{extra_field} }}\n\
+                 record {long_rec} {{\n\
+                     {field_77}: inner,\n\
+                     res-long-field-name-crossing-match-header-width-in-convert-and-glue: result<inner, string>,\n\
+                     nested-opt: option<option<option<option<option<u32>>>>>,\n\
+                 }}\n\
+                 variant {long_var} {{\n\
+                     {long_case_a}(inner),\n\
+                     {long_case_b},\n\
+                 }}\n\
+                 enum {long_enum} {{\n\
+                     {long_case_b},\n\
+                     other-case,\n\
+                 }}\n\
+                 flags very-long-flags-type-name-for-conversion {{\n\
+                     {long_flag_a},\n\
+                     {long_flag_b},\n\
+                 }}\n\
+                 multi: func({field_77}: string, second: u32) -> u32;\n\
+             }}\n"
+        )
+    };
+    fs::write(v01.join("contract.wit"), make_wit("0.1.0", "")).unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        make_wit("0.2.0", ", extra: option<string>"),
+    )
+    .unwrap();
+
+    let r01 = witforge::workflow::lock(
+        &witforge::workflow::VersionOptions::new(v01.clone())
+            .with_baseline(witforge::workflow::Baseline::First),
+    )
+    .unwrap();
+    assert!(r01.is_ok(), "{:?}", r01.report.findings);
+    fs::write(&r01.lockfile, r01.rendered.unwrap()).unwrap();
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    let r02 = witforge::workflow::lock(
+        &witforge::workflow::VersionOptions::new(v02.clone())
+            .with_baseline(witforge::workflow::Baseline::Against(v01.join("wire.lock"))),
+    )
+    .unwrap();
+    assert!(r02.is_ok(), "{:?}", r02.report.findings);
+    fs::write(&r02.lockfile, r02.rendered.unwrap()).unwrap();
+
+    let rust_files = witforge::emit::rust::plan(&wit_root).unwrap();
+    let proto_files = witforge::emit::proto::plan(&wit_root).unwrap();
+    let glue_files = witforge::emit::glue::plan(&wit_root, "crate::plain", "crate::proto").unwrap();
+
+    let crate_dir = base.join("krate");
+    let src_dir = crate_dir.join("src");
+    let proto_dir = base.join("proto");
+    let plain_out = src_dir.join("plain");
+    let glue_out = src_dir.join("glue");
+    fs::create_dir_all(&src_dir).unwrap();
+    rust_files.write(&plain_out).unwrap();
+    proto_files.write(&proto_dir).unwrap();
+    glue_files.write(&glue_out).unwrap();
+
+    for edition in ["2021", "2024"] {
+        for dir in [&plain_out, &glue_out] {
+            for entry in fs::read_dir(dir).unwrap() {
+                let p = entry.unwrap().path();
+                if p.extension().is_some_and(|ext| ext == "rs") {
+                    let out = Command::new("rustfmt")
+                        .args(["--check", "--edition", edition])
+                        .arg(&p)
+                        .output()
+                        .unwrap();
+                    assert!(
+                        out.status.success(),
+                        "rustfmt --edition {edition} failed on {}:\nstdout:\n{}\nstderr:\n{}",
+                        p.display(),
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                }
+            }
+        }
+    }
+
+    let fds = protox::compile([proto_dir.join("v0.proto")], [&proto_dir]).unwrap();
+    let prost_out = src_dir.join("proto");
+    fs::create_dir_all(&prost_out).unwrap();
+    let mut prost_cfg = prost_build::Config::new();
+    prost_cfg.out_dir(&prost_out);
+    prost_cfg.compile_fds(fds).unwrap();
+    fs::write(
+        prost_out.join("mod.rs"),
+        "pub mod v0 { include!(\"ex.wave3.v0.rs\"); }\n",
+    )
+    .unwrap();
+    fs::write(
+        src_dir.join("lib.rs"),
+        "pub mod plain;\n#[allow(clippy::all)]\npub mod proto;\npub mod glue;\n",
+    )
+    .unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"witforge-third-wave-emitter\"\n\
+         version = \"0.0.0\"\n\
+         edition = \"2024\"\n\
+         publish = false\n\
+         \n\
+         [dependencies]\n\
+         prost = \"0.14\"\n\
+         \n\
+         [workspace]\n",
+    )
+    .unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Cargo.lock"),
+        crate_dir.join("Cargo.lock"),
+    )
+    .unwrap();
+
+    let target_dir = base.join("cargo-target");
+    let clippy = Command::new(env!("CARGO"))
+        .args(["clippy", "--offline", "--lib", "--manifest-path"])
+        .arg(crate_dir.join("Cargo.toml"))
+        .args(["--", "-D", "warnings"])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .unwrap();
+    assert!(
+        clippy.status.success(),
+        "clippy -D warnings failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&clippy.stdout),
+        String::from_utf8_lossy(&clippy.stderr)
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

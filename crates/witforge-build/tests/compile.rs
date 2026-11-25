@@ -614,3 +614,96 @@ fn second_wave_audit_include_file_and_pbjson_incremental_cleanup() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn third_wave_audit_empty_proto_pbjson_prefix_and_backslash_guards() {
+    let base =
+        std::env::temp_dir().join(format!("witforge-build-third-wave-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let proto_dir = base.join("proto");
+    let out_dir = base.join("out");
+    fs::create_dir_all(&proto_dir).unwrap();
+    fs::create_dir_all(&out_dir).unwrap();
+
+    // 1. Backslash in `include_file` is refused on every platform (including Unix).
+    fs::write(
+        proto_dir.join("v0.proto"),
+        "syntax = \"proto3\";\npackage ex.empty.v0;\n",
+    )
+    .unwrap();
+    let err = witforge_build::Config::new()
+        .out_dir(&out_dir)
+        .include_file(r"sub\prost_include.rs")
+        .compile_protos(&proto_dir)
+        .unwrap_err();
+    assert!(
+        matches!(err, witforge_build::Error::InvalidIncludeFile(_)),
+        "expected InvalidIncludeFile for backslash, got {err:?}"
+    );
+
+    // 2. Standalone `.proto` with no messages/enums produces `pub mod v0 {}` without a dangling
+    //    `include!("ex.empty.v0.rs");` and removes any stale `.rs` from an earlier build.
+    fs::write(out_dir.join("ex.empty.v0.rs"), "// stale\n").unwrap();
+    let out = witforge_build::Config::new()
+        .out_dir(&out_dir)
+        .compile_protos(&proto_dir)
+        .unwrap();
+    let include_text = fs::read_to_string(out.include_file.as_ref().unwrap()).unwrap();
+    assert!(
+        include_text.contains("pub mod v0 {}"),
+        "expected empty v0 module without dangling include: {include_text}"
+    );
+    assert!(!include_text.contains("ex.empty.v0.rs"));
+    assert!(!out_dir.join("ex.empty.v0.rs").exists());
+
+    // 3. Under `pbjson`:
+    //    a) `package google.tasks.v0;` importing `google/protobuf/timestamp.proto` must NOT emit
+    //       a stray `google.protobuf.serde.rs`.
+    //    b) Package-less `.proto` returns `Err(Error::Pbjson(_))` instead of panicking.
+    #[cfg(feature = "pbjson")]
+    {
+        let wkt_proto = base.join("wkt-proto");
+        let wkt_out = base.join("wkt-out");
+        fs::create_dir_all(&wkt_proto).unwrap();
+        fs::create_dir_all(&wkt_out).unwrap();
+        fs::write(
+            wkt_proto.join("v0.proto"),
+            "syntax = \"proto3\";\n\
+             package google.tasks.v0;\n\
+             import \"google/protobuf/timestamp.proto\";\n\
+             message Task { uint64 id = 1; google.protobuf.Timestamp at = 2; }\n",
+        )
+        .unwrap();
+        witforge_build::Config::new()
+            .out_dir(&wkt_out)
+            .pbjson(true)
+            .compile_protos(&wkt_proto)
+            .unwrap();
+        assert!(wkt_out.join("google.tasks.v0.serde.rs").is_file());
+        assert!(
+            !wkt_out.join("google.protobuf.serde.rs").exists(),
+            "imported well-known proto must not leak into pbjson output"
+        );
+
+        let nopkg_proto = base.join("nopkg-proto");
+        let nopkg_out = base.join("nopkg-out");
+        fs::create_dir_all(&nopkg_proto).unwrap();
+        fs::create_dir_all(&nopkg_out).unwrap();
+        fs::write(
+            nopkg_proto.join("v0.proto"),
+            "syntax = \"proto3\";\nmessage Bare { uint64 id = 1; }\n",
+        )
+        .unwrap();
+        let err = witforge_build::Config::new()
+            .out_dir(&nopkg_out)
+            .pbjson(true)
+            .compile_protos(&nopkg_proto)
+            .unwrap_err();
+        assert!(
+            matches!(err, witforge_build::Error::Pbjson(_)),
+            "expected Error::Pbjson for package-less proto, got {err:?}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

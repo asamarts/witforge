@@ -943,17 +943,54 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
       `expected annotation in logs: ${logs.join('\n')}`,
     );
 
-    // Signal-killed child processes report the signal rather than `status null`.
+    // Signal-killed child processes report the signal rather than `status null` and MUST NOT
+    // re-execute a `--format json` probe.
+    let signalCalls = 0;
     assert.throws(
       () =>
         runCommands([['witforge', 'check', 'wit']], {
           format: 'human',
           env: { GITHUB_OUTPUT: ghOutput },
           log: () => {},
-          spawnSync: () => ({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }),
+          spawnSync: () => {
+            signalCalls += 1;
+            return { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
+          },
         }),
       /witforge check terminated by signal SIGKILL/,
     );
+    assert.equal(signalCalls, 1, 'signal-killed command must not re-run a --format json probe');
+
+    // Unwritable SARIF target must not drop `failed-command` or mask the primary command failure.
+    const unwritableSarif = path.join(tmp, 'sarif-dir-not-file');
+    fs.mkdirSync(unwritableSarif, { recursive: true });
+    const sarifFailOut = path.join(tmp, 'sarif-fail-output');
+    assert.throws(
+      () =>
+        runCommands([['witforge', 'diff', 'a', 'b']], {
+          format: 'sarif',
+          sarifFile: unwritableSarif,
+          env: { GITHUB_OUTPUT: sarifFailOut },
+          log: () => {},
+          spawnSync: () => ({ status: 1, stdout: '{}', stderr: '' }),
+        }),
+      /witforge diff exited with status 1/,
+    );
+    assert.match(fs.readFileSync(sarifFailOut, 'utf8'), /failed-command=witforge diff/);
+
+    // Human-mode spawn errors also set `failed-command`.
+    const humanSpawnOut = path.join(tmp, 'human-spawn-output');
+    assert.throws(
+      () =>
+        runCommands([['witforge', 'check', 'wit']], {
+          format: 'human',
+          env: { GITHUB_OUTPUT: humanSpawnOut },
+          log: () => {},
+          spawnSync: () => ({ error: new Error('spawn ENOEXEC') }),
+        }),
+      /spawn ENOEXEC/,
+    );
+    assert.match(fs.readFileSync(humanSpawnOut, 'utf8'), /failed-command=witforge check/);
 
     // Spawn errors set `failed-command`, flush prior SARIF runs, and buffered spawns set maxBuffer.
     const spawnErrOut = path.join(tmp, 'spawn-err-output');

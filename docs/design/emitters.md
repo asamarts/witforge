@@ -447,11 +447,11 @@ these exact `serde_json` behaviours are pinned by `crates/witforge/tests/serde.r
 | flags | `pub struct` of `pub bool` fields |
 | `type a = b` | `pub type A = B;` |
 | `use ... as ...` alias | `pub type Alias = DefiningType;` in the using interface module |
+| named `list`/`option`/`result` | `pub type` alias |
 
 A list whose resolved element type is `u8` uses the `list<u8>` row even when the element is
 spelled through one or more aliases, including a `use ... as ...` alias of a dependency type.
 The alias itself keeps its `pub type` item; only the list's element projection is resolved.
-| named `list`/`option`/`result` | `pub type` alias |
 
 Examples:
 
@@ -926,7 +926,7 @@ witforge generate [--config <file> | --no-config] [--project <name>] [--check] [
 witforge diff   <old> <new> [--check[=<views>]] [--json]
 witforge inspect [<path>] [--json] [--released <path>] [--config <file> | --no-config] [--project <name>]
 witforge init   [<dir>] [--package <ns:name>] [--serde]
-witforge new-version [<wit-root>] [--major] [--from <version>]
+witforge new-version [<wit-root>] [--major] [--from <version>] [--released <path>]
                      [--config <file> | --no-config] [--project <name>]
 witforge release <wit-dir> [--released <path>] [--config <file> | --no-config] [--project <name>]
 witforge retire  <wit-dir> [--released <path>] [--config <file> | --no-config] [--project <name>]
@@ -1132,7 +1132,7 @@ and the later version-conversion layer.
 witforge glue <wit-root> --out <dir> \
   --plain-root <rust-module-path> \
   --proto-root <rust-module-path> \
-  [--check] [--released <path>]
+  [--no-std | --std] [--check] [--diff] [--released <path>]
 ```
 
 - `--plain-root` is the Rust module that contains `v<major>_<minor>` modules and, for a contract
@@ -1257,7 +1257,8 @@ pub enum GlueError {
 - `field`, `enumeration`, and `message` carry canonical WIT identities where possible.
 - `MissingField` covers a required proto3 `optional` scalar/string/bool/float/enum/bytes value
   and a required message field.
-- `Display` names the failing field/type and the reason; `std::error::Error` is implemented.
+- `Display` names the failing field/type and the reason; `std::error::Error` (or
+  `::core::error::Error` under `--no-std`) is implemented.
 - `#[non_exhaustive]` allows a new decode rule to add a variant without breaking exhaustive
   matches.
 - No `anyhow`, `thiserror`, `serde_json`, or other runtime dependency is used.
@@ -1290,7 +1291,7 @@ pub mod span {
   - named `option<list>` / `option<option>` → its named direct wrapper message;
   - named `list<T>` → the direct repeated representation, for example
     `::std::vec::Vec<ProtoT>`;
-  - named `option<T>` → `::std::option::Option<ProtoT>` for singular projections, or the direct
+  - named `option<T>` → `::core::option::Option<ProtoT>` for singular projections, or the direct
     wrapper message as a field for list/option projections;
   - alias / `use` alias → the target’s direct proto type.
 - A `to_proto` for an alias or a structural named type delegates to the target conversion or
@@ -1484,7 +1485,8 @@ that the source version cannot supply, such as `types/user.old-field`; `UnknownC
 type and case that the target version does not have. All error fields carry `'static` identities.
 Generated conversions never rely on untyped `Ok(...)?` expressions, so consumer-defined `From`
 impls on `ConversionError` cannot break type inference, and generated code is free of default-level
-Clippy warnings. `ConversionError` implements `Display` and `std::error::Error`. Its generated doc
+Clippy warnings. `ConversionError` implements `Display` and `std::error::Error` (or
+`::core::error::Error` under `--no-std`). Its generated doc
 comment notes what `#[non_exhaustive]` does and does not do: it binds only crates downstream of
 the one that includes the generated module, whereas inside the including crate it has no effect,
 so a `match` on `ConversionError` there needs a wildcard arm and struct patterns should include
@@ -1594,7 +1596,7 @@ their own code beside the generated ones.
 
 ## 10. JSON Schema emitter
 
-`witforge schema <wit-root> --out <dir> [--draft 7|2020-12] [--check] [--released <path>]` writes
+`witforge schema <wit-root> --out <dir> [--draft 7|2020-12] [--check] [--diff] [--released <path>]` writes
 one JSON Schema document per version and one per dependency (Draft 7 by default, or opt-in
 Draft 2020-12):
 
@@ -1718,7 +1720,7 @@ witforge generate [--config witforge.toml | --no-config] [--project NAME] [--che
                   [--serde | --no-serde] [--no-std | --std] [--draft 7|2020-12] [--released PATH]
 witforge check    [<path>] [--config witforge.toml | --no-config] [--project NAME]
 witforge freeze   [<wit-root>] [--released PATH] [--config witforge.toml | --no-config] [--project NAME] [--base REV]
-witforge new-version [<wit-root>] [--major] [--from VERSION] [--config witforge.toml | --no-config] [--project NAME]
+witforge new-version [<wit-root>] [--major] [--from VERSION] [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge release  <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge retire   <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge inspect  [<path>] [--json] [--released PATH] [--config witforge.toml | --no-config] [--project NAME]

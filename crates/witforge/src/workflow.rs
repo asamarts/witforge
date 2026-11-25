@@ -620,22 +620,12 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
             } else {
                 first_model_by_major.insert(major, current_model);
             }
-            if released
-                && let Some(predecessor) = &predecessor
-                && let Ok((current_lock, _)) = read_required_lock(&directory.join("wire.lock"))
-                && let Ok((predecessor_lock, _)) =
-                    read_required_lock(&predecessor.join("wire.lock"))
-                && let Err(error) = current_lock.check_append_only(&predecessor_lock)
-            {
-                result.error(
-                    codes::LOCKFILE_ERROR,
-                    format!(
-                        "{} does not continue {}: {error:#}",
-                        directory.join("wire.lock").display(),
-                        predecessor.join("wire.lock").display()
-                    ),
-                    Some(directory.join("wire.lock").display().to_string()),
-                );
+            if released && let Some(predecessor) = &predecessor {
+                check_released_predecessor_continuity(
+                    &directory.join("wire.lock"),
+                    &predecessor.join("wire.lock"),
+                    &mut result,
+                )?;
             }
         } else {
             since_history.exclude(model::Version::new(major, minor, 0));
@@ -643,6 +633,50 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
         previous_by_major.insert(major, directory);
     }
     Ok(result)
+}
+
+fn check_released_predecessor_continuity(
+    current_lock_path: &Path,
+    pred_lock_path: &Path,
+    result: &mut Report,
+) -> Result<()> {
+    let (current_lock, _) = read_required_lock(current_lock_path)?;
+    match read_required_lock(pred_lock_path) {
+        Ok((predecessor_lock, _)) => {
+            if let Err(error) = current_lock.check_append_only(&predecessor_lock) {
+                result.error(
+                    codes::LOCKFILE_ERROR,
+                    format!(
+                        "{} does not continue {}: {error:#}",
+                        current_lock_path.display(),
+                        pred_lock_path.display()
+                    ),
+                    Some(current_lock_path.display().to_string()),
+                );
+            }
+            Ok(())
+        }
+        Err(error)
+            if error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+            }) =>
+        {
+            result.error(
+                codes::LOCKFILE_ERROR,
+                format!(
+                    "cannot verify {} against predecessor {}: missing lockfile {}",
+                    current_lock_path.display(),
+                    pred_lock_path.display(),
+                    pred_lock_path.display()
+                ),
+                Some(pred_lock_path.display().to_string()),
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Validate a version directory as a release candidate inside its enclosing WIT root.
@@ -695,7 +729,8 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
         || crate::default_released_manifest(version_dir),
         Path::to_path_buf,
     );
-    let manifest_meta = match fs::symlink_metadata(&manifest_path) {
+    let normalized_manifest: PathBuf = manifest_path.components().collect();
+    let manifest_meta = match fs::symlink_metadata(&normalized_manifest) {
         Ok(meta) => Some(meta),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(err) => {
@@ -795,56 +830,11 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
         return Ok(result);
     }
     if already_listed && let Some(pred) = &predecessor {
-        let current_lock_path = version_dir.join("wire.lock");
-        let pred_lock_path = pred.join("wire.lock");
-        match (
-            read_required_lock(&current_lock_path),
-            read_required_lock(&pred_lock_path),
-        ) {
-            (Ok((current_lock, _)), Ok((predecessor_lock, _))) => {
-                if let Err(error) = current_lock.check_append_only(&predecessor_lock) {
-                    result.error(
-                        codes::LOCKFILE_ERROR,
-                        format!(
-                            "{} does not continue {}: {error:#}",
-                            current_lock_path.display(),
-                            pred_lock_path.display()
-                        ),
-                        Some(current_lock_path.display().to_string()),
-                    );
-                }
-            }
-            (Err(error), _) => {
-                if is_contract_error(&error) {
-                    append_contract_error(&mut result, &error, Some(&current_lock_path));
-                } else {
-                    result.error(
-                        codes::LOCKFILE_ERROR,
-                        format!(
-                            "cannot verify {} against predecessor {}: {error:#}",
-                            current_lock_path.display(),
-                            pred_lock_path.display()
-                        ),
-                        Some(current_lock_path.display().to_string()),
-                    );
-                }
-            }
-            (_, Err(error)) => {
-                if is_contract_error(&error) {
-                    append_contract_error(&mut result, &error, Some(&pred_lock_path));
-                } else {
-                    result.error(
-                        codes::LOCKFILE_ERROR,
-                        format!(
-                            "cannot verify {} against predecessor {}: {error:#}",
-                            current_lock_path.display(),
-                            pred_lock_path.display()
-                        ),
-                        Some(pred_lock_path.display().to_string()),
-                    );
-                }
-            }
-        }
+        check_released_predecessor_continuity(
+            &version_dir.join("wire.lock"),
+            &pred.join("wire.lock"),
+            &mut result,
+        )?;
     }
 
     let mut since_history = model::SinceHistory::new(

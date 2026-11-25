@@ -1104,14 +1104,17 @@ fn record_body(
     for stmt in stmts {
         writeln!(out, "{stmt}")?;
     }
-    let lit = rustfmt::fmt_struct_lit(
-        indent,
-        &target_path,
-        &fields,
-        indent + "::core::result::Result::Ok(".len(),
-        1,
-    );
-    writeln!(out, "{prefix}::core::result::Result::Ok({lit})")?;
+    let ok_prefix = "::core::result::Result::Ok(";
+    if indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH {
+        let inner_indent = indent + 4;
+        let inner_prefix = " ".repeat(inner_indent);
+        let lit = rustfmt::fmt_struct_lit(inner_indent, &target_path, &fields, inner_indent, 1);
+        writeln!(out, "{prefix}{ok_prefix}\n{inner_prefix}{lit},\n{prefix})")?;
+    } else {
+        let lit =
+            rustfmt::fmt_struct_lit(indent, &target_path, &fields, indent + ok_prefix.len(), 1);
+        writeln!(out, "{prefix}{ok_prefix}{lit})")?;
+    }
     Ok(out)
 }
 
@@ -1163,8 +1166,26 @@ fn variant_body(
             }
         }
         let pat = match (target_case, &source_case.payload) {
-            (Some(_), Some(_)) => format!("{source_path}::{source_case_name}(payload)"),
-            (None, Some(_)) => format!("{source_path}::{source_case_name}(_)"),
+            (Some(_), Some(_)) => {
+                let single_pat = format!("{source_path}::{source_case_name}(payload)");
+                if arm_indent + single_pat.len() + " => {".len() > rustfmt::MAX_WIDTH {
+                    let pat_inner = " ".repeat(arm_indent + 4);
+                    let pat_close = " ".repeat(arm_indent);
+                    format!("{source_path}::{source_case_name}(\n{pat_inner}payload,\n{pat_close})")
+                } else {
+                    single_pat
+                }
+            }
+            (None, Some(_)) => {
+                let single_pat = format!("{source_path}::{source_case_name}(_)");
+                if arm_indent + single_pat.len() + " => {".len() > rustfmt::MAX_WIDTH {
+                    let pat_inner = " ".repeat(arm_indent + 4);
+                    let pat_close = " ".repeat(arm_indent);
+                    format!("{source_path}::{source_case_name}(\n{pat_inner}_,\n{pat_close})")
+                } else {
+                    single_pat
+                }
+            }
             (_, None) => format!("{source_path}::{source_case_name}"),
         };
         let arm = match (target_case, &source_case.payload) {
@@ -1212,26 +1233,33 @@ fn variant_body(
                 )?;
                 let mut inner = val.expr;
                 let ctor = format!("{target_path}::{target_case_name}");
-                let ok_single = format!("::core::result::Result::Ok({ctor}({inner}))");
+                let ok_prefix = "::core::result::Result::Ok(";
+                let ok_single = format!("{ok_prefix}{ctor}({inner}))");
                 if stmts.is_empty() && body_indent + ok_single.len() > rustfmt::MAX_WIDTH {
                     let tmp = fresh(next_id);
                     stmts.push(rustfmt::fmt_let_stmt(body_indent, &tmp, &inner));
                     inner = tmp;
                 }
-                let ctor_call = rustfmt::fmt_call(
-                    body_indent,
-                    &ctor,
-                    &[inner],
-                    body_indent + "::core::result::Result::Ok(".len(),
-                    1,
-                );
-                let tail = format!("::core::result::Result::Ok({ctor_call})");
+                let ok_with_inner = format!("{ok_prefix}{ctor}({inner}))");
+                let tail = if body_indent + ok_with_inner.len() > rustfmt::MAX_WIDTH {
+                    let inner_indent = body_indent + 4;
+                    let inner_prefix = " ".repeat(inner_indent);
+                    let body_prefix = " ".repeat(body_indent);
+                    let ctor_call =
+                        rustfmt::fmt_call(inner_indent, &ctor, &[inner], inner_indent, 1);
+                    format!("{ok_prefix}\n{inner_prefix}{ctor_call},\n{body_prefix})")
+                } else {
+                    ok_with_inner
+                };
                 rustfmt::fmt_match_arm(arm_indent, &pat, &stmts, &tail)
             }
             (Some(target_case), None) => {
                 let target_case_name = rust_ident(&pascal_case(&target_case.name), "variant case")?;
-                let tail = format!("::core::result::Result::Ok({target_path}::{target_case_name})");
-                rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
+                rustfmt::fmt_match_arm_ok(
+                    arm_indent,
+                    &pat,
+                    &format!("{target_path}::{target_case_name}"),
+                )
             }
         };
         writeln!(out, "{arm}")?;
@@ -1277,8 +1305,11 @@ fn enum_body(
             .transpose()?;
         let pat = format!("{source_path}::{source_case_name}");
         let arm = if let Some(target_case_name) = target_case_name {
-            let tail = format!("::core::result::Result::Ok({target_path}::{target_case_name})");
-            rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
+            rustfmt::fmt_match_arm_ok(
+                arm_indent,
+                &pat,
+                &format!("{target_path}::{target_case_name}"),
+            )
         } else {
             let err = rustfmt::fmt_struct_lit(
                 body_indent,
@@ -1318,10 +1349,15 @@ fn flags_body(
     let target_type = rust_ident(&pascal_case(&source_def.name), "type")?;
     let target_path = format!("super::__witforge_to::{target_interface_module}::{target_type}");
     let mut fields = Vec::new();
+    let mut stmts = Vec::new();
+    let mut next_id = 0usize;
     let mut used_value = false;
+    let ok_prefix = "::core::result::Result::Ok(";
+    let wrap_ok = indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH;
+    let field_indent = if wrap_ok { indent + 8 } else { indent + 4 };
     for target_flag in target_flags {
         let target_name = rust_ident(&snake_case(&target_flag.name), "flag")?;
-        let val = if let Some(source_flag) = source_flags
+        let mut val = if let Some(source_flag) = source_flags
             .iter()
             .find(|source_flag| source_flag.name == target_flag.name)
         {
@@ -1331,20 +1367,31 @@ fn flags_body(
         } else {
             "false".to_string()
         };
+        if field_indent + target_name.len() + 2 + val.len() + 1 > rustfmt::MAX_WIDTH {
+            let tmp = fresh(&mut next_id);
+            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &val));
+            val = tmp;
+        }
         fields.push((target_name, val));
     }
     let mut out = String::new();
     if !used_value {
         writeln!(out, "{prefix}let _ = value;")?;
     }
-    let lit = rustfmt::fmt_struct_lit(
-        indent,
-        &target_path,
-        &fields,
-        indent + "::core::result::Result::Ok(".len(),
-        1,
-    );
-    writeln!(out, "{prefix}::core::result::Result::Ok({lit})")?;
+    for stmt in stmts {
+        writeln!(out, "{stmt}")?;
+    }
+    let ok_prefix = "::core::result::Result::Ok(";
+    if indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH {
+        let inner_indent = indent + 4;
+        let inner_prefix = " ".repeat(inner_indent);
+        let lit = rustfmt::fmt_struct_lit(inner_indent, &target_path, &fields, inner_indent, 1);
+        writeln!(out, "{prefix}{ok_prefix}\n{inner_prefix}{lit},\n{prefix})")?;
+    } else {
+        let lit =
+            rustfmt::fmt_struct_lit(indent, &target_path, &fields, indent + ok_prefix.len(), 1);
+        writeln!(out, "{prefix}{ok_prefix}{lit})")?;
+    }
     Ok(out)
 }
 
@@ -1882,11 +1929,24 @@ fn emit_result_value(
             false,
             no_std,
         )?;
+        let mut inner = val.expr;
+        if body_indent + "::core::result::Result::Ok()".len() + inner.len() > rustfmt::MAX_WIDTH {
+            let tmp = fresh(next_id);
+            arm_stmts.push(rustfmt::fmt_let_stmt(body_indent, &tmp, &inner));
+            inner = tmp;
+        }
+        let tail = rustfmt::fmt_call(
+            body_indent,
+            "::core::result::Result::Ok",
+            &[inner],
+            body_indent,
+            0,
+        );
         rustfmt::fmt_match_arm(
             arm_indent,
             &format!("::core::result::Result::Ok({ok_var})"),
             &arm_stmts,
-            &format!("::core::result::Result::Ok({})", val.expr),
+            &tail,
         )
     } else {
         rustfmt::fmt_match_arm(
@@ -1915,11 +1975,24 @@ fn emit_result_value(
             false,
             no_std,
         )?;
+        let mut inner = val.expr;
+        if body_indent + "::core::result::Result::Err()".len() + inner.len() > rustfmt::MAX_WIDTH {
+            let tmp = fresh(next_id);
+            arm_stmts.push(rustfmt::fmt_let_stmt(body_indent, &tmp, &inner));
+            inner = tmp;
+        }
+        let tail = rustfmt::fmt_call(
+            body_indent,
+            "::core::result::Result::Err",
+            &[inner],
+            body_indent,
+            0,
+        );
         rustfmt::fmt_match_arm(
             arm_indent,
             &format!("::core::result::Result::Err({err_var})"),
             &arm_stmts,
-            &format!("::core::result::Result::Err({})", val.expr),
+            &tail,
         )
     } else {
         rustfmt::fmt_match_arm(
@@ -1930,9 +2003,15 @@ fn emit_result_value(
         )
     };
 
-    stmts.push(format!(
-        "{prefix}let {out_var} = match {expression} {{\n{ok_arm}\n{err_arm}\n{prefix}}};"
-    ));
+    let mut scrutinee = expression.to_string();
+    let mut header = format!("{prefix}let {out_var} = match {scrutinee} {{");
+    if scrutinee.contains('\n') || header.len() > rustfmt::MAX_WIDTH {
+        let tmp = fresh(next_id);
+        stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &scrutinee));
+        scrutinee = tmp;
+        header = format!("{prefix}let {out_var} = match {scrutinee} {{");
+    }
+    stmts.push(format!("{header}\n{ok_arm}\n{err_arm}\n{prefix}}};"));
     Ok(ValueExpr {
         expr: out_var,
         returns_result: false,

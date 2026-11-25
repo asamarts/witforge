@@ -21,7 +21,7 @@ JSON diagnostics use this versioned envelope:
 ```json
 {
   "version": 1,
-  "tool": { "name": "witforge", "version": "0.7.0" },
+  "tool": { "name": "witforge", "version": "0.8.0" },
   "diagnostics": [
     {
       "code": "WF1015",
@@ -65,7 +65,7 @@ message.
 
 ## Library reports
 
-`workflow::check`, `workflow::check_root`, and `workflow::lock` return structured `Report`
+`workflow::check`, `workflow::check_root`, `workflow::check_release`, and `workflow::lock` return structured `Report`
 values. Each `Finding` carries its `LocatedDiagnostic`, rendering category, and exact human line;
 `LockReport` additionally carries canonical lockfile text and writes only when its explicit
 `write` method is called. The library neither prints nor chooses an exit status.
@@ -153,7 +153,7 @@ beside each split code for consumers updating JSON or SARIF filters.
 | `WF1205` | note | — | `lock` restored a draft removal. |
 | `WF2001` | error | — | A generated file is missing, changed, extra, unowned, or otherwise refuses `--check`. |
 | `WF2002` | error | — | Version-to-version Rust conversion generation refused an incompatible evolution between adjacent versions. |
-| `WF3001` | error | — | `diff` found a wire-, source-, or generated-API-breaking change. |
+| `WF3001` | error | — | `diff` found a wire-, source-, generated-API-, or decode-breaking change. |
 | `WF3002` | note | — | `diff` found a compatible change. |
 | `WF3003` | note | — | `diff` found a record whose generated new-to-old conversion is guaranteed to fail. The path is the missing member. |
 | `WF3004` | note | — | `diff` found a non-defaulted required record field addition or retyped member that makes conversion generation refuse. The path is the affected member. |

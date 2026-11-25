@@ -711,19 +711,21 @@ function runCommands(commands, options = {}) {
         break;
       }
       if (result.status !== 0) {
-        // Re-run the same read-only check/diff/freeze/--check command in structured JSON mode so
-        // GitHub workflow annotations receive exact file/line/column spans.
-        const probe = spawn(command[0], [...command.slice(1), '--format', 'json'], {
-          encoding: 'utf8',
-          maxBuffer: MAX_SPAWN_BUFFER,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        if (!probe.error && probe.stdout) {
-          try {
-            const parsed = JSON.parse(probe.stdout);
-            emitAnnotations(annotationsFromJsonReport(parsed), log);
-          } catch {
-            // Fall back cleanly if the installed binary did not emit JSON diagnostics.
+        if (result.status !== null) {
+          // Re-run the same read-only check/diff/freeze/--check command in structured JSON mode so
+          // GitHub workflow annotations receive exact file/line/column spans.
+          const probe = spawn(command[0], [...command.slice(1), '--format', 'json'], {
+            encoding: 'utf8',
+            maxBuffer: MAX_SPAWN_BUFFER,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          if (!probe.error && probe.stdout) {
+            try {
+              const parsed = JSON.parse(probe.stdout);
+              emitAnnotations(annotationsFromJsonReport(parsed), log);
+            } catch {
+              // Fall back cleanly if the installed binary did not emit JSON diagnostics.
+            }
           }
         }
         failed = { command, status: result.status, signal: result.signal };
@@ -769,6 +771,10 @@ function runCommands(commands, options = {}) {
     }
   }
 
+  if (failed) {
+    setOutput('failed-command', commandLabel(failed.command), env);
+  }
+
   if (format === 'sarif') {
     const sarifDoc = {
       $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
@@ -776,14 +782,24 @@ function runCommands(commands, options = {}) {
       runs: sarifRuns,
     };
     const resolvedSarif = path.resolve(sarifFile);
-    fs.mkdirSync(path.dirname(resolvedSarif), { recursive: true });
-    fs.writeFileSync(resolvedSarif, `${JSON.stringify(sarifDoc, null, 2)}\n`);
-    setOutput('sarif-file', sarifFile, env);
+    try {
+      fs.mkdirSync(path.dirname(resolvedSarif), { recursive: true });
+      fs.writeFileSync(resolvedSarif, `${JSON.stringify(sarifDoc, null, 2)}\n`);
+      setOutput('sarif-file', sarifFile, env);
+    } catch (sarifError) {
+      if (!failed) {
+        setOutput('failed-command', 'sarif', env);
+        throw sarifError;
+      }
+      log(
+        `::warning::failed to write SARIF output to ${escapeAnnotationData(sarifFile)}: ` +
+          `${escapeAnnotationData(sarifError.message || sarifError)}`,
+      );
+    }
   }
 
   if (failed) {
     const label = commandLabel(failed.command);
-    setOutput('failed-command', label, env);
     if (failed.error) throw failed.error;
     if (failed.status === null && failed.signal) {
       throw new Error(`${label} terminated by signal ${failed.signal}`);
@@ -851,7 +867,7 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(`::error::${error.message || error}`);
+    console.error(`::error::${escapeAnnotationData(error.message || error)}`);
     process.exitCode = 1;
   });
 }

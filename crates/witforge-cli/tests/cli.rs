@@ -5480,3 +5480,135 @@ fn second_wave_audit_release_retire_and_new_version_manifest_guards() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn third_wave_audit_new_version_major_cross_root_and_symlink_guards() {
+    let base = std::env::temp_dir().join(format!(
+        "witforge-third-wave-cli-guards-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let wit_a = base.join("wit-a");
+    let wit_b = base.join("wit-b");
+    fs::create_dir_all(wit_a.join("v0.1")).unwrap();
+    fs::create_dir_all(wit_a.join("v1.0")).unwrap();
+    fs::create_dir_all(wit_b.join("v0.1")).unwrap();
+    for (dir, pkg) in [
+        (wit_a.join("v0.1"), "ex:a@0.1.0"),
+        (wit_a.join("v1.0"), "ex:a@1.0.0"),
+        (wit_b.join("v0.1"), "ex:b@0.1.0"),
+    ] {
+        fs::write(
+            dir.join("contract.wit"),
+            format!("package {pkg};\ninterface api {{ record item {{ id: u64 }} }}\n"),
+        )
+        .unwrap();
+        assert!(
+            witforge()
+                .args(["lock"])
+                .arg(&dir)
+                .arg("--first")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    fs::write(wit_a.join("released"), "v0.1 retired\nv1.0\n").unwrap();
+    fs::write(wit_b.join("released"), "v0.1\n").unwrap();
+
+    // 1. `new-version` refuses cross-root `--released` (preventing resurrecting retired major 0).
+    let cross_nv = witforge()
+        .args(["new-version"])
+        .arg(&wit_a)
+        .args(["--from", "v0.1", "--released"])
+        .arg(wit_b.join("released"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(cross_nv.status.code(), Some(2), "{cross_nv:?}");
+    let val: serde_json::Value = serde_json::from_slice(&cross_nv.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+    assert!(!wit_a.join("v0.2").exists());
+
+    // 2. `new-version --major` still validates `--released` (missing, cross-root, corrupt).
+    let major_missing = witforge()
+        .args(["new-version"])
+        .arg(&wit_a)
+        .args(["--major", "--released"])
+        .arg(wit_a.join("does-not-exist"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(major_missing.status.code(), Some(2), "{major_missing:?}");
+    let val: serde_json::Value = serde_json::from_slice(&major_missing.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9002", "{val}");
+
+    let major_cross = witforge()
+        .args(["new-version"])
+        .arg(&wit_a)
+        .args(["--major", "--released"])
+        .arg(wit_b.join("released"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(major_cross.status.code(), Some(2), "{major_cross:?}");
+    let val: serde_json::Value = serde_json::from_slice(&major_cross.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+    // 3. Missing configured `project.released` in `witforge.toml` fails with `WF9002`.
+    fs::write(
+        base.join("witforge.toml"),
+        "version = 1\n[project.main]\nroot = \"wit-a\"\nreleased = \"wit-a/typo-released\"\n",
+    )
+    .unwrap();
+    let cfg_missing = witforge()
+        .args(["new-version", "--from", "v0.1", "--config"])
+        .arg(base.join("witforge.toml"))
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(cfg_missing.status.code(), Some(2), "{cfg_missing:?}");
+    let val: serde_json::Value = serde_json::from_slice(&cfg_missing.stdout).unwrap();
+    assert_eq!(val["diagnostics"][0]["code"], "WF9002", "{val}");
+
+    // 4. Root path `--released /` is refused with `WF9004` even when `cwd == wit_root`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let root_rel = witforge()
+            .current_dir(&wit_a)
+            .args(["release"])
+            .arg(wit_a.join("v0.1"))
+            .args(["--released", "/", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(root_rel.status.code(), Some(2), "{root_rel:?}");
+        let val: serde_json::Value = serde_json::from_slice(&root_rel.stdout).unwrap();
+        assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+
+        // Trailing-slash symlinked directory manifest is refused with `WF9004` rather than `EISDIR`.
+        let dir_target = base.join("dir-target");
+        fs::create_dir_all(&dir_target).unwrap();
+        let sym_dir = wit_a.join("sym-dir");
+        symlink(&dir_target, &sym_dir).unwrap();
+        let trailing_sym = witforge()
+            .args(["release"])
+            .arg(wit_a.join("v0.1"))
+            .args([
+                "--released",
+                &format!("{}/", sym_dir.display()),
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(trailing_sym.status.code(), Some(2), "{trailing_sym:?}");
+        let val: serde_json::Value = serde_json::from_slice(&trailing_sym.stdout).unwrap();
+        assert_eq!(val["diagnostics"][0]["code"], "WF9004", "{val}");
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

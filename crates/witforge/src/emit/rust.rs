@@ -1,6 +1,6 @@
 //! Deterministic Rust source generation from the owned model.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -872,6 +872,13 @@ fn emit_type_def(
             if complex_type {
                 writeln!(out, "{prefix}#[allow(clippy::type_complexity)]")?;
             }
+            let variant_names: Vec<&str> = rendered_cases
+                .iter()
+                .map(|(_, case_name, _)| case_name.as_str())
+                .collect();
+            if needs_allow_enum_variant_names(&name, &variant_names) {
+                writeln!(out, "{prefix}#[allow(clippy::enum_variant_names)]")?;
+            }
             writeln!(out, "{prefix}pub enum {name} {{")?;
             for (case, case_name, payload_ty) in rendered_cases {
                 rustfmt::write_docs_or(
@@ -898,7 +905,7 @@ fn emit_type_def(
                 writeln!(out, "{prefix}pub enum {name} {{}}")?;
                 return Ok(());
             }
-            writeln!(out, "{prefix}pub enum {name} {{")?;
+            let mut rendered_cases = Vec::with_capacity(cases.len());
             let mut case_names = BTreeMap::new();
             for case in cases {
                 let case_name = rust_ident(&pascal_case(&case.name), "enum case")?;
@@ -908,6 +915,17 @@ fn emit_type_def(
                     &format!("case {}", case.name),
                     &format!("{}/{}", interface.name, def.name),
                 )?;
+                rendered_cases.push((case, case_name));
+            }
+            let variant_names: Vec<&str> = rendered_cases
+                .iter()
+                .map(|(_, case_name)| case_name.as_str())
+                .collect();
+            if needs_allow_enum_variant_names(&name, &variant_names) {
+                writeln!(out, "{prefix}#[allow(clippy::enum_variant_names)]")?;
+            }
+            writeln!(out, "{prefix}pub enum {name} {{")?;
+            for (case, case_name) in rendered_cases {
                 rustfmt::write_docs_or(
                     out,
                     indent + 4,
@@ -940,7 +958,11 @@ fn emit_type_def(
                     &flag.docs,
                     &format!("Flag `{}/{}.{}`.", interface.name, def.name, flag.name),
                 )?;
-                writeln!(out, "{member_prefix}pub {flag_name}: bool,")?;
+                writeln!(
+                    out,
+                    "{}",
+                    rustfmt::fmt_struct_field(indent + 4, &flag_name, "bool")
+                )?;
             }
             writeln!(out, "{prefix}}}")?;
         }
@@ -1135,6 +1157,64 @@ fn resolves_to_unit_err_result(model: &Model, ty: &TypeExpr) -> bool {
     false
 }
 
+fn split_pascal_words(ident: &str) -> Vec<&str> {
+    let raw = ident.strip_prefix("r#").unwrap_or(ident);
+    let bytes = raw.as_bytes();
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let mut words = Vec::new();
+    let mut start = 0usize;
+    for i in 1..bytes.len() {
+        if bytes[i].is_ascii_uppercase()
+            && (!bytes[i - 1].is_ascii_uppercase()
+                || (i + 1 < bytes.len() && bytes[i + 1].is_ascii_lowercase()))
+        {
+            words.push(&raw[start..i]);
+            start = i;
+        }
+    }
+    words.push(&raw[start..]);
+    words
+}
+
+/// Detect whether Clippy's warn-by-default `clippy::enum_variant_names` lint will fire on
+/// `pub enum {enum_name} { ... }`.
+fn needs_allow_enum_variant_names(enum_name: &str, variant_names: &[&str]) -> bool {
+    if variant_names.is_empty() {
+        return false;
+    }
+    let enum_words = split_pascal_words(enum_name);
+    let variant_words: Vec<Vec<&str>> = variant_names
+        .iter()
+        .map(|v| split_pascal_words(v))
+        .collect();
+    if !enum_words.is_empty()
+        && variant_words.iter().any(|words| {
+            words.len() > enum_words.len()
+                && (words.starts_with(&enum_words) || words.ends_with(&enum_words))
+        })
+    {
+        return true;
+    }
+    if variant_words.len() >= 3 && variant_words.iter().all(|words| words.len() >= 2) {
+        let first = variant_words[0][0];
+        if variant_words.iter().all(|words| words[0] == first) {
+            return true;
+        }
+        let last = *variant_words[0].last().expect("checked len >= 2");
+        if variant_words
+            .iter()
+            .all(|words| words.last().copied() == Some(last))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+type LayoutKey = (Option<String>, String, String);
+
 /// Conservative 64-bit size estimate for `clippy::large_enum_variant` (default threshold 200 bytes).
 /// Emits `#[allow(clippy::large_enum_variant)]` whenever a variant case's upper-bound size exceeds
 /// every other case's lower-bound (niche-optimized) size by at least 160 bytes.
@@ -1142,11 +1222,14 @@ fn has_large_variant_disparity(model: &Model, cases: &[crate::model::Case]) -> b
     if cases.len() < 2 {
         return false;
     }
+    let mut memo: BTreeMap<LayoutKey, (usize, usize, usize)> = BTreeMap::new();
+    let mut visiting: BTreeSet<LayoutKey> = BTreeSet::new();
     let bounds: Vec<(usize, usize)> = cases
         .iter()
         .map(|case| {
             case.payload.as_ref().map_or((0, 0), |ty| {
-                let (min_sz, max_sz, _) = estimate_type_layout(model, None, ty, 0, 0);
+                let (min_sz, max_sz, _) =
+                    estimate_type_layout(model, None, ty, 0, 0, &mut memo, &mut visiting);
                 (min_sz, max_sz)
             })
         })
@@ -1169,12 +1252,14 @@ fn estimate_result_layout(
     result: &crate::model::ResultExpr,
     depth: usize,
     alias_hops: usize,
+    memo: &mut BTreeMap<LayoutKey, (usize, usize, usize)>,
+    visiting: &mut BTreeSet<LayoutKey>,
 ) -> (usize, usize, usize) {
     let (ok_min, ok_max, ok_al) = result.ok.as_deref().map_or((0, 0, 1), |t| {
-        estimate_type_layout(model, context, t, depth + 1, alias_hops)
+        estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting)
     });
     let (err_min, err_max, err_al) = result.err.as_deref().map_or((0, 0, 1), |t| {
-        estimate_type_layout(model, context, t, depth + 1, alias_hops)
+        estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting)
     });
     let al = ok_al.max(err_al).max(1);
     let min_raw = ok_min.max(err_min);
@@ -1193,13 +1278,16 @@ fn estimate_variant_layout(
     cases: &[crate::model::Case],
     depth: usize,
     alias_hops: usize,
+    memo: &mut BTreeMap<LayoutKey, (usize, usize, usize)>,
+    visiting: &mut BTreeSet<LayoutKey>,
 ) -> (usize, usize, usize) {
     let mut max_min = 0usize;
     let mut max_max = 0usize;
     let mut max_align = 1usize;
     for case in cases {
         if let Some(t) = &case.payload {
-            let (cmin, cmax, cal) = estimate_type_layout(model, context, t, depth + 1, alias_hops);
+            let (cmin, cmax, cal) =
+                estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting);
             max_min = max_min.max(cmin);
             max_max = max_max.max(cmax);
             max_align = max_align.max(cal);
@@ -1231,16 +1319,19 @@ fn estimate_variant_layout(
 
 /// Conservative `(min_size, max_size, align)` estimate for `clippy::large_enum_variant` detection.
 ///
-/// Tracks `alias_hops` separately from structural `depth` so deep alias chains (up to
-/// `MAX_ALIAS_CHAIN`) do not truncate size estimation prematurely, accounts for Rust niche
-/// optimizations in `min_size` (so a niche-shrunk second-largest variant does not hide a real
-/// disparity), and rounds record and enum sizes up to their maximum power-of-two field alignment.
+/// Memoizes every nominal type definition `(dep_key, interface, name)` with a cycle-guard set and
+/// resets structural `depth` and `alias_hops` on entering nominal `Record`/`Variant` definitions so
+/// DAG-shaped records cannot trigger exponential recursion and deep nominal record chains or
+/// multi-record alias chains never truncate prematurely.
+#[allow(clippy::too_many_lines)]
 fn estimate_type_layout(
     model: &Model,
     context: Option<&crate::model::Dependency>,
     ty: &TypeExpr,
     depth: usize,
     alias_hops: usize,
+    memo: &mut BTreeMap<LayoutKey, (usize, usize, usize)>,
+    visiting: &mut BTreeSet<LayoutKey>,
 ) -> (usize, usize, usize) {
     if depth > crate::model::MAX_TYPE_NESTING || alias_hops > crate::model::MAX_ALIAS_CHAIN {
         return (24, 24, 8);
@@ -1253,17 +1344,30 @@ fn estimate_type_layout(
         TypeExpr::String | TypeExpr::List(_) => (24, 24, 8),
         TypeExpr::Option(inner) => {
             let (min_sz, max_sz, al) =
-                estimate_type_layout(model, context, inner, depth + 1, alias_hops);
+                estimate_type_layout(model, context, inner, depth + 1, alias_hops, memo, visiting);
             (min_sz, max_sz.saturating_add(al), al)
         }
         TypeExpr::Result(result) => {
-            estimate_result_layout(model, context, result, depth, alias_hops)
+            estimate_result_layout(model, context, result, depth, alias_hops, memo, visiting)
         }
         TypeExpr::Named(name) => {
             let Some((resolved_dep, def)) = model.type_def_in(context, name) else {
                 return (8, 8, 8);
             };
-            match &def.kind {
+            let dep_key = resolved_dep.map(|d| {
+                format!(
+                    "{}:{}@{}",
+                    d.package.namespace, d.package.name, d.package.version
+                )
+            });
+            let key: LayoutKey = (dep_key, name.interface.clone(), def.name.clone());
+            if let Some(&cached) = memo.get(&key) {
+                return cached;
+            }
+            if !visiting.insert(key.clone()) {
+                return (24, 24, 8);
+            }
+            let computed = match &def.kind {
                 TypeDefKind::Record(fields) => {
                     let mut min_sum = 0usize;
                     let mut max_sum = 0usize;
@@ -1273,8 +1377,10 @@ fn estimate_type_layout(
                             model,
                             resolved_dep,
                             &field.ty,
-                            depth + 1,
-                            alias_hops,
+                            0,
+                            0,
+                            memo,
+                            visiting,
                         );
                         max_align = max_align.max(fal);
                         min_sum = min_sum.saturating_add(fmin);
@@ -1287,7 +1393,7 @@ fn estimate_type_layout(
                     )
                 }
                 TypeDefKind::Variant(cases) => {
-                    estimate_variant_layout(model, resolved_dep, cases, depth, alias_hops)
+                    estimate_variant_layout(model, resolved_dep, cases, 0, 0, memo, visiting)
                 }
                 TypeDefKind::Enum(cases) => {
                     if cases.len() <= 1 {
@@ -1301,19 +1407,41 @@ fn estimate_type_layout(
                     }
                 }
                 TypeDefKind::Flags(flags) => (flags.len(), flags.len(), 1),
-                TypeDefKind::Alias(target) => {
-                    estimate_type_layout(model, resolved_dep, target, depth, alias_hops + 1)
-                }
+                TypeDefKind::Alias(target) => estimate_type_layout(
+                    model,
+                    resolved_dep,
+                    target,
+                    depth,
+                    alias_hops + 1,
+                    memo,
+                    visiting,
+                ),
                 TypeDefKind::List(_) => (24, 24, 8),
                 TypeDefKind::Option(inner) => {
-                    let (min_sz, max_sz, al) =
-                        estimate_type_layout(model, resolved_dep, inner, depth + 1, alias_hops);
+                    let (min_sz, max_sz, al) = estimate_type_layout(
+                        model,
+                        resolved_dep,
+                        inner,
+                        depth + 1,
+                        alias_hops,
+                        memo,
+                        visiting,
+                    );
                     (min_sz, max_sz.saturating_add(al), al)
                 }
-                TypeDefKind::Result(result) => {
-                    estimate_result_layout(model, resolved_dep, result, depth, alias_hops)
-                }
-            }
+                TypeDefKind::Result(result) => estimate_result_layout(
+                    model,
+                    resolved_dep,
+                    result,
+                    depth,
+                    alias_hops,
+                    memo,
+                    visiting,
+                ),
+            };
+            visiting.remove(&key);
+            memo.insert(key, computed);
+            computed
         }
     }
 }

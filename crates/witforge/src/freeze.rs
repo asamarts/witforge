@@ -179,11 +179,19 @@ pub fn check_root_with_manifest(
         .status
         .success();
 
-    let log_commits = if has_head {
-        manifest_commits(&repo, &manifest, base_commit.as_deref())?
-    } else {
-        Vec::new()
-    };
+    let (manifest, all_manifest_spellings) =
+        reconcile_case_insensitive_manifests(&repo, manifest, base_commit.as_deref(), has_head);
+
+    let mut log_commits_by_path: Vec<(String, Vec<String>)> = Vec::new();
+    if has_head {
+        for spelling in &all_manifest_spellings {
+            let commits = manifest_commits(&repo, spelling, base_commit.as_deref())?;
+            if !commits.is_empty() {
+                log_commits_by_path.push((spelling.clone(), commits));
+            }
+        }
+    }
+    let has_any_log_commits = !log_commits_by_path.is_empty();
 
     let manifest_disk = repo.join(&manifest);
     let manifest_meta = fs::symlink_metadata(&manifest_disk).ok();
@@ -194,7 +202,7 @@ pub fn check_root_with_manifest(
         .as_ref()
         .is_some_and(|meta| meta.file_type().is_file());
 
-    if manifest_meta.is_none() && log_commits.is_empty() {
+    if manifest_meta.is_none() && !has_any_log_commits {
         if let Some(explicit) = explicit_manifest {
             return Err(operational_error(
                 codes::IO_ERROR,
@@ -479,73 +487,84 @@ pub fn check_root_with_manifest(
         }
     }
 
-    // 2. Walk the manifest's commit history at its current path.
+    // 2. Walk the manifest's commit history across its current path (and any case-variant
+    //    spellings when `core.ignorecase` is active).
     let mut checks = 0usize;
     let mut reported_removals: BTreeSet<(String, String)> = BTreeSet::new();
     let mut reported_unretire: BTreeSet<(String, String)> = BTreeSet::new();
     let mut reported_diffs: BTreeSet<(String, String)> = BTreeSet::new();
 
-    for commit in &log_commits {
-        let Some(blob) = git_show_file(&repo, commit, &manifest)? else {
-            continue;
-        };
-        let short = short_sha(commit);
-        for (entry, was_retired) in parse_manifest_history_entries(&blob) {
-            let Some(&currently_retired) = current_entries_map.get(&entry) else {
-                if reported_removals.insert((manifest.clone(), entry.clone())) {
+    for (hist_manifest, commits) in &log_commits_by_path {
+        for commit in commits {
+            let Some(blob) = git_show_file(&repo, commit, hist_manifest)? else {
+                continue;
+            };
+            let short = short_sha(commit);
+            for (entry, was_retired) in parse_manifest_history_entries(&blob) {
+                let Some(&currently_retired) = current_entries_map.get(&entry) else {
+                    if reported_removals.insert((manifest.clone(), entry.clone())) {
+                        push_violation(
+                            &mut violations,
+                            &repo,
+                            &manifest,
+                            None,
+                            format!(
+                                "released entry `{entry}` (listed in {short}) was removed from \
+                                 {manifest}"
+                            ),
+                        );
+                    }
+                    continue;
+                };
+                if was_retired
+                    && !currently_retired
+                    && reported_unretire.insert((manifest.clone(), entry.clone()))
+                {
                     push_violation(
                         &mut violations,
                         &repo,
                         &manifest,
-                        None,
+                        entry_positions.get(&entry).copied().flatten(),
                         format!(
-                            "released entry `{entry}` (listed in {short}) was removed from \
-                             {manifest}"
+                            "released entry `{entry}` (retired in {short}) was un-retired in \
+                             {manifest}; retirement is permanent"
                         ),
                     );
                 }
-                continue;
-            };
-            if was_retired
-                && !currently_retired
-                && reported_unretire.insert((manifest.clone(), entry.clone()))
-            {
-                push_violation(
-                    &mut violations,
-                    &repo,
-                    &manifest,
-                    entry_positions.get(&entry).copied().flatten(),
-                    format!(
-                        "released entry `{entry}` (retired in {short}) was un-retired in \
-                         {manifest}; retirement is permanent"
-                    ),
-                );
-            }
-            let dir_rel = format!("{prefix}{entry}");
-            let changed = git_diff_paths(&repo, commit, &dir_rel)?;
-            if !changed.is_empty() {
-                for changed_path in changed {
-                    if reported_diffs.insert((dir_rel.clone(), changed_path.clone())) {
-                        push_violation(
-                            &mut violations,
-                            &repo,
-                            &changed_path,
-                            None,
-                            format!(
-                                "released directory `{dir_rel}` changed since its release in \
-                                 {short}: `{changed_path}`"
-                            ),
-                        );
+                let dir_rel = format!("{prefix}{entry}");
+                let changed = git_diff_paths(&repo, commit, &dir_rel)?;
+                if !changed.is_empty() {
+                    for changed_path in changed {
+                        if reported_diffs.insert((dir_rel.clone(), changed_path.clone())) {
+                            push_violation(
+                                &mut violations,
+                                &repo,
+                                &changed_path,
+                                None,
+                                format!(
+                                    "released directory `{dir_rel}` changed since its release in \
+                                     {short}: `{changed_path}`"
+                                ),
+                            );
+                        }
                     }
                 }
+                checks += 1;
             }
-            checks += 1;
         }
     }
 
     // 3. Walk earlier rename paths of the manifest (stop at copies).
-    if has_head && !log_commits.is_empty() {
-        let earlier_paths = follow_renamed_manifests(&repo, &manifest, base_commit.as_deref())?;
+    if has_head && has_any_log_commits {
+        let mut earlier_paths = BTreeSet::new();
+        for (hist_manifest, _) in &log_commits_by_path {
+            for old_path in follow_renamed_manifests(&repo, hist_manifest, base_commit.as_deref())?
+            {
+                if !all_manifest_spellings.contains(&old_path) {
+                    earlier_paths.insert(old_path);
+                }
+            }
+        }
         for old_manifest in earlier_paths {
             let old_prefix = if manifest_in_root {
                 match old_manifest.rsplit_once('/') {
@@ -657,31 +676,11 @@ pub fn check_root_with_manifest(
     })
 }
 
-fn normalize_lexical(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => match out.components().next_back() {
-                Some(std::path::Component::Normal(_)) => {
-                    out.pop();
-                }
-                Some(std::path::Component::RootDir | std::path::Component::Prefix(_)) => {}
-                _ => out.push(component),
-            },
-            other => out.push(other),
-        }
-    }
-    out
-}
-
 fn canonicalize_best_effort(path: &Path) -> Result<PathBuf> {
-    let abs = if path.is_absolute() {
-        normalize_lexical(path)
-    } else {
-        let cwd = std::env::current_dir().context("failed to read current directory")?;
-        normalize_lexical(&cwd.join(path))
-    };
+    // Strip trailing separators without collapsing `..` across symlinks, then resolve through
+    // the OS so `<symlink>/..` follows OS semantics rather than lexical cancellation.
+    let stripped: PathBuf = path.components().collect();
+    let abs = std::path::absolute(&stripped).context("failed to resolve path")?;
     let mut missing = Vec::new();
     let mut cursor = abs.as_path();
     if let Ok(meta) = fs::symlink_metadata(&abs) {
@@ -737,6 +736,76 @@ fn git_bool_config(repo: &Path, key: &str) -> bool {
     output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
 }
 
+fn reconcile_case_insensitive_manifests(
+    repo: &Path,
+    manifest: String,
+    base_commit: Option<&str>,
+    has_head: bool,
+) -> (String, BTreeSet<String>) {
+    let mut all = BTreeSet::new();
+    all.insert(manifest.clone());
+    if !git_bool_config(repo, "core.ignorecase") {
+        return (manifest, all);
+    }
+
+    let mut matched = BTreeSet::new();
+    if let Ok(index_paths) = git_nul_paths(repo, &["ls-files", "-z"]) {
+        for tracked in index_paths {
+            if tracked.eq_ignore_ascii_case(&manifest) {
+                matched.insert(tracked);
+            }
+        }
+    }
+    if has_head
+        && let Ok(head_paths) = git_nul_paths(repo, &["ls-tree", "-r", "--name-only", "-z", "HEAD"])
+    {
+        for tracked in head_paths {
+            if tracked.eq_ignore_ascii_case(&manifest) {
+                matched.insert(tracked);
+            }
+        }
+    }
+    if let Some(base) = base_commit
+        && let Ok(base_paths) = git_nul_paths(repo, &["ls-tree", "-r", "--name-only", "-z", base])
+    {
+        for tracked in base_paths {
+            if tracked.eq_ignore_ascii_case(&manifest) {
+                matched.insert(tracked);
+            }
+        }
+    }
+    if has_head {
+        let range = base_commit.map(|base| format!("{base}..HEAD"));
+        let mut args = vec!["log", "--full-history", "--name-only", "-z", "--format="];
+        if let Some(ref rev_range) = range {
+            args.push(rev_range);
+        }
+        if let Ok(output) = run_git(repo, &args)
+            && output.status.success()
+        {
+            for raw in output.stdout.split(|&byte| byte == 0) {
+                let text = String::from_utf8_lossy(raw);
+                for line in text.lines() {
+                    let trimmed = line.trim_matches(['\r', '\n']);
+                    if !trimmed.is_empty() && trimmed.eq_ignore_ascii_case(&manifest) {
+                        matched.insert(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    for spelling in &matched {
+        all.insert(spelling.clone());
+    }
+    let primary = if !matched.contains(&manifest) && matched.len() == 1 {
+        matched.into_iter().next().unwrap_or(manifest)
+    } else {
+        manifest
+    };
+    (primary, all)
+}
+
 fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
     if explicit.file_name().is_none() {
         return Err(operational_error(
@@ -769,34 +838,16 @@ fn resolve_manifest_in_repo(explicit: &Path, repo: &Path) -> Result<String> {
             Some(explicit.display().to_string()),
         )
     })?;
-    let mut rel_git = to_git_path(rel_manifest);
-    // Reconcile against git's exact tracked spelling so a case-insensitive filesystem cannot
-    // bypass manifest history checks via alternate casing (even when `git rm`'d from the index).
-    if let Ok(tracked) = git_nul_paths(repo, &["ls-files", "-z", "--", &rel_git])
-        && tracked.len() == 1
-        && tracked[0].eq_ignore_ascii_case(&rel_git)
-    {
-        rel_git = tracked.into_iter().next().unwrap_or(rel_git);
-    } else if git_bool_config(repo, "core.ignorecase") {
-        let mut candidates = std::collections::BTreeSet::new();
-        if let Ok(index_paths) = git_nul_paths(repo, &["ls-files", "-z"]) {
-            for tracked in index_paths {
-                if tracked.eq_ignore_ascii_case(&rel_git) {
-                    candidates.insert(tracked);
-                }
-            }
-        }
-        if let Ok(head_paths) = git_nul_paths(repo, &["ls-tree", "-r", "--name-only", "-z", "HEAD"])
-        {
-            for tracked in head_paths {
-                if tracked.eq_ignore_ascii_case(&rel_git) {
-                    candidates.insert(tracked);
-                }
-            }
-        }
-        if candidates.len() == 1 {
-            rel_git = candidates.into_iter().next().unwrap_or(rel_git);
-        }
+    let rel_git = to_git_path(rel_manifest);
+    if rel_git.is_empty() {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "release freeze: invalid released manifest path `{}`",
+                explicit.display()
+            ),
+            Some(explicit.display().to_string()),
+        ));
     }
     Ok(rel_git)
 }

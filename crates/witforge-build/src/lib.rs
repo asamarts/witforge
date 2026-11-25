@@ -350,22 +350,34 @@ impl Config {
         let pbjson_enabled = false;
 
         #[cfg(feature = "pbjson")]
+        if pbjson_enabled {
+            for file in &descriptors.file {
+                if file.package.as_deref().is_none_or(str::is_empty) {
+                    let name = file.name.as_deref().unwrap_or("<unnamed>");
+                    return Err(Error::Pbjson(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "protobuf file `{name}` has no `package` declaration, which is \
+                             required when `pbjson` is enabled"
+                        ),
+                    )));
+                }
+            }
+        }
+
+        #[cfg(feature = "pbjson")]
         let pbjson_prefixes = collect_pbjson_prefixes(&package_by_file);
 
         self.prost.out_dir(&out_dir);
         let include_path = self.include_file.as_ref().map(|name| out_dir.join(name));
-        let raw_prost_include = if has_dependencies {
-            if let Some(include_name) = &self.include_file {
-                if pbjson_enabled {
-                    let scratch_name =
-                        PathBuf::from(format!(".{}.prost", include_name.to_string_lossy()));
-                    self.prost.include_file(&scratch_name);
-                    Some(out_dir.join(scratch_name))
-                } else {
-                    self.prost.include_file(include_name);
-                    None
-                }
+        let raw_prost_include = if let Some(include_name) = &self.include_file {
+            if !has_dependencies || pbjson_enabled {
+                let scratch_name =
+                    PathBuf::from(format!(".{}.prost", include_name.to_string_lossy()));
+                self.prost.include_file(&scratch_name);
+                Some(out_dir.join(scratch_name))
             } else {
+                self.prost.include_file(include_name);
                 None
             }
         } else {
@@ -426,10 +438,17 @@ impl Config {
                 #[cfg(not(feature = "pbjson"))]
                 let _ = raw_prost_include;
             } else {
+                let emitted_prost_files = raw_prost_include
+                    .as_deref()
+                    .map(extract_prost_include_files)
+                    .transpose()?
+                    .unwrap_or_default();
                 write_standalone_include(
                     &proto_files,
                     proto_dir,
                     &package_by_file,
+                    &out_dir,
+                    &emitted_prost_files,
                     include_path,
                     #[cfg(feature = "pbjson")]
                     &serde_by_pkg,
@@ -480,6 +499,9 @@ impl Drop for TempFileGuard {
 }
 
 fn validate_include_file_name(name: &Path) -> Result<(), Error> {
+    if name.as_os_str().as_encoded_bytes().contains(&b'\\') {
+        return Err(Error::InvalidIncludeFile(name.to_path_buf()));
+    }
     let mut components = name.components();
     match (components.next(), components.next()) {
         (Some(Component::Normal(part)), None) if !part.is_empty() && name.as_os_str() == part => {
@@ -616,13 +638,28 @@ fn pbjson_candidate_file_names(pkg: &str) -> Vec<String> {
 fn collect_pbjson_prefixes(package_by_file: &BTreeMap<String, String>) -> BTreeSet<String> {
     let mut prefixes = BTreeSet::new();
     for pkg in package_by_file.values() {
-        if let Some(first) = pkg.split('.').next()
-            && !first.is_empty()
-        {
-            prefixes.insert(format!(".{first}"));
+        if !pkg.is_empty() {
+            prefixes.insert(format!(".{pkg}"));
         }
     }
     prefixes
+}
+
+fn extract_prost_include_files(raw_include_path: &Path) -> Result<BTreeSet<String>, Error> {
+    let text = fs::read_to_string(raw_include_path).map_err(|source| Error::Io {
+        path: Some(raw_include_path.to_path_buf()),
+        source,
+    })?;
+    let mut files = BTreeSet::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("include!(\"")
+            && let Some(file_name) = rest.strip_suffix("\");")
+        {
+            files.insert(file_name.to_string());
+        }
+    }
+    Ok(files)
 }
 
 fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), Error> {
@@ -637,10 +674,13 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_standalone_include(
     proto_files: &[PathBuf],
     proto_dir: &Path,
     package_by_file: &BTreeMap<String, String>,
+    out_dir: &Path,
+    emitted_prost_files: &BTreeSet<String>,
     include_path: &Path,
     #[cfg(feature = "pbjson")] serde_by_pkg: &BTreeMap<String, String>,
     pbjson_enabled: bool,
@@ -667,13 +707,21 @@ fn write_standalone_include(
     for (major, pkg) in majors {
         let rs_name = prost_file_name(&pkg);
         let _ = writeln!(out);
-        let _ = writeln!(out, "pub mod v{major} {{");
-        let _ = writeln!(out, "    include!({rs_name:?});");
-        #[cfg(feature = "pbjson")]
-        if pbjson_enabled && let Some(serde_name) = serde_by_pkg.get(&pkg) {
-            let _ = writeln!(out, "    include!({serde_name:?});");
+        if emitted_prost_files.contains(&rs_name) {
+            let _ = writeln!(out, "pub mod v{major} {{");
+            let _ = writeln!(out, "    include!({rs_name:?});");
+            #[cfg(feature = "pbjson")]
+            if pbjson_enabled && let Some(serde_name) = serde_by_pkg.get(&pkg) {
+                let _ = writeln!(out, "    include!({serde_name:?});");
+            }
+            let _ = writeln!(out, "}}");
+        } else {
+            let stale = out_dir.join(&rs_name);
+            if stale.is_file() {
+                let _ = fs::remove_file(stale);
+            }
+            let _ = writeln!(out, "pub mod v{major} {{}}");
         }
-        let _ = writeln!(out, "}}");
     }
 
     write_if_changed(include_path, out.as_bytes())

@@ -37,10 +37,20 @@ requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependenc
     || fail "witforge-cli requires witforge ${requirement}; require the released version ${version}"
 
 # Keep the standalone fuzz workspace lockfile aligned with the workspace crate version; CI runs
-# `cargo check --manifest-path fuzz/Cargo.toml --locked`.
-if [[ -f "${ROOT}/fuzz/Cargo.toml" ]]; then
-    fuzz_version="$(cargo metadata --manifest-path "${ROOT}/fuzz/Cargo.toml" --format-version 1 --locked \
-        | jq -r '.packages[] | select(.name == "witforge") | .version' | sort -u)"
+# `cargo check --manifest-path fuzz/Cargo.toml --locked`. Parse fuzz/Cargo.lock directly so this
+# script stays completely offline (matching `cargo metadata --no-deps --locked` above).
+if [[ -f "${ROOT}/fuzz/Cargo.lock" ]]; then
+    fuzz_version="$(awk '
+        /^\[\[package\]\]/ { in_pkg = 0 }
+        /^name = "witforge"$/ { in_pkg = 1; next }
+        in_pkg && /^version = "/ {
+            v = $0
+            sub(/^version = "/, "", v)
+            sub(/"$/, "", v)
+            print v
+            in_pkg = 0
+        }
+    ' "${ROOT}/fuzz/Cargo.lock" | sort -u)"
     [[ "${fuzz_version}" == "${version}" ]] \
         || fail "fuzz/Cargo.lock pins witforge ${fuzz_version:-<missing>}, expected ${version}; run 'cargo update --manifest-path fuzz/Cargo.toml -p witforge'"
 fi

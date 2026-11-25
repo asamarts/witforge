@@ -2197,9 +2197,14 @@ fn push_let_else_err(
     } else {
         let tmp = temps.fresh();
         stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, scrutinee));
-        stmts.push(format!(
-            "{prefix}let {pat} = {tmp} else {{\n{return_stmt}\n{prefix}}};"
-        ));
+        let hoisted_header = format!("{prefix}let {pat} = {tmp} else {{");
+        if hoisted_header.len() <= rustfmt::MAX_WIDTH {
+            stmts.push(format!("{hoisted_header}\n{return_stmt}\n{prefix}}};"));
+        } else {
+            stmts.push(format!(
+                "{prefix}let {pat} = {tmp}\n{prefix}else {{\n{return_stmt}\n{prefix}}};"
+            ));
+        }
     }
 }
 
@@ -2262,10 +2267,17 @@ fn emit_direct_module_tail(
     if indent + direct.len() <= rustfmt::MAX_WIDTH {
         writeln!(out, "{pad}{direct}")?;
     } else {
-        let inner = " ".repeat(indent + 4);
+        let inner_indent = indent + 4;
+        let inner = " ".repeat(inner_indent);
         writeln!(out, "{pad}{{")?;
         writeln!(out, "{inner}use {module} as target;")?;
-        writeln!(out, "{inner}target::{func}({arg})")?;
+        let call = format!("target::{func}({arg})");
+        if inner_indent + call.len() <= rustfmt::MAX_WIDTH {
+            writeln!(out, "{inner}{call}")?;
+        } else {
+            writeln!(out, "{}", rustfmt::fmt_let_stmt(inner_indent, "v0", arg))?;
+            writeln!(out, "{inner}target::{func}(v0)")?;
+        }
         writeln!(out, "{pad}}}")?;
     }
     Ok(())
@@ -2540,15 +2552,34 @@ impl Emitter<'_> {
                         "payload",
                         payload,
                     )?;
-                    let val = hoist_if_long(
+                    let mut val = hoist_if_long(
                         &mut arm_stmts,
                         arm_body_indent,
                         &mut temps,
                         val,
                         "Oneof::".len() + prost_variant.len() + 2,
                     );
-                    let pat = format!("Plain::{plain_variant}(payload)");
-                    let tail = format!("Oneof::{prost_variant}({val})");
+                    if val.len() > rustfmt::FN_CALL_WIDTH {
+                        let tmp = temps.fresh();
+                        arm_stmts.push(rustfmt::fmt_let_stmt(arm_body_indent, &tmp, &val));
+                        val = tmp;
+                    }
+                    let single_pat = format!("Plain::{plain_variant}(payload)");
+                    let pat = if arm_indent + single_pat.len() + " => {".len() > rustfmt::MAX_WIDTH
+                    {
+                        let pat_inner = " ".repeat(arm_indent + 4);
+                        let pat_close = " ".repeat(arm_indent);
+                        format!("Plain::{plain_variant}(\n{pat_inner}payload,\n{pat_close})")
+                    } else {
+                        single_pat
+                    };
+                    let tail = rustfmt::fmt_call(
+                        arm_body_indent,
+                        &format!("Oneof::{prost_variant}"),
+                        &[val],
+                        arm_body_indent,
+                        0,
+                    );
                     writeln!(
                         out,
                         "{}",
@@ -2556,7 +2587,13 @@ impl Emitter<'_> {
                     )?;
                 } else {
                     let pat = format!("Plain::{plain_variant}");
-                    let tail = format!("Oneof::{prost_variant}(Empty {{}})");
+                    let tail = rustfmt::fmt_call(
+                        arm_body_indent,
+                        &format!("Oneof::{prost_variant}"),
+                        &["Empty {}".to_string()],
+                        arm_body_indent,
+                        0,
+                    );
                     writeln!(
                         out,
                         "{}",
@@ -2628,20 +2665,51 @@ impl Emitter<'_> {
                         val,
                         "::core::result::Result::Ok(Plain::".len() + plain_variant.len() + 2,
                     );
-                    let pat = format!("Oneof::{prost_variant}(payload)");
-                    let tail = format!("::core::result::Result::Ok(Plain::{plain_variant}({val}))");
+                    let single_pat = format!("Oneof::{prost_variant}(payload)");
+                    let pat = if arm_indent + single_pat.len() + " => {".len() > rustfmt::MAX_WIDTH
+                    {
+                        let pat_inner = " ".repeat(arm_indent + 4);
+                        let pat_close = " ".repeat(arm_indent);
+                        format!("Oneof::{prost_variant}(\n{pat_inner}payload,\n{pat_close})")
+                    } else {
+                        single_pat
+                    };
+                    let ok_prefix = "::core::result::Result::Ok(";
+                    let plain_ctor = format!("Plain::{plain_variant}");
+                    let ok_single = format!("{ok_prefix}{plain_ctor}({val}))");
+                    let tail = if arm_body_indent + ok_single.len() > rustfmt::MAX_WIDTH {
+                        let inner_indent = arm_body_indent + 4;
+                        let inner_pad = " ".repeat(inner_indent);
+                        let body_pad = " ".repeat(arm_body_indent);
+                        let ctor_call =
+                            rustfmt::fmt_call(inner_indent, &plain_ctor, &[val], inner_indent, 1);
+                        format!("{ok_prefix}\n{inner_pad}{ctor_call},\n{body_pad})")
+                    } else {
+                        ok_single
+                    };
                     writeln!(
                         out,
                         "{}",
                         rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail)
                     )?;
                 } else {
-                    let pat = format!("Oneof::{prost_variant}(_)");
-                    let tail = format!("::core::result::Result::Ok(Plain::{plain_variant})");
+                    let single_pat = format!("Oneof::{prost_variant}(_)");
+                    let pat = if arm_indent + single_pat.len() + " => {".len() > rustfmt::MAX_WIDTH
+                    {
+                        let pat_inner = " ".repeat(arm_indent + 4);
+                        let pat_close = " ".repeat(arm_indent);
+                        format!("Oneof::{prost_variant}(\n{pat_inner}_,\n{pat_close})")
+                    } else {
+                        single_pat
+                    };
                     writeln!(
                         out,
                         "{}",
-                        rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
+                        rustfmt::fmt_match_arm_ok(
+                            arm_indent,
+                            &pat,
+                            &format!("Plain::{plain_variant}")
+                        )
                     )?;
                 }
             }
@@ -2702,11 +2770,10 @@ impl Emitter<'_> {
             let plain_variant = rust_ident(&pascal_case(&case.name), "enum case")?;
             let number = self.number(interface, type_name, &case.name)?;
             let pat = number.to_string();
-            let tail = format!("::core::result::Result::Ok(Plain::{plain_variant})");
             writeln!(
                 out,
                 "{}",
-                rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail)
+                rustfmt::fmt_match_arm_ok(arm_indent, &pat, &format!("Plain::{plain_variant}"))
             )?;
         }
         let err_let_prefix = "let err = ";
@@ -2757,12 +2824,21 @@ impl Emitter<'_> {
             writeln!(out, "{body_pad}let _ = value;")?;
             writeln!(out, "{body_pad}Proto {{}}")?;
         } else {
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
             let mut pairs = Vec::with_capacity(flags.len());
             for flag in flags {
                 let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
                 let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
-                pairs.push((prost_flag, format!("value.{plain_flag}")));
+                let mut expr = format!("value.{plain_flag}");
+                if body_indent + 4 + prost_flag.len() + 2 + expr.len() + 1 > rustfmt::MAX_WIDTH {
+                    let tmp = temps.fresh();
+                    stmts.push(rustfmt::fmt_let_stmt(body_indent, &tmp, &expr));
+                    expr = tmp;
+                }
+                pairs.push((prost_flag, expr));
             }
+            push_stmts(out, &stmts)?;
             let lit = rustfmt::fmt_struct_lit(body_indent, "Proto", &pairs, body_indent, 0);
             writeln!(out, "{body_pad}{lit}")?;
         }
@@ -2773,12 +2849,21 @@ impl Emitter<'_> {
             writeln!(out, "{body_pad}let _ = value;")?;
             writeln!(out, "{body_pad}::core::result::Result::Ok(Plain {{}})")?;
         } else {
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
             let mut pairs = Vec::with_capacity(flags.len());
             for flag in flags {
                 let plain_flag = rust_ident(&snake_case(&flag.name), "flag")?;
                 let prost_flag = ident::prost_field_ident(&ident::proto_field_name(&flag.name));
-                pairs.push((plain_flag, format!("value.{prost_flag}")));
+                let mut expr = format!("value.{prost_flag}");
+                if body_indent + 4 + plain_flag.len() + 2 + expr.len() + 1 > rustfmt::MAX_WIDTH {
+                    let tmp = temps.fresh();
+                    stmts.push(rustfmt::fmt_let_stmt(body_indent, &tmp, &expr));
+                    expr = tmp;
+                }
+                pairs.push((plain_flag, expr));
             }
+            push_stmts(out, &stmts)?;
             let ok_prefix = "::core::result::Result::Ok(";
             let lit = rustfmt::fmt_struct_lit(
                 body_indent,
@@ -3994,7 +4079,12 @@ impl Emitter<'_> {
             format!("{pad}if let ::core::option::Option::Some({item_var}) = {scrutinee} {{");
         if scrutinee.contains('\n') || header.len() > rustfmt::MAX_WIDTH {
             let tmp = temps.fresh();
-            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &format!("&{borrowed}")));
+            let rhs = if opt_expr.starts_with('&') || borrowed.contains('.') {
+                format!("&{borrowed}")
+            } else {
+                borrowed.to_string()
+            };
+            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &rhs));
             header =
                 format!("{pad}if let ::core::option::Option::Some({item_var}) = {tmp}.as_ref() {{");
         }
@@ -4367,13 +4457,17 @@ impl Emitter<'_> {
             &[],
             "Case::None(Empty {})",
         );
+        let some_val = rustfmt::fmt_call(
+            inner_indent + 4,
+            "::core::option::Option::Some",
+            std::slice::from_ref(&inner_var),
+            inner_indent + 4 + "value: ".len(),
+            1,
+        );
         let lit = rustfmt::fmt_struct_lit(
             inner_indent,
             "Wrapper",
-            &[(
-                "value".to_string(),
-                format!("::core::option::Option::Some({inner_var})"),
-            )],
+            &[("value".to_string(), some_val)],
             inner_indent,
             0,
         );
@@ -4433,13 +4527,17 @@ impl Emitter<'_> {
             &[],
             "Case::None(Empty {})",
         );
+        let some_val = rustfmt::fmt_call(
+            inner_indent + 4,
+            "::core::option::Option::Some",
+            std::slice::from_ref(&inner_var),
+            inner_indent + 4 + "value: ".len(),
+            1,
+        );
         let lit = rustfmt::fmt_struct_lit(
             inner_indent,
             "Wrapper",
-            &[(
-                "value".to_string(),
-                format!("::core::option::Option::Some({inner_var})"),
-            )],
+            &[("value".to_string(), some_val)],
             inner_indent,
             0,
         );
@@ -5037,7 +5135,14 @@ impl Emitter<'_> {
                 rustfmt::fmt_type_alias(inner_indent, "type Empty", &empty)
             )?;
         }
-        writeln!(out, "{inner_pad}let inner = match {expr} {{")?;
+        let match_expr =
+            if inner_indent + "let inner = match  {".len() + expr.len() > rustfmt::MAX_WIDTH {
+                writeln!(out, "{}", rustfmt::fmt_let_stmt(inner_indent, "v0", expr))?;
+                "v0"
+            } else {
+                expr
+            };
+        writeln!(out, "{inner_pad}let inner = match {match_expr} {{")?;
         for (side, variant) in [("Ok", "Ok"), ("Err", "Err")] {
             let slot = if side == "Ok" {
                 &result.ok
@@ -5054,13 +5159,18 @@ impl Emitter<'_> {
                     "v",
                     ty,
                 )?;
-                let val = hoist_if_long(
+                let mut val = hoist_if_long(
                     &mut arm_stmts,
                     arm_body_indent,
                     &mut temps,
                     val,
                     "Case::".len() + variant.len() + 2,
                 );
+                if val.len() > rustfmt::FN_CALL_WIDTH {
+                    let tmp = temps.fresh();
+                    arm_stmts.push(rustfmt::fmt_let_stmt(arm_body_indent, &tmp, &val));
+                    val = tmp;
+                }
                 let pat = format!("::core::result::Result::{side}(v)");
                 let tail = format!("Case::{variant}({val})");
                 writeln!(

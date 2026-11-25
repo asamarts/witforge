@@ -666,8 +666,10 @@ pub(crate) fn package_location(
             }
         }
     }
-    if let Some(file) = file {
-        return find_package_header_position(&file, cache, virtual_sources);
+    if let Some(file) = &file
+        && let Some(pos) = find_explicit_package_header_position(file, cache, virtual_sources)
+    {
+        return Some((file.clone(), pos));
     }
     if let Some(entry) = contract.dependency_entry(package_id) {
         if let Some(sources) = virtual_sources {
@@ -681,19 +683,21 @@ pub(crate) fn package_location(
                 .filter(|key| key.starts_with(&prefix))
                 .cloned()
                 .collect();
-            return pick_package_header_file(&candidates, cache, Some(sources));
-        }
-        if entry.is_file() {
+            if let Some(found) = pick_package_header_file(&candidates, cache, Some(sources)) {
+                return Some(found);
+            }
+        } else if entry.is_file() {
             return find_package_header_position(&entry.display().to_string(), cache, None);
-        }
-        if entry.is_dir()
+        } else if entry.is_dir()
             && let Ok(wit_files) = sorted_wit_files(entry)
         {
             let candidates: Vec<String> = wit_files
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            return pick_package_header_file(&candidates, cache, None);
+            if let Some(found) = pick_package_header_file(&candidates, cache, None) {
+                return Some(found);
+            }
         }
     }
     if package_id == contract.package {
@@ -710,7 +714,12 @@ pub(crate) fn package_location(
                 .map(|p| p.display().to_string())
                 .collect()
         };
-        return pick_package_header_file(&candidates, cache, virtual_sources);
+        if let Some(found) = pick_package_header_file(&candidates, cache, virtual_sources) {
+            return Some(found);
+        }
+    }
+    if let Some(file) = file {
+        return find_package_header_position(&file, cache, virtual_sources);
     }
     None
 }
@@ -1638,6 +1647,7 @@ impl ReleasedManifest {
     /// Returns an error for an unreadable manifest, any invalid entry, or a symlinked directory
     /// or directory content.
     pub fn load(path: &Path) -> Result<Self> {
+        let _ = inspect_manifest_path(path)?;
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read released manifest {}", path.display()))?;
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
@@ -2079,9 +2089,32 @@ pub fn load_root_released_manifest(
     load_manifest_or_default(wit_root.join(RELEASED_MANIFEST), explicit)
 }
 
+fn inspect_manifest_path(path: &Path) -> Result<Option<fs::Metadata>> {
+    let normalized: PathBuf = path.components().collect();
+    match fs::symlink_metadata(&normalized) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(operational_error(
+                    diagnostic::codes::GUARD_REFUSED,
+                    format!(
+                        "released manifest `{}` is a symlink; commit a regular file",
+                        path.display()
+                    ),
+                    Some(path.display().to_string()),
+                ));
+            }
+            Ok(Some(meta))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => {
+            Err(err).with_context(|| format!("failed to read released manifest {}", path.display()))
+        }
+    }
+}
+
 fn load_manifest_or_default(default: PathBuf, explicit: Option<&Path>) -> Result<ReleasedManifest> {
     let path = explicit.map_or(default, Path::to_path_buf);
-    if explicit.is_none() && !path.exists() {
+    if explicit.is_none() && inspect_manifest_path(&path)?.is_none() {
         return Ok(ReleasedManifest::default());
     }
     ReleasedManifest::load(&path)
@@ -2234,7 +2267,7 @@ fn released_directories(
             defaults.push(parent.join(RELEASED_MANIFEST));
         }
         for candidate in defaults {
-            if candidate.exists() && !manifests.contains(&candidate) {
+            if inspect_manifest_path(&candidate)?.is_some() && !manifests.contains(&candidate) {
                 manifests.push(candidate);
             }
         }

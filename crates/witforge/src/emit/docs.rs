@@ -182,35 +182,61 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
     }
 
     fn is_closing_star_banner(line: &str, expected_gutter: &str) -> bool {
-        let Some(rest) = line.strip_prefix(expected_gutter) else {
+        let ws_len = line
+            .bytes()
+            .take_while(|&b| b == b' ' || b == b'\t')
+            .count();
+        let ws = &line[..ws_len];
+        let rest = &line[ws_len..];
+        if rest.is_empty() || !rest.bytes().all(|b| b == b'*') {
             return false;
-        };
-        rest.len() >= 2 && rest.bytes().all(|b| b == b'*')
+        }
+        // Same gutter as body lines (` * ` / ` **`), aligned 1 column left of the body gutter
+        // (`/***\n * text\n***/` or `  /***\n   * text\n  ***/`), or column 0 when body is
+        // indented.
+        (ws == expected_gutter && rest.len() >= 2)
+            || expected_gutter
+                .strip_suffix(' ')
+                .is_some_and(|aligned| ws == aligned)
+            || (ws.is_empty() && !expected_gutter.is_empty())
     }
 
-    fn is_indented_closing_star_banner(line: &str) -> bool {
+    fn is_standalone_closing_star_banner(line: &str) -> bool {
         let ws_len = line
             .bytes()
             .take_while(|&b| b == b' ' || b == b'\t')
             .count();
         let rest = &line[ws_len..];
-        ws_len > 0 && rest.len() >= 2 && rest.bytes().all(|b| b == b'*')
+        rest.len() >= 2 && rest.bytes().all(|b| b == b'*')
     }
 
     fn strip_inline_closing_stars(line: &str) -> Option<String> {
-        let no_stars = line.trim_end_matches('*');
-        if no_stars.len() < line.len() && no_stars.ends_with([' ', '\t']) {
-            let trimmed = no_stars.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+        let trimmed_start = line.trim_start_matches([' ', '\t']);
+        // Pure `**+` banner line (`/** ***/`, `/*****/`).
+        if trimmed_start.len() >= 2 && trimmed_start.bytes().all(|b| b == b'*') {
+            return Some(String::new());
+        }
+        // Symmetric `/*** Hello. ***/` (or `/*** ***/`) -> `* Hello. *` / `* **`.
+        if let Some(after_lead) = trimmed_start.strip_prefix('*')
+            && (after_lead.is_empty() || after_lead.starts_with([' ', '\t']))
+        {
+            let no_stars = after_lead.trim_end_matches('*');
+            if no_stars.len() < after_lead.len()
+                && (no_stars.is_empty() || no_stars.ends_with([' ', '\t']))
+            {
+                return Some(no_stars.trim().to_string());
             }
+        }
+        // Single-line `/** Hello. ***/` leaves trailing `<ws>**+` (>= 2 stars). Require >= 2
+        // trailing stars so `/// Pointer T *` and `/// Match pattern *` are never corrupted.
+        let no_stars = line.trim_end_matches('*');
+        if line.len() - no_stars.len() >= 2 && no_stars.ends_with([' ', '\t']) {
+            return Some(no_stars.trim().to_string());
         }
         None
     }
 
-    // Single-line `/** Hello. **/` block comments leave trailing `<ws>*+` (wit-parser already
-    // strips the single leading space after `/**`). Markdown emphasis like `**bold**` has no
-    // whitespace before the closing `*` and is untouched.
+    // Single-line block comment banners (`/*** Hello. ***/`, `/** Hello. ***/`, `/*****/`).
     if lines.len() == 1
         && let Some(stripped) = strip_inline_closing_stars(&lines[0])
     {
@@ -218,9 +244,26 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
         return;
     }
 
+    // All-banner multi-line block comments (`/****\n****/`, `/****\n ****/`).
+    if lines.len() >= 2
+        && lines.iter().any(|l| {
+            let t = l.trim_start_matches([' ', '\t']);
+            t.len() >= 2 && t.bytes().all(|b| b == b'*')
+        })
+        && lines.iter().all(|l| {
+            let t = l.trim_start_matches([' ', '\t']);
+            t.is_empty() || t.bytes().all(|b| b == b'*')
+        })
+    {
+        for line in lines.iter_mut() {
+            line.clear();
+        }
+        return;
+    }
+
     // Form 1: every non-empty line shares the same `<spaces/tabs>*` gutter (non-empty gutter or
     // at least one bare `*` blank line), optionally preceded by a `*`-only opening banner line
-    // (`/***`) and/or ending in a matching `*`-only closing banner line (`***/`).
+    // (`/***`) and/or ending in an aligned `*`-only closing banner line (`***/`, `**/`).
     let has_opening_banner =
         lines.len() >= 2 && !lines[0].is_empty() && lines[0].bytes().all(|b| b == b'*');
     let start_idx = usize::from(has_opening_banner);
@@ -276,7 +319,7 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
 
     // Form 2: `/** First line\n * Second line\n */` (and 2-line `/** First line.\n ***/`) where
     // line 0 is prose and every non-empty continuation line shares a `<spaces/tabs>*` gutter
-    // (optionally followed by a matching closing `*`-only banner line). Preserve 0-space (`*`),
+    // (optionally followed by an aligned closing `*`-only banner line). Preserve 0-space (`*`),
     // 2-space (`  *`), and colon-introduced 1-space (`Options:\n * a`) `///` Markdown bullet lists.
     if lines.len() >= 2 && list_marker_content_col(&lines[0]).is_none() {
         let mut tail_match = true;
@@ -290,7 +333,7 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
             if idx == last_idx
                 && match tail_gutter {
                     Some(g) => is_closing_star_banner(line, g),
-                    None => is_indented_closing_star_banner(line),
+                    None => is_standalone_closing_star_banner(line),
                 }
             {
                 tail_closing_banner = true;
@@ -1030,8 +1073,17 @@ mod tests {
             sanitize_rust_lines(tabbed_block),
             vec!["First line.", "", "Second line."]
         );
-        assert_eq!(sanitize_rust_lines(" Hello. *"), vec!["Hello."]);
+        assert_eq!(sanitize_rust_lines("* Hello. *"), vec!["Hello."]);
         assert_eq!(sanitize_rust_lines(" Hello. **"), vec!["Hello."]);
+        assert_eq!(sanitize_rust_lines("Pointer T *"), vec!["Pointer T *"]);
+        assert_eq!(
+            sanitize_rust_lines("Match pattern *"),
+            vec!["Match pattern *"]
+        );
+        assert_eq!(sanitize_rust_lines("**"), Vec::<String>::new());
+        assert_eq!(sanitize_rust_lines("***"), Vec::<String>::new());
+        assert_eq!(sanitize_rust_lines("* **"), Vec::<String>::new());
+        assert_eq!(sanitize_rust_lines("**\n**"), Vec::<String>::new());
         assert_eq!(
             sanitize_rust_lines(" First line.\n * Second line.\n **"),
             vec!["First line.", "Second line."]
@@ -1054,12 +1106,20 @@ package ex:docs@0.1.0;
  * Package second line.
  */
 interface api {
-  /** Single-line banner. **/
+  /*** Symmetric single-line banner. ***/
   record one {
     /***\n   * Opened and closed banner.\n   ***/
     a: u32,
     /** Two-line closing banner.\n     ***/
     b: u32,
+    /***\n     * Aligned closing banner.\n    ***/
+    c: u32,
+    /** Inline triple-star banner. ***/
+    d: u32,
+    /** ***/
+    e: u32,
+    /** Two-line col-0 closing banner.\n****/
+    f: u32,
   }
 
   /** Two-space indented first line
@@ -1074,8 +1134,10 @@ interface api {
     /// * gamma
     /// * delta
     y: u32,
-    /// Emphasis **bold** stays intact.
+    /// Emphasis **bold** and Pointer T * stay intact.
     z: u32,
+    /// Match pattern *
+    w: u32,
   }
 }
 ";
@@ -1091,7 +1153,10 @@ interface api {
             vec!["Package first line", "Package second line."]
         );
         let one = iface.types.iter().find(|t| t.name == "one").unwrap();
-        assert_eq!(sanitize_rust_lines(&one.docs), vec!["Single-line banner."]);
+        assert_eq!(
+            sanitize_rust_lines(&one.docs),
+            vec!["Symmetric single-line banner."]
+        );
         let crate::model::TypeDefKind::Record(one_fields) = &one.kind else {
             panic!("expected record");
         };
@@ -1102,6 +1167,22 @@ interface api {
         assert_eq!(
             sanitize_rust_lines(&one_fields[1].docs),
             vec!["Two-line closing banner."]
+        );
+        assert_eq!(
+            sanitize_rust_lines(&one_fields[2].docs),
+            vec!["Aligned closing banner."]
+        );
+        assert_eq!(
+            sanitize_rust_lines(&one_fields[3].docs),
+            vec!["Inline triple-star banner."]
+        );
+        assert_eq!(
+            sanitize_rust_lines(&one_fields[4].docs),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            sanitize_rust_lines(&one_fields[5].docs),
+            vec!["Two-line col-0 closing banner."]
         );
 
         let two = iface.types.iter().find(|t| t.name == "two").unwrap();
@@ -1125,7 +1206,11 @@ interface api {
         );
         assert_eq!(
             sanitize_rust_lines(&two_fields[2].docs),
-            vec!["Emphasis **bold** stays intact."]
+            vec!["Emphasis **bold** and Pointer T * stay intact."]
+        );
+        assert_eq!(
+            sanitize_rust_lines(&two_fields[3].docs),
+            vec!["Match pattern *"]
         );
     }
 }
