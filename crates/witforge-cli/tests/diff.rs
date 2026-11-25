@@ -2083,6 +2083,8 @@ fn diff_git_base_compares_working_tree_respects_tmpdir_and_enforces_guards() {
 
     let json_out = witforge()
         .env("TMPDIR", &private_tmp)
+        .env("TMP", &private_tmp)
+        .env("TEMP", &private_tmp)
         .current_dir(&repo)
         .args(["diff", "--git-base", "HEAD~1", "wit", "--json"])
         .output()
@@ -2091,7 +2093,11 @@ fn diff_git_base_compares_working_tree_respects_tmpdir_and_enforces_guards() {
     let val: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
     assert_eq!(val["old"]["path"], "HEAD~1:wit/v0.1", "{val}");
     assert_eq!(val["old"]["version"], "0.1.0");
-    assert_eq!(val["new"]["path"], "wit/v0.2", "{val}");
+    assert_eq!(
+        Path::new(val["new"]["path"].as_str().unwrap()),
+        Path::new("wit").join("v0.2"),
+        "{val}"
+    );
     assert_eq!(val["new"]["version"], "0.2.0");
     assert_eq!(val["summary"]["changes"], 1);
     assert_eq!(val["summary"]["wire_breaking"], 0);
@@ -2203,7 +2209,12 @@ fn diff_git_base_compares_working_tree_respects_tmpdir_and_enforces_guards() {
 
     // 3. Shallow-clone missing revision detection (`WF9004`, exit 2, mentions shallow + fetch-depth).
     let shallow_dir = root.join("shallow-clone");
-    let repo_url = format!("file://{}", fs::canonicalize(&repo).unwrap().display());
+    let canon_repo = fs::canonicalize(&repo).unwrap();
+    let repo_uri_path = canon_repo
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('\\', "/");
+    let repo_url = format!("file:///{}", repo_uri_path.trim_start_matches('/'));
     run_git_cmd(
         &root,
         &[
