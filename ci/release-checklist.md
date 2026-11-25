@@ -403,3 +403,9 @@ another real consumer minor exists; a synthetic version or pin-only change is no
       SHA-256 checksums, SLSA attestations, zero `PT_INTERP` on `musl`, live CLI checks, and a
       fresh crates.io consumer crate compiling against `witforge = "0.8.0"` and
       `witforge-build = { version = "0.8.0", features = ["pbjson"] }`.
+- [x] Post-release main CI run 45668774709
+      (`https://github.com/asamarts/witforge/actions/runs/45668774709/job/139403562334`) verified
+      semver compatibility against published `0.8.0`, auto-advanced the documented public API
+      baseline to `v0.8.0`, and ran the published `asamarts/witforge@v0.8.0` Action (with default
+      `github-token` and static Linux `musl` archives) across Linux x86_64/arm64, macOS
+      Intel/arm64, and Windows x86_64.
