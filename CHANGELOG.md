@@ -6,10 +6,42 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sixth-wave audit hardening (`W10-127`):** Closed six remaining CommonMark doctest escapes in
+  `docs.rs` (bare/empty list markers, empty list items followed by blank lines, chained same-line
+  nested list markers and first-line fenced code/blockquotes, non-`1` ordered list markers
+  interrupting paragraphs, Setext heading underlines and `first_line_code` separation after a
+  paragraph, and `max_fence_indent`-aware ATX headings/thematic breaks) plus ASCII-only trimming
+  in `parse_external_link`; fixed Edition 2021 vs 2024 `rustfmt` parity for exact-100 error
+  string fields (`glue.rs` `push_let_else_err`, `convert.rs` `MissingMember`) and deep-nesting
+  wrapping on payload-less `Result::Ok(())`/`Err(())` and `Option::Some(...)` decode tails;
+  refused root-path `--released /` with `WF9004` (`GUARD_REFUSED`); hardened
+  `ci/check-version-references.sh` (published Action step name + `--is-ancestor`),
+  `ci/semver-release-type.sh` (`--is-ancestor`), and `ci/check-public-api-policy.sh` (tagless
+  clone `git fetch --tags` guidance); and fixed post-`0.8.0` doc inaccuracies in
+  `docs/design/conformance.md`, `docs/design/public-api.md`, `ci/README.md`, `docs/guide/ci.md`,
+  and `docs/guide/diagnostics.md`.
+
 ## [0.8.0] - 2026-11-24
 
 All library API changes since 0.7.0 are strictly additive (`docs/design/public-api-inventory.txt`
 retains every v0.7.0 symbol and signature). Wire numbers and lockfile identity do not change.
+
+Release evidence: annotated tag `v0.8.0` points to commit `44bc734` (tagged and published
+2026-11-25); exact-commit
+[CI run 45540343872](https://github.com/asamarts/witforge/actions/runs/45540343872) (`ci ok` job
+`138962554267`) and pre-bootstrap manual
+[Release verify run 45554356368](https://github.com/asamarts/witforge/actions/runs/45554356368)
+passed; `witforge-build 0.8.0` was bootstrapped on crates.io with Trusted Publishing registered
+(`asamarts/witforge`, `release.yml`, environment `release`); and tag
+[Release run 45556097432](https://github.com/asamarts/witforge/actions/runs/45556097432) built,
+attested, and published all 7 archives (including static Linux `musl`), published `witforge 0.8.0`
+and `witforge-cli 0.8.0` via OIDC, published the GitHub Release, and passed the 5-runner tagged
+Action smoke. Independent post-publication checks verified `docs.rs` builds for `witforge 0.8.0`
+and `witforge-build 0.8.0`, archive SHA-256 checksums, SLSA attestations, static `musl` ELF
+linkage (`no PT_INTERP`), and a fresh crates.io consumer build with `witforge 0.8.0` and
+`witforge-build 0.8.0` (`pbjson`).
 
 Generated output changes:
 
@@ -135,7 +167,7 @@ Generated output changes:
   public-api-inventory.txt}`, `docs/guide/{ci,wiring,reference,generated-output,
   json-projections}.md`, `docs/quickstart.md`, `ci/{README,release-checklist}.md`,
   `.github/workflows/ci.yml`, and `README.md`.
-- **Adversarial audit hardening (`W10-115`–`W10-120`, `W10-122`, `W10-124`):**
+- **Adversarial audit hardening (`W10-115`–`W10-120`, `W10-122`, `W10-124`–`W10-126`):**
   - Derived protobuf `import` statements from actual non-comment body references so transitive
     dependency imports are never dropped (`W10-115`).
   - Hardened `.github/workflows/{ci,release}.yml`, `action/index.js` (strict version regex,
@@ -180,7 +212,6 @@ Generated output changes:
     `docs.rs` aligned block-comment banner normalization without corrupting single-line ` *` prose
     or Markdown bullet lists, and `#![no_std]` + `serde` header/test coverage (`W10-120`,
     `W10-122`, `W10-124`).
-
   - Fixed fourth-wave audit defects (`W10-125`): removed `Copy` from `#[non_exhaustive]`
     `RustOptions` and `GlueOptions` before `0.8.0` publication so future non-`Copy` options stay
     SemVer-compatible; replaced `usize::next_multiple_of` with saturating alignment rounding and

@@ -373,3 +373,33 @@ another real consumer minor exists; a synthetic version or pin-only change is no
       ordinary semver compatibility against published 0.7.0, enforced the tagged signature
       inventory baseline, and ran the published 0.7.0 Action successfully on Linux x86_64/arm64,
       macOS Intel/arm64, and Windows x86_64.
+
+## 0.8.0 record
+
+- [x] Release commit `44bc734`, annotated tag `v0.8.0` (tagged and published 2026-11-25).
+- [x] Exact-commit main CI run 45540343872
+      (`https://github.com/asamarts/witforge/actions/runs/45540343872/job/138962554267`) passed
+      all 21 non-skipped jobs on Linux, macOS 15, Windows, MSRV 1.88, both static Linux `musl`
+      targets, security, semver compatibility against 0.7.0, documented public API inventory,
+      benchmark, packaging, generated output, release freeze, workflows, the five-target pinned
+      0.7.0 Action matrix, and the plan gate.
+- [x] Pre-bootstrap manual `release.yml` (`workflow_dispatch`) verify run 45554356368
+      (`https://github.com/asamarts/witforge/actions/runs/45554356368`) passed uncached
+      `ci/check-buf-history.sh` (7 fixture roots × 13 historical releases `v0.1.0`–`v0.7.0`),
+      `cargo-semver-checks`, `ci/publish.sh --dry-run`, and verified `.crate` digests on `main`.
+- [x] One-time crates.io bootstrap published `witforge-build 0.8.0` and registered GitHub Trusted
+      Publishing (`id: 37043`, `asamarts/witforge`, `release.yml`, environment `release`) matching
+      `witforge` (`30088`) and `witforge-cli` (`30089`).
+- [x] Tag release run 45556097432
+      (`https://github.com/asamarts/witforge/actions/runs/45556097432`) passed all 22/22 jobs:
+      exact-commit `ci ok` check, uncached historical `buf` check, all 7 platform archives
+      (including static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`), all 7
+      pre-publish smoke checks, OIDC publication of `witforge 0.8.0` and `witforge-cli 0.8.0`
+      (skipping already-published `witforge-build 0.8.0`), draft-first GitHub Release
+      (`https://github.com/asamarts/witforge/releases/tag/v0.8.0`, 14 assets + SLSA provenance),
+      and the 5-runner tagged Action smoke.
+- [x] Independent verification confirmed `docs.rs` builds for `witforge 0.8.0` and
+      `witforge-build 0.8.0` (`HTTP 200`), downloaded Linux `musl` and `gnu` archives, verified
+      SHA-256 checksums, SLSA attestations, zero `PT_INTERP` on `musl`, live CLI checks, and a
+      fresh crates.io consumer crate compiling against `witforge = "0.8.0"` and
+      `witforge-build = { version = "0.8.0", features = ["pbjson"] }`.
