@@ -1135,3 +1135,378 @@ fn freeze_audit_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn project_policy_diff_check_and_forbid_unstable_in_release_work_end_to_end() {
+    let base = std::env::temp_dir().join(format!("witforge-policy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // Create a two-project repo with distinct `[project.<name>.policy]` rules.
+    let alpha_v01 = base.join("alpha/v0.1");
+    let alpha_v02 = base.join("alpha/v0.2");
+    fs::create_dir_all(&alpha_v01).unwrap();
+    fs::create_dir_all(&alpha_v02).unwrap();
+    fs::write(
+        alpha_v01.join("contract.wit"),
+        "package acme:alpha@0.1.0;\n\
+         interface api {\n\
+           record item { id: u32 }\n\
+           ping: func();\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        alpha_v02.join("contract.wit"),
+        "package acme:alpha@0.2.0;\n\
+         interface api {\n\
+           record item { id: u32, note: option<string> }\n\
+           ping: func();\n\
+         }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&alpha_v01)
+            .arg("--first")
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::copy(alpha_v01.join("wire.lock"), alpha_v02.join("wire.lock")).unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&alpha_v02)
+            .args(["--against"])
+            .arg(alpha_v01.join("wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let beta_v01 = base.join("beta/v0.1");
+    let beta_v02 = base.join("beta/v0.2");
+    fs::create_dir_all(&beta_v01).unwrap();
+    fs::create_dir_all(&beta_v02).unwrap();
+    fs::write(
+        beta_v01.join("contract.wit"),
+        "package acme:beta@0.1.0;\n\
+         @since(version = 0.1.0)\n\
+         interface api {\n\
+           @since(version = 0.1.0)\n\
+           record item { id: u32 }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        beta_v02.join("contract.wit"),
+        "package acme:beta@0.2.0;\n\
+         @since(version = 0.1.0)\n\
+         interface api {\n\
+           @since(version = 0.1.0)\n\
+           record item { id: u32 }\n\
+           @unstable(feature = draft-search)\n\
+           search: func(query: string) -> list<item>;\n\
+         }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&beta_v01)
+            .arg("--first")
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::copy(beta_v01.join("wire.lock"), beta_v02.join("wire.lock")).unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&beta_v02)
+            .args(["--against"])
+            .arg(beta_v01.join("wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let config = write_config(
+        &base,
+        r#"
+version = 1
+
+[project.alpha]
+root = "alpha"
+
+[project.alpha.policy]
+diff-check = ["wire", "decode"]
+
+[project.beta]
+root = "beta"
+
+[project.beta.policy]
+diff-check = ["decode"]
+forbid-unstable-in-release = true
+"#,
+    );
+
+    // 1. Bare `witforge diff alpha/v0.1 alpha/v0.2 --check` discovers `[project.alpha.policy]`
+    // (`wire, decode`) via root-matching -> PASSES (optional field addition is wire+decode
+    // compatible, even though it breaks source/api)!
+    let alpha_discovered = witforge()
+        .current_dir(&base)
+        .args(["diff", "alpha/v0.1", "alpha/v0.2", "--check"])
+        .output()
+        .unwrap();
+    assert!(
+        alpha_discovered.status.success(),
+        "policy.diff-check=[wire,decode] must pass optional addition: {alpha_discovered:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&alpha_discovered.stdout).contains("result: COMPATIBLE"),
+        "{alpha_discovered:?}"
+    );
+
+    // `--no-config` ignores discovered policy and falls back to default `wire,source,api` -> FAILS!
+    let alpha_no_cfg = witforge()
+        .current_dir(&base)
+        .args(["diff", "alpha/v0.1", "alpha/v0.2", "--check", "--no-config"])
+        .output()
+        .unwrap();
+    assert_eq!(alpha_no_cfg.status.code(), Some(1), "{alpha_no_cfg:?}");
+
+    // Explicit `--check=api` overrides `policy.diff-check` -> FAILS!
+    let alpha_override = witforge()
+        .current_dir(&base)
+        .args([
+            "diff",
+            "alpha/v0.1",
+            "alpha/v0.2",
+            "--check=api",
+            "--config",
+            config.to_str().unwrap(),
+            "--project",
+            "alpha",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(alpha_override.status.code(), Some(1), "{alpha_override:?}");
+
+    // Plain `witforge diff` without `--check` always exits 0.
+    let alpha_plain = witforge()
+        .current_dir(&base)
+        .args([
+            "diff",
+            "alpha/v0.1",
+            "alpha/v0.2",
+            "--config",
+            config.to_str().unwrap(),
+            "--project",
+            "alpha",
+        ])
+        .output()
+        .unwrap();
+    assert!(alpha_plain.status.success(), "{alpha_plain:?}");
+
+    // Beta adds a new function (`search`), which is decode-breaking (`old<-new`):
+    // bare `--check` uses `beta`'s `policy.diff-check = ["decode"]` -> FAILS!
+    let beta_check = witforge()
+        .current_dir(&base)
+        .args(["diff", "beta/v0.1", "beta/v0.2", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(beta_check.status.code(), Some(1), "{beta_check:?}");
+    assert!(
+        String::from_utf8_lossy(&beta_check.stderr).contains("gated view(s) (decode)"),
+        "{beta_check:?}"
+    );
+
+    // Explicit `--config` on multi-project config without `--project` fails with WF9001 (exit 2).
+    let multi_err = witforge()
+        .current_dir(&base)
+        .args([
+            "diff",
+            "alpha/v0.1",
+            "alpha/v0.2",
+            "--check",
+            "--config",
+            config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(multi_err.status.code(), Some(2), "{multi_err:?}");
+
+    // 2. `forbid-unstable-in-release = true`:
+    // First release beta/v0.1 (no `@unstable` items) -> succeeds!
+    let rel_v01 = witforge()
+        .current_dir(&base)
+        .args(["release", "beta/v0.1"])
+        .output()
+        .unwrap();
+    assert!(rel_v01.status.success(), "{rel_v01:?}");
+    assert_eq!(
+        fs::read_to_string(base.join("beta/released")).unwrap(),
+        "v0.1\n"
+    );
+
+    // Releasing beta/v0.2 fails via discovered `[project.beta.policy]` with `WF1014` and leaves
+    // `beta/released` untouched!
+    let rel_v02_fail = witforge()
+        .current_dir(&base)
+        .args(["release", "beta/v0.2", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(rel_v02_fail.status.code(), Some(1), "{rel_v02_fail:?}");
+    let rel_json: serde_json::Value = serde_json::from_slice(&rel_v02_fail.stdout).unwrap();
+    assert_eq!(rel_json["diagnostics"][0]["code"], "WF1014", "{rel_json}");
+    assert_eq!(
+        rel_json["diagnostics"][0]["path"], "api.search",
+        "{rel_json}"
+    );
+    assert!(
+        rel_json["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("draft-search"),
+        "{rel_json}"
+    );
+    assert!(
+        rel_json["diagnostics"][0]["line"].as_u64().is_some(),
+        "diagnostic should carry source line: {rel_json}"
+    );
+    assert_eq!(
+        fs::read_to_string(base.join("beta/released")).unwrap(),
+        "v0.1\n",
+        "released manifest must not change when policy refuses release"
+    );
+
+    // `--forbid-unstable` on CLI works even with `--no-config`.
+    let rel_cli_forbid = witforge()
+        .current_dir(&base)
+        .args(["release", "beta/v0.2", "--no-config", "--forbid-unstable"])
+        .output()
+        .unwrap();
+    assert_eq!(rel_cli_forbid.status.code(), Some(1), "{rel_cli_forbid:?}");
+
+    // `--allow-unstable` explicitly overrides config `forbid-unstable-in-release = true`.
+    let rel_allow = witforge()
+        .current_dir(&base)
+        .args(["release", "beta/v0.2", "--allow-unstable"])
+        .output()
+        .unwrap();
+    assert!(rel_allow.status.success(), "{rel_allow:?}");
+    assert_eq!(
+        fs::read_to_string(base.join("beta/released")).unwrap(),
+        "v0.1\nv0.2\n"
+    );
+
+    // 3. `--git-base` with omitted positional path resolves `project.root` and `policy.diff-check`!
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&base)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.name", "test"]);
+    run_git(&["config", "user.email", "test@example.invalid"]);
+    run_git(&["config", "commit.gpgsign", "false"]);
+    run_git(&["add", "alpha/v0.1", "witforge.toml"]);
+    run_git(&["commit", "-q", "-m", "v0.1 only"]);
+    let git_base_cfg = witforge()
+        .current_dir(&base)
+        .args([
+            "diff",
+            "--git-base",
+            "HEAD",
+            "--project",
+            "alpha",
+            "--check",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        git_base_cfg.status.success(),
+        "git-base + --project alpha + policy.diff-check should pass: {git_base_cfg:?}"
+    );
+    let gb_json: serde_json::Value = serde_json::from_slice(&git_base_cfg.stdout).unwrap();
+    assert_eq!(gb_json["old"]["path"], "HEAD:alpha/v0.1", "{gb_json}");
+    assert_eq!(gb_json["new"]["version"], "0.2.0", "{gb_json}");
+
+    // 4. Invalid policy configurations fail with exit 2 (`WF9001` / `WF9003`).
+    let bad_empty = base.join("bad-empty.toml");
+    fs::write(
+        &bad_empty,
+        "version = 1\n[project.a]\nroot = \"alpha\"\n[project.a.policy]\ndiff-check = []\n",
+    )
+    .unwrap();
+    let empty_out = witforge()
+        .current_dir(&base)
+        .args([
+            "diff",
+            "alpha/v0.1",
+            "alpha/v0.2",
+            "--config",
+            bad_empty.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(empty_out.status.code(), Some(2), "{empty_out:?}");
+    let empty_json: serde_json::Value = serde_json::from_slice(&empty_out.stdout).unwrap();
+    assert_eq!(empty_json["diagnostics"][0]["code"], "WF9001");
+
+    let bad_view = base.join("bad-view.toml");
+    fs::write(
+        &bad_view,
+        "version = 1\n[project.a]\nroot = \"alpha\"\n[project.a.policy]\ndiff-check = [\"bogus\"]\n",
+    )
+    .unwrap();
+    let view_out = witforge()
+        .current_dir(&base)
+        .args([
+            "diff",
+            "alpha/v0.1",
+            "alpha/v0.2",
+            "--config",
+            bad_view.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(view_out.status.code(), Some(2), "{view_out:?}");
+    let view_json: serde_json::Value = serde_json::from_slice(&view_out.stdout).unwrap();
+    assert_eq!(view_json["diagnostics"][0]["code"], "WF9001");
+
+    let bad_key = base.join("bad-key.toml");
+    fs::write(
+        &bad_key,
+        "version = 1\n[project.a]\nroot = \"alpha\"\n[project.a.policy]\nunknown-key = true\n",
+    )
+    .unwrap();
+    let key_out = witforge()
+        .current_dir(&base)
+        .args([
+            "check",
+            "--config",
+            bad_key.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(key_out.status.code(), Some(2), "{key_out:?}");
+    let key_json: serde_json::Value = serde_json::from_slice(&key_out.stdout).unwrap();
+    assert_eq!(key_json["diagnostics"][0]["code"], "WF9003");
+
+    fs::remove_dir_all(&base).unwrap();
+}

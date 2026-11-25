@@ -1757,8 +1757,10 @@ witforge generate [--config witforge.toml | --no-config] [--project NAME] [--che
 witforge check    [<path>] [--config witforge.toml | --no-config] [--project NAME]
 witforge freeze   [<wit-root>] [--released PATH] [--config witforge.toml | --no-config] [--project NAME] [--base REV]
 witforge new-version [<wit-root>] [--major] [--from VERSION] [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
-witforge release  <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
+witforge release  <wit-dir> [--released PATH] [--forbid-unstable | --allow-unstable] [--config witforge.toml | --no-config] [--project NAME]
 witforge retire   <wit-dir> [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
+witforge diff     <old> <new> [--json] [--check[=VIEWS]] [--config witforge.toml | --no-config] [--project NAME]
+witforge diff     --git-base <rev> [<path>] [--json] [--check[=VIEWS]] [--config witforge.toml | --no-config] [--project NAME]
 witforge inspect  [<path>] [--json] [--released PATH] [--config witforge.toml | --no-config] [--project NAME]
 witforge rust     [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
 witforge proto    [<wit-root>] [--config witforge.toml | --no-config] [--project NAME]
@@ -1793,12 +1795,27 @@ draft = "7"
 out = "src/glue"
 plain-root = "crate::plain"
 proto-root = "crate::proto"
+
+[project.alint.policy]
+diff-check = ["wire", "decode"]
+forbid-unstable-in-release = true
 ```
 
 - `version` is required and must be `1`.
 - `project.<name>` is a project table; at least one is required. Project names are TOML keys.
 - `root` is required for each project.
 - `released` is optional; when absent the generator's normal default applies.
+- `policy` is optional and declares opt-in project governance rules:
+  - `diff-check`: optional non-empty array of compatibility views (`"wire"`, `"source"`, `"api"`,
+    `"decode"`) used as the default view set when bare `witforge diff --check` is invoked without
+    `=<views>`. Explicit `--check=<views>` overrides `policy.diff-check`; plain `witforge diff`
+    without `--check` remains non-gating (exit `0`).
+  - `forbid-unstable-in-release`: optional boolean (default `false`). When `true`,
+    `witforge release` refuses to release a version directory that contains any `@unstable`
+    interface, type, function, world, or world import/export (including `@deprecated` items that
+    were never stabilized with `@since`), reporting `WF1014` with source locations and exiting `1`
+    without modifying the `released` manifest. CLI flags `--forbid-unstable` and `--allow-unstable`
+    override the configured value.
 - `rust`, `proto`, `schema`, and `glue` sections are optional. Each output section has an `out`
   path; `rust` also has optional `serde = true|false` and `no-std = true|false`; `schema` also has
   optional `draft = "7" | "2020-12"` (default `"7"`); `glue` also has optional `plain-root`,
@@ -1838,8 +1855,16 @@ proto-root = "crate::proto"
   invocation (`witforge rust <root> --out ...`) are both valid. An explicitly passed `--config`
   file is validated even when CLI flags override all of its values.
 - `--serde` and `--no-serde` override `rust.serde`; `--no-std` and `--std` override `rust.no-std`
-  and `glue.no-std`; `--draft` overrides `schema.draft`. `--check` has no configuration key: it is
-  an action, not a project setting.
+  and `glue.no-std`; `--draft` overrides `schema.draft`; `--check=<views>` overrides
+  `policy.diff-check`; `--forbid-unstable` and `--allow-unstable` override
+  `policy.forbid-unstable-in-release`. Bare `--check` remains an action flag, not a boolean
+  config key; `policy.diff-check` only selects its default views when `--check` is passed.
+- When `witforge diff ... --check` or `witforge release <wit-dir>` runs without explicit
+  `--config`/`--project` (and without `--no-config`), an upward-discovered `witforge.toml`
+  applies its `[project.<name>.policy]` only when a unique project's `root` matches the target
+  path (or enclosing WIT root for `release`), leaving unrelated self-contained invocations
+  unaffected. When `--git-base <rev>` is passed without `<path>`, `witforge diff` resolves the
+  selected project's `root` from `witforge.toml`.
 - `witforge generate` runs every configured emitter (`rust`, `proto`, `schema`, `glue`) for each
   selected project; one failing emitter does not prevent the remaining emitters from reporting,
   and the command exits `1` if any emitter reported a violation (or `2` on an operational error).

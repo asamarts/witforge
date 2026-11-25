@@ -18,10 +18,12 @@
 //! witforge init  [DIR] [--package NS:NAME] [--serde]
 //! witforge new-version [<wit-root>] [--major] [--from VERSION] [--released PATH]
 //!                      [--config PATH | --no-config] [--project NAME]
-//! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
+//! witforge release <wit-dir> [--released PATH] [--forbid-unstable | --allow-unstable]
+//!                  [--config PATH | --no-config] [--project NAME]
 //! witforge retire  <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
-//! witforge diff  <old> <new> [--json] [--check[=VIEWS]]
-//! witforge diff  --git-base <rev> <path> [--json] [--check[=VIEWS]]
+//! witforge diff  <old> <new> [--json] [--check[=VIEWS]] [--config PATH | --no-config] [--project NAME]
+//! witforge diff  --git-base <rev> [<path>] [--json] [--check[=VIEWS]]
+//!                [--config PATH | --no-config] [--project NAME]
 //! witforge inspect [<path>] [--json] [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge freeze [<wit-root>] [--released PATH] [--config PATH | --no-config] [--project NAME] [--base REV]
 //! witforge completions <bash|zsh|fish>
@@ -239,11 +241,17 @@ struct GlueOptions {
     config: ConfigArgs,
 }
 
+/// Internal sentinel used only as `clap`'s `default_missing_value` for bare `--check`.
+/// Because OS command-line arguments cannot contain NUL bytes, this distinguishes bare `--check`
+/// from any explicit `--check=<VIEWS>` (including `--check=`).
+const BARE_CHECK_SENTINEL: &str = "\0";
+
 #[derive(Debug, Args)]
 struct DiffOptions {
-    /// Old version directory or WIT root (or target directory when `--git-base` is given).
+    /// Old version directory or WIT root (or target directory when `--git-base` is given; omit
+    /// with `--git-base` to use the configured project root).
     #[arg(value_name = "OLD")]
-    old: PathBuf,
+    old: Option<PathBuf>,
     /// New version directory or WIT root (omit when `--git-base` is given).
     #[arg(value_name = "NEW")]
     new: Option<PathBuf>,
@@ -254,15 +262,20 @@ struct DiffOptions {
     #[arg(long)]
     json: bool,
     /// Exit non-zero when a breaking change hits any gated view (comma-separated: wire, source,
-    /// api, decode; defaults to wire,source,api without decode when given without `=...`).
+    /// api, decode; defaults to `[project.<name>.policy].diff-check` or `wire,source,api` without
+    /// decode when given without `=...`).
     #[arg(
         long,
         value_name = "VIEWS",
         num_args = 0..=1,
         require_equals = true,
-        default_missing_value = "wire,source,api"
+        default_missing_value = BARE_CHECK_SENTINEL
     )]
     check: Option<String>,
+    /// Configuration file; supplies `[project.<name>.policy].diff-check` (and project `root`
+    /// when `--git-base` is used without a positional path).
+    #[command(flatten)]
+    config: ConfigArgs,
 }
 
 #[derive(Debug, Args)]
@@ -383,7 +396,15 @@ struct ReleaseOptions {
     /// Released-version manifest path; defaults to `<WIT_DIR>/../released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
-    /// Configuration file; read only when `--config` or `--project` is passed.
+    /// Refuse releasing a version containing any `@unstable` declaration (overrides config).
+    #[arg(long = "forbid-unstable", conflicts_with = "allow_unstable")]
+    forbid_unstable: bool,
+    /// Allow releasing a version containing `@unstable` declarations, overriding
+    /// `[project.<name>.policy].forbid-unstable-in-release = true`.
+    #[arg(long = "allow-unstable", conflicts_with = "forbid_unstable")]
+    allow_unstable: bool,
+    /// Configuration file; supplies `released` (with `--config`/`--project`) and
+    /// `[project.<name>.policy].forbid-unstable-in-release`.
     #[command(flatten)]
     config: ConfigArgs,
 }
@@ -479,6 +500,19 @@ struct ProjectConfig {
     proto: Option<OutConfig>,
     schema: Option<SchemaConfig>,
     glue: Option<GlueConfig>,
+    policy: Option<PolicyConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyConfig {
+    /// Default views gated by bare `witforge diff --check` (each of `wire`, `source`, `api`,
+    /// `decode`).
+    #[serde(rename = "diff-check")]
+    diff_check: Option<Vec<String>>,
+    /// Refuse `witforge release` when the version contains any `@unstable` item.
+    #[serde(rename = "forbid-unstable-in-release")]
+    forbid_unstable_in_release: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -903,6 +937,15 @@ fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<
                 &format!("project.{proj_name}.glue.out"),
                 &glue.out,
                 config_path,
+            )?;
+        }
+        if let Some(policy) = &proj.policy
+            && let Some(views) = &policy.diff_check
+        {
+            parse_policy_diff_check(
+                views,
+                &format!("project.{proj_name}.policy.diff-check"),
+                Some(config_path.display().to_string()),
             )?;
         }
     }
@@ -1675,9 +1718,17 @@ struct CheckViews {
 }
 
 impl CheckViews {
+    /// The default `--check` view set (`wire,source,api`; excludes `decode`).
+    const DEFAULT: Self = Self {
+        wire: true,
+        source: true,
+        api: true,
+        decode: false,
+    };
+
     /// Whether this is the default `--check` view set (`wire,source,api`; excludes `decode`).
     fn is_default_set(self) -> bool {
-        self.wire && self.source && self.api && !self.decode
+        self == Self::DEFAULT
     }
 
     fn matches(self, change: &diff::Change, verdict: diff::DecodeVerdict) -> bool {
@@ -1703,6 +1754,153 @@ impl CheckViews {
         }
         names.join(", ")
     }
+}
+
+fn parse_policy_diff_check(
+    raw_views: &[String],
+    label: &str,
+    path: Option<String>,
+) -> Result<CheckViews> {
+    if raw_views.is_empty() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!(
+                "invalid `{label}`: expected a non-empty list of `wire`, `source`, `api`, `decode`"
+            ),
+            path,
+        ));
+    }
+    let mut views = CheckViews {
+        wire: false,
+        source: false,
+        api: false,
+        decode: false,
+    };
+    for part in raw_views {
+        match part.as_str() {
+            "wire" => views.wire = true,
+            "source" => views.source = true,
+            "api" => views.api = true,
+            "decode" => views.decode = true,
+            other => {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "unknown view `{other}` in `{label}`; expected `wire`, `source`, `api`, \
+                         or `decode`"
+                    ),
+                    path,
+                ));
+            }
+        }
+    }
+    Ok(views)
+}
+
+fn select_project_by_name<'a>(
+    config: &'a ConfigFile,
+    config_path: &Path,
+    project_name: Option<&str>,
+) -> Result<(&'a str, &'a ProjectConfig)> {
+    let name = match project_name {
+        Some(name) => name,
+        None if config.project.len() == 1 => config
+            .project
+            .keys()
+            .next()
+            .expect("checked one project")
+            .as_str(),
+        None => {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!(
+                    "configuration {} has multiple projects; pass --project",
+                    config_path.display()
+                ),
+                Some(config_path.display().to_string()),
+            ));
+        }
+    };
+    let Some((key, project)) = config.project.get_key_value(name) else {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!("configuration has no project `{name}`"),
+            Some(config_path.display().to_string()),
+        ));
+    };
+    Ok((key.as_str(), project))
+}
+
+fn match_discovered_project_for_path<'a>(
+    config: &'a ConfigFile,
+    base: &Path,
+    target: &Path,
+    require_exact_root: bool,
+) -> Option<&'a ProjectConfig> {
+    let canon_target = fs::canonicalize(target).ok()?;
+    let mut matched: Option<&'a ProjectConfig> = None;
+    for proj in config.project.values() {
+        let proj_root = resolve_config_path(base, &proj.root);
+        let Ok(canon_root) = fs::canonicalize(&proj_root) else {
+            continue;
+        };
+        let is_match = if require_exact_root {
+            canon_target == canon_root
+        } else {
+            canon_target == canon_root || canon_target.starts_with(&canon_root)
+        };
+        if is_match {
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(proj);
+        }
+    }
+    matched
+}
+
+fn resolve_diff_policy_views(
+    options: &DiffOptions,
+    target_for_discovery: &Path,
+    loaded_project: Option<(&ProjectConfig, &Path, &str)>,
+) -> Result<Option<CheckViews>> {
+    let Some(raw) = options.check.as_deref() else {
+        return Ok(None);
+    };
+    if raw != BARE_CHECK_SENTINEL {
+        return parse_check_views(Some(raw));
+    }
+    if let Some((project, config_path, proj_name)) = loaded_project {
+        if let Some(views) = project
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.diff_check.as_deref())
+        {
+            return Ok(Some(parse_policy_diff_check(
+                views,
+                &format!("project.{proj_name}.policy.diff-check"),
+                Some(config_path.display().to_string()),
+            )?));
+        }
+        return Ok(Some(CheckViews::DEFAULT));
+    }
+    if !options.config.no_config
+        && let Some(found) = workflow::discover_config()
+        && let Ok((config, base)) = load_config_file(&found)
+        && let Some(project) =
+            match_discovered_project_for_path(&config, &base, target_for_discovery, false)
+        && let Some(views) = project
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.diff_check.as_deref())
+    {
+        return Ok(Some(parse_policy_diff_check(
+            views,
+            "policy.diff-check",
+            Some(found.display().to_string()),
+        )?));
+    }
+    Ok(Some(CheckViews::DEFAULT))
 }
 
 fn parse_check_views(raw: Option<&str>) -> Result<Option<CheckViews>> {
@@ -1761,27 +1959,90 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         // error, so a non-human `--format` never prints a diagnostic envelope instead of `--json`.
         reporter.suppress();
     }
-    let check_views = parse_check_views(options.check.as_deref())?;
-    let full = if let Some(git_base) = &options.git_base {
+    // Validate any explicit `--check=<views>` before loading endpoints so usage errors surface
+    // immediately.
+    let explicit_check_views = match options.check.as_deref() {
+        Some(raw) if raw != BARE_CHECK_SENTINEL => parse_check_views(Some(raw))?,
+        _ => None,
+    };
+    let explicit_cfg = options.config.config.is_some() || options.config.project.is_some();
+    let needs_root_from_cfg = options.git_base.is_some() && options.old.is_none();
+    if options.config.no_config && options.config.project.is_some() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "`--project` requires `--config` (discovery disabled by `--no-config`)",
+            None,
+        ));
+    }
+    let loaded_cfg: Option<(PathBuf, PathBuf, String, ProjectConfig)> =
+        if explicit_cfg || needs_root_from_cfg {
+            let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    "missing PATH (pass a version directory or WIT root, or use `witforge.toml`)",
+                    None,
+                ));
+            };
+            let (config, base) = load_config_file(&config_path)?;
+            let (proj_name, project) =
+                select_project_by_name(&config, &config_path, options.config.project.as_deref())?;
+            Some((config_path, base, proj_name.to_string(), project.clone()))
+        } else {
+            None
+        };
+
+    let (target_for_discovery, full) = if let Some(git_base) = &options.git_base {
         if options.new.is_some() {
             return Err(op_error(
                 codes::CLI_USAGE,
-                "`--git-base` takes a single target path (`witforge diff --git-base <REV> \
-                 <PATH>`), not both `<OLD>` and `<NEW>`",
+                "`--git-base` takes at most one target path (`witforge diff --git-base <REV> \
+                 [<PATH>]`), not both `<OLD>` and `<NEW>`",
                 None,
             ));
         }
-        diff::compare_git_base(git_base, &options.old)?
+        let target = if let Some(path) = &options.old {
+            path.clone()
+        } else if let Some((_, base, _, project)) = &loaded_cfg {
+            resolve_config_path(base, &project.root)
+        } else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing PATH (pass `witforge diff --git-base <REV> <PATH>` or use `witforge.toml`)",
+                None,
+            ));
+        };
+        let result = diff::compare_git_base(git_base, &target)?;
+        (target, result)
     } else {
+        let Some(old) = &options.old else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing OLD and NEW endpoints (pass `witforge diff <OLD> <NEW>` or `witforge \
+                 diff --git-base <REV> [<PATH>]`)",
+                None,
+            ));
+        };
         let Some(new) = &options.new else {
             return Err(op_error(
                 codes::CLI_USAGE,
                 "missing NEW endpoint (pass `witforge diff <OLD> <NEW>` or `witforge diff \
-                 --git-base <REV> <PATH>`)",
+                 --git-base <REV> [<PATH>]`)",
                 None,
             ));
         };
-        diff::compare_full(&options.old, new)?
+        let result = diff::compare_full(old, new)?;
+        (new.clone(), result)
+    };
+    let check_views = if explicit_check_views.is_some() {
+        explicit_check_views
+    } else {
+        resolve_diff_policy_views(
+            options,
+            &target_for_discovery,
+            loaded_cfg
+                .as_ref()
+                .map(|(path, _, name, proj)| (proj, path.as_path(), name.as_str())),
+        )?
     };
     let analysis = &full.analysis;
     let omissions = &full.conversion_omissions;
@@ -2633,6 +2894,138 @@ fn ensure_manifest_belongs_to_wit_root(manifest_path: &Path, wit_root: &Path) ->
     workflow::ensure_manifest_belongs_to_wit_root(manifest_path, wit_root)
 }
 
+fn resolve_release_policy_forbid_unstable(
+    options: &ReleaseOptions,
+    wit_root: &Path,
+) -> Result<bool> {
+    if options.forbid_unstable {
+        return Ok(true);
+    }
+    if options.allow_unstable {
+        return Ok(false);
+    }
+    if options.config.config.is_some() || options.config.project.is_some() {
+        let Some(config_path) = resolve_config_path_opt(&options.config, true)? else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--project` requires `--config`",
+                None,
+            ));
+        };
+        let (config, _) = load_config_file(&config_path)?;
+        let (_, project) =
+            select_project_by_name(&config, &config_path, options.config.project.as_deref())?;
+        return Ok(project
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.forbid_unstable_in_release)
+            .unwrap_or(false));
+    }
+    if !options.config.no_config
+        && let Some(found) = workflow::discover_config()
+        && let Ok((config, base)) = load_config_file(&found)
+        && let Some(project) = match_discovered_project_for_path(&config, &base, wit_root, true)
+    {
+        return Ok(project
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.forbid_unstable_in_release)
+            .unwrap_or(false));
+    }
+    Ok(false)
+}
+
+fn unstable_feature_name(stability: &witforge::model::Stability) -> Option<&str> {
+    match stability {
+        witforge::model::Stability::Unstable { feature }
+        | witforge::model::Stability::Deprecated {
+            since: None,
+            feature: Some(feature),
+            ..
+        } => Some(feature.as_str()),
+        _ => None,
+    }
+}
+
+fn collect_unstable_items(model: &witforge::model::Model) -> Vec<(String, String)> {
+    let mut items = Vec::new();
+    for iface in &model.interfaces {
+        if let Some(feature) = unstable_feature_name(&iface.stability) {
+            items.push((iface.name.clone(), feature.to_string()));
+        }
+        for ty in &iface.types {
+            if let Some(feature) = unstable_feature_name(&ty.stability) {
+                items.push((format!("{}/{}", iface.name, ty.name), feature.to_string()));
+            }
+        }
+        for func in &iface.functions {
+            if let Some(feature) = unstable_feature_name(&func.stability) {
+                items.push((format!("{}.{}", iface.name, func.name), feature.to_string()));
+            }
+        }
+    }
+    for world in &model.worlds {
+        if let Some(feature) = unstable_feature_name(&world.stability) {
+            items.push((world.name.clone(), feature.to_string()));
+        }
+        for imp in &world.imports {
+            if let Some(feature) = unstable_feature_name(&imp.stability) {
+                items.push((
+                    format!("{}/import/{}", world.name, imp.qualified_name()),
+                    feature.to_string(),
+                ));
+            }
+        }
+        for exp in &world.exports {
+            if let Some(feature) = unstable_feature_name(&exp.stability) {
+                items.push((
+                    format!("{}/export/{}", world.name, exp.qualified_name()),
+                    feature.to_string(),
+                ));
+            }
+        }
+    }
+    items
+}
+
+fn check_release_forbid_unstable(
+    dir: &Path,
+    entry_name: &str,
+    reporter: &mut Reporter,
+) -> Result<bool> {
+    let contract = witforge::load(dir)?;
+    let locations = contract.member_locations();
+    let model = witforge::model::build(&contract)?;
+    let unstable = collect_unstable_items(&model);
+    if unstable.is_empty() {
+        return Ok(true);
+    }
+    for (path, feature) in unstable {
+        let message = format!(
+            "cannot release `{entry_name}`: `{path}` is marked `@unstable(feature = {feature})` \
+             and `forbid-unstable-in-release` policy is enabled"
+        );
+        if reporter.human() {
+            diagnostics::write_stderr_line(&format!("error: {message}"));
+        } else {
+            let mut diag =
+                Diagnostic::error(codes::SUBSET_ANNOTATION, message).with_path(path.clone());
+            let mut located =
+                LocatedDiagnostic::from_diagnostic(diag.clone()).with_logical(path.clone());
+            if let Some((file, pos)) = locations.get(&path) {
+                diag = diag.with_position(*pos);
+                located = LocatedDiagnostic::from_diagnostic(diag)
+                    .with_file(file.clone())
+                    .with_logical(path);
+            } else {
+                located = located.with_file(dir.display().to_string());
+            }
+            reporter.push_located(located);
+        }
+    }
+    Ok(false)
+}
+
 #[allow(clippy::too_many_lines)]
 fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     ensure_version_directory(&options.dir)?;
@@ -2736,10 +3129,14 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
 
     // Validate the version directory and enclosing WIT-root invariants (package identity,
     // `@since` history, dependency-graph identity, and retirement order) before recording.
+    let forbid_unstable = resolve_release_policy_forbid_unstable(options, wit_root)?;
     let report = contract_workflow::check_release(&options.dir, Some(&manifest_path))?;
     let status = render_workflow_report(&report, reporter);
     if status != ExitCode::SUCCESS {
         return Ok(status);
+    }
+    if forbid_unstable && !check_release_forbid_unstable(&options.dir, &entry_name, reporter)? {
+        return Ok(ExitCode::from(1));
     }
 
     if already_listed {

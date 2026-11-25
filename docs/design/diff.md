@@ -275,9 +275,10 @@ fields):
 `deprecated(since=0.1.0,version=0.2.0)`. A change's `number` is the new member's wire number when
 the change concerns a numbered member, or the old number for a removal.
 
-`--check` (equivalent to `--check=wire,source,api`) exits `0` when no change breaks the default
-three views and `1` when at least one does; **`decode` is not part of the default `--check` set**
-and only gates when explicitly selected. `--check=<views>` restricts or extends the gate to any
+`--check` (equivalent to `--check=wire,source,api`, or `[project.<name>.policy].diff-check` when
+configured in `witforge.toml`) exits `0` when no change breaks the gated views and `1` when at
+least one does; **`decode` is not part of the built-in default `--check` set**
+and only gates when explicitly selected via `--check=<views>` or `policy.diff-check`. `--check=<views>` restricts or extends the gate to any
 comma-separated subset of `wire`, `source`, `api`, and `decode` (for example `--check=wire,decode`
 to allow source/API-breaking minor additions that remain wire- and binary-decode-compatible while
 rejecting added required fields or closed enum/variant cases, or `--check=decode` to gate on

@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Project governance policy table (`W11-042`):** Added opt-in `[project.<name>.policy]` in
+  `witforge.toml` with `diff-check = ["wire", "decode", ...]` (default views for bare
+  `witforge diff --check`, overridden by explicit `--check=<views>`) and
+  `forbid-unstable-in-release = true|false` (refusing `witforge release` with `WF1014` and source
+  locations when any `@unstable` declaration is present, overridable with `--forbid-unstable` /
+  `--allow-unstable`). `witforge diff` now also accepts `--config`/`--no-config`/`--project` and
+  can resolve `project.root` when `--git-base <REV>` is invoked without a positional path.
 - **Git-ref contract diffing (`W11-043`):** Added `witforge diff --git-base <REV> <PATH>` and
   `witforge::diff::compare_git_base` to compare a working-tree version directory or WIT root
   against its committed tree at `<REV>`. Materializes blobs directly from Git's object database
