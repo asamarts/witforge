@@ -1242,7 +1242,7 @@ fn fourth_wave_audit_freeze_tree_symlink_path_and_package_location_regressions()
 fn fifth_wave_audit_cross_root_manifest_symlink_lock_and_header_comment_regressions() {
     use witforge::diagnostic::codes;
     use witforge::emit::{glue, json_schema, proto, rust};
-    use witforge::{diff, inspect};
+    use witforge::inspect;
 
     let base =
         std::env::temp_dir().join(format!("witforge-w10-126-workflow-{}", std::process::id()));
@@ -1387,6 +1387,7 @@ fn fifth_wave_audit_cross_root_manifest_symlink_lock_and_header_comment_regressi
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
+        use witforge::diff;
 
         let sym_root = base.join("sym-lock");
         make_two_version_root(&sym_root, "ex:symlock");
