@@ -406,6 +406,7 @@ fn emit_version_with_resolver(
     }
 
     let parent_module = version_module_name(model);
+    let mut serde_registry = SerdeArrayRegistry::default();
     for interface in &model.interfaces {
         let module = rust_ident(&snake_case(&interface.name), "interface module")?;
         writeln!(out)?;
@@ -424,7 +425,16 @@ fn emit_version_with_resolver(
             writeln!(out, "pub mod {module} {{}}")?;
         } else {
             writeln!(out, "pub mod {module} {{")?;
-            emit_interface(&mut out, 4, model, interface, options, foreign_resolver)?;
+            emit_interface(
+                &mut out,
+                4,
+                model,
+                interface,
+                options,
+                foreign_resolver,
+                &mut serde_registry,
+                "super::__witforge_serde",
+            )?;
             writeln!(out, "}}")?;
         }
     }
@@ -439,9 +449,11 @@ fn emit_version_with_resolver(
         writeln!(out)?;
         writeln!(out, "pub use {module}::{trait_name};")?;
     }
+    emit_serde_array_module(&mut out, &serde_registry, options.no_std)?;
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_interface(
     out: &mut String,
     indent: usize,
@@ -449,6 +461,8 @@ fn emit_interface(
     interface: &crate::model::Interface,
     options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
+    serde_registry: &mut SerdeArrayRegistry,
+    serde_mod_prefix: &str,
 ) -> Result<()> {
     let mut type_names: BTreeMap<String, String> = BTreeMap::new();
     let trait_name = if interface.functions.is_empty() {
@@ -482,6 +496,8 @@ fn emit_interface(
             def,
             options,
             foreign_resolver,
+            serde_registry,
+            serde_mod_prefix,
         )?;
     }
     if let Some(trait_name) = trait_name {
@@ -543,6 +559,7 @@ fn emit_dependency_bindings_layout(
         )?;
         Ok(format!("super::super::{pkg_mod}"))
     };
+    let mut serde_registry = SerdeArrayRegistry::default();
     emit_dep_group(
         &mut out,
         0,
@@ -552,6 +569,8 @@ fn emit_dependency_bindings_layout(
         options,
         &shared_resolver,
         None,
+        &mut serde_registry,
+        "super::super::__witforge_serde",
     )?;
 
     for (&major, scoped_deps) in &layout.per_major {
@@ -586,9 +605,12 @@ fn emit_dependency_bindings_layout(
             options,
             &major_resolver,
             Some((major, layout)),
+            &mut serde_registry,
+            "super::super::super::__witforge_serde",
         )?;
         writeln!(out, "}}")?;
     }
+    emit_serde_array_module(&mut out, &serde_registry, options.no_std)?;
     Ok(out)
 }
 
@@ -602,6 +624,8 @@ fn emit_dep_group(
     options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
     scoped_context: Option<(u64, &DepLayout)>,
+    serde_registry: &mut SerdeArrayRegistry,
+    serde_mod_prefix: &str,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     let iface_prefix = " ".repeat(indent + 4);
@@ -685,6 +709,8 @@ fn emit_dep_group(
                     interface,
                     options,
                     foreign_resolver,
+                    serde_registry,
+                    serde_mod_prefix,
                 )?;
                 writeln!(out, "{iface_prefix}}}")?;
             }
@@ -737,8 +763,11 @@ fn emit_record(
     fields: &[crate::model::Field],
     options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
+    serde_registry: &mut SerdeArrayRegistry,
+    serde_mod_prefix: &str,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
+    let field_prefix = " ".repeat(indent + 4);
     write_derives(out, indent, options.serde)?;
     if fields.is_empty() {
         writeln!(out, "{prefix}pub struct {name} {{}}")?;
@@ -765,19 +794,27 @@ fn emit_record(
         if rustfmt::needs_allow_type_complexity(&ty) {
             complex_type = true;
         }
-        rendered_fields.push((field, field_name, ty));
+        let serde_with = if options.serde {
+            serde_registry.register_for_type(model, None, &field.ty, serde_mod_prefix)
+        } else {
+            None
+        };
+        rendered_fields.push((field, field_name, ty, serde_with));
     }
     if complex_type {
         writeln!(out, "{prefix}#[allow(clippy::type_complexity)]")?;
     }
     writeln!(out, "{prefix}pub struct {name} {{")?;
-    for (field, field_name, ty) in rendered_fields {
+    for (field, field_name, ty, serde_with) in rendered_fields {
         rustfmt::write_docs_or(
             out,
             indent + 4,
             &field.docs,
             &format!("Field `{}/{}.{}`.", interface.name, def.name, field.name),
         )?;
+        if let Some(with_path) = serde_with {
+            writeln!(out, "{field_prefix}#[serde(with = \"{with_path}\")]")?;
+        }
         writeln!(
             out,
             "{}",
@@ -788,7 +825,7 @@ fn emit_record(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn emit_type_def(
     out: &mut String,
     indent: usize,
@@ -797,6 +834,8 @@ fn emit_type_def(
     def: &TypeDef,
     options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
+    serde_registry: &mut SerdeArrayRegistry,
+    serde_mod_prefix: &str,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     let member_prefix = " ".repeat(indent + 4);
@@ -808,8 +847,10 @@ fn emit_type_def(
         TypeDefKind::Flags(_) => format!("Flags `{}/{}`.", interface.name, def.name),
         TypeDefKind::Alias(_)
         | TypeDefKind::List(_)
+        | TypeDefKind::FixedLengthList(..)
         | TypeDefKind::Option(_)
-        | TypeDefKind::Result(_) => format!("Type alias `{}/{}`.", interface.name, def.name),
+        | TypeDefKind::Result(_)
+        | TypeDefKind::Map(..) => format!("Type alias `{}/{}`.", interface.name, def.name),
     };
     rustfmt::write_docs_or(out, indent, &def.docs, &fallback_doc)?;
     write_stability_doc(out, indent, &def.stability)?;
@@ -826,6 +867,8 @@ fn emit_type_def(
                 fields,
                 options,
                 foreign_resolver,
+                serde_registry,
+                serde_mod_prefix,
             )?;
         }
         TypeDefKind::Variant(cases) => {
@@ -867,26 +910,36 @@ fn emit_type_def(
                 {
                     complex_type = true;
                 }
-                rendered_cases.push((case, case_name, payload_ty));
+                let serde_with = if options.serde {
+                    case.payload.as_ref().and_then(|payload| {
+                        serde_registry.register_for_type(model, None, payload, serde_mod_prefix)
+                    })
+                } else {
+                    None
+                };
+                rendered_cases.push((case, case_name, payload_ty, serde_with));
             }
             if complex_type {
                 writeln!(out, "{prefix}#[allow(clippy::type_complexity)]")?;
             }
             let variant_names: Vec<&str> = rendered_cases
                 .iter()
-                .map(|(_, case_name, _)| case_name.as_str())
+                .map(|(_, case_name, _, _)| case_name.as_str())
                 .collect();
             if needs_allow_enum_variant_names(&name, &variant_names) {
                 writeln!(out, "{prefix}#[allow(clippy::enum_variant_names)]")?;
             }
             writeln!(out, "{prefix}pub enum {name} {{")?;
-            for (case, case_name, payload_ty) in rendered_cases {
+            for (case, case_name, payload_ty, serde_with) in rendered_cases {
                 rustfmt::write_docs_or(
                     out,
                     indent + 4,
                     &case.docs,
                     &format!("Case `{}/{}.{}`.", interface.name, def.name, case.name),
                 )?;
+                if let Some(with_path) = serde_with {
+                    writeln!(out, "{member_prefix}#[serde(with = \"{with_path}\")]")?;
+                }
                 if let Some(ty) = payload_ty {
                     writeln!(
                         out,
@@ -1002,6 +1055,25 @@ fn emit_type_def(
                 rustfmt::fmt_type_alias(indent, &format!("pub type {name}"), &ty)
             )?;
         }
+        TypeDefKind::FixedLengthList(element, len) => {
+            let elem_ty = if model.resolves_to_u8(element) {
+                "u8".to_string()
+            } else {
+                map_type(
+                    model,
+                    &interface.name,
+                    element,
+                    options.no_std,
+                    foreign_resolver,
+                )?
+            };
+            let ty = format!("[{elem_ty}; {len}]");
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(indent, &format!("pub type {name}"), &ty)
+            )?;
+        }
         TypeDefKind::Option(payload) => {
             let ty = format!(
                 "{}<{}>",
@@ -1030,6 +1102,28 @@ fn emit_type_def(
                 |ty| map_type(model, &interface.name, ty, options.no_std, foreign_resolver),
             )?;
             let ty = format!("{}<{ok}, {err}>", result_path(options.no_std));
+            writeln!(
+                out,
+                "{}",
+                rustfmt::fmt_type_alias(indent, &format!("pub type {name}"), &ty)
+            )?;
+        }
+        TypeDefKind::Map(key, value) => {
+            let key_ty = map_type(
+                model,
+                &interface.name,
+                key,
+                options.no_std,
+                foreign_resolver,
+            )?;
+            let val_ty = map_type(
+                model,
+                &interface.name,
+                value,
+                options.no_std,
+                foreign_resolver,
+            )?;
+            let ty = format!("{}<{key_ty}, {val_ty}>", btree_map_path(options.no_std));
             writeln!(
                 out,
                 "{}",
@@ -1387,9 +1481,22 @@ fn estimate_type_layout(
     match ty {
         TypeExpr::Bool | TypeExpr::U8 | TypeExpr::S8 => ((1, 1, 1), true),
         TypeExpr::U16 | TypeExpr::S16 => ((2, 2, 2), true),
-        TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 => ((4, 4, 4), true),
+        TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 | TypeExpr::Char => ((4, 4, 4), true),
         TypeExpr::U64 | TypeExpr::S64 | TypeExpr::F64 => ((8, 8, 8), true),
-        TypeExpr::String | TypeExpr::List(_) => ((24, 24, 8), true),
+        TypeExpr::String | TypeExpr::List(_) | TypeExpr::Map(..) => ((24, 24, 8), true),
+        TypeExpr::FixedLengthList(inner, len) => {
+            let ((min_sz, max_sz, al), exact) =
+                estimate_type_layout(model, context, inner, depth + 1, alias_hops, memo, visiting);
+            let count = usize::try_from(*len).unwrap_or(usize::MAX);
+            (
+                (
+                    min_sz.saturating_mul(count),
+                    max_sz.saturating_mul(count),
+                    al,
+                ),
+                exact,
+            )
+        }
         TypeExpr::Option(inner) => {
             let ((min_sz, max_sz, al), exact) =
                 estimate_type_layout(model, context, inner, depth + 1, alias_hops, memo, visiting);
@@ -1471,7 +1578,27 @@ fn estimate_type_layout(
                     memo,
                     visiting,
                 ),
-                TypeDefKind::List(_) => ((24, 24, 8), true),
+                TypeDefKind::List(_) | TypeDefKind::Map(..) => ((24, 24, 8), true),
+                TypeDefKind::FixedLengthList(inner, len) => {
+                    let ((min_sz, max_sz, al), arr_exact) = estimate_type_layout(
+                        model,
+                        resolved_dep,
+                        inner,
+                        next_depth + 1,
+                        next_alias_hops,
+                        memo,
+                        visiting,
+                    );
+                    let count = usize::try_from(*len).unwrap_or(usize::MAX);
+                    (
+                        (
+                            min_sz.saturating_mul(count),
+                            max_sz.saturating_mul(count),
+                            al,
+                        ),
+                        arr_exact,
+                    )
+                }
                 TypeDefKind::Option(inner) => {
                     let ((min_sz, max_sz, al), opt_exact) = estimate_type_layout(
                         model,
@@ -1527,12 +1654,889 @@ const fn option_path(no_std: bool) -> &'static str {
     }
 }
 
+const fn btree_map_path(no_std: bool) -> &'static str {
+    if no_std {
+        "::alloc::collections::BTreeMap"
+    } else {
+        "::std::collections::BTreeMap"
+    }
+}
+
 const fn result_path(no_std: bool) -> &'static str {
     if no_std {
         "::core::result::Result"
     } else {
         "::std::result::Result"
     }
+}
+
+#[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct SerdeArrayRegistry {
+    codecs: Vec<String>,
+    index: BTreeMap<String, usize>,
+    uses_opt: bool,
+    uses_list: bool,
+    uses_map: bool,
+    uses_res: bool,
+}
+
+impl SerdeArrayRegistry {
+    fn register_for_type(
+        &mut self,
+        model: &Model,
+        context: Option<&crate::model::Dependency>,
+        ty: &TypeExpr,
+        mod_prefix: &str,
+    ) -> Option<String> {
+        let codec = self.codec_expr(model, context, ty, &mut BTreeSet::new())?;
+        let idx = if let Some(&existing) = self.index.get(&codec) {
+            existing
+        } else {
+            let next = self.codecs.len();
+            self.codecs.push(codec.clone());
+            self.index.insert(codec, next);
+            next
+        };
+        Some(format!("{mod_prefix}::c{idx}"))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn codec_expr(
+        &mut self,
+        model: &Model,
+        context: Option<&crate::model::Dependency>,
+        ty: &TypeExpr,
+        visiting: &mut BTreeSet<String>,
+    ) -> Option<String> {
+        match ty {
+            TypeExpr::FixedLengthList(inner, len) => {
+                let inner_codec = self.codec_expr(model, context, inner, visiting);
+                if *len > 32 || inner_codec.is_some() {
+                    let elem = inner_codec.unwrap_or_else(|| "super::Direct".to_string());
+                    Some(format!("super::Array<{elem}, {len}>"))
+                } else {
+                    None
+                }
+            }
+            TypeExpr::Option(inner) => {
+                let inner_codec = self.codec_expr(model, context, inner, visiting)?;
+                self.uses_opt = true;
+                Some(format!("super::Opt<{inner_codec}>"))
+            }
+            TypeExpr::List(inner) => {
+                let inner_codec = self.codec_expr(model, context, inner, visiting)?;
+                self.uses_list = true;
+                Some(format!("super::List<{inner_codec}>"))
+            }
+            TypeExpr::Map(_, value) => {
+                let val_codec = self.codec_expr(model, context, value, visiting)?;
+                self.uses_map = true;
+                Some(format!("super::Map<{val_codec}>"))
+            }
+            TypeExpr::Result(result) => {
+                let ok_codec = result
+                    .ok
+                    .as_deref()
+                    .and_then(|t| self.codec_expr(model, context, t, visiting));
+                let err_codec = result
+                    .err
+                    .as_deref()
+                    .and_then(|t| self.codec_expr(model, context, t, visiting));
+                if ok_codec.is_none() && err_codec.is_none() {
+                    return None;
+                }
+                self.uses_res = true;
+                let ok = ok_codec.unwrap_or_else(|| "super::Direct".to_string());
+                let err = err_codec.unwrap_or_else(|| "super::Direct".to_string());
+                Some(format!("super::Res<{ok}, {err}>"))
+            }
+            TypeExpr::Named(name) => {
+                let (resolved_dep, def) = model.type_def_in(context, name)?;
+                let key = resolved_dep.map_or_else(
+                    || name.to_string(),
+                    |dep| format!("{}:{}/{name}", dep.package.namespace, dep.package.name),
+                );
+                if !visiting.insert(key.clone()) {
+                    return None;
+                }
+                let out = match &def.kind {
+                    TypeDefKind::Alias(target) => {
+                        self.codec_expr(model, resolved_dep, target, visiting)
+                    }
+                    TypeDefKind::List(elem) => self
+                        .codec_expr(model, resolved_dep, elem, visiting)
+                        .map(|inner| {
+                            self.uses_list = true;
+                            format!("super::List<{inner}>")
+                        }),
+                    TypeDefKind::FixedLengthList(elem, len) => {
+                        let inner_codec = self.codec_expr(model, resolved_dep, elem, visiting);
+                        if *len > 32 || inner_codec.is_some() {
+                            let e = inner_codec.unwrap_or_else(|| "super::Direct".to_string());
+                            Some(format!("super::Array<{e}, {len}>"))
+                        } else {
+                            None
+                        }
+                    }
+                    TypeDefKind::Option(inner) => self
+                        .codec_expr(model, resolved_dep, inner, visiting)
+                        .map(|c| {
+                            self.uses_opt = true;
+                            format!("super::Opt<{c}>")
+                        }),
+                    TypeDefKind::Map(_, val) => self
+                        .codec_expr(model, resolved_dep, val, visiting)
+                        .map(|c| {
+                            self.uses_map = true;
+                            format!("super::Map<{c}>")
+                        }),
+                    TypeDefKind::Result(result) => {
+                        let ok_codec = result
+                            .ok
+                            .as_deref()
+                            .and_then(|t| self.codec_expr(model, resolved_dep, t, visiting));
+                        let err_codec = result
+                            .err
+                            .as_deref()
+                            .and_then(|t| self.codec_expr(model, resolved_dep, t, visiting));
+                        if ok_codec.is_none() && err_codec.is_none() {
+                            None
+                        } else {
+                            self.uses_res = true;
+                            let ok = ok_codec.unwrap_or_else(|| "super::Direct".to_string());
+                            let err = err_codec.unwrap_or_else(|| "super::Direct".to_string());
+                            Some(format!("super::Res<{ok}, {err}>"))
+                        }
+                    }
+                    TypeDefKind::Record(_)
+                    | TypeDefKind::Variant(_)
+                    | TypeDefKind::Enum(_)
+                    | TypeDefKind::Flags(_) => None,
+                };
+                visiting.remove(&key);
+                out
+            }
+            _ => None,
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn emit_serde_array_module(
+    out: &mut String,
+    registry: &SerdeArrayRegistry,
+    no_std: bool,
+) -> Result<()> {
+    if registry.codecs.is_empty() {
+        return Ok(());
+    }
+    let vec_ty = vec_path(no_std);
+    let map_ty = btree_map_path(no_std);
+    writeln!(out)?;
+    writeln!(out, "mod __witforge_serde {{")?;
+    writeln!(out, "    pub trait Ser<T> {{")?;
+    writeln!(out, "        fn ser<S: ::serde::Serializer>(")?;
+    writeln!(out, "            value: &T,")?;
+    writeln!(out, "            serializer: S,")?;
+    writeln!(out, "        ) -> ::core::result::Result<S::Ok, S::Error>;")?;
+    writeln!(out, "    }}")?;
+    writeln!(out)?;
+    writeln!(out, "    pub trait De<'de, T> {{")?;
+    writeln!(out, "        fn de<D: ::serde::Deserializer<'de>>(")?;
+    writeln!(out, "            deserializer: D,")?;
+    writeln!(out, "        ) -> ::core::result::Result<T, D::Error>;")?;
+    writeln!(out, "    }}")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    struct SerWrap<'a, T, C>(&'a T, ::core::marker::PhantomData<C>);"
+    )?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    impl<T, C: Ser<T>> ::serde::Serialize for SerWrap<'_, T, C> {{"
+    )?;
+    writeln!(out, "        fn serialize<S: ::serde::Serializer>(")?;
+    writeln!(out, "            &self,")?;
+    writeln!(out, "            serializer: S,")?;
+    writeln!(
+        out,
+        "        ) -> ::core::result::Result<S::Ok, S::Error> {{"
+    )?;
+    writeln!(out, "            C::ser(self.0, serializer)")?;
+    writeln!(out, "        }}")?;
+    writeln!(out, "    }}")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    struct DeSeed<T, C>(::core::marker::PhantomData<(T, C)>);"
+    )?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    impl<'de, T, C: De<'de, T>> ::serde::de::DeserializeSeed<'de> for DeSeed<T, C> {{"
+    )?;
+    writeln!(out, "        type Value = T;")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "        fn deserialize<D: ::serde::Deserializer<'de>>("
+    )?;
+    writeln!(out, "            self,")?;
+    writeln!(out, "            deserializer: D,")?;
+    writeln!(out, "        ) -> ::core::result::Result<T, D::Error> {{")?;
+    writeln!(out, "            C::de(deserializer)")?;
+    writeln!(out, "        }}")?;
+    writeln!(out, "    }}")?;
+    writeln!(out)?;
+    writeln!(out, "    pub struct Direct;")?;
+    writeln!(out)?;
+    writeln!(out, "    impl<T: ::serde::Serialize> Ser<T> for Direct {{")?;
+    writeln!(out, "        fn ser<S: ::serde::Serializer>(")?;
+    writeln!(out, "            value: &T,")?;
+    writeln!(out, "            serializer: S,")?;
+    writeln!(
+        out,
+        "        ) -> ::core::result::Result<S::Ok, S::Error> {{"
+    )?;
+    writeln!(out, "            value.serialize(serializer)")?;
+    writeln!(out, "        }}")?;
+    writeln!(out, "    }}")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    impl<'de, T: ::serde::Deserialize<'de>> De<'de, T> for Direct {{"
+    )?;
+    writeln!(out, "        fn de<D: ::serde::Deserializer<'de>>(")?;
+    writeln!(out, "            deserializer: D,")?;
+    writeln!(out, "        ) -> ::core::result::Result<T, D::Error> {{")?;
+    writeln!(out, "            T::deserialize(deserializer)")?;
+    writeln!(out, "        }}")?;
+    writeln!(out, "    }}")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    pub struct Array<E, const N: usize>(::core::marker::PhantomData<E>);"
+    )?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    impl<T, E: Ser<T>, const N: usize> Ser<[T; N]> for Array<E, N> {{"
+    )?;
+    writeln!(out, "        fn ser<S: ::serde::Serializer>(")?;
+    writeln!(out, "            value: &[T; N],")?;
+    writeln!(out, "            serializer: S,")?;
+    writeln!(
+        out,
+        "        ) -> ::core::result::Result<S::Ok, S::Error> {{"
+    )?;
+    writeln!(out, "            use ::serde::ser::SerializeTuple as _;")?;
+    writeln!(
+        out,
+        "            let mut tup = serializer.serialize_tuple(N)?;"
+    )?;
+    writeln!(out, "            for item in value {{")?;
+    writeln!(
+        out,
+        "                tup.serialize_element(&SerWrap::<T, E>(item, ::core::marker::PhantomData))?;"
+    )?;
+    writeln!(out, "            }}")?;
+    writeln!(out, "            tup.end()")?;
+    writeln!(out, "        }}")?;
+    writeln!(out, "    }}")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "    impl<'de, T, E: De<'de, T>, const N: usize> De<'de, [T; N]> for Array<E, N> {{"
+    )?;
+    writeln!(out, "        fn de<D: ::serde::Deserializer<'de>>(")?;
+    writeln!(out, "            deserializer: D,")?;
+    writeln!(
+        out,
+        "        ) -> ::core::result::Result<[T; N], D::Error> {{"
+    )?;
+    writeln!(
+        out,
+        "            struct V<T, E, const N: usize>(::core::marker::PhantomData<(T, E)>);"
+    )?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "            impl<'de, T, E: De<'de, T>, const N: usize> ::serde::de::Visitor<'de> for V<T, E, N> {{"
+    )?;
+    writeln!(out, "                type Value = [T; N];")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "                fn expecting(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{"
+    )?;
+    writeln!(
+        out,
+        "                    write!(f, \"an array of length {{N}}\")"
+    )?;
+    writeln!(out, "                }}")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "                fn visit_seq<A: ::serde::de::SeqAccess<'de>>("
+    )?;
+    writeln!(out, "                    self,")?;
+    writeln!(out, "                    mut seq: A,")?;
+    writeln!(
+        out,
+        "                ) -> ::core::result::Result<[T; N], A::Error> {{"
+    )?;
+    writeln!(
+        out,
+        "                    let mut out = {vec_ty}::with_capacity(N);"
+    )?;
+    writeln!(out, "                    for idx in 0..N {{")?;
+    writeln!(
+        out,
+        "                        match seq.next_element_seed(DeSeed::<T, E>(::core::marker::PhantomData))? {{"
+    )?;
+    writeln!(
+        out,
+        "                            ::core::option::Option::Some(v) => out.push(v),"
+    )?;
+    writeln!(
+        out,
+        "                            ::core::option::Option::None => {{"
+    )?;
+    writeln!(
+        out,
+        "                                return ::core::result::Result::Err("
+    )?;
+    writeln!(
+        out,
+        "                                    ::serde::de::Error::invalid_length(idx, &self),"
+    )?;
+    writeln!(out, "                                );")?;
+    writeln!(out, "                            }}")?;
+    writeln!(out, "                        }}")?;
+    writeln!(out, "                    }}")?;
+    writeln!(out, "                    <[T; N]>::try_from(out)")?;
+    writeln!(
+        out,
+        "                        .map_err(|_| ::serde::de::Error::invalid_length(N, &self))"
+    )?;
+    writeln!(out, "                }}")?;
+    writeln!(out, "            }}")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "            deserializer.deserialize_tuple(N, V::<T, E, N>(::core::marker::PhantomData))"
+    )?;
+    writeln!(out, "        }}")?;
+    writeln!(out, "    }}")?;
+    if registry.uses_opt {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    pub struct Opt<E>(::core::marker::PhantomData<E>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<T, E: Ser<T>> Ser<::core::option::Option<T>> for Opt<E> {{"
+        )?;
+        writeln!(out, "        fn ser<S: ::serde::Serializer>(")?;
+        writeln!(out, "            value: &::core::option::Option<T>,")?;
+        writeln!(out, "            serializer: S,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<S::Ok, S::Error> {{"
+        )?;
+        writeln!(out, "            match value {{")?;
+        writeln!(out, "                ::core::option::Option::Some(v) => {{")?;
+        writeln!(
+            out,
+            "                    serializer.serialize_some(&SerWrap::<T, E>(v, ::core::marker::PhantomData))"
+        )?;
+        writeln!(out, "                }}")?;
+        writeln!(
+            out,
+            "                ::core::option::Option::None => serializer.serialize_none(),"
+        )?;
+        writeln!(out, "            }}")?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<'de, T, E: De<'de, T>> De<'de, ::core::option::Option<T>> for Opt<E> {{"
+        )?;
+        writeln!(out, "        fn de<D: ::serde::Deserializer<'de>>(")?;
+        writeln!(out, "            deserializer: D,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<::core::option::Option<T>, D::Error> {{"
+        )?;
+        writeln!(
+            out,
+            "            struct OptVisitor<T, E>(::core::marker::PhantomData<(T, E)>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            impl<'de, T, E: De<'de, T>> ::serde::de::Visitor<'de> for OptVisitor<T, E> {{"
+        )?;
+        writeln!(
+            out,
+            "                type Value = ::core::option::Option<T>;"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn expecting(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{"
+        )?;
+        writeln!(out, "                    f.write_str(\"option\")")?;
+        writeln!(out, "                }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn visit_none<Er: ::serde::de::Error>("
+        )?;
+        writeln!(out, "                    self,")?;
+        writeln!(
+            out,
+            "                ) -> ::core::result::Result<::core::option::Option<T>, Er> {{"
+        )?;
+        writeln!(
+            out,
+            "                    ::core::result::Result::Ok(::core::option::Option::None)"
+        )?;
+        writeln!(out, "                }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn visit_unit<Er: ::serde::de::Error>("
+        )?;
+        writeln!(out, "                    self,")?;
+        writeln!(
+            out,
+            "                ) -> ::core::result::Result<::core::option::Option<T>, Er> {{"
+        )?;
+        writeln!(
+            out,
+            "                    ::core::result::Result::Ok(::core::option::Option::None)"
+        )?;
+        writeln!(out, "                }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn visit_some<D: ::serde::Deserializer<'de>>("
+        )?;
+        writeln!(out, "                    self,")?;
+        writeln!(out, "                    deserializer: D,")?;
+        writeln!(
+            out,
+            "                ) -> ::core::result::Result<::core::option::Option<T>, D::Error> {{"
+        )?;
+        writeln!(
+            out,
+            "                    E::de(deserializer).map(::core::option::Option::Some)"
+        )?;
+        writeln!(out, "                }}")?;
+        writeln!(out, "            }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            deserializer.deserialize_option(OptVisitor::<T, E>(::core::marker::PhantomData))"
+        )?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+    }
+    if registry.uses_list {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    pub struct List<E>(::core::marker::PhantomData<E>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<T, E: Ser<T>> Ser<{vec_ty}<T>> for List<E> {{"
+        )?;
+        writeln!(out, "        fn ser<S: ::serde::Serializer>(")?;
+        writeln!(out, "            value: &{vec_ty}<T>,")?;
+        writeln!(out, "            serializer: S,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<S::Ok, S::Error> {{"
+        )?;
+        writeln!(out, "            use ::serde::ser::SerializeSeq as _;")?;
+        writeln!(
+            out,
+            "            let mut seq = serializer.serialize_seq(::core::option::Option::Some(value.len()))?;"
+        )?;
+        writeln!(out, "            for item in value {{")?;
+        writeln!(
+            out,
+            "                seq.serialize_element(&SerWrap::<T, E>(item, ::core::marker::PhantomData))?;"
+        )?;
+        writeln!(out, "            }}")?;
+        writeln!(out, "            seq.end()")?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<'de, T, E: De<'de, T>> De<'de, {vec_ty}<T>> for List<E> {{"
+        )?;
+        writeln!(out, "        fn de<D: ::serde::Deserializer<'de>>(")?;
+        writeln!(out, "            deserializer: D,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<{vec_ty}<T>, D::Error> {{"
+        )?;
+        writeln!(
+            out,
+            "            struct ListVisitor<T, E>(::core::marker::PhantomData<(T, E)>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            impl<'de, T, E: De<'de, T>> ::serde::de::Visitor<'de> for ListVisitor<T, E> {{"
+        )?;
+        writeln!(out, "                type Value = {vec_ty}<T>;")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn expecting(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{"
+        )?;
+        writeln!(out, "                    f.write_str(\"a sequence\")")?;
+        writeln!(out, "                }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn visit_seq<A: ::serde::de::SeqAccess<'de>>("
+        )?;
+        writeln!(out, "                    self,")?;
+        writeln!(out, "                    mut seq: A,")?;
+        writeln!(
+            out,
+            "                ) -> ::core::result::Result<Self::Value, A::Error> {{"
+        )?;
+        writeln!(out, "                    let mut out = {vec_ty}::new();")?;
+        writeln!(
+            out,
+            "                    while let ::core::option::Option::Some(v) ="
+        )?;
+        writeln!(
+            out,
+            "                        seq.next_element_seed(DeSeed::<T, E>(::core::marker::PhantomData))?"
+        )?;
+        writeln!(out, "                    {{")?;
+        writeln!(out, "                        out.push(v);")?;
+        writeln!(out, "                    }}")?;
+        writeln!(out, "                    ::core::result::Result::Ok(out)")?;
+        writeln!(out, "                }}")?;
+        writeln!(out, "            }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            deserializer.deserialize_seq(ListVisitor::<T, E>(::core::marker::PhantomData))"
+        )?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+    }
+    if registry.uses_map {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    pub struct Map<V>(::core::marker::PhantomData<V>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<K: ::serde::Serialize, T, V: Ser<T>> Ser<{map_ty}<K, T>> for Map<V> {{"
+        )?;
+        writeln!(out, "        fn ser<S: ::serde::Serializer>(")?;
+        writeln!(out, "            value: &{map_ty}<K, T>,")?;
+        writeln!(out, "            serializer: S,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<S::Ok, S::Error> {{"
+        )?;
+        writeln!(out, "            use ::serde::ser::SerializeMap as _;")?;
+        writeln!(
+            out,
+            "            let mut map = serializer.serialize_map(::core::option::Option::Some(value.len()))?;"
+        )?;
+        writeln!(out, "            for (k, v) in value {{")?;
+        writeln!(
+            out,
+            "                map.serialize_entry(k, &SerWrap::<T, V>(v, ::core::marker::PhantomData))?;"
+        )?;
+        writeln!(out, "            }}")?;
+        writeln!(out, "            map.end()")?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<'de, K, T, V> De<'de, {map_ty}<K, T>> for Map<V>"
+        )?;
+        writeln!(out, "    where")?;
+        writeln!(
+            out,
+            "        K: ::serde::Deserialize<'de> + ::core::cmp::Ord,"
+        )?;
+        writeln!(out, "        V: De<'de, T>,")?;
+        writeln!(out, "    {{")?;
+        writeln!(out, "        fn de<D: ::serde::Deserializer<'de>>(")?;
+        writeln!(out, "            deserializer: D,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<{map_ty}<K, T>, D::Error> {{"
+        )?;
+        writeln!(
+            out,
+            "            struct MapVisitor<K, T, V>(::core::marker::PhantomData<(K, T, V)>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            impl<'de, K, T, V> ::serde::de::Visitor<'de> for MapVisitor<K, T, V>"
+        )?;
+        writeln!(out, "            where")?;
+        writeln!(
+            out,
+            "                K: ::serde::Deserialize<'de> + ::core::cmp::Ord,"
+        )?;
+        writeln!(out, "                V: De<'de, T>,")?;
+        writeln!(out, "            {{")?;
+        writeln!(out, "                type Value = {map_ty}<K, T>;")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn expecting(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{"
+        )?;
+        writeln!(out, "                    f.write_str(\"a map\")")?;
+        writeln!(out, "                }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn visit_map<A: ::serde::de::MapAccess<'de>>("
+        )?;
+        writeln!(out, "                    self,")?;
+        writeln!(out, "                    mut map: A,")?;
+        writeln!(
+            out,
+            "                ) -> ::core::result::Result<Self::Value, A::Error> {{"
+        )?;
+        writeln!(out, "                    let mut out = {map_ty}::new();")?;
+        writeln!(
+            out,
+            "                    while let ::core::option::Option::Some((k, v)) = map.next_entry_seed("
+        )?;
+        writeln!(
+            out,
+            "                        ::core::marker::PhantomData::<K>,"
+        )?;
+        writeln!(
+            out,
+            "                        DeSeed::<T, V>(::core::marker::PhantomData),"
+        )?;
+        writeln!(out, "                    )? {{")?;
+        writeln!(out, "                        out.insert(k, v);")?;
+        writeln!(out, "                    }}")?;
+        writeln!(out, "                    ::core::result::Result::Ok(out)")?;
+        writeln!(out, "                }}")?;
+        writeln!(out, "            }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            deserializer.deserialize_map(MapVisitor::<K, T, V>(::core::marker::PhantomData))"
+        )?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+    }
+    if registry.uses_res {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    pub struct Res<O, E>(::core::marker::PhantomData<(O, E)>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<T, U, O: Ser<T>, E: Ser<U>> Ser<::core::result::Result<T, U>> for Res<O, E> {{"
+        )?;
+        writeln!(out, "        fn ser<S: ::serde::Serializer>(")?;
+        writeln!(out, "            value: &::core::result::Result<T, U>,")?;
+        writeln!(out, "            serializer: S,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<S::Ok, S::Error> {{"
+        )?;
+        writeln!(out, "            match value {{")?;
+        writeln!(
+            out,
+            "                ::core::result::Result::Ok(v) => serializer.serialize_newtype_variant("
+        )?;
+        writeln!(out, "                    \"Result\",")?;
+        writeln!(out, "                    0,")?;
+        writeln!(out, "                    \"Ok\",")?;
+        writeln!(
+            out,
+            "                    &SerWrap::<T, O>(v, ::core::marker::PhantomData),"
+        )?;
+        writeln!(out, "                ),")?;
+        writeln!(
+            out,
+            "                ::core::result::Result::Err(v) => serializer.serialize_newtype_variant("
+        )?;
+        writeln!(out, "                    \"Result\",")?;
+        writeln!(out, "                    1,")?;
+        writeln!(out, "                    \"Err\",")?;
+        writeln!(
+            out,
+            "                    &SerWrap::<U, E>(v, ::core::marker::PhantomData),"
+        )?;
+        writeln!(out, "                ),")?;
+        writeln!(out, "            }}")?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "    impl<'de, T, U, O, E> De<'de, ::core::result::Result<T, U>> for Res<O, E>"
+        )?;
+        writeln!(out, "    where")?;
+        writeln!(out, "        O: De<'de, T>,")?;
+        writeln!(out, "        E: De<'de, U>,")?;
+        writeln!(out, "    {{")?;
+        writeln!(out, "        fn de<D: ::serde::Deserializer<'de>>(")?;
+        writeln!(out, "            deserializer: D,")?;
+        writeln!(
+            out,
+            "        ) -> ::core::result::Result<::core::result::Result<T, U>, D::Error> {{"
+        )?;
+        writeln!(out, "            #[derive(::serde::Deserialize)]")?;
+        writeln!(out, "            enum Tag {{")?;
+        writeln!(out, "                Ok,")?;
+        writeln!(out, "                Err,")?;
+        writeln!(out, "            }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            struct ResVisitor<T, U, O, E>(::core::marker::PhantomData<(T, U, O, E)>);"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "            impl<'de, T, U, O, E> ::serde::de::Visitor<'de> for ResVisitor<T, U, O, E>"
+        )?;
+        writeln!(out, "            where")?;
+        writeln!(out, "                O: De<'de, T>,")?;
+        writeln!(out, "                E: De<'de, U>,")?;
+        writeln!(out, "            {{")?;
+        writeln!(
+            out,
+            "                type Value = ::core::result::Result<T, U>;"
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn expecting(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{"
+        )?;
+        writeln!(out, "                    f.write_str(\"enum Result\")")?;
+        writeln!(out, "                }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "                fn visit_enum<A: ::serde::de::EnumAccess<'de>>("
+        )?;
+        writeln!(out, "                    self,")?;
+        writeln!(out, "                    data: A,")?;
+        writeln!(
+            out,
+            "                ) -> ::core::result::Result<Self::Value, A::Error> {{"
+        )?;
+        writeln!(
+            out,
+            "                    use ::serde::de::VariantAccess as _;"
+        )?;
+        writeln!(out, "                    match data.variant::<Tag>()? {{")?;
+        writeln!(out, "                        (Tag::Ok, variant) => variant")?;
+        writeln!(
+            out,
+            "                            .newtype_variant_seed(DeSeed::<T, O>(::core::marker::PhantomData))"
+        )?;
+        writeln!(
+            out,
+            "                            .map(::core::result::Result::Ok),"
+        )?;
+        writeln!(
+            out,
+            "                        (Tag::Err, variant) => variant"
+        )?;
+        writeln!(
+            out,
+            "                            .newtype_variant_seed(DeSeed::<U, E>(::core::marker::PhantomData))"
+        )?;
+        writeln!(
+            out,
+            "                            .map(::core::result::Result::Err),"
+        )?;
+        writeln!(out, "                    }}")?;
+        writeln!(out, "                }}")?;
+        writeln!(out, "            }}")?;
+        writeln!(out)?;
+        writeln!(out, "            deserializer.deserialize_enum(")?;
+        writeln!(out, "                \"Result\",")?;
+        writeln!(out, "                &[\"Ok\", \"Err\"],")?;
+        writeln!(
+            out,
+            "                ResVisitor::<T, U, O, E>(::core::marker::PhantomData),"
+        )?;
+        writeln!(out, "            )")?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+    }
+    for (idx, codec_ty) in registry.codecs.iter().enumerate() {
+        writeln!(out)?;
+        writeln!(out, "    pub mod c{idx} {{")?;
+        writeln!(
+            out,
+            "{}",
+            rustfmt::fmt_type_alias(8, "type Codec", codec_ty)
+        )?;
+        writeln!(out)?;
+        writeln!(out, "        pub fn serialize<T, S: ::serde::Serializer>(")?;
+        writeln!(out, "            value: &T,")?;
+        writeln!(out, "            serializer: S,")?;
+        writeln!(out, "        ) -> ::core::result::Result<S::Ok, S::Error>")?;
+        writeln!(out, "        where")?;
+        writeln!(out, "            Codec: super::Ser<T>,")?;
+        writeln!(out, "        {{")?;
+        writeln!(
+            out,
+            "            <Codec as super::Ser<T>>::ser(value, serializer)"
+        )?;
+        writeln!(out, "        }}")?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "        pub fn deserialize<'de, T, D: ::serde::Deserializer<'de>>("
+        )?;
+        writeln!(out, "            deserializer: D,")?;
+        writeln!(out, "        ) -> ::core::result::Result<T, D::Error>")?;
+        writeln!(out, "        where")?;
+        writeln!(out, "            Codec: super::De<'de, T>,")?;
+        writeln!(out, "        {{")?;
+        writeln!(
+            out,
+            "            <Codec as super::De<'de, T>>::de(deserializer)"
+        )?;
+        writeln!(out, "        }}")?;
+        writeln!(out, "    }}")?;
+    }
+    writeln!(out, "}}")?;
+    Ok(())
 }
 
 fn map_type(
@@ -1554,6 +2558,7 @@ fn map_type(
         TypeExpr::S64 => Ok("i64".to_string()),
         TypeExpr::F32 => Ok("f32".to_string()),
         TypeExpr::F64 => Ok("f64".to_string()),
+        TypeExpr::Char => Ok("char".to_string()),
         TypeExpr::String => Ok(string_path(no_std).to_string()),
         TypeExpr::Named(name) => {
             if let Some((namespace, package)) = name.package() {
@@ -1590,6 +2595,14 @@ fn map_type(
                 ))
             }
         }
+        TypeExpr::FixedLengthList(element, len) => {
+            let elem_ty = if model.resolves_to_u8(element) {
+                "u8".to_string()
+            } else {
+                map_type(model, current_interface, element, no_std, foreign_resolver)?
+            };
+            Ok(format!("[{elem_ty}; {len}]"))
+        }
         TypeExpr::Option(payload) => Ok(format!(
             "{}<{}>",
             option_path(no_std),
@@ -1605,6 +2618,11 @@ fn map_type(
                 |ty| map_type(model, current_interface, ty, no_std, foreign_resolver),
             )?;
             Ok(format!("{}<{ok}, {err}>", result_path(no_std)))
+        }
+        TypeExpr::Map(key, value) => {
+            let key_ty = map_type(model, current_interface, key, no_std, foreign_resolver)?;
+            let val_ty = map_type(model, current_interface, value, no_std, foreign_resolver)?;
+            Ok(format!("{}<{key_ty}, {val_ty}>", btree_map_path(no_std)))
         }
     }
 }

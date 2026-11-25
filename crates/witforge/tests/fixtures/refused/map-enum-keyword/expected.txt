@@ -1,0 +1,1 @@
+example:bad/types/holder.type: record `types/holder`: field `type` has type `map<_, enum>` with Rust keyword name `type`, which fails `prost-derive` accessor generation (`get_r#type`); rename the field or wrap the enum in a record

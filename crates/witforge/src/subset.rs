@@ -1,8 +1,10 @@
 //! The restricted WIT subset that every contract must stay inside.
 //!
 //! Version 1 of the subset is pure and synchronous, and maps cleanly onto Rust
-//! and protobuf: no resources or handles, no `future`, `stream`, or `error-context`, no `map`, no
-//! fixed-length lists, no `char`, no tuples, no `async` functions or `get`/`set` accessors.
+//! and protobuf: no resources or handles, no `future`, `stream`, or `error-context`, no tuples,
+//! no `async` functions or `get`/`set` accessors. Primitives include `char`; containers include
+//! `list<T>`, fixed-length `list<T, N>` (`1 <= N <= 65536`), `option<T>`, `result<T, E>`, and
+//! `map<K, V>` with `bool`, integer, `char`, or `string` keys.
 //! Types and functions live in the package's named interfaces, and a local type may reference a
 //! named type from a standard `deps/` package. Worlds may import and export interfaces defined
 //! by this package or by a standard `deps/` package without renaming them or defining them
@@ -1298,8 +1300,15 @@ fn check_dependency_def_refs(
                 }
             }
         }
-        TypeDefKind::Option(ty) | TypeDefKind::List(ty) | TypeDefKind::Type(ty) => {
+        TypeDefKind::Option(ty)
+        | TypeDefKind::List(ty)
+        | TypeDefKind::FixedLengthList(ty, _)
+        | TypeDefKind::Type(ty) => {
             check_dependency_type_refs(contract, ty, at, visited, reason, sink);
+        }
+        TypeDefKind::Map(key, value) => {
+            check_dependency_type_refs(contract, key, at, visited, reason, sink);
+            check_dependency_type_refs(contract, value, at, visited, reason, sink);
         }
         TypeDefKind::Result(result) => {
             for ty in [&result.ok, &result.err].into_iter().flatten() {
@@ -1311,8 +1320,6 @@ fn check_dependency_def_refs(
         | TypeDefKind::Tuple(_)
         | TypeDefKind::Resource
         | TypeDefKind::Handle(_)
-        | TypeDefKind::Map(..)
-        | TypeDefKind::FixedLengthList(..)
         | TypeDefKind::Future(_)
         | TypeDefKind::Stream(_)
         | TypeDefKind::Unknown => {}
@@ -1591,23 +1598,33 @@ fn check_def(
             reason,
             def_span,
         ),
-        TypeDefKind::Map(..) => {
-            sink.refuse_with_reason(
-                codes::SUBSET_MAP,
-                at,
-                "`map` is not supported yet; use `list<record>`",
-                reason,
-                def_span,
-            );
+        TypeDefKind::Map(key, value) => {
+            if !is_wit_map_key(key) {
+                sink.refuse_with_reason(
+                    codes::SUBSET_MAP,
+                    at,
+                    "`map` keys must be `bool`, an integer, `char`, or `string`",
+                    reason,
+                    def_span,
+                );
+            }
+            check_type(contract, key, at, reason, def_span, sink);
+            check_type(contract, value, at, reason, def_span, sink);
         }
-        TypeDefKind::FixedLengthList(..) => {
-            sink.refuse_with_reason(
-                codes::SUBSET_FIXED_LENGTH_LIST,
-                at,
-                "fixed-length lists are not supported; use `list`",
-                reason,
-                def_span,
-            );
+        TypeDefKind::FixedLengthList(ty, len) => {
+            if *len == 0 || *len > crate::model::MAX_FIXED_LIST_LEN {
+                sink.refuse_with_reason(
+                    codes::SUBSET_FIXED_LENGTH_LIST,
+                    at,
+                    format!(
+                        "fixed-length list length `{len}` must be between 1 and {}; use `list` for unbounded or empty lists",
+                        crate::model::MAX_FIXED_LIST_LEN
+                    ),
+                    reason,
+                    def_span,
+                );
+            }
+            check_type(contract, ty, at, reason, def_span, sink);
         }
         TypeDefKind::Future(_) | TypeDefKind::Stream(_) => {
             sink.refuse_with_reason(
@@ -1650,16 +1667,8 @@ fn check_type(
         | Type::S64
         | Type::F32
         | Type::F64
+        | Type::Char
         | Type::String => {}
-        Type::Char => {
-            sink.refuse_with_reason(
-                codes::SUBSET_CHAR,
-                at,
-                "`char` is not supported; use `string`",
-                reason,
-                span,
-            );
-        }
         Type::ErrorContext => {
             sink.refuse_with_reason(
                 codes::SUBSET_ERROR_CONTEXT,
@@ -1807,7 +1816,12 @@ fn check_package_generated_collisions(
             let named_opt_wrapper_kind = match &def.kind {
                 TypeDefKind::Option(payload) => match resolve_wit_alias(resolve, payload) {
                     Type::Id(inner_id) => match &resolve.types[*inner_id].kind {
-                        TypeDefKind::List(elem) if !is_wit_u8(resolve, elem) => Some(false),
+                        TypeDefKind::List(elem) | TypeDefKind::FixedLengthList(elem, _)
+                            if !is_wit_u8(resolve, elem) =>
+                        {
+                            Some(false)
+                        }
+                        TypeDefKind::Map(..) => Some(false),
                         TypeDefKind::Option(_) => Some(true),
                         _ => None,
                     },
@@ -2226,6 +2240,17 @@ fn check_prost_field_accessor_collisions<'a>(
     for (name, ty, span) in fields {
         let proto_field = ident::proto_field_name(name);
         let kind = resolve_prost_field_accessor_kind(resolve, ty);
+        if kind == ident::ProstFieldAccessorKind::MapEnum
+            && ident::prost_field_ident(&proto_field).starts_with("r#")
+        {
+            sink.refuse_collision(
+                location_for(name),
+                format!(
+                    "{parent_label}: {member_kind} `{name}` has type `map<_, enum>` with Rust keyword name `{proto_field}`, which fails `prost-derive` accessor generation (`get_r#{proto_field}`); rename the {member_kind} or wrap the enum in a record"
+                ),
+                span,
+            );
+        }
         for accessor in ident::prost_field_accessors(&proto_field, kind) {
             if let Some(prev) = accessors.get(&accessor) {
                 if !prev.eq_ignore_ascii_case(name) {
@@ -2265,6 +2290,23 @@ fn is_wit_enum(resolve: &wit_parser::Resolve, ty: &Type) -> bool {
     )
 }
 
+fn is_wit_map_key(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Bool
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::S8
+            | Type::S16
+            | Type::S32
+            | Type::S64
+            | Type::Char
+            | Type::String
+    )
+}
+
 fn is_wit_scalar_or_bytes(resolve: &wit_parser::Resolve, ty: &Type) -> bool {
     match resolve_wit_alias(resolve, ty) {
         Type::Bool
@@ -2278,12 +2320,15 @@ fn is_wit_scalar_or_bytes(resolve: &wit_parser::Resolve, ty: &Type) -> bool {
         | Type::S64
         | Type::F32
         | Type::F64
+        | Type::Char
         | Type::String => true,
         Type::Id(id) => match &resolve.types[*id].kind {
-            TypeDefKind::List(element) => is_wit_u8(resolve, element),
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
+                is_wit_u8(resolve, element)
+            }
             _ => false,
         },
-        Type::Char | Type::ErrorContext => false,
+        Type::ErrorContext => false,
     }
 }
 
@@ -2303,14 +2348,22 @@ fn resolve_prost_field_accessor_kind(
         | Type::S64
         | Type::F32
         | Type::F64
+        | Type::Char
         | Type::String => ident::ProstFieldAccessorKind::OptionalScalar,
         Type::Id(id) => match &resolve.types[*id].kind {
             TypeDefKind::Enum(_) => ident::ProstFieldAccessorKind::OptionalEnum,
-            TypeDefKind::List(element) => {
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                 if is_wit_u8(resolve, element) {
                     ident::ProstFieldAccessorKind::OptionalScalar
                 } else if is_wit_enum(resolve, element) {
                     ident::ProstFieldAccessorKind::RepeatedEnum
+                } else {
+                    ident::ProstFieldAccessorKind::None
+                }
+            }
+            TypeDefKind::Map(_, value) => {
+                if is_wit_enum(resolve, value) {
+                    ident::ProstFieldAccessorKind::MapEnum
                 } else {
                     ident::ProstFieldAccessorKind::None
                 }
@@ -2326,6 +2379,6 @@ fn resolve_prost_field_accessor_kind(
             }
             _ => ident::ProstFieldAccessorKind::None,
         },
-        Type::Char | Type::ErrorContext => ident::ProstFieldAccessorKind::None,
+        Type::ErrorContext => ident::ProstFieldAccessorKind::None,
     }
 }

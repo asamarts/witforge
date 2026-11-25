@@ -19,7 +19,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 
-use crate::model::{MAX_CANONICAL_TYPE_BYTES, MAX_TYPE_NESTING, Member, MemberKind};
+use crate::model::{
+    MAX_CANONICAL_TYPE_BYTES, MAX_FIXED_LIST_LEN, MAX_TYPE_NESTING, Member, MemberKind,
+};
 
 /// The exact first line of every v2 lockfile.
 pub const HEADER: &str = "# witforge wire lockfile v2";
@@ -1712,6 +1714,9 @@ impl<'a> CanonicalTypeParser<'a> {
         if ident == "list" && self.eat('<') {
             return self.enter_container(|parser| {
                 parser.parse_type()?;
+                if parser.eat(',') {
+                    parser.parse_fixed_len()?;
+                }
                 parser.expect('>')
             });
         }
@@ -1726,6 +1731,14 @@ impl<'a> CanonicalTypeParser<'a> {
                 parser.parse_slot()?;
                 parser.expect(',')?;
                 parser.parse_slot()?;
+                parser.expect('>')
+            });
+        }
+        if ident == "map" && self.eat('<') {
+            return self.enter_container(|parser| {
+                parser.parse_map_key()?;
+                parser.expect(',')?;
+                parser.parse_type()?;
                 parser.expect('>')
             });
         }
@@ -1754,11 +1767,59 @@ impl<'a> CanonicalTypeParser<'a> {
                 | "s64"
                 | "f32"
                 | "f64"
+                | "char"
                 | "string"
         ) {
             return Ok(());
         }
         bail!("unknown type name `{ident}`")
+    }
+
+    fn parse_map_key(&mut self) -> Result<()> {
+        let key = self.ident()?;
+        if matches!(
+            key,
+            "bool"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "s8"
+                | "s16"
+                | "s32"
+                | "s64"
+                | "char"
+                | "string"
+        ) {
+            Ok(())
+        } else {
+            bail!("unsupported map key type `{key}`")
+        }
+    }
+
+    fn parse_fixed_len(&mut self) -> Result<()> {
+        let start = self.position;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.position += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let digits = &self.input[start..self.position];
+        if digits.is_empty() {
+            bail!("missing fixed-length list size");
+        }
+        if digits.starts_with('0') {
+            bail!("invalid fixed-length list size `{digits}`");
+        }
+        let len: u32 = digits
+            .parse()
+            .with_context(|| format!("invalid fixed-length list size `{digits}`"))?;
+        if len == 0 || len > MAX_FIXED_LIST_LEN {
+            bail!("fixed-length list size `{len}` must be between 1 and {MAX_FIXED_LIST_LEN}");
+        }
+        Ok(())
     }
 
     fn enter_container(&mut self, parse: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {

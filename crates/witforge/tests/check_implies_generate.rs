@@ -83,7 +83,7 @@ fn unreachable_unsupported_dependency_chains_and_cross_dep_refs_are_pruned_clean
            record outer { w: wrap }\n\
            type alias-outer = outer;\n\
            take-outer: func(o: alias-outer);\n\
-           record bad-char { c: char }\n\
+           record bad-char { c: tuple<u8, u8> }\n\
            record bad-holder { b: bad-char }\n\
          }\n",
     )

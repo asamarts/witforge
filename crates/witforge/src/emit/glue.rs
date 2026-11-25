@@ -94,6 +94,22 @@ pub enum GlueError {
         /// The canonical wrapper identity.
         message: &'static str,
     },
+    /// A Unicode scalar value is not a valid `char`.
+    InvalidChar {
+        /// The canonical field or payload identity.
+        field: &'static str,
+        /// The code point that is not a valid Unicode scalar value.
+        value: u32,
+    },
+    /// A fixed-length list does not have the exact required length.
+    InvalidLength {
+        /// The canonical field or payload identity.
+        field: &'static str,
+        /// The required length from the WIT contract.
+        expected: usize,
+        /// The actual length decoded from protobuf.
+        actual: usize,
+    },
 }
 
 impl ::core::fmt::Display for GlueError {
@@ -111,6 +127,20 @@ impl ::core::fmt::Display for GlueError {
             }
             Self::UnknownCase { message } => write!(formatter, "message `{message}` has no case"),
             Self::InvalidState { message } => write!(formatter, "message `{message}` is invalid"),
+            Self::InvalidChar { field, value } => {
+                write!(
+                    formatter,
+                    "field `{field}`: value {value:#x} is not a valid char"
+                )
+            }
+            Self::InvalidLength {
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "field `{field}`: expected {expected} elements, got {actual}"
+            ),
         }
     }
 }
@@ -683,6 +713,13 @@ fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
         TypeExpr::List(element) => {
             TypeExpr::List(Box::new(qualify_type(Some(dependency), element)))
         }
+        TypeExpr::FixedLengthList(element, len) => {
+            TypeExpr::FixedLengthList(Box::new(qualify_type(Some(dependency), element)), *len)
+        }
+        TypeExpr::Map(key, value) => TypeExpr::Map(
+            Box::new(qualify_type(Some(dependency), key)),
+            Box::new(qualify_type(Some(dependency), value)),
+        ),
         TypeExpr::Option(payload) => {
             TypeExpr::Option(Box::new(qualify_type(Some(dependency), payload)))
         }
@@ -863,6 +900,34 @@ impl<'a> Emitter<'a> {
             "::alloc::vec::Vec"
         } else {
             "::std::vec::Vec"
+        }
+    }
+
+    const fn plain_map_ty(&self) -> &'static str {
+        if self.no_std {
+            "::alloc::collections::BTreeMap"
+        } else {
+            "::std::collections::BTreeMap"
+        }
+    }
+
+    const fn proto_map_ty(&self) -> &'static str {
+        if self.no_std {
+            "::alloc::collections::BTreeMap"
+        } else {
+            "::std::collections::HashMap"
+        }
+    }
+
+    fn proto_map_key_type(&self, ty: &TypeExpr) -> Result<String> {
+        match ty {
+            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => Ok("u32".to_string()),
+            TypeExpr::U64 => Ok("u64".to_string()),
+            TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
+            TypeExpr::S64 => Ok("i64".to_string()),
+            TypeExpr::String => Ok(self.string_ty().to_string()),
+            _ => bail!("map key `{ty:?}` is not a valid primitive map key"),
         }
     }
 
@@ -1150,6 +1215,7 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
+            TypeExpr::Char => Ok("char".to_string()),
             TypeExpr::String => Ok(self.string_ty().to_string()),
             TypeExpr::Named(name) => self.plain_named(name),
             TypeExpr::List(element) => {
@@ -1159,6 +1225,19 @@ impl<'a> Emitter<'a> {
                     Ok(format!("{}<{}>", self.vec_ty(), self.plain_type(element)?))
                 }
             }
+            TypeExpr::FixedLengthList(element, len) => {
+                if self.model.resolves_to_u8(element) {
+                    Ok(format!("[u8; {len}]"))
+                } else {
+                    Ok(format!("[{}; {len}]", self.plain_type(element)?))
+                }
+            }
+            TypeExpr::Map(key, value) => Ok(format!(
+                "{}<{}, {}>",
+                self.plain_map_ty(),
+                self.plain_type(key)?,
+                self.plain_type(value)?
+            )),
             TypeExpr::Option(payload) => Ok(format!(
                 "::core::option::Option<{}>",
                 self.plain_type(payload)?
@@ -1267,20 +1346,30 @@ impl<'a> Emitter<'a> {
     ) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => Ok("u32".to_string()),
             TypeExpr::U64 => Ok("u64".to_string()),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
             TypeExpr::String => Ok(self.string_ty().to_string()),
-            TypeExpr::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(Some(owner), element) =>
+            {
                 Ok(format!("{}<u8>", self.vec_ty()))
             }
-            TypeExpr::List(element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
                 let name = format!(
                     "WitforgeListOf{}",
                     self.owner_shape_name_ty(Some(owner), element)?
+                );
+                Ok(self.dependency_proto_path(owner, &name))
+            }
+            TypeExpr::Map(key, value) => {
+                let name = format!(
+                    "WitforgeMapOf{}And{}",
+                    self.owner_shape_name_ty(Some(owner), key)?,
+                    self.owner_shape_name_ty(Some(owner), value)?
                 );
                 Ok(self.dependency_proto_path(owner, &name))
             }
@@ -1310,22 +1399,30 @@ impl<'a> Emitter<'a> {
                         | TypeDefKind::Variant(_)
                         | TypeDefKind::Flags(_)
                         | TypeDefKind::Result(_) => Ok(self.dependency_proto_type(name, owner)),
-                        TypeDefKind::List(element)
+                        TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                             if self.model.resolves_to_u8_in(Some(owner), element) =>
                         {
                             Ok(format!("{}<u8>", self.vec_ty()))
                         }
-                        TypeDefKind::List(element) => {
+                        TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                             let wrapper = format!(
                                 "WitforgeListOf{}",
                                 self.owner_shape_name_ty(Some(owner), element)?
                             );
                             Ok(self.dependency_proto_path(owner, &wrapper))
                         }
+                        TypeDefKind::Map(key, value) => {
+                            let wrapper = format!(
+                                "WitforgeMapOf{}And{}",
+                                self.owner_shape_name_ty(Some(owner), key)?,
+                                self.owner_shape_name_ty(Some(owner), value)?
+                            );
+                            Ok(self.dependency_proto_path(owner, &wrapper))
+                        }
                         TypeDefKind::Option(payload) => {
                             let wrapper = if matches!(
                                 self.foreign_form_expr(Some(owner), payload)?,
-                                Form::List | Form::Option
+                                Form::List | Form::Map | Form::Option
                             ) {
                                 format!(
                                     "WitforgeOptionOf{}",
@@ -1352,12 +1449,15 @@ impl<'a> Emitter<'a> {
                         | TypeDefKind::Variant(_)
                         | TypeDefKind::Flags(_)
                         | TypeDefKind::Result(_) => Ok(self.dependency_proto_type(name, other)),
-                        TypeDefKind::List(element)
+                        TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                             if self.model.resolves_to_u8_in(Some(other), element) =>
                         {
                             Ok(format!("{}<u8>", self.vec_ty()))
                         }
-                        TypeDefKind::List(_) | TypeDefKind::Option(_) => {
+                        TypeDefKind::List(_)
+                        | TypeDefKind::FixedLengthList(_, _)
+                        | TypeDefKind::Map(_, _)
+                        | TypeDefKind::Option(_) => {
                             let shape = self.foreign_shape_name_for_caller(
                                 Some(owner),
                                 other,
@@ -1386,9 +1486,12 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(false),
-            TypeExpr::List(element) => Ok(!self.model.resolves_to_u8_in(Some(owner), element)),
-            TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(true),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
+                Ok(!self.model.resolves_to_u8_in(Some(owner), element))
+            }
+            TypeExpr::Map(_, _) | TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(true),
             TypeExpr::Named(name) => {
                 let (resolved_dep, def) = self.resolve_type_def(Some(owner), name)?;
                 match &def.kind {
@@ -1396,10 +1499,10 @@ impl<'a> Emitter<'a> {
                         let next_owner = resolved_dep.unwrap_or(owner);
                         self.element_uses_dependency_wrapper(next_owner, target)
                     }
-                    TypeDefKind::List(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         Ok(!self.model.resolves_to_u8_in(resolved_dep, element))
                     }
-                    TypeDefKind::Option(_) => Ok(true),
+                    TypeDefKind::Map(_, _) | TypeDefKind::Option(_) => Ok(true),
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Enum(_)
@@ -1427,17 +1530,27 @@ impl<'a> Emitter<'a> {
         match kind {
             TypeDefKind::Enum(_) => Ok("i32".to_string()),
             TypeDefKind::Alias(target) => self.foreign_proto_type_expr(Some(owner), target),
-            TypeDefKind::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(Some(owner), element) =>
+            {
                 Ok(format!("{}<u8>", self.vec_ty()))
             }
-            TypeDefKind::List(element) => Ok(format!(
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => Ok(format!(
                 "{}<{}>",
                 self.vec_ty(),
                 self.dependency_defined_proto_singular(owner, element)?
             )),
+            TypeDefKind::Map(key, value) => Ok(format!(
+                "{}<{}, {}>",
+                self.proto_map_ty(),
+                self.proto_map_key_type(key)?,
+                self.dependency_defined_proto_singular(owner, value)?
+            )),
             TypeDefKind::Option(payload) => {
                 let inner = match self.foreign_form_expr(Some(owner), payload)? {
-                    Form::List | Form::Option => self.dependency_proto_type(name, owner),
+                    Form::List | Form::Map | Form::Option => {
+                        self.dependency_proto_type(name, owner)
+                    }
                     Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
                         self.dependency_defined_proto_singular(owner, payload)?
                     }
@@ -1468,20 +1581,28 @@ impl<'a> Emitter<'a> {
                     self.foreign_proto_type_in(Some(dependency), name, &def.kind)
                 }
             }
-            TypeExpr::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(Some(owner), element) =>
+            {
                 Ok(format!("{}<u8>", self.vec_ty()))
             }
-            TypeExpr::List(element) => Ok(format!(
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => Ok(format!(
                 "{}<{}>",
                 self.vec_ty(),
                 self.dependency_defined_proto_singular(owner, element)?
+            )),
+            TypeExpr::Map(key, value) => Ok(format!(
+                "{}<{}, {}>",
+                self.proto_map_ty(),
+                self.proto_map_key_type(key)?,
+                self.dependency_defined_proto_singular(owner, value)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "::core::option::Option<{}>",
                 self.dependency_defined_proto_singular(owner, payload)?
             )),
             TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => Ok("u32".to_string()),
             TypeExpr::U64 => Ok("u64".to_string()),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
             TypeExpr::S64 => Ok("i64".to_string()),
@@ -1518,10 +1639,15 @@ impl<'a> Emitter<'a> {
                 let qualified = qualify_type(Some(owner), target);
                 self.proto_singular_type(&qualified)
             }
-            TypeDefKind::List(element) if self.model.resolves_to_u8_in(Some(owner), element) => {
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(Some(owner), element) =>
+            {
                 Ok(format!("{}<u8>", self.vec_ty()))
             }
-            TypeDefKind::List(_) | TypeDefKind::Option(_) => {
+            TypeDefKind::List(_)
+            | TypeDefKind::FixedLengthList(_, _)
+            | TypeDefKind::Map(_, _)
+            | TypeDefKind::Option(_) => {
                 let shape = self.foreign_shape_name_for_caller(None, owner, name, kind)?;
                 let wrapper_name = format!("Witforge{shape}");
                 Ok(self.proto_user_type_path(&wrapper_name))
@@ -1553,10 +1679,16 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("S64".to_string()),
             TypeExpr::F32 => Ok("F32".to_string()),
             TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::Char => Ok("Char".to_string()),
             TypeExpr::String => Ok("String".to_string()),
-            TypeExpr::List(element) => Ok(format!(
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => Ok(format!(
                 "ListOf{}",
                 self.owner_shape_name_ty(owner, element)?
+            )),
+            TypeExpr::Map(key, value) => Ok(format!(
+                "MapOf{}And{}",
+                self.owner_shape_name_ty(owner, key)?,
+                self.owner_shape_name_ty(owner, value)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "OptionOf{}",
@@ -1568,14 +1700,21 @@ impl<'a> Emitter<'a> {
                 if self.is_same_package(owner, target_dep) {
                     match &def.kind {
                         TypeDefKind::Alias(target) => self.owner_shape_name_ty(owner, target),
-                        TypeDefKind::List(element) => Ok(format!(
-                            "ListOf{}",
-                            self.owner_shape_name_ty(owner, element)?
+                        TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
+                            Ok(format!(
+                                "ListOf{}",
+                                self.owner_shape_name_ty(owner, element)?
+                            ))
+                        }
+                        TypeDefKind::Map(key, value) => Ok(format!(
+                            "MapOf{}And{}",
+                            self.owner_shape_name_ty(owner, key)?,
+                            self.owner_shape_name_ty(owner, value)?
                         )),
                         TypeDefKind::Option(payload) => {
                             if matches!(
                                 self.foreign_form_expr(owner, payload)?,
-                                Form::List | Form::Option
+                                Form::List | Form::Map | Form::Option
                             ) {
                                 Ok(format!(
                                     "OptionOf{}",
@@ -1629,7 +1768,7 @@ impl<'a> Emitter<'a> {
     ) -> Result<String> {
         match kind {
             TypeDefKind::Alias(target) => self.foreign_shape_name_expr(caller, owner, target),
-            TypeDefKind::List(element) => {
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                 if self.element_uses_dependency_wrapper(owner, element)? {
                     Ok(format!(
                         "ListOf{}{}",
@@ -1643,10 +1782,23 @@ impl<'a> Emitter<'a> {
                     ))
                 }
             }
+            TypeDefKind::Map(key, value) => {
+                let k = self.foreign_shape_name_expr(caller, owner, key)?;
+                let v = if self.element_uses_dependency_wrapper(owner, value)? {
+                    format!(
+                        "{}{}",
+                        dependency_pkg_prefix(owner),
+                        self.owner_shape_name_ty(Some(owner), value)?
+                    )
+                } else {
+                    self.foreign_shape_name_expr(caller, owner, value)?
+                };
+                Ok(format!("MapOf{k}And{v}"))
+            }
             TypeDefKind::Option(payload) => {
                 if matches!(
                     self.foreign_form_expr(Some(owner), payload)?,
-                    Form::List | Form::Option
+                    Form::List | Form::Map | Form::Option
                 ) {
                     Ok(format!("OptionOf{}", dependency_shape_name(owner, name)))
                 } else {
@@ -1682,10 +1834,16 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("S64".to_string()),
             TypeExpr::F32 => Ok("F32".to_string()),
             TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::Char => Ok("Char".to_string()),
             TypeExpr::String => Ok("String".to_string()),
-            TypeExpr::List(element) => Ok(format!(
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => Ok(format!(
                 "ListOf{}",
                 self.foreign_shape_name_expr(caller, owner, element)?
+            )),
+            TypeExpr::Map(key, value) => Ok(format!(
+                "MapOf{}And{}",
+                self.foreign_shape_name_expr(caller, owner, key)?,
+                self.foreign_shape_name_expr(caller, owner, value)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "OptionOf{}",
@@ -1734,10 +1892,13 @@ impl<'a> Emitter<'a> {
         match kind {
             TypeDefKind::Alias(target) => self.foreign_form_expr(context, target),
             TypeDefKind::Enum(_) => Ok(Form::Enum),
-            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(context, element) =>
+            {
                 Ok(Form::Bytes)
             }
-            TypeDefKind::List(_) => Ok(Form::List),
+            TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _) => Ok(Form::List),
+            TypeDefKind::Map(_, _) => Ok(Form::Map),
             TypeDefKind::Option(_) => Ok(Form::Option),
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
@@ -1758,10 +1919,13 @@ impl<'a> Emitter<'a> {
                     self.foreign_form_kind(Some(dependency), &def.kind)
                 }
             }
-            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(context, element) =>
+            {
                 Ok(Form::Bytes)
             }
-            TypeExpr::List(_) => Ok(Form::List),
+            TypeExpr::List(_) | TypeExpr::FixedLengthList(_, _) => Ok(Form::List),
+            TypeExpr::Map(_, _) => Ok(Form::Map),
             TypeExpr::Option(_) => Ok(Form::Option),
             TypeExpr::Result(_) => Ok(Form::Message),
             TypeExpr::Bool
@@ -1775,6 +1939,7 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(Form::Scalar),
         }
     }
@@ -1844,20 +2009,28 @@ impl<'a> Emitter<'a> {
     fn proto_type(&self, ty: &TypeExpr) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => Ok("u32".to_string()),
             TypeExpr::U64 => Ok("u64".to_string()),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
             TypeExpr::String => Ok(self.string_ty().to_string()),
-            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8(element) =>
+            {
                 Ok(format!("{}<u8>", self.vec_ty()))
             }
-            TypeExpr::List(element) => Ok(format!(
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => Ok(format!(
                 "{}<{}>",
                 self.vec_ty(),
                 self.proto_singular_type(element)?
+            )),
+            TypeExpr::Map(key, value) => Ok(format!(
+                "{}<{}, {}>",
+                self.proto_map_ty(),
+                self.proto_map_key_type(key)?,
+                self.proto_singular_type(value)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "::core::option::Option<{}>",
@@ -1878,20 +2051,28 @@ impl<'a> Emitter<'a> {
                         Ok(self.proto_user_type(&name.interface, &name.name))
                     }
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
-                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                        if self.model.resolves_to_u8(element) =>
+                    {
                         Ok(format!("{}<u8>", self.vec_ty()))
                     }
-                    TypeDefKind::List(element) => Ok(format!(
-                        "{}<{}>",
-                        self.vec_ty(),
-                        self.proto_singular_type(element)?
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => Ok(
+                        format!("{}<{}>", self.vec_ty(), self.proto_singular_type(element)?),
+                    ),
+                    TypeDefKind::Map(key, value) => Ok(format!(
+                        "{}<{}, {}>",
+                        self.proto_map_ty(),
+                        self.proto_map_key_type(key)?,
+                        self.proto_singular_type(value)?
                     )),
                     TypeDefKind::Option(payload) => {
-                        let inner = if matches!(self.form(payload)?, Form::List | Form::Option) {
-                            self.proto_direct_wrapper(name)
-                        } else {
-                            self.proto_singular_type(payload)?
-                        };
+                        let inner =
+                            if matches!(self.form(payload)?, Form::List | Form::Map | Form::Option)
+                            {
+                                self.proto_direct_wrapper(name)
+                            } else {
+                                self.proto_singular_type(payload)?
+                            };
                         Ok(format!("::core::option::Option<{inner}>"))
                     }
                 }
@@ -1902,18 +2083,28 @@ impl<'a> Emitter<'a> {
     fn proto_singular_type(&self, ty: &TypeExpr) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("u32".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => Ok("u32".to_string()),
             TypeExpr::U64 => Ok("u64".to_string()),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("i32".to_string()),
             TypeExpr::S64 => Ok("i64".to_string()),
             TypeExpr::F32 => Ok("f32".to_string()),
             TypeExpr::F64 => Ok("f64".to_string()),
             TypeExpr::String => Ok(self.string_ty().to_string()),
-            TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8(element) =>
+            {
                 Ok(format!("{}<u8>", self.vec_ty()))
             }
-            TypeExpr::List(element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
                 let name = format!("WitforgeListOf{}", self.shape_name(element)?);
+                Ok(self.proto_user_type_path(&name))
+            }
+            TypeExpr::Map(key, value) => {
+                let name = format!(
+                    "WitforgeMapOf{}And{}",
+                    self.shape_name(key)?,
+                    self.shape_name(value)?
+                );
                 Ok(self.proto_user_type_path(&name))
             }
             TypeExpr::Option(payload) => {
@@ -1935,19 +2126,31 @@ impl<'a> Emitter<'a> {
                         Ok(self.proto_user_type(&name.interface, &name.name))
                     }
                     TypeDefKind::Enum(_) => Ok("i32".to_string()),
-                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                        if self.model.resolves_to_u8(element) =>
+                    {
                         Ok(format!("{}<u8>", self.vec_ty()))
                     }
-                    TypeDefKind::List(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         let name = format!("WitforgeListOf{}", self.shape_name(element)?);
                         Ok(self.proto_user_type_path(&name))
                     }
+                    TypeDefKind::Map(key, value) => {
+                        let name = format!(
+                            "WitforgeMapOf{}And{}",
+                            self.shape_name(key)?,
+                            self.shape_name(value)?
+                        );
+                        Ok(self.proto_user_type_path(&name))
+                    }
                     TypeDefKind::Option(payload) => {
-                        let name = if matches!(self.form(payload)?, Form::List | Form::Option) {
-                            format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name))
-                        } else {
-                            format!("WitforgeOptionOf{}", self.shape_name(payload)?)
-                        };
+                        let name =
+                            if matches!(self.form(payload)?, Form::List | Form::Map | Form::Option)
+                            {
+                                format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name))
+                            } else {
+                                format!("WitforgeOptionOf{}", self.shape_name(payload)?)
+                            };
                         Ok(self.proto_user_type_path(&name))
                     }
                 }
@@ -2010,9 +2213,15 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(Form::Scalar),
-            TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(Form::Bytes),
-            TypeExpr::List(_) => Ok(Form::List),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8(element) =>
+            {
+                Ok(Form::Bytes)
+            }
+            TypeExpr::List(_) | TypeExpr::FixedLengthList(_, _) => Ok(Form::List),
+            TypeExpr::Map(_, _) => Ok(Form::Map),
             TypeExpr::Option(_) => Ok(Form::Option),
             TypeExpr::Result(_) => Ok(Form::Message),
             TypeExpr::Named(name) => {
@@ -2023,10 +2232,13 @@ impl<'a> Emitter<'a> {
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.form(target),
                     TypeDefKind::Enum(_) => Ok(Form::Enum),
-                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                        if self.model.resolves_to_u8(element) =>
+                    {
                         Ok(Form::Bytes)
                     }
-                    TypeDefKind::List(_) => Ok(Form::List),
+                    TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _) => Ok(Form::List),
+                    TypeDefKind::Map(_, _) => Ok(Form::Map),
                     TypeDefKind::Option(_) => Ok(Form::Option),
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
@@ -2050,8 +2262,16 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("S64".to_string()),
             TypeExpr::F32 => Ok("F32".to_string()),
             TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::Char => Ok("Char".to_string()),
             TypeExpr::String => Ok("String".to_string()),
-            TypeExpr::List(element) => Ok(format!("ListOf{}", self.shape_name(element)?)),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
+                Ok(format!("ListOf{}", self.shape_name(element)?))
+            }
+            TypeExpr::Map(key, value) => Ok(format!(
+                "MapOf{}And{}",
+                self.shape_name(key)?,
+                self.shape_name(value)?
+            )),
             TypeExpr::Option(payload) => Ok(format!("OptionOf{}", self.shape_name(payload)?)),
             TypeExpr::Result(result) => Ok(format!(
                 "ResultOf{}And{}",
@@ -2065,9 +2285,14 @@ impl<'a> Emitter<'a> {
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.shape_name(target),
-                    TypeDefKind::List(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         Ok(format!("ListOf{}", self.shape_name(element)?))
                     }
+                    TypeDefKind::Map(key, value) => Ok(format!(
+                        "MapOf{}And{}",
+                        self.shape_name(key)?,
+                        self.shape_name(value)?
+                    )),
                     TypeDefKind::Option(payload) => {
                         Ok(format!("OptionOf{}", self.shape_name(payload)?))
                     }
@@ -2119,6 +2344,7 @@ enum Form {
     Enum,
     Message,
     List,
+    Map,
     Option,
 }
 
@@ -2163,17 +2389,11 @@ fn push_stmts(out: &mut String, stmts: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn push_let_else_err(
-    stmts: &mut Vec<String>,
-    indent: usize,
-    temps: &mut TempGen,
-    pat: &str,
-    scrutinee: &str,
+fn format_return_err_body(
+    body_indent: usize,
     err_path: &str,
     err_fields: &[(String, String)],
-) {
-    let prefix = " ".repeat(indent);
-    let body_indent = indent + 4;
+) -> String {
     let body_prefix = " ".repeat(body_indent);
     let err_prefix = "return ::core::result::Result::Err(";
     let wrap_err = body_indent + err_prefix.len() + err_path.len() + 4 >= rustfmt::MAX_WIDTH;
@@ -2203,11 +2423,39 @@ fn push_let_else_err(
         );
         format!("{body_prefix}{err_prefix}{err_expr});")
     };
-    let else_body = if else_prefix_stmts.is_empty() {
+    if else_prefix_stmts.is_empty() {
         return_stmt
     } else {
         format!("{}\n{return_stmt}", else_prefix_stmts.join("\n"))
-    };
+    }
+}
+
+fn push_if_ne_err(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    lhs: &str,
+    rhs: &str,
+    err_path: &str,
+    err_fields: &[(String, String)],
+) {
+    let prefix = " ".repeat(indent);
+    let body = format_return_err_body(indent + 4, err_path, err_fields);
+    stmts.push(format!("{prefix}if {lhs} != {rhs} {{\n{body}\n{prefix}}}"));
+}
+
+fn push_let_else_err(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    temps: &mut TempGen,
+    pat: &str,
+    scrutinee: &str,
+    err_path: &str,
+    err_fields: &[(String, String)],
+) {
+    let prefix = " ".repeat(indent);
+    let body_indent = indent + 4;
+    let body_prefix = " ".repeat(body_indent);
+    let else_body = format_return_err_body(body_indent, err_path, err_fields);
     let header = format!("{prefix}let {pat} = {scrutinee} else {{");
     if !scrutinee.contains('\n') && header.len() < rustfmt::MAX_WIDTH {
         stmts.push(format!("{header}\n{else_body}\n{prefix}}};"));
@@ -2411,6 +2659,12 @@ impl Emitter<'_> {
             }
             TypeDefKind::List(element) => {
                 self.emit_list(out, &plain, &interface.name, &def.name, element)?;
+            }
+            TypeDefKind::FixedLengthList(element, len) => {
+                self.emit_fixed_list(out, &plain, &interface.name, &def.name, element, *len)?;
+            }
+            TypeDefKind::Map(key, value) => {
+                self.emit_map(out, &plain, &interface.name, &def.name, key, value)?;
             }
             TypeDefKind::Option(payload) => {
                 self.emit_option(out, &plain, &interface.name, &def.name, payload)?;
@@ -3073,6 +3327,101 @@ impl Emitter<'_> {
         Ok(())
     }
 
+    fn emit_fixed_list(
+        &self,
+        out: &mut String,
+        plain: &str,
+        interface: &str,
+        type_name: &str,
+        element: &TypeExpr,
+        len: u32,
+    ) -> Result<()> {
+        let proto = self.proto_type(&TypeExpr::FixedLengthList(Box::new(element.clone()), len))?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+        self.write_type_aliases(out, &[("Plain", plain), ("Proto", &proto)])?;
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
+        if self.model.resolves_to_u8(element) || self.identity(element)?.is_some() {
+            writeln!(out, "{body_pad}{}::from(value.as_slice())", self.vec_ty())?;
+        } else {
+            let mut stmts = Vec::new();
+            let mut temps = TempGen::new();
+            let out_var =
+                self.emit_encode_list_loop(&mut stmts, body_indent, &mut temps, "value", element)?;
+            push_stmts(out, &stmts)?;
+            writeln!(out, "{body_pad}{out_var}")?;
+        }
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
+        let mut stmts = Vec::new();
+        let mut temps = TempGen::new();
+        let identity = format!("{interface}/{type_name}");
+        let out_var = self.emit_decode_fixed_list(
+            &mut stmts,
+            body_indent,
+            &mut temps,
+            "value",
+            element,
+            len,
+            &identity,
+        )?;
+        push_stmts(out, &stmts)?;
+        writeln!(out, "{body_pad}::core::result::Result::Ok({out_var})")?;
+        writeln!(out, "{item_pad}}}")?;
+        Ok(())
+    }
+
+    fn emit_map(
+        &self,
+        out: &mut String,
+        plain: &str,
+        interface: &str,
+        type_name: &str,
+        key: &TypeExpr,
+        value: &TypeExpr,
+    ) -> Result<()> {
+        let proto = self.proto_type(&TypeExpr::Map(
+            Box::new(key.clone()),
+            Box::new(value.clone()),
+        ))?;
+        let item_indent = self.type_item_indent();
+        let body_indent = item_indent + 4;
+        let item_pad = " ".repeat(item_indent);
+        let body_pad = " ".repeat(body_indent);
+        self.write_type_aliases(out, &[("Plain", plain), ("Proto", &proto)])?;
+
+        self.write_to_from_headers(out, interface, type_name, "Proto")?;
+        let mut stmts = Vec::new();
+        let mut temps = TempGen::new();
+        let expr =
+            self.emit_encode_map_loop(&mut stmts, body_indent, &mut temps, "value", key, value)?;
+        push_stmts(out, &stmts)?;
+        writeln!(out, "{body_pad}{expr}")?;
+        writeln!(out, "{item_pad}}}")?;
+
+        self.write_from_header(out, interface, type_name, "Proto")?;
+        let mut stmts = Vec::new();
+        let mut temps = TempGen::new();
+        let identity = format!("{interface}/{type_name}");
+        let out_var = self.emit_decode_map_loop(
+            &mut stmts,
+            body_indent,
+            &mut temps,
+            "value",
+            key,
+            value,
+            &identity,
+        )?;
+        push_stmts(out, &stmts)?;
+        writeln!(out, "{body_pad}::core::result::Result::Ok({out_var})")?;
+        writeln!(out, "{item_pad}}}")?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     fn emit_option(
         &self,
@@ -3101,7 +3450,7 @@ impl Emitter<'_> {
 
         let mut aliases: Vec<(&str, &str)> = vec![("Plain", plain), ("Proto", &proto)];
         match form {
-            Form::List => aliases.push(("Wrapper", &wrapper)),
+            Form::List | Form::Map => aliases.push(("Wrapper", &wrapper)),
             Form::Option => {
                 aliases.push(("Wrapper", &wrapper));
                 aliases.push(("Oneof", &oneof));
@@ -3126,8 +3475,11 @@ impl Emitter<'_> {
                     "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
                 )?;
                 let mut stmts = Vec::new();
-                let values = if let Some((_, foreign_name, TypeDefKind::List(_))) =
-                    self.resolve_foreign_named(payload)?
+                let values = if let Some((
+                    _,
+                    foreign_name,
+                    TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _),
+                )) = self.resolve_foreign_named(payload)?
                 {
                     let module = self.foreign_type_module(&foreign_name)?;
                     emit_module_call(
@@ -3140,10 +3492,13 @@ impl Emitter<'_> {
                         false,
                     )
                 } else {
-                    let element = self.list_element(payload)?;
-                    match self.identity(&element)? {
-                        Some(_) => format!("::core::clone::Clone::clone({item_var})"),
-                        None => self.emit_encode_list_loop(
+                    let (element, fixed_len) = self.list_info(payload)?;
+                    match (fixed_len, self.identity(&element)?) {
+                        (Some(_), Some(_)) => {
+                            format!("{}::from({item_var}.as_slice())", self.vec_ty())
+                        }
+                        (None, Some(_)) => format!("::core::clone::Clone::clone({item_var})"),
+                        (_, None) => self.emit_encode_list_loop(
                             &mut stmts,
                             inner_indent,
                             &mut temps,
@@ -3165,6 +3520,63 @@ impl Emitter<'_> {
                     inner_indent,
                     "Wrapper",
                     &[("values".to_string(), values)],
+                    inner_indent + assign_prefix.len(),
+                    2,
+                );
+                writeln!(out, "{inner_pad}{assign_prefix}{lit});")?;
+                writeln!(out, "{body_pad}}}")?;
+                writeln!(out, "{body_pad}{out_var}")?;
+            }
+            Form::Map => {
+                let mut temps = TempGen::new();
+                let out_var = temps.fresh();
+                let item_var = temps.fresh();
+                writeln!(
+                    out,
+                    "{body_pad}let mut {out_var} = ::core::option::Option::None;"
+                )?;
+                writeln!(
+                    out,
+                    "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
+                )?;
+                let mut stmts = Vec::new();
+                let entries = if let Some((_, foreign_name, TypeDefKind::Map(_, _))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let module = self.foreign_type_module(&foreign_name)?;
+                    emit_module_call(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        &module,
+                        "to_proto",
+                        &item_var,
+                        false,
+                    )
+                } else {
+                    let (key, val) = self.map_types(payload)?;
+                    self.emit_encode_map_loop(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        &item_var,
+                        &key,
+                        &val,
+                    )?
+                };
+                let entries = hoist_if_long(
+                    &mut stmts,
+                    inner_indent,
+                    &mut temps,
+                    entries,
+                    4 + "entries: ".len() + 1,
+                );
+                push_stmts(out, &stmts)?;
+                let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
+                let lit = rustfmt::fmt_struct_lit(
+                    inner_indent,
+                    "Wrapper",
+                    &[("entries".to_string(), entries)],
                     inner_indent + assign_prefix.len(),
                     2,
                 );
@@ -3327,8 +3739,11 @@ impl Emitter<'_> {
                     "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
                 )?;
                 let mut stmts = Vec::new();
-                let decoded = if let Some((_, foreign_name, TypeDefKind::List(_))) =
-                    self.resolve_foreign_named(payload)?
+                let decoded = if let Some((
+                    _,
+                    foreign_name,
+                    TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _),
+                )) = self.resolve_foreign_named(payload)?
                 {
                     let module = self.foreign_type_module(&foreign_name)?;
                     emit_module_call(
@@ -3341,8 +3756,18 @@ impl Emitter<'_> {
                         true,
                     )
                 } else {
-                    let element = self.list_element(payload)?;
-                    if self.identity(&element)?.is_some() {
+                    let (element, fixed_len) = self.list_info(payload)?;
+                    if let Some(len) = fixed_len {
+                        self.emit_decode_fixed_list(
+                            &mut stmts,
+                            inner_indent,
+                            &mut temps,
+                            &format!("{item_var}.values"),
+                            &element,
+                            len,
+                            &label,
+                        )?
+                    } else if self.identity(&element)?.is_some() {
                         format!("{item_var}.values")
                     } else {
                         self.emit_decode_list_loop(
@@ -3354,6 +3779,57 @@ impl Emitter<'_> {
                             &label,
                         )?
                     }
+                };
+                let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
+                let decoded = hoist_if_long_call_arg(
+                    &mut stmts,
+                    inner_indent,
+                    &mut temps,
+                    decoded,
+                    assign_prefix.len() + 2,
+                );
+                push_stmts(out, &stmts)?;
+                writeln!(out, "{inner_pad}{assign_prefix}{decoded});")?;
+                writeln!(out, "{body_pad}}}")?;
+                writeln!(out, "{body_pad}::core::result::Result::Ok({out_var})")?;
+            }
+            Form::Map => {
+                let mut temps = TempGen::new();
+                let out_var = temps.fresh();
+                let item_var = temps.fresh();
+                writeln!(
+                    out,
+                    "{body_pad}let mut {out_var} = ::core::option::Option::None;"
+                )?;
+                writeln!(
+                    out,
+                    "{body_pad}if let ::core::option::Option::Some({item_var}) = value {{"
+                )?;
+                let mut stmts = Vec::new();
+                let decoded = if let Some((_, foreign_name, TypeDefKind::Map(_, _))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let module = self.foreign_type_module(&foreign_name)?;
+                    emit_module_call(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        &module,
+                        "from_proto",
+                        &format!("{item_var}.entries"),
+                        true,
+                    )
+                } else {
+                    let (key, val) = self.map_types(payload)?;
+                    self.emit_decode_map_loop(
+                        &mut stmts,
+                        inner_indent,
+                        &mut temps,
+                        &format!("{item_var}.entries"),
+                        &key,
+                        &val,
+                        &label,
+                    )?
                 };
                 let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
                 let decoded = hoist_if_long_call_arg(
@@ -4139,6 +4615,207 @@ impl Emitter<'_> {
         Ok(out_var)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn emit_decode_fixed_list(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        list_expr: &str,
+        element: &TypeExpr,
+        len: u32,
+        identity: &str,
+    ) -> Result<String> {
+        let len_var = temps.fresh();
+        let mut src = list_expr.to_string();
+        if src.contains('\n')
+            || indent + format!("let {len_var} = {src}.len();").len() > rustfmt::MAX_WIDTH
+        {
+            let tmp = temps.fresh();
+            stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &src));
+            src = tmp;
+        }
+        stmts.push(rustfmt::fmt_let_stmt(
+            indent,
+            &len_var,
+            &format!("{src}.len()"),
+        ));
+        let vec_expr = if self.model.resolves_to_u8(element) || self.identity(element)?.is_some() {
+            src
+        } else {
+            push_if_ne_err(
+                stmts,
+                indent,
+                &len_var,
+                &len.to_string(),
+                "GlueError::InvalidLength",
+                &[
+                    ("field".to_string(), format!("\"{identity}\"")),
+                    ("expected".to_string(), len.to_string()),
+                    ("actual".to_string(), len_var.clone()),
+                ],
+            );
+            self.emit_decode_list_loop(stmts, indent, temps, &src, element, identity)?
+        };
+        let out_var = temps.fresh();
+        push_let_else_err(
+            stmts,
+            indent,
+            temps,
+            &format!("::core::result::Result::Ok({out_var})"),
+            &format!("::core::convert::TryInto::<[_; {len}]>::try_into({vec_expr})"),
+            "GlueError::InvalidLength",
+            &[
+                ("field".to_string(), format!("\"{identity}\"")),
+                ("expected".to_string(), len.to_string()),
+                ("actual".to_string(), len_var),
+            ],
+        );
+        Ok(out_var)
+    }
+
+    fn emit_encode_map_loop(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        map_expr: &str,
+        key: &TypeExpr,
+        value: &TypeExpr,
+    ) -> Result<String> {
+        let out_var = temps.fresh();
+        let key_var = temps.fresh();
+        let val_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        let mut iter_expr = map_expr.to_string();
+        let borrowed = Self::borrowed(map_expr);
+        let cap_stmt = rustfmt::fmt_let_stmt(
+            indent,
+            &format!("mut {out_var}"),
+            &format!("{}::with_capacity({borrowed}.len())", self.vec_ty()),
+        );
+        let mut for_header = format!("{pad}for ({key_var}, {val_var}) in {iter_expr} {{");
+        if for_header.len() > rustfmt::MAX_WIDTH || cap_stmt.contains('\n') {
+            let map_tmp = temps.fresh();
+            stmts.push(rustfmt::fmt_let_stmt(indent, &map_tmp, &iter_expr));
+            iter_expr = map_tmp;
+            for_header = format!("{pad}for ({key_var}, {val_var}) in {iter_expr} {{");
+            stmts.push(rustfmt::fmt_let_stmt(
+                indent,
+                &format!("mut {out_var}"),
+                &format!("{}::with_capacity({iter_expr}.len())", self.vec_ty()),
+            ));
+        } else {
+            stmts.push(cap_stmt);
+        }
+        let mut loop_stmts = Vec::new();
+        let mut enc_key =
+            self.emit_encode_singular(&mut loop_stmts, inner_indent, temps, &key_var, key)?;
+        let mut enc_val =
+            self.emit_encode_singular(&mut loop_stmts, inner_indent, temps, &val_var, value)?;
+        if enc_key.contains('\n')
+            || enc_val.contains('\n')
+            || enc_key.len() + enc_val.len() + 4 > rustfmt::FN_CALL_WIDTH
+            || inner_indent + out_var.len() + ".push((, ));".len() + enc_key.len() + enc_val.len()
+                > rustfmt::MAX_WIDTH
+        {
+            if enc_key.len() > 8 || enc_key.contains('\n') {
+                let tmp = temps.fresh();
+                loop_stmts.push(rustfmt::fmt_let_stmt(inner_indent, &tmp, &enc_key));
+                enc_key = tmp;
+            }
+            if enc_val.len() > 8 || enc_val.contains('\n') {
+                let tmp = temps.fresh();
+                loop_stmts.push(rustfmt::fmt_let_stmt(inner_indent, &tmp, &enc_val));
+                enc_val = tmp;
+            }
+        }
+        let mut block = format!("{for_header}\n");
+        for stmt in loop_stmts {
+            let _ = writeln!(block, "{stmt}");
+        }
+        let _ = writeln!(block, "{inner_pad}{out_var}.push(({enc_key}, {enc_val}));");
+        let _ = write!(block, "{pad}}}");
+        stmts.push(block);
+        Ok(format!("{out_var}.into_iter().collect()"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_decode_map_loop(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        map_expr: &str,
+        key: &TypeExpr,
+        value: &TypeExpr,
+        identity: &str,
+    ) -> Result<String> {
+        let out_var = temps.fresh();
+        let key_var = temps.fresh();
+        let val_var = temps.fresh();
+        let pad = " ".repeat(indent);
+        let inner_indent = indent + 4;
+        let inner_pad = " ".repeat(inner_indent);
+        stmts.push(rustfmt::fmt_let_stmt(
+            indent,
+            &format!("mut {out_var}"),
+            &format!("{}::new()", self.plain_map_ty()),
+        ));
+        let mut iter_expr = map_expr.to_string();
+        let mut for_header = format!("{pad}for ({key_var}, {val_var}) in {iter_expr} {{");
+        if for_header.len() > rustfmt::MAX_WIDTH {
+            let map_tmp = temps.fresh();
+            stmts.push(rustfmt::fmt_let_stmt(indent, &map_tmp, &iter_expr));
+            iter_expr = map_tmp;
+            for_header = format!("{pad}for ({key_var}, {val_var}) in {iter_expr} {{");
+        }
+        let mut loop_stmts = Vec::new();
+        let mut dec_key = Self::emit_decode_primitive(
+            &mut loop_stmts,
+            inner_indent,
+            temps,
+            &key_var,
+            key,
+            identity,
+        )?;
+        let mut dec_val = self.emit_decode_singular(
+            &mut loop_stmts,
+            inner_indent,
+            temps,
+            &val_var,
+            value,
+            identity,
+        )?;
+        if dec_key.contains('\n')
+            || dec_val.contains('\n')
+            || dec_key.len() + dec_val.len() + 2 > rustfmt::FN_CALL_WIDTH
+            || inner_indent + out_var.len() + ".insert(, );".len() + dec_key.len() + dec_val.len()
+                > rustfmt::MAX_WIDTH
+        {
+            if dec_key.len() > 8 || dec_key.contains('\n') {
+                let tmp = temps.fresh();
+                loop_stmts.push(rustfmt::fmt_let_stmt(inner_indent, &tmp, &dec_key));
+                dec_key = tmp;
+            }
+            if dec_val.len() > 8 || dec_val.contains('\n') {
+                let tmp = temps.fresh();
+                loop_stmts.push(rustfmt::fmt_let_stmt(inner_indent, &tmp, &dec_val));
+                dec_val = tmp;
+            }
+        }
+        let mut block = format!("{for_header}\n");
+        for stmt in loop_stmts {
+            let _ = writeln!(block, "{stmt}");
+        }
+        let _ = writeln!(block, "{inner_pad}{out_var}.insert({dec_key}, {dec_val});");
+        let _ = write!(block, "{pad}}}");
+        stmts.push(block);
+        Ok(out_var)
+    }
+
     fn emit_encode_option_stmt(
         &self,
         stmts: &mut Vec<String>,
@@ -4251,7 +4928,9 @@ impl Emitter<'_> {
         ty: &TypeExpr,
     ) -> Result<String> {
         match self.form(ty)? {
-            Form::List | Form::Option => self.emit_encode_value(stmts, indent, temps, expr, ty),
+            Form::List | Form::Map | Form::Option => {
+                self.emit_encode_value(stmts, indent, temps, expr, ty)
+            }
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
                 let inner = self.emit_encode_value(stmts, indent, temps, expr, ty)?;
                 let inner = hoist_if_long_call_arg(
@@ -4283,7 +4962,7 @@ impl Emitter<'_> {
             | TypeExpr::F32
             | TypeExpr::F64 => Ok(Self::copied(expr)),
             TypeExpr::String => Ok(format!("::core::clone::Clone::clone({expr})")),
-            TypeExpr::U8 | TypeExpr::U16 => Ok(Self::widened(expr, "u32")),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::Char => Ok(Self::widened(expr, "u32")),
             TypeExpr::S8 | TypeExpr::S16 => Ok(Self::widened(expr, "i32")),
             TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
                 Ok(format!("::core::clone::Clone::clone({expr})"))
@@ -4292,6 +4971,24 @@ impl Emitter<'_> {
                 Some(_) => Ok(format!("::core::clone::Clone::clone({expr})")),
                 None => self.emit_encode_list_loop(stmts, indent, temps, expr, element),
             },
+            TypeExpr::FixedLengthList(element, _) if self.model.resolves_to_u8(element) => {
+                Ok(format!(
+                    "{}::from({}.as_slice())",
+                    self.vec_ty(),
+                    Self::borrowed(expr)
+                ))
+            }
+            TypeExpr::FixedLengthList(element, _) => match self.identity(element)? {
+                Some(_) => Ok(format!(
+                    "{}::from({}.as_slice())",
+                    self.vec_ty(),
+                    Self::borrowed(expr)
+                )),
+                None => self.emit_encode_list_loop(stmts, indent, temps, expr, element),
+            },
+            TypeExpr::Map(key, value) => {
+                self.emit_encode_map_loop(stmts, indent, temps, expr, key, value)
+            }
             TypeExpr::Option(payload) => match self.identity(payload)? {
                 Some(Identity::Copy) => Ok(Self::copied(expr)),
                 Some(Identity::Clone) => Ok(format!("::core::clone::Clone::clone({expr})")),
@@ -4322,6 +5019,8 @@ impl Emitter<'_> {
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Result(_)
                     | TypeDefKind::List(_)
+                    | TypeDefKind::FixedLengthList(_, _)
+                    | TypeDefKind::Map(_, _)
                     | TypeDefKind::Option(_) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(emit_module_call(
@@ -4351,7 +5050,7 @@ impl Emitter<'_> {
             | TypeExpr::F32
             | TypeExpr::F64 => Ok(Self::copied(expr)),
             TypeExpr::String => Ok(format!("::core::clone::Clone::clone({expr})")),
-            TypeExpr::U8 | TypeExpr::U16 => Ok(Self::widened(expr, "u32")),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::Char => Ok(Self::widened(expr, "u32")),
             TypeExpr::S8 | TypeExpr::S16 => Ok(Self::widened(expr, "i32")),
             TypeExpr::List(element) if self.model.resolves_to_u8(element) => {
                 Ok(format!("::core::clone::Clone::clone({expr})"))
@@ -4363,6 +5062,30 @@ impl Emitter<'_> {
                     None => self.emit_encode_list_loop(stmts, indent, temps, expr, element)?,
                 };
                 Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values))
+            }
+            TypeExpr::FixedLengthList(element, _) if self.model.resolves_to_u8(element) => {
+                Ok(format!(
+                    "{}::from({}.as_slice())",
+                    self.vec_ty(),
+                    Self::borrowed(expr)
+                ))
+            }
+            TypeExpr::FixedLengthList(element, _) => {
+                let wrapper = self.proto_singular_type(ty)?;
+                let values = match self.identity(element)? {
+                    Some(_) => format!(
+                        "{}::from({}.as_slice())",
+                        self.vec_ty(),
+                        Self::borrowed(expr)
+                    ),
+                    None => self.emit_encode_list_loop(stmts, indent, temps, expr, element)?,
+                };
+                Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values))
+            }
+            TypeExpr::Map(key, value) => {
+                let wrapper = self.proto_singular_type(ty)?;
+                let entries = self.emit_encode_map_loop(stmts, indent, temps, expr, key, value)?;
+                Ok(self.emit_wrap_map(stmts, indent, temps, &wrapper, entries))
             }
             TypeExpr::Option(payload) => {
                 let proto_wrapper = format!("WitforgeOptionOf{}", self.shape_name(payload)?);
@@ -4390,7 +5113,7 @@ impl Emitter<'_> {
                             let target = qualify_type(Some(dependency), target);
                             return self.emit_encode_singular(stmts, indent, temps, expr, &target);
                         }
-                        TypeDefKind::List(element)
+                        TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                             if self.model.resolves_to_u8_in(Some(dependency), element) =>
                         {
                             let module = self.foreign_type_module(name)?;
@@ -4398,13 +5121,21 @@ impl Emitter<'_> {
                                 stmts, indent, temps, &module, "to_proto", expr, false,
                             ));
                         }
-                        TypeDefKind::List(_) => {
+                        TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _) => {
                             let wrapper = self.foreign_proto_singular(name)?;
                             let module = self.foreign_type_module(name)?;
                             let values = emit_module_call(
                                 stmts, indent, temps, &module, "to_proto", expr, false,
                             );
                             return Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values));
+                        }
+                        TypeDefKind::Map(_, _) => {
+                            let wrapper = self.foreign_proto_singular(name)?;
+                            let module = self.foreign_type_module(name)?;
+                            let entries = emit_module_call(
+                                stmts, indent, temps, &module, "to_proto", expr, false,
+                            );
+                            return Ok(self.emit_wrap_map(stmts, indent, temps, &wrapper, entries));
                         }
                         TypeDefKind::Option(_) => {
                             let shape = self
@@ -4444,7 +5175,9 @@ impl Emitter<'_> {
                             stmts, indent, temps, &module, "to_proto", expr, false,
                         ))
                     }
-                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                        if self.model.resolves_to_u8(element) =>
+                    {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(emit_module_call(
                             stmts, indent, temps, &module, "to_proto", expr, false,
@@ -4456,10 +5189,27 @@ impl Emitter<'_> {
                             self.emit_encode_list_loop(stmts, indent, temps, expr, element)?;
                         Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values))
                     }
+                    TypeDefKind::FixedLengthList(_, _) => {
+                        let wrapper = self.proto_singular_type(ty)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
+                        let values = emit_module_call(
+                            stmts, indent, temps, &module, "to_proto", expr, false,
+                        );
+                        Ok(self.emit_wrap_list(stmts, indent, temps, &wrapper, values))
+                    }
+                    TypeDefKind::Map(_, _) => {
+                        let wrapper = self.proto_singular_type(ty)?;
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
+                        let entries = emit_module_call(
+                            stmts, indent, temps, &module, "to_proto", expr, false,
+                        );
+                        Ok(self.emit_wrap_map(stmts, indent, temps, &wrapper, entries))
+                    }
                     TypeDefKind::Option(payload) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         let proto_wrapper =
-                            if matches!(self.form(payload)?, Form::List | Form::Option) {
+                            if matches!(self.form(payload)?, Form::List | Form::Map | Form::Option)
+                            {
                                 format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name))
                             } else {
                                 format!("WitforgeOptionOf{}", self.shape_name(payload)?)
@@ -4487,16 +5237,39 @@ impl Emitter<'_> {
         wrapper: &str,
         values: String,
     ) -> String {
+        self.emit_wrap_single_field(stmts, indent, temps, wrapper, "values", values)
+    }
+
+    fn emit_wrap_map(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        wrapper: &str,
+        entries: String,
+    ) -> String {
+        self.emit_wrap_single_field(stmts, indent, temps, wrapper, "entries", entries)
+    }
+
+    fn emit_wrap_single_field(
+        &self,
+        stmts: &mut Vec<String>,
+        indent: usize,
+        temps: &mut TempGen,
+        wrapper: &str,
+        field_name: &str,
+        value: String,
+    ) -> String {
         let _ = self;
         let out_var = temps.fresh();
         let pad = " ".repeat(indent);
         let inner_indent = indent + 4;
         let inner_pad = " ".repeat(inner_indent);
-        let values = hoist_if_long(stmts, indent, temps, values, 8 + "values: ".len() + 1);
+        let value = hoist_if_long(stmts, indent, temps, value, 8 + field_name.len() + 3);
         let lit = rustfmt::fmt_struct_lit(
             inner_indent,
             "Wrapper",
-            &[("values".to_string(), values)],
+            &[(field_name.to_string(), value)],
             inner_indent,
             0,
         );
@@ -4641,6 +5414,8 @@ impl Emitter<'_> {
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Result(_)
                     | TypeDefKind::List(_)
+                    | TypeDefKind::FixedLengthList(_, _)
+                    | TypeDefKind::Map(_, _)
                     | TypeDefKind::Option(_) => {
                         Ok(Some(self.plain_type_module(&name.interface, &name.name)?))
                     }
@@ -4659,7 +5434,7 @@ impl Emitter<'_> {
         identity: &str,
     ) -> Result<()> {
         match self.form(ty)? {
-            Form::List | Form::Option => {
+            Form::List | Form::Map | Form::Option => {
                 self.emit_decode_value_tail(out, indent, expr, ty, identity)
             }
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
@@ -4718,7 +5493,7 @@ impl Emitter<'_> {
         identity: &str,
     ) -> Result<String> {
         match self.form(ty)? {
-            Form::List | Form::Option => {
+            Form::List | Form::Map | Form::Option => {
                 self.emit_decode_value(stmts, indent, temps, expr, ty, identity)
             }
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
@@ -4754,6 +5529,7 @@ impl Emitter<'_> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String
             | TypeExpr::U8
             | TypeExpr::U16
@@ -4766,6 +5542,12 @@ impl Emitter<'_> {
                 Some(_) => Ok(expr.to_string()),
                 None => self.emit_decode_list_loop(stmts, indent, temps, expr, element, identity),
             },
+            TypeExpr::FixedLengthList(element, len) => {
+                self.emit_decode_fixed_list(stmts, indent, temps, expr, element, *len, identity)
+            }
+            TypeExpr::Map(key, value) => {
+                self.emit_decode_map_loop(stmts, indent, temps, expr, key, value, identity)
+            }
             TypeExpr::Option(payload) => match self.identity(payload)? {
                 Some(_) => Ok(expr.to_string()),
                 None => self.emit_decode_option_stmt(stmts, indent, temps, expr, payload, identity),
@@ -4797,6 +5579,8 @@ impl Emitter<'_> {
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Result(_)
                     | TypeDefKind::List(_)
+                    | TypeDefKind::FixedLengthList(_, _)
+                    | TypeDefKind::Map(_, _)
                     | TypeDefKind::Option(_) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(emit_module_call(
@@ -4832,6 +5616,7 @@ impl Emitter<'_> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String
             | TypeExpr::U8
             | TypeExpr::U16
@@ -4851,6 +5636,27 @@ impl Emitter<'_> {
                     identity,
                 ),
             },
+            TypeExpr::FixedLengthList(element, len) if self.model.resolves_to_u8(element) => {
+                self.emit_decode_fixed_list(stmts, indent, temps, expr, element, *len, identity)
+            }
+            TypeExpr::FixedLengthList(element, len) => self.emit_decode_fixed_list(
+                stmts,
+                indent,
+                temps,
+                &format!("{expr}.values"),
+                element,
+                *len,
+                identity,
+            ),
+            TypeExpr::Map(key, value) => self.emit_decode_map_loop(
+                stmts,
+                indent,
+                temps,
+                &format!("{expr}.entries"),
+                key,
+                value,
+                identity,
+            ),
             TypeExpr::Option(payload) => {
                 let proto_wrapper = format!("WitforgeOptionOf{}", self.shape_name(payload)?);
                 let oneof = self.proto_oneof(&proto_wrapper, "value");
@@ -4873,7 +5679,7 @@ impl Emitter<'_> {
                                 stmts, indent, temps, expr, &target, identity,
                             );
                         }
-                        TypeDefKind::List(element)
+                        TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                             if self.model.resolves_to_u8_in(Some(dependency), element) =>
                         {
                             let module = self.foreign_type_module(name)?;
@@ -4887,7 +5693,7 @@ impl Emitter<'_> {
                                 true,
                             ));
                         }
-                        TypeDefKind::List(_) => {
+                        TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _) => {
                             let module = self.foreign_type_module(name)?;
                             return Ok(emit_module_call(
                                 stmts,
@@ -4896,6 +5702,18 @@ impl Emitter<'_> {
                                 &module,
                                 "from_proto",
                                 &format!("{expr}.values"),
+                                true,
+                            ));
+                        }
+                        TypeDefKind::Map(_, _) => {
+                            let module = self.foreign_type_module(name)?;
+                            return Ok(emit_module_call(
+                                stmts,
+                                indent,
+                                temps,
+                                &module,
+                                "from_proto",
+                                &format!("{expr}.entries"),
                                 true,
                             ));
                         }
@@ -4944,7 +5762,9 @@ impl Emitter<'_> {
                             true,
                         ))
                     }
-                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                        if self.model.resolves_to_u8(element) =>
+                    {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         Ok(emit_module_call(
                             stmts,
@@ -4967,10 +5787,35 @@ impl Emitter<'_> {
                             identity,
                         ),
                     },
+                    TypeDefKind::FixedLengthList(_, _) => {
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
+                        Ok(emit_module_call(
+                            stmts,
+                            indent,
+                            temps,
+                            &module,
+                            "from_proto",
+                            &format!("{expr}.values"),
+                            true,
+                        ))
+                    }
+                    TypeDefKind::Map(_, _) => {
+                        let module = self.plain_type_module(&name.interface, &name.name)?;
+                        Ok(emit_module_call(
+                            stmts,
+                            indent,
+                            temps,
+                            &module,
+                            "from_proto",
+                            &format!("{expr}.entries"),
+                            true,
+                        ))
+                    }
                     TypeDefKind::Option(payload) => {
                         let module = self.plain_type_module(&name.interface, &name.name)?;
                         let proto_wrapper =
-                            if matches!(self.form(payload)?, Form::List | Form::Option) {
+                            if matches!(self.form(payload)?, Form::List | Form::Map | Form::Option)
+                            {
                                 format!("WitforgeOptionOf{}", Self::proto_direct_wrapper_name(name))
                             } else {
                                 format!("WitforgeOptionOf{}", self.shape_name(payload)?)
@@ -5156,6 +6001,22 @@ impl Emitter<'_> {
             | TypeExpr::F32
             | TypeExpr::F64
             | TypeExpr::String => return Ok(expr.to_string()),
+            TypeExpr::Char => {
+                let out_var = temps.fresh();
+                push_let_else_err(
+                    stmts,
+                    indent,
+                    temps,
+                    &format!("::core::option::Option::Some({out_var})"),
+                    &format!("::core::char::from_u32({expr})"),
+                    "GlueError::InvalidChar",
+                    &[
+                        ("field".to_string(), format!("\"{identity}\"")),
+                        ("value".to_string(), expr.to_string()),
+                    ],
+                );
+                return Ok(out_var);
+            }
             TypeExpr::U8 => "u8",
             TypeExpr::U16 => "u16",
             TypeExpr::S8 => "i8",
@@ -5355,25 +6216,66 @@ impl Emitter<'_> {
         Ok(out_var)
     }
 
-    fn list_element(&self, ty: &TypeExpr) -> Result<TypeExpr> {
-        self.list_element_in(None, ty)
+    fn list_info(&self, ty: &TypeExpr) -> Result<(TypeExpr, Option<u32>)> {
+        self.list_info_in(None, ty)
     }
 
-    fn list_element_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<TypeExpr> {
+    fn list_info_in(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<(TypeExpr, Option<u32>)> {
         match ty {
-            TypeExpr::List(element) => Ok(qualify_type(context, element)),
+            TypeExpr::List(element) => Ok((qualify_type(context, element), None)),
+            TypeExpr::FixedLengthList(element, len) => {
+                Ok((qualify_type(context, element), Some(*len)))
+            }
             TypeExpr::Named(name) => {
                 let (dependency, def) = self.resolve_type_def(context, name)?;
                 match &def.kind {
-                    TypeDefKind::List(element) => Ok(qualify_type(dependency, element)),
+                    TypeDefKind::List(element) => Ok((qualify_type(dependency, element), None)),
+                    TypeDefKind::FixedLengthList(element, len) => {
+                        Ok((qualify_type(dependency, element), Some(*len)))
+                    }
                     TypeDefKind::Alias(target) => {
                         let target = target.clone();
-                        self.list_element_in(dependency, &target)
+                        self.list_info_in(dependency, &target)
                     }
                     _ => bail!("type `{name}` is not a list"),
                 }
             }
             _ => bail!("type is not a list"),
+        }
+    }
+
+    fn map_types(&self, ty: &TypeExpr) -> Result<(TypeExpr, TypeExpr)> {
+        self.map_types_in(None, ty)
+    }
+
+    fn map_types_in(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<(TypeExpr, TypeExpr)> {
+        match ty {
+            TypeExpr::Map(key, value) => {
+                Ok((qualify_type(context, key), qualify_type(context, value)))
+            }
+            TypeExpr::Named(name) => {
+                let (dependency, def) = self.resolve_type_def(context, name)?;
+                match &def.kind {
+                    TypeDefKind::Map(key, value) => Ok((
+                        qualify_type(dependency, key),
+                        qualify_type(dependency, value),
+                    )),
+                    TypeDefKind::Alias(target) => {
+                        let target = target.clone();
+                        self.map_types_in(dependency, &target)
+                    }
+                    _ => bail!("type `{name}` is not a map"),
+                }
+            }
+            _ => bail!("type is not a map"),
         }
     }
 

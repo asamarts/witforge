@@ -20,6 +20,13 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 
 ## Emitter options, IR, and tooling surface
 
+- **WIT subset expansion (`char`, `list<T, N>`, `map<K, V>`, `0.9.0`):**
+  `tests/subset_expansion.rs` validates model lowering, canonical lockfile grammar, `inspect` IR,
+  `diff` compatibility/defaulting, `WF1021`/`WF1003` refusals, Draft 7 and Draft 2020-12 JSON
+  Schema validation, `--serde` large-array (`N > 32`) helpers, `convert.rs`, `prost` + `pbjson` +
+  `glue` round-trips and error variants (`InvalidChar`, `InvalidLength`, `IntegerOutOfRange`,
+  `MissingField`) in Editions 2021 and 2024, and `#![no_std]` + `alloc` (`prost.btree_map`)
+  compilation.
 - **Opt-in `no_std` + `alloc` (`0.8.0`):** `tests/emit_rust.rs` and `tests/emit_glue.rs` verify
   `RustOptions::new().with_no_std(true)` and `GlueOptions::new().with_no_std(true)` emit zero
   `::std::` references across plain modules, `convert.rs`, `worlds.rs`, `witforge_deps.rs`, and

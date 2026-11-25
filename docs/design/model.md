@@ -17,7 +17,7 @@ owned, read-only representation of one contract version:
 - it carries types, docs, stability, interfaces, functions, worlds, and source order;
 - it is independent of `wit-parser` types, so an upstream bump changes one conversion module;
 - it is total over the supported subset. Anything outside the subset is refused before model
-  construction, so the model never has to represent resources, tuples, maps, `future`, `stream`,
+  construction, so the model never has to represent resources, tuples, `future`, `stream`,
   `error-context`, or world-defined types/functions. Named types and world interfaces from
   `wit/deps` dependencies are retained as package-qualified references; see
   [`dependencies.md`](dependencies.md).
@@ -66,6 +66,8 @@ pub enum TypeDefKind {
     Flags(Vec<Flag>),
     Alias(TypeExpr),                  // `type a = b` and `use` aliases
     List(TypeExpr),                   // named `type x = list<T>`
+    FixedLengthList(TypeExpr, u32),   // named `type x = list<T, N>` (1 <= N <= 65536)
+    Map(TypeExpr, TypeExpr),          // named `type x = map<K, V>`
     Option(TypeExpr),                 // named `type x = option<T>`
     Result(ResultExpr),               // named `type x = result<T, E>`
 }
@@ -125,9 +127,12 @@ pub enum TypeExpr {
     U8, U16, U32, U64,
     S8, S16, S32, S64,
     F32, F64,
+    Char,
     String,
     Named(QualifiedName),
     List(Box<TypeExpr>),
+    FixedLengthList(Box<TypeExpr>, u32),
+    Map(Box<TypeExpr>, Box<TypeExpr>),
     Option(Box<TypeExpr>),
     Result(ResultExpr),
 }
@@ -196,10 +201,10 @@ model::build(&Contract) -> Result<Model>
   owning type's stability and a single member cannot be deprecated independently.
 - It MUST keep `type a = b` and `use` aliases as `TypeDefKind::Alias`; aliases create no lockfile
   members and are expanded for canonical types. Rust emits them as aliases; proto inlines them.
-- It MUST keep named `list`, `option`, and `result` types as their structural kinds (not as
+- It MUST keep named `list`, fixed-length `list<T, N>`, `map<K, V>`, `option`, and `result` types as their structural kinds (not as
   aliases). The Rust emitter emits an alias; the proto emitter applies the structural
   projection, using a named message when that projection requires one (a named result, or an
-  option of a list/option), as specified in [`emitters.md`](emitters.md); the lockfile expands
+  option of a list/fixed-length list/map/option), as specified in [`emitters.md`](emitters.md); the lockfile expands
   them at use sites.
 - A named reference MUST resolve to the defining interface. A local reference resolves in the
   root package; a reference with package identity resolves in the corresponding standard
@@ -253,14 +258,15 @@ model::build(&Contract) -> Result<Model>
 
 `TypeExpr` has one canonical display form, used by lockfile entries and comparisons:
 
-- primitives use WIT spelling (`bool`, `u8`, `s64`, `f64`, `string`);
+- primitives use WIT spelling (`bool`, `u8`, `s64`, `f64`, `char`, `string`);
 - a named record/variant/enum/flags is `interface/type` (package version omitted);
 - a local alias expands recursively to its target;
-- a local named `list`/`option`/`result` expands structurally;
+- a local named `list`/`list<T, N>`/`map`/`option`/`result` expands structurally;
 - a named type imported from a dependency—alias, named structural, or member-bearing—is written
   as its package-qualified name (`ex:shared/types/id`, `ex:shared/types/items`) and is not
   expanded; the dependency version is not part of the name;
-- `list<T>` is `list<T>`, `option<T>` is `option<T>`;
+- `list<T>` is `list<T>`, `list<T, N>` is `list<T,N>` (`1 <= N <= 65536`), `map<K, V>` is
+  `map<K,V>` (primitive map key `K`), `option<T>` is `option<T>`;
 - `result` is `result<ok,err>` with both slots and `_` for a missing payload;
 - no whitespace.
 
@@ -272,7 +278,10 @@ than reimplementing the rules.
 
 Every model is checked once, after construction and before any lockfile or emitter walks it:
 
-- at most **32** nested `list`/`option`/`result` levels in one type expression;
+- at most **32** nested `list`/`list<T, N>`/`map`/`option`/`result` levels in one type expression;
+- fixed-length list lengths MUST be between **1** and **65536** inclusive (`WF1021`);
+- `map<K, V>` keys MUST be one of the 11 WIT primitive key types (`bool`, `u8`, `u16`, `u32`,
+  `u64`, `s8`, `s16`, `s32`, `s64`, `char`, `string`) (`WF1020`);
 - at most **32** alias links followed in one chain;
 - at most **1024 bytes** in one canonical type string.
 

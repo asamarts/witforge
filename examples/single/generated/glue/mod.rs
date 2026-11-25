@@ -34,6 +34,22 @@ pub enum GlueError {
         /// The canonical wrapper identity.
         message: &'static str,
     },
+    /// A Unicode scalar value is not a valid `char`.
+    InvalidChar {
+        /// The canonical field or payload identity.
+        field: &'static str,
+        /// The code point that is not a valid Unicode scalar value.
+        value: u32,
+    },
+    /// A fixed-length list does not have the exact required length.
+    InvalidLength {
+        /// The canonical field or payload identity.
+        field: &'static str,
+        /// The required length from the WIT contract.
+        expected: usize,
+        /// The actual length decoded from protobuf.
+        actual: usize,
+    },
 }
 
 impl ::core::fmt::Display for GlueError {
@@ -51,6 +67,20 @@ impl ::core::fmt::Display for GlueError {
             }
             Self::UnknownCase { message } => write!(formatter, "message `{message}` has no case"),
             Self::InvalidState { message } => write!(formatter, "message `{message}` is invalid"),
+            Self::InvalidChar { field, value } => {
+                write!(
+                    formatter,
+                    "field `{field}`: value {value:#x} is not a valid char"
+                )
+            }
+            Self::InvalidLength {
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "field `{field}`: expected {expected} elements, got {actual}"
+            ),
         }
     }
 }

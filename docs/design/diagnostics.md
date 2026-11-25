@@ -119,11 +119,11 @@ beside each split code for consumers updating JSON or SARIF filters.
 | `WF1014` | error | `WF1001` | Only `@since`, `@unstable`, and `@deprecated` are accepted. `@deprecated` must accompany `@since` or `@unstable`. Annotation versions must be `<major>.<minor>.0`, cannot be later than the containing package, and deprecation cannot predate `@since`. |
 | `WF1015` | error | `WF1001` | Resources and handles (`resource`, `borrow<T>`, `own<T>`) are not supported. |
 | `WF1016` | error | `WF1001` | `future` and `stream` types are not supported. |
-| `WF1017` | error | `WF1001` | `char` primitive is not supported; use `string`. |
+| `WF1017` | error | `WF1001` | Legacy code: `char` is now supported; retained for diagnostic code stability. |
 | `WF1018` | error | `WF1001` | `error-context` is not supported. |
 | `WF1019` | error | `WF1001` | Tuples are not supported; use a named record. |
-| `WF1020` | error | `WF1001` | `map` is not supported; use `list<record>`. |
-| `WF1021` | error | `WF1001` | Fixed-length lists are not supported; use `list`. |
+| `WF1020` | error | `WF1001` | Unsupported `map<K, V>` key type; map keys must be `bool`, an integer, `char`, or `string`. |
+| `WF1021` | error | `WF1001` | Fixed-length `list<T, N>` length must be between 1 and 65536 (inclusive). |
 | `WF1022` | error | `WF1001` | Empty records are not supported. |
 | `WF1023` | error | `WF1001` | `async` functions are not supported. |
 | `WF1024` | error | `WF1001` | `get` and `set` accessors are not supported. |

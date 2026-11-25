@@ -323,6 +323,17 @@ fn check_type_convertible(
                 omitted,
             )
         }
+        (
+            TypeDefKind::FixedLengthList(source_target, source_len),
+            TypeDefKind::FixedLengthList(target_target, target_len),
+        ) => check_type_expr_convertible(
+            source,
+            target,
+            &TypeExpr::FixedLengthList(Box::new(source_target.clone()), *source_len),
+            &TypeExpr::FixedLengthList(Box::new(target_target.clone()), *target_len),
+            "fixed-length list",
+            omitted,
+        ),
         (TypeDefKind::Option(source_target), TypeDefKind::Option(target_target)) => {
             check_type_expr_convertible(
                 source,
@@ -340,6 +351,16 @@ fn check_type_convertible(
                 &TypeExpr::Result(source_result.clone()),
                 &TypeExpr::Result(target_result.clone()),
                 "result",
+                omitted,
+            )
+        }
+        (TypeDefKind::Map(source_key, source_val), TypeDefKind::Map(target_key, target_val)) => {
+            check_type_expr_convertible(
+                source,
+                target,
+                &TypeExpr::Map(Box::new(source_key.clone()), Box::new(source_val.clone())),
+                &TypeExpr::Map(Box::new(target_key.clone()), Box::new(target_val.clone())),
+                "map",
                 omitted,
             )
         }
@@ -374,6 +395,7 @@ fn check_type_expr_convertible(
         | (TypeExpr::S64, TypeExpr::S64)
         | (TypeExpr::F32, TypeExpr::F32)
         | (TypeExpr::F64, TypeExpr::F64)
+        | (TypeExpr::Char, TypeExpr::Char)
         | (TypeExpr::String, TypeExpr::String) => Ok(None),
         (TypeExpr::Named(source_name), TypeExpr::Named(target_name))
             if source_name == target_name =>
@@ -397,6 +419,12 @@ fn check_type_expr_convertible(
         }
         (TypeExpr::List(sa), TypeExpr::List(tb)) | (TypeExpr::Option(sa), TypeExpr::Option(tb)) => {
             check_type_expr_convertible(source, target, sa, tb, context_label, omitted)
+        }
+        (TypeExpr::FixedLengthList(sa, sn), TypeExpr::FixedLengthList(tb, tn)) if sn == tn => {
+            check_type_expr_convertible(source, target, sa, tb, context_label, omitted)
+        }
+        (TypeExpr::Map(sk, sv), TypeExpr::Map(tk, tv)) if sk == tk => {
+            check_type_expr_convertible(source, target, sv, tv, context_label, omitted)
         }
         (TypeExpr::Result(sa), TypeExpr::Result(tb)) => {
             match (&sa.ok, &tb.ok) {
@@ -867,6 +895,21 @@ fn conversion_body(
                 no_std,
             )
         }
+        (
+            TypeDefKind::FixedLengthList(source_target, source_len),
+            TypeDefKind::FixedLengthList(target_target, target_len),
+        ) => emit_direct_conversion(
+            indent,
+            &mut next_id,
+            source,
+            target,
+            source_interface,
+            target_interface,
+            &TypeExpr::FixedLengthList(Box::new(source_target.clone()), *source_len),
+            &TypeExpr::FixedLengthList(Box::new(target_target.clone()), *target_len),
+            &format!("{}/{}", source_interface.name, source_def.name),
+            no_std,
+        ),
         (TypeDefKind::Option(source_target), TypeDefKind::Option(target_target)) => {
             emit_direct_conversion(
                 indent,
@@ -891,6 +934,20 @@ fn conversion_body(
                 target_interface,
                 &TypeExpr::Result(source_result.clone()),
                 &TypeExpr::Result(target_result.clone()),
+                &format!("{}/{}", source_interface.name, source_def.name),
+                no_std,
+            )
+        }
+        (TypeDefKind::Map(source_key, source_val), TypeDefKind::Map(target_key, target_val)) => {
+            emit_direct_conversion(
+                indent,
+                &mut next_id,
+                source,
+                target,
+                source_interface,
+                target_interface,
+                &TypeExpr::Map(Box::new(source_key.clone()), Box::new(source_val.clone())),
+                &TypeExpr::Map(Box::new(target_key.clone()), Box::new(target_val.clone())),
                 &format!("{}/{}", source_interface.name, source_def.name),
                 no_std,
             )
@@ -1441,12 +1498,19 @@ fn is_infallible_pair(
         | (TypeExpr::S64, TypeExpr::S64)
         | (TypeExpr::F32, TypeExpr::F32)
         | (TypeExpr::F64, TypeExpr::F64)
+        | (TypeExpr::Char, TypeExpr::Char)
         | (TypeExpr::String, TypeExpr::String) => true,
         (TypeExpr::Named(a), TypeExpr::Named(b)) if a == b => a
             .package()
             .is_some_and(|(ns, pkg)| same_effective_dependency(source, target, ns, pkg)),
         (TypeExpr::List(a), TypeExpr::List(b)) | (TypeExpr::Option(a), TypeExpr::Option(b)) => {
             is_infallible_pair(source, target, a, b)
+        }
+        (TypeExpr::FixedLengthList(a, na), TypeExpr::FixedLengthList(b, nb)) if na == nb => {
+            is_infallible_pair(source, target, a, b)
+        }
+        (TypeExpr::Map(ak, av), TypeExpr::Map(bk, bv)) if ak == bk => {
+            is_infallible_pair(source, target, av, bv)
         }
         (TypeExpr::Result(a), TypeExpr::Result(b)) => {
             let ok = match (&a.ok, &b.ok) {
@@ -1518,9 +1582,17 @@ fn resolve_expr(
                 TypeDefKind::List(element) => Ok(TypeExpr::List(Box::new(resolve_expr(
                     model, resolved, element, role, visiting,
                 )?))),
+                TypeDefKind::FixedLengthList(element, len) => Ok(TypeExpr::FixedLengthList(
+                    Box::new(resolve_expr(model, resolved, element, role, visiting)?),
+                    *len,
+                )),
                 TypeDefKind::Option(payload) => Ok(TypeExpr::Option(Box::new(resolve_expr(
                     model, resolved, payload, role, visiting,
                 )?))),
+                TypeDefKind::Map(key, value) => Ok(TypeExpr::Map(
+                    Box::new(resolve_expr(model, resolved, key, role, visiting)?),
+                    Box::new(resolve_expr(model, resolved, value, role, visiting)?),
+                )),
                 TypeDefKind::Result(result) => Ok(TypeExpr::Result(ResultExpr {
                     ok: result
                         .ok
@@ -1542,9 +1614,17 @@ fn resolve_expr(
         TypeExpr::List(element) => Ok(TypeExpr::List(Box::new(resolve_expr(
             model, context, element, role, visiting,
         )?))),
+        TypeExpr::FixedLengthList(element, len) => Ok(TypeExpr::FixedLengthList(
+            Box::new(resolve_expr(model, context, element, role, visiting)?),
+            *len,
+        )),
         TypeExpr::Option(payload) => Ok(TypeExpr::Option(Box::new(resolve_expr(
             model, context, payload, role, visiting,
         )?))),
+        TypeExpr::Map(key, value) => Ok(TypeExpr::Map(
+            Box::new(resolve_expr(model, context, key, role, visiting)?),
+            Box::new(resolve_expr(model, context, value, role, visiting)?),
+        )),
         TypeExpr::Result(result) => Ok(TypeExpr::Result(ResultExpr {
             ok: result
                 .ok
@@ -1608,7 +1688,8 @@ fn emit_convert_value(
         | (TypeExpr::S32, TypeExpr::S32)
         | (TypeExpr::S64, TypeExpr::S64)
         | (TypeExpr::F32, TypeExpr::F32)
-        | (TypeExpr::F64, TypeExpr::F64) => Ok(ValueExpr {
+        | (TypeExpr::F64, TypeExpr::F64)
+        | (TypeExpr::Char, TypeExpr::Char) => Ok(ValueExpr {
             expr: copied(expression),
             returns_result: false,
         }),
@@ -1797,6 +1878,166 @@ fn emit_convert_value(
             let _ = writeln!(if_code, "{inner_prefix}{out_var} = {some_call};");
             let _ = write!(if_code, "{prefix}}}");
             stmts.push(if_code);
+            Ok(ValueExpr {
+                expr: out_var,
+                returns_result: false,
+            })
+        }
+        (
+            TypeExpr::FixedLengthList(source_element, source_len),
+            TypeExpr::FixedLengthList(target_element, target_len),
+        ) if source_len == target_len => {
+            if is_infallible_pair(&source.model, &target.model, source_element, target_element) {
+                return Ok(ValueExpr {
+                    expr: copy_or_clone(&source_type, expression),
+                    returns_result: false,
+                });
+            }
+            let prefix = " ".repeat(indent);
+            let inner_indent = indent + 4;
+            let inner_prefix = " ".repeat(inner_indent);
+            let out_var = fresh(next_id);
+            let item_var = fresh(next_id);
+            let mut iter_expr = expression.to_string();
+            let vec_ty = if no_std {
+                "::alloc::vec::Vec"
+            } else {
+                "::std::vec::Vec"
+            };
+            let mut for_header = format!("{prefix}for {item_var} in {iter_expr} {{");
+            if for_header.len() > rustfmt::MAX_WIDTH {
+                let list_tmp = fresh(next_id);
+                stmts.push(rustfmt::fmt_let_stmt(indent, &list_tmp, &iter_expr));
+                iter_expr = list_tmp;
+                for_header = format!("{prefix}for {item_var} in {iter_expr} {{");
+            }
+            stmts.push(rustfmt::fmt_let_stmt(
+                indent,
+                &format!("mut {out_var}"),
+                &format!("{vec_ty}::with_capacity({source_len})"),
+            ));
+            let mut body_stmts = Vec::new();
+            let elem = emit_convert_value(
+                &mut body_stmts,
+                inner_indent,
+                next_id,
+                source,
+                target,
+                source_interface,
+                target_interface,
+                source_element,
+                target_element,
+                &item_var,
+                path,
+                false,
+                no_std,
+            )?;
+            let mut loop_code = format!("{for_header}\n");
+            for s in body_stmts {
+                let _ = writeln!(loop_code, "{s}");
+            }
+            let push_call = rustfmt::fmt_call(
+                inner_indent,
+                &format!("{out_var}.push"),
+                &[elem.expr],
+                inner_indent,
+                1,
+            );
+            let _ = writeln!(loop_code, "{inner_prefix}{push_call};");
+            let _ = write!(loop_code, "{prefix}}}");
+            stmts.push(loop_code);
+            let arr_var = fresh(next_id);
+            let try_expr = format!("<[_; {source_len}]>::try_from({out_var})");
+            let ok_pat = format!("::core::result::Result::Ok({arr_var})");
+            let single_head = format!("{prefix}let {ok_pat} = {try_expr} else {{");
+            let let_else_head = if single_head.len() <= rustfmt::MAX_WIDTH {
+                single_head
+            } else {
+                let res_var = fresh(next_id);
+                stmts.push(rustfmt::fmt_let_stmt(indent, &res_var, &try_expr));
+                let short_head = format!("{prefix}let {ok_pat} = {res_var} else {{");
+                if short_head.len() <= rustfmt::MAX_WIDTH {
+                    short_head
+                } else if indent + 4 + ok_pat.len() + 3 + res_var.len() <= rustfmt::MAX_WIDTH {
+                    format!("{prefix}let {ok_pat} = {res_var}\n{prefix}else {{")
+                } else {
+                    format!(
+                        "{prefix}let ::core::result::Result::Ok(\n{inner_prefix}{arr_var},\n{prefix}) = {res_var}\n{prefix}else {{"
+                    )
+                }
+            };
+            stmts.push(format!(
+                "{let_else_head}\n{inner_prefix}unreachable!()\n{prefix}}};"
+            ));
+            Ok(ValueExpr {
+                expr: arr_var,
+                returns_result: false,
+            })
+        }
+        (TypeExpr::Map(source_key, source_val), TypeExpr::Map(target_key, target_val))
+            if source_key == target_key =>
+        {
+            if is_infallible_pair(&source.model, &target.model, source_val, target_val) {
+                return Ok(ValueExpr {
+                    expr: format!("::core::clone::Clone::clone({expression})"),
+                    returns_result: false,
+                });
+            }
+            let prefix = " ".repeat(indent);
+            let inner_indent = indent + 4;
+            let inner_prefix = " ".repeat(inner_indent);
+            let out_var = fresh(next_id);
+            let key_var = fresh(next_id);
+            let val_var = fresh(next_id);
+            let mut iter_expr = expression.to_string();
+            let map_ty = if no_std {
+                "::alloc::collections::BTreeMap"
+            } else {
+                "::std::collections::BTreeMap"
+            };
+            let mut for_header = format!("{prefix}for ({key_var}, {val_var}) in {iter_expr} {{");
+            if for_header.len() > rustfmt::MAX_WIDTH {
+                let map_tmp = fresh(next_id);
+                stmts.push(rustfmt::fmt_let_stmt(indent, &map_tmp, &iter_expr));
+                iter_expr = map_tmp;
+                for_header = format!("{prefix}for ({key_var}, {val_var}) in {iter_expr} {{");
+            }
+            stmts.push(rustfmt::fmt_let_stmt(
+                indent,
+                &format!("mut {out_var}"),
+                &format!("{map_ty}::new()"),
+            ));
+            let mut body_stmts = Vec::new();
+            let elem = emit_convert_value(
+                &mut body_stmts,
+                inner_indent,
+                next_id,
+                source,
+                target,
+                source_interface,
+                target_interface,
+                source_val,
+                target_val,
+                &val_var,
+                path,
+                false,
+                no_std,
+            )?;
+            let mut loop_code = format!("{for_header}\n");
+            for s in body_stmts {
+                let _ = writeln!(loop_code, "{s}");
+            }
+            let key_expr = copy_or_clone(source_key, &key_var);
+            let insert_call = rustfmt::fmt_call(
+                inner_indent,
+                &format!("{out_var}.insert"),
+                &[key_expr, elem.expr],
+                inner_indent,
+                1,
+            );
+            let _ = writeln!(loop_code, "{inner_prefix}{insert_call};");
+            let _ = write!(loop_code, "{prefix}}}");
+            stmts.push(loop_code);
             Ok(ValueExpr {
                 expr: out_var,
                 returns_result: false,
@@ -2052,9 +2293,10 @@ fn is_copy_resolved(ty: &TypeExpr) -> bool {
         | TypeExpr::S32
         | TypeExpr::S64
         | TypeExpr::F32
-        | TypeExpr::F64 => true,
-        TypeExpr::String | TypeExpr::Named(_) | TypeExpr::List(_) => false,
-        TypeExpr::Option(inner) => is_copy_resolved(inner),
+        | TypeExpr::F64
+        | TypeExpr::Char => true,
+        TypeExpr::String | TypeExpr::Named(_) | TypeExpr::List(_) | TypeExpr::Map(..) => false,
+        TypeExpr::FixedLengthList(inner, _) | TypeExpr::Option(inner) => is_copy_resolved(inner),
         TypeExpr::Result(result) => {
             result.ok.as_deref().is_none_or(is_copy_resolved)
                 && result.err.as_deref().is_none_or(is_copy_resolved)

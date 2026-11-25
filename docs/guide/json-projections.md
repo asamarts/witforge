@@ -39,13 +39,19 @@ spelling rather than the WIT spelling:
 - **Enums and variants:** enum cases serialize as PascalCase strings (`done-now` -> `"DoneNow"`),
   payload-less variant cases serialize as unit strings (`"Started"`), and payload variant cases use
   externally tagged single-key objects (`{"Item": {...}}`).
-- **Bytes and integers:** `list<u8>` (including byte aliases) serializes as a JSON array of
-  integers (`[0, 127, 255]`), not base64. Rust integer types serialize as exact JSON numbers,
-  including `u64` and `s64` (JavaScript `JSON.parse` loses precision above `±2^53`).
+- **Bytes, characters, fixed-length lists, maps, and integers:** `list<u8>` (including byte aliases)
+  and `list<u8, N>` serialize as JSON arrays of integers (`[0, 127, 255]`), not base64; arrays with
+  length `N > 32` (including inside `Option`, `Vec`, `BTreeMap`, or `Result`) use a private
+  generated `#[serde(with = "...")]` helper module with no extra crate dependencies. `char`
+  serializes as a single-character JSON string, and `map<K, V>` (`BTreeMap<K, V>`) serializes as a
+  JSON object with stringified keys in deterministic key order. Rust integer types serialize as
+  exact JSON numbers, including `u64` and `s64` (JavaScript `JSON.parse` loses precision above
+  `±2^53`).
 - **Reading and evolution:** derived Serde treats an omitted `option<T>` field as `None` (writing
   `None` as `null`) and silently ignores unknown fields. Reading a `v0.1` JSON document directly as
   `v0.2` therefore yields `None` for an added `option<T>` field, but fails with a missing-field
-  error for an added `list<T>` field—unlike generated `convert.rs`, which defaults both.
+  error for an added `list<T>` or `map<K, V>` field—unlike generated `convert.rs`, which defaults
+  `option<T>`, `list<T>`, and `map<K, V>`.
 - **`serde_json` losses:** because JSON has no distinct representation for nested nulls or
   non-finite floats, `serde_json` serializes `Some(None)` on nested options (`option<option<T>>`,
   through aliases, or in lists) as `null` and deserializes it as `None`, and serializes `NaN` /

@@ -84,7 +84,7 @@ types whose foreign dependency changed are reported in `conversion_omissions` be
 | Category | Meaning |
 |---|---|
 | `added` | A declaration exists only in the new version. |
-| `added-defaulted` | An added record field has a type the generated old-to-new conversion can default: `option<T>`, `list<T>`, or an alias or named definition of one. |
+| `added-defaulted` | An added record field has a type the generated old-to-new conversion can default: `option<T>`, `list<T>`, `map<K, V>`, or an alias or named definition of one. |
 | `removed` | A declaration exists only in the old version. |
 | `reordered` | Common members changed declaration order. The report lists the old and new relative order of the common members. |
 | `retyped` | A member, alias shape, or function result kept its name but changed type. |
@@ -160,10 +160,10 @@ A change is `decode_breaking` when either `new_reads_old` or `old_reads_new` is 
 
 | Change | `new_reads_old` | `old_reads_new` | Observed decode-profile behavior (binary) |
 |---|---|---|---|
-| Added `option<T>` or non-byte `list<T>` record field / parameter | `true` | `true` | Absence decodes as `None` / empty `Vec`; old binary reader skips unknown field |
-| Added required record field / parameter (including required `list<u8>` / byte alias) | `false` | `true` | New reader rejects absent field (`MissingField`); old binary reader skips unknown field |
-| Removed `option<T>` or non-byte `list<T>` record field / parameter | `true` | `true` | New binary reader skips unknown field; old reader decodes absence as `None` / empty `Vec` |
-| Removed required record field / parameter (including required `list<u8>` / byte alias) | `true` | `false` | New binary reader skips unknown field; old reader rejects absent field (`MissingField`) |
+| Added `option<T>`, non-byte `list<T>`, or `map<K, V>` record field / parameter | `true` | `true` | Absence decodes as `None` / empty `Vec` / empty `BTreeMap`; old binary reader skips unknown field |
+| Added required record field / parameter (including required `list<u8>`, `list<T, N>`, or `char`) | `false` | `true` | New reader rejects absent field (`MissingField` or `InvalidLength`); old binary reader skips unknown field |
+| Removed `option<T>`, non-byte `list<T>`, or `map<K, V>` record field / parameter | `true` | `true` | New binary reader skips unknown field; old reader decodes absence as `None` / empty `Vec` / empty `BTreeMap` |
+| Removed required record field / parameter (including required `list<u8>`, `list<T, N>`, or `char`) | `true` | `false` | New binary reader skips unknown field; old reader rejects absent field (`MissingField` or `InvalidLength`) |
 | Added enum or variant case | `true` | `false` | New reader accepts all old cases; old reader rejects the new case (`UnknownEnumValue` / `UnknownCase`) |
 | Removed enum or variant case | `false` | `true` | New reader rejects the removed case (`UnknownEnumValue` / `UnknownCase`); old reader accepts remaining cases |
 | Added or removed flag | `true` | `true` | Flags are proto3 `bool` fields (absent defaults to `false`, unknown bool skipped in binary) |

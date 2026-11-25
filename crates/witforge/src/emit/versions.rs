@@ -387,8 +387,15 @@ fn dep_referenced_packages(dep: &Dependency) -> BTreeSet<(String, String)> {
                     }
                 }
                 TypeDefKind::Flags(_) => {}
-                TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
+                TypeDefKind::Alias(ty)
+                | TypeDefKind::List(ty)
+                | TypeDefKind::FixedLengthList(ty, _)
+                | TypeDefKind::Option(ty) => {
                     collect_foreign_packages(ty, &mut out);
+                }
+                TypeDefKind::Map(key, value) => {
+                    collect_foreign_packages(key, &mut out);
+                    collect_foreign_packages(value, &mut out);
                 }
                 TypeDefKind::Result(res) => {
                     if let Some(ok) = &res.ok {
@@ -420,8 +427,14 @@ fn collect_foreign_packages(ty: &crate::model::TypeExpr, out: &mut BTreeSet<(Str
                 out.insert((ns.to_string(), pkg.to_string()));
             }
         }
-        crate::model::TypeExpr::List(inner) | crate::model::TypeExpr::Option(inner) => {
+        crate::model::TypeExpr::List(inner)
+        | crate::model::TypeExpr::FixedLengthList(inner, _)
+        | crate::model::TypeExpr::Option(inner) => {
             collect_foreign_packages(inner, out);
+        }
+        crate::model::TypeExpr::Map(key, value) => {
+            collect_foreign_packages(key, out);
+            collect_foreign_packages(value, out);
         }
         crate::model::TypeExpr::Result(res) => {
             if let Some(ok) = &res.ok {
@@ -619,6 +632,13 @@ fn same_type_shape(old: &TypeDefKind, new: &TypeDefKind) -> bool {
         (TypeDefKind::Alias(old), TypeDefKind::Alias(new))
         | (TypeDefKind::List(old), TypeDefKind::List(new))
         | (TypeDefKind::Option(old), TypeDefKind::Option(new)) => old == new,
+        (
+            TypeDefKind::FixedLengthList(old_el, old_len),
+            TypeDefKind::FixedLengthList(new_el, new_len),
+        ) => old_len == new_len && old_el == new_el,
+        (TypeDefKind::Map(old_k, old_v), TypeDefKind::Map(new_k, new_v)) => {
+            old_k == new_k && old_v == new_v
+        }
         (TypeDefKind::Result(old), TypeDefKind::Result(new)) => old == new,
         _ => false,
     }

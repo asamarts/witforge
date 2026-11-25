@@ -599,7 +599,7 @@ fn workflow_subset_since_history_and_load_sources_audit_regressions() {
     // without cascading a bogus WF1014 on `v0.2`!
     fs::write(
         sh_fail.join("v0.1/contract.wit"),
-        "package ex:shf@0.1.0;\ninterface api { record bad { c: char } }\n",
+        "package ex:shf@0.1.0;\ninterface api { record bad { c: tuple<u8, u8> } }\n",
     )
     .unwrap();
     let sh_fail_rep = workflow::check_root(&sh_fail, None).unwrap();

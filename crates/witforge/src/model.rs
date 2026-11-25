@@ -19,7 +19,7 @@ use wit_parser::{
 
 use crate::Contract;
 
-/// Maximum nested `list`, `option`, and `result` levels in one type expression.
+/// Maximum nested `list`, `option`, `result`, and `map` levels in one type expression.
 pub(crate) const MAX_TYPE_NESTING: usize = 32;
 /// Maximum number of alias links followed while resolving one type expression.
 pub(crate) const MAX_ALIAS_CHAIN: usize = 32;
@@ -27,6 +27,26 @@ pub(crate) const MAX_ALIAS_CHAIN: usize = 32;
 pub(crate) const MAX_CANONICAL_TYPE_BYTES: usize = 1024;
 /// Maximum bytes in one synthesized protobuf wrapper name.
 pub(crate) const MAX_WRAPPER_NAME_BYTES: usize = 1024;
+/// Maximum element count permitted in a fixed-length `list<T, N>`.
+pub(crate) const MAX_FIXED_LIST_LEN: u32 = 65_536;
+
+/// Whether `ty` is one of the 11 WIT primitives permitted as a `map<K, V>` key.
+pub(crate) const fn is_valid_map_key(ty: &TypeExpr) -> bool {
+    matches!(
+        ty,
+        TypeExpr::Bool
+            | TypeExpr::U8
+            | TypeExpr::U16
+            | TypeExpr::U32
+            | TypeExpr::U64
+            | TypeExpr::S8
+            | TypeExpr::S16
+            | TypeExpr::S32
+            | TypeExpr::S64
+            | TypeExpr::Char
+            | TypeExpr::String
+    )
+}
 
 /// A contract version, used for package versions and `@since` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -307,16 +327,22 @@ pub enum TypeExpr {
     F32,
     /// `f64`.
     F64,
+    /// `char` (Unicode scalar value).
+    Char,
     /// `string`.
     String,
     /// A named type, including an alias or named structural type.
     Named(QualifiedName),
     /// `list<T>`.
     List(Box<Self>),
+    /// `list<T, N>` (fixed-length list, `1 <= N <= 65536`).
+    FixedLengthList(Box<Self>, u32),
     /// `option<T>`.
     Option(Box<Self>),
     /// `result<ok, err>`, with `None` payloads rendered as `_`.
     Result(ResultExpr),
+    /// `map<K, V>`, where `K` is `bool`, an integer, `char`, or `string`.
+    Map(Box<Self>, Box<Self>),
 }
 
 /// The two payload slots of a `result`.
@@ -442,10 +468,14 @@ pub enum TypeDefKind {
     Alias(TypeExpr),
     /// A named `list<T>` definition.
     List(TypeExpr),
+    /// A named `list<T, N>` fixed-length list definition.
+    FixedLengthList(TypeExpr, u32),
     /// A named `option<T>` definition.
     Option(TypeExpr),
     /// A named `result<ok, err>` definition.
     Result(ResultExpr),
+    /// A named `map<K, V>` definition.
+    Map(TypeExpr, TypeExpr),
 }
 
 /// A function parameter.
@@ -839,12 +869,21 @@ impl Model {
             TypeExpr::S64 => "s64".to_string(),
             TypeExpr::F32 => "f32".to_string(),
             TypeExpr::F64 => "f64".to_string(),
+            TypeExpr::Char => "char".to_string(),
             TypeExpr::String => "string".to_string(),
             TypeExpr::Named(name) => self.canonical_named(name, visiting, nesting, aliases)?,
             TypeExpr::List(element) => {
                 let nesting = next_nesting(nesting)?;
                 format!(
                     "list<{}>",
+                    self.canonical_type_inner(element, visiting, nesting, aliases)?
+                )
+            }
+            TypeExpr::FixedLengthList(element, len) => {
+                check_fixed_list_len(*len)?;
+                let nesting = next_nesting(nesting)?;
+                format!(
+                    "list<{},{len}>",
                     self.canonical_type_inner(element, visiting, nesting, aliases)?
                 )
             }
@@ -858,6 +897,18 @@ impl Model {
             TypeExpr::Result(result) => {
                 let nesting = next_nesting(nesting)?;
                 self.canonical_result(result, visiting, nesting, aliases)?
+            }
+            TypeExpr::Map(key, value) => {
+                ensure!(
+                    is_valid_map_key(key),
+                    "unsupported map key type; map keys must be `bool`, an integer, `char`, or `string`"
+                );
+                let nesting = next_nesting(nesting)?;
+                format!(
+                    "map<{},{}>",
+                    self.canonical_type_inner(key, visiting, nesting, aliases)?,
+                    self.canonical_type_inner(value, visiting, nesting, aliases)?
+                )
             }
         };
         check_canonical_length(text)
@@ -923,6 +974,17 @@ impl Model {
                 ))
             }
             Some(TypeDef {
+                kind: TypeDefKind::FixedLengthList(element, len),
+                ..
+            }) => {
+                check_fixed_list_len(*len)?;
+                let nesting = next_nesting(nesting)?;
+                Ok(format!(
+                    "list<{},{len}>",
+                    self.canonical_type_inner(element, visiting, nesting, aliases)?
+                ))
+            }
+            Some(TypeDef {
                 kind: TypeDefKind::Option(payload),
                 ..
             }) => {
@@ -939,11 +1001,33 @@ impl Model {
                 let nesting = next_nesting(nesting)?;
                 self.canonical_result(result, visiting, nesting, aliases)
             }
+            Some(TypeDef {
+                kind: TypeDefKind::Map(key, value),
+                ..
+            }) => {
+                ensure!(
+                    is_valid_map_key(key),
+                    "unsupported map key type in `{name}`; map keys must be `bool`, an integer, `char`, or `string`"
+                );
+                let nesting = next_nesting(nesting)?;
+                Ok(format!(
+                    "map<{},{}>",
+                    self.canonical_type_inner(key, visiting, nesting, aliases)?,
+                    self.canonical_type_inner(value, visiting, nesting, aliases)?
+                ))
+            }
             None => bail!("type `{name}` is not in the model"),
         };
         visiting.remove(name);
         result
     }
+}
+
+fn check_fixed_list_len(len: u32) -> Result<()> {
+    if len == 0 || len > MAX_FIXED_LIST_LEN {
+        bail!("fixed-length list length {len} must be between 1 and {MAX_FIXED_LIST_LEN}");
+    }
+    Ok(())
 }
 
 fn next_nesting(nesting: usize) -> Result<usize> {
@@ -1255,8 +1339,13 @@ fn type_def_refs_exist(
                 .is_none_or(|ty| type_expr_refs_exist(ns, pkg, ty, surviving))
         }),
         TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => true,
-        TypeDefKind::Alias(ty) | TypeDefKind::List(ty) | TypeDefKind::Option(ty) => {
-            type_expr_refs_exist(ns, pkg, ty, surviving)
+        TypeDefKind::Alias(ty)
+        | TypeDefKind::List(ty)
+        | TypeDefKind::FixedLengthList(ty, _)
+        | TypeDefKind::Option(ty) => type_expr_refs_exist(ns, pkg, ty, surviving),
+        TypeDefKind::Map(key, value) => {
+            type_expr_refs_exist(ns, pkg, key, surviving)
+                && type_expr_refs_exist(ns, pkg, value, surviving)
         }
         TypeDefKind::Result(result) => {
             result
@@ -1304,9 +1393,14 @@ fn type_expr_refs_exist(
         | TypeExpr::S64
         | TypeExpr::F32
         | TypeExpr::F64
+        | TypeExpr::Char
         | TypeExpr::String => true,
-        TypeExpr::List(inner) | TypeExpr::Option(inner) => {
+        TypeExpr::List(inner) | TypeExpr::FixedLengthList(inner, _) | TypeExpr::Option(inner) => {
             type_expr_refs_exist(ns, pkg, inner, surviving)
+        }
+        TypeExpr::Map(key, value) => {
+            type_expr_refs_exist(ns, pkg, key, surviving)
+                && type_expr_refs_exist(ns, pkg, value, surviving)
         }
         TypeExpr::Result(result) => {
             result
@@ -1398,8 +1492,10 @@ impl Model {
                 }
                 TypeDefKind::Alias(_)
                 | TypeDefKind::List(_)
+                | TypeDefKind::FixedLengthList(..)
                 | TypeDefKind::Option(_)
-                | TypeDefKind::Result(_) => {
+                | TypeDefKind::Result(_)
+                | TypeDefKind::Map(..) => {
                     let name = QualifiedName {
                         interface: interface.name.clone(),
                         name: def.name.clone(),
@@ -1508,8 +1604,10 @@ impl Model {
                 }
                 TypeDefKind::Alias(_)
                 | TypeDefKind::List(_)
+                | TypeDefKind::FixedLengthList(..)
                 | TypeDefKind::Option(_)
-                | TypeDefKind::Result(_) => {
+                | TypeDefKind::Result(_)
+                | TypeDefKind::Map(..) => {
                     let name = QualifiedName {
                         interface: interface.name.clone(),
                         name: def.name.clone(),
@@ -1664,6 +1762,14 @@ fn build_type_def(resolve: &Resolve, root: PackageId, name: &str, id: TypeId) ->
         WitTypeDefKind::List(element) => TypeDefKind::List(
             type_expr(resolve, root, element).with_context(|| format!("named list `{name}`"))?,
         ),
+        WitTypeDefKind::FixedLengthList(element, len) => {
+            check_fixed_list_len(*len)?;
+            TypeDefKind::FixedLengthList(
+                type_expr(resolve, root, element)
+                    .with_context(|| format!("named fixed-length list `{name}`"))?,
+                *len,
+            )
+        }
         WitTypeDefKind::Option(payload) => TypeDefKind::Option(
             type_expr(resolve, root, payload).with_context(|| format!("named option `{name}`"))?,
         ),
@@ -1671,11 +1777,20 @@ fn build_type_def(resolve: &Resolve, root: PackageId, name: &str, id: TypeId) ->
             result_expr(resolve, root, result.ok.as_ref(), result.err.as_ref())
                 .with_context(|| format!("named result `{name}`"))?,
         ),
+        WitTypeDefKind::Map(key, value) => {
+            let key =
+                type_expr(resolve, root, key).with_context(|| format!("named map `{name}` key"))?;
+            ensure!(
+                is_valid_map_key(&key),
+                "named map `{name}` uses an unsupported key type"
+            );
+            let value = type_expr(resolve, root, value)
+                .with_context(|| format!("named map `{name}` value"))?;
+            TypeDefKind::Map(key, value)
+        }
         WitTypeDefKind::Resource
         | WitTypeDefKind::Handle(_)
         | WitTypeDefKind::Tuple(_)
-        | WitTypeDefKind::Map(..)
-        | WitTypeDefKind::FixedLengthList(..)
         | WitTypeDefKind::Future(_)
         | WitTypeDefKind::Stream(_)
         | WitTypeDefKind::Unknown => bail!("type `{name}` uses an unsupported WIT construct"),
@@ -1848,7 +1963,7 @@ fn type_expr(resolve: &Resolve, root: PackageId, ty: &Type) -> Result<TypeExpr> 
         Type::F32 => Ok(TypeExpr::F32),
         Type::F64 => Ok(TypeExpr::F64),
         Type::String => Ok(TypeExpr::String),
-        Type::Char => bail!("`char` is outside the supported subset"),
+        Type::Char => Ok(TypeExpr::Char),
         Type::ErrorContext => bail!("`error-context` is outside the supported subset"),
         Type::Id(id) => type_id_expr(resolve, root, *id),
     }
@@ -1885,13 +2000,13 @@ fn type_id_expr(resolve: &Resolve, root: PackageId, id: TypeId) -> Result<TypeEx
             | WitTypeDefKind::Flags(_)
             | WitTypeDefKind::Type(_)
             | WitTypeDefKind::List(_)
+            | WitTypeDefKind::FixedLengthList(..)
             | WitTypeDefKind::Option(_)
-            | WitTypeDefKind::Result(_) => {}
+            | WitTypeDefKind::Result(_)
+            | WitTypeDefKind::Map(..) => {}
             WitTypeDefKind::Resource
             | WitTypeDefKind::Handle(_)
             | WitTypeDefKind::Tuple(_)
-            | WitTypeDefKind::Map(..)
-            | WitTypeDefKind::FixedLengthList(..)
             | WitTypeDefKind::Future(_)
             | WitTypeDefKind::Stream(_)
             | WitTypeDefKind::Unknown => {
@@ -1908,6 +2023,13 @@ fn type_id_expr(resolve: &Resolve, root: PackageId, id: TypeId) -> Result<TypeEx
             WitTypeDefKind::List(element) => {
                 Ok(TypeExpr::List(Box::new(type_expr(resolve, root, element)?)))
             }
+            WitTypeDefKind::FixedLengthList(element, len) => {
+                check_fixed_list_len(*len)?;
+                Ok(TypeExpr::FixedLengthList(
+                    Box::new(type_expr(resolve, root, element)?),
+                    *len,
+                ))
+            }
             WitTypeDefKind::Option(payload) => Ok(TypeExpr::Option(Box::new(type_expr(
                 resolve, root, payload,
             )?))),
@@ -1917,6 +2039,15 @@ fn type_id_expr(resolve: &Resolve, root: PackageId, id: TypeId) -> Result<TypeEx
                 result.ok.as_ref(),
                 result.err.as_ref(),
             )?)),
+            WitTypeDefKind::Map(key, value) => {
+                let key = type_expr(resolve, root, key)?;
+                ensure!(
+                    is_valid_map_key(&key),
+                    "unsupported map key type; map keys must be `bool`, an integer, `char`, or `string`"
+                );
+                let value = type_expr(resolve, root, value)?;
+                Ok(TypeExpr::Map(Box::new(key), Box::new(value)))
+            }
             WitTypeDefKind::Record(_)
             | WitTypeDefKind::Variant(_)
             | WitTypeDefKind::Enum(_)
@@ -1924,8 +2055,6 @@ fn type_id_expr(resolve: &Resolve, root: PackageId, id: TypeId) -> Result<TypeEx
             WitTypeDefKind::Resource
             | WitTypeDefKind::Handle(_)
             | WitTypeDefKind::Tuple(_)
-            | WitTypeDefKind::Map(..)
-            | WitTypeDefKind::FixedLengthList(..)
             | WitTypeDefKind::Future(_)
             | WitTypeDefKind::Stream(_)
             | WitTypeDefKind::Unknown => bail!("unsupported anonymous WIT construct"),
@@ -2183,8 +2312,10 @@ impl Model {
                     }
                     TypeDefKind::Alias(_)
                     | TypeDefKind::List(_)
+                    | TypeDefKind::FixedLengthList(..)
                     | TypeDefKind::Option(_)
-                    | TypeDefKind::Result(_) => {}
+                    | TypeDefKind::Result(_)
+                    | TypeDefKind::Map(..) => {}
                 }
             }
 

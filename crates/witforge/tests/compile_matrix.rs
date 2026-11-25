@@ -1058,12 +1058,13 @@ world app {
             },
         },
         MatrixEntry {
-            name: "refuse_char_primitive",
+            name: "refuse_zero_fixed_length_list",
             deps: &[],
-            root_wit: "package ex:ch@0.1.0;\ninterface types { record r { c: char } }\n".to_string(),
+            root_wit: "package ex:fl@0.1.0;\ninterface types { record r { v: list<u8, 0> } }\n"
+                .to_string(),
             expected: Expected::CheckRefuses {
-                code: "WF1017",
-                needle: "char",
+                code: "WF1021",
+                needle: "fixed-length list",
             },
         },
         MatrixEntry {

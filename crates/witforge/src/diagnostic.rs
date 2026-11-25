@@ -33,15 +33,15 @@ pub mod codes {
     pub const SUBSET_RESOURCE: &str = "WF1015";
     /// `future` and `stream` types are not supported.
     pub const SUBSET_FUTURE_OR_STREAM: &str = "WF1016";
-    /// `char` primitive is not supported; use `string`.
+    /// Legacy code: `char` is now supported (retained for diagnostic code stability).
     pub const SUBSET_CHAR: &str = "WF1017";
     /// `error-context` is not supported.
     pub const SUBSET_ERROR_CONTEXT: &str = "WF1018";
     /// Tuples are not supported; use a named record.
     pub const SUBSET_TUPLE: &str = "WF1019";
-    /// `map` is not supported; use `list<record>`.
+    /// Unsupported `map` key type; map keys must be `bool`, an integer, `char`, or `string`.
     pub const SUBSET_MAP: &str = "WF1020";
-    /// Fixed-length lists are not supported; use `list`.
+    /// Invalid fixed-length list length; length must be between 1 and 65536.
     pub const SUBSET_FIXED_LENGTH_LIST: &str = "WF1021";
     /// Empty records are not supported.
     pub const SUBSET_EMPTY_RECORD: &str = "WF1022";
@@ -206,7 +206,7 @@ pub const CATALOG: &[CodeInfo] = &[
     CodeInfo {
         code: codes::SUBSET_CHAR,
         severity: Severity::Error,
-        summary: "`char` is not supported; use `string`.",
+        summary: "Legacy code: `char` is now supported (retained for code stability).",
         supersedes: Some(codes::SUBSET_UNSUPPORTED),
     },
     CodeInfo {
@@ -224,13 +224,13 @@ pub const CATALOG: &[CodeInfo] = &[
     CodeInfo {
         code: codes::SUBSET_MAP,
         severity: Severity::Error,
-        summary: "`map` is not supported; use `list<record>`.",
+        summary: "Unsupported `map` key type; keys must be `bool`, an integer, `char`, or `string`.",
         supersedes: Some(codes::SUBSET_UNSUPPORTED),
     },
     CodeInfo {
         code: codes::SUBSET_FIXED_LENGTH_LIST,
         severity: Severity::Error,
-        summary: "Fixed-length lists are not supported; use `list`.",
+        summary: "Invalid fixed-length list length; length must be between 1 and 65536.",
         supersedes: Some(codes::SUBSET_UNSUPPORTED),
     },
     CodeInfo {
@@ -527,12 +527,17 @@ pub fn explanation(code: &str) -> Option<&'static str> {
             Some("Resources and handles (`resource`, `borrow<T>`, `own<T>`) are not supported.")
         }
         codes::SUBSET_FUTURE_OR_STREAM => Some("`future` and `stream` types are not supported."),
-        codes::SUBSET_CHAR => Some("`char` primitive is not supported; use `string`."),
+        codes::SUBSET_CHAR => {
+            Some("Legacy code: `char` is now supported; retained for diagnostic code stability.")
+        }
         codes::SUBSET_ERROR_CONTEXT => Some("`error-context` is not supported."),
         codes::SUBSET_TUPLE => Some("Tuples are not supported; use a named record."),
-        codes::SUBSET_MAP => Some("`map` is not supported; use `list<record>`."),
+        codes::SUBSET_MAP => Some(
+            "Unsupported `map<K, V>` key type; map keys must be `bool`, an integer, `char`, or \
+             `string`.",
+        ),
         codes::SUBSET_FIXED_LENGTH_LIST => {
-            Some("Fixed-length lists are not supported; use `list`.")
+            Some("Fixed-length `list<T, N>` length must be between 1 and 65536 (inclusive).")
         }
         codes::SUBSET_EMPTY_RECORD => Some("Empty records are not supported."),
         codes::SUBSET_ASYNC_FUNCTION => Some("`async` functions are not supported."),

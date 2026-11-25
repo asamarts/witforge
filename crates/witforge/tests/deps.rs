@@ -533,7 +533,7 @@ interface api {
 
 interface types {
     record hidden {
-        value: char,
+        value: tuple<u8, u8>,
     }
     type bad = hidden;
 }
@@ -547,7 +547,7 @@ interface types {
     assert!(
         violations.iter().any(|violation| {
             violation.location == "example:shared/types/hidden.value"
-                && violation.message.contains("`char` is not supported")
+                && violation.message.contains("tuples are not supported")
         }),
         "{violations:#?}"
     );
@@ -564,7 +564,7 @@ interface types {
             message.contains("example:shared/types/hidden.value"),
             "{message}"
         );
-        assert!(message.contains("`char` is not supported"), "{message}");
+        assert!(message.contains("tuples are not supported"), "{message}");
     }
     fs::remove_dir_all(&root).unwrap();
 }
@@ -865,7 +865,7 @@ fn world_implicit_import_diagnostics_name_the_world_item() {
 interface types {
     record item { id: u32 }
     resource session;
-    bad: func(c: char);
+    bad: func(c: tuple<u8, u8>);
 }
 ";
     let check_case = |label: &str, contract_wit: &str| {

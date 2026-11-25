@@ -555,7 +555,7 @@ fn all_commands_report_identical_per_rule_codes_and_multiple_diagnostics() {
     fs::create_dir_all(&v01).unwrap();
     fs::write(
         v01.join("contract.wit"),
-        "package ex:h@0.1.0;\ninterface types { record r { a: tuple<u32, u32>, b: char } }\n",
+        "package ex:h@0.1.0;\ninterface types { record r { a: tuple<u32, u32>, b: list<u8, 0> } }\n",
     )
     .unwrap();
     fs::write(v01.join("wire.lock"), "# witforge wire lockfile v2\n").unwrap();
@@ -648,7 +648,7 @@ fn all_commands_report_identical_per_rule_codes_and_multiple_diagnostics() {
         );
         assert_eq!(diags[0]["code"], "WF1019", "{label}: {diags:?}");
         assert_eq!(diags[0]["path"], "ex:h/types/r.a", "{label}: {diags:?}");
-        assert_eq!(diags[1]["code"], "WF1017", "{label}: {diags:?}");
+        assert_eq!(diags[1]["code"], "WF1021", "{label}: {diags:?}");
         assert_eq!(diags[1]["path"], "ex:h/types/r.b", "{label}: {diags:?}");
         let summary: Vec<(String, String, String)> = diags
             .iter()
@@ -695,7 +695,7 @@ fn all_commands_report_identical_per_rule_codes_and_multiple_diagnostics() {
             results[0]["locations"][0]["physicalLocation"]["region"]["startLine"],
             2
         );
-        assert_eq!(results[1]["ruleId"], "WF1017", "{label}: {results:?}");
+        assert_eq!(results[1]["ruleId"], "WF1021", "{label}: {results:?}");
         assert_eq!(
             results[1]["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
             "ex:h/types/r.b"
@@ -1340,13 +1340,13 @@ fn wit_syntax_and_resolution_errors_carry_file_line_column_and_snippet() {
     fs::create_dir_all(&bom_dir).unwrap();
     fs::write(
         bom_dir.join("contract.wit"),
-        "\u{feff}package ex:bom@0.1.0; interface a { record r { bad: char } }\n",
+        "\u{feff}package ex:bom@0.1.0; interface a { record r { bad: error-context } }\n",
     )
     .unwrap();
     let bom_json = output(&["check", bom_dir.to_str().unwrap(), "--format", "json"]);
     assert_eq!(bom_json.status.code(), Some(1), "{bom_json:?}");
     let bom_diag = &json(&bom_json)["diagnostics"][0];
-    assert_eq!(bom_diag["code"], "WF1017", "{bom_diag}");
+    assert_eq!(bom_diag["code"], "WF1018", "{bom_diag}");
     assert_eq!(bom_diag["line"], 1, "{bom_diag}");
     // `package ex:bom@0.1.0; interface a { record r { ` is 47 chars -> 1-based col 48 (BOM not counted).
     assert_eq!(bom_diag["column"], 48, "{bom_diag}");
@@ -1366,7 +1366,7 @@ fn subset_use_deps_utf16_columns_and_cwd_relative_sarif_uris() {
     // Tab (1 UTF-16 unit) + comment with supplementary emoji on line above + CRLF + `use` into deps.
     fs::write(
         dir.join("deps/shared/types.wit"),
-        "package ex:shared@0.1.0;\r\ninterface base {\r\n    // 😀 café\r\n\trecord bad {\r\n\t\tflag-char: char,\r\n\t}\r\n}\r\n",
+        "package ex:shared@0.1.0;\r\ninterface base {\r\n    // 😀 café\r\n\trecord bad {\r\n\t\tflag-err: error-context,\r\n\t}\r\n}\r\n",
     )
     .unwrap();
     fs::write(
@@ -1384,7 +1384,7 @@ fn subset_use_deps_utf16_columns_and_cwd_relative_sarif_uris() {
     assert_eq!(sarif_out.status.code(), Some(1), "{sarif_out:?}");
     let sarif = json(&sarif_out);
     let result = &sarif["runs"][0]["results"][0];
-    assert_eq!(result["ruleId"], "WF1017", "{result}");
+    assert_eq!(result["ruleId"], "WF1018", "{result}");
     // Position MUST be the declaration in deps/shared/types.wit (line 5), NOT the `use` in contract.wit!
     assert_eq!(
         result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
@@ -1394,14 +1394,14 @@ fn subset_use_deps_utf16_columns_and_cwd_relative_sarif_uris() {
         result["locations"][0]["physicalLocation"]["region"]["startLine"],
         5
     );
-    // Two leading tabs on line 5 -> `flag-char` starts at 1-based UTF-16 column 3!
+    // Two leading tabs on line 5 -> `flag-err` starts at 1-based UTF-16 column 3!
     assert_eq!(
         result["locations"][0]["physicalLocation"]["region"]["startColumn"],
         3
     );
     assert_eq!(
         result["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
-        "ex:shared/base/bad.flag-char"
+        "ex:shared/base/bad.flag-err"
     );
 
     // Inline UTF-16 column check with tab + BMP + supplementary char on the same line.
@@ -1409,7 +1409,7 @@ fn subset_use_deps_utf16_columns_and_cwd_relative_sarif_uris() {
     fs::create_dir_all(&col_dir).unwrap();
     fs::write(
         col_dir.join("contract.wit"),
-        "package ex:col@0.1.0;\ninterface a {\n\trecord r { /* café 😀 */ bad: char }\n}\n",
+        "package ex:col@0.1.0;\ninterface a {\n\trecord r { /* café 😀 */ bad: error-context }\n}\n",
     )
     .unwrap();
     let col_json = witforge()
@@ -1429,7 +1429,7 @@ fn subset_use_deps_utf16_columns_and_cwd_relative_sarif_uris() {
     fs::create_dir_all(&spaced_dir).unwrap();
     fs::write(
         spaced_dir.join("contract.wit"),
-        "package ex:space@0.1.0;\ninterface a { record r { bad: char } }\n",
+        "package ex:space@0.1.0;\ninterface a { record r { bad: error-context } }\n",
     )
     .unwrap();
     let spaced_sarif = witforge()

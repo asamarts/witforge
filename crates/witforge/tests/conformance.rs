@@ -49,13 +49,21 @@ fn collect_expr(expr: &TypeExpr, primitives: &mut BTreeSet<&'static str>, nested
         TypeExpr::F64 => {
             primitives.insert("f64");
         }
+        TypeExpr::Char => {
+            primitives.insert("char");
+        }
         TypeExpr::String => {
             primitives.insert("string");
         }
         TypeExpr::Named(_) => {}
-        TypeExpr::List(element) => {
+        TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
             *nested = true;
             collect_expr(element, primitives, nested);
+        }
+        TypeExpr::Map(key, value) => {
+            *nested = true;
+            collect_expr(key, primitives, nested);
+            collect_expr(value, primitives, nested);
         }
         TypeExpr::Option(payload) => {
             *nested = true;
@@ -94,6 +102,8 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
                 TypeDefKind::Flags(_) => "flags",
                 TypeDefKind::Alias(_) => "alias",
                 TypeDefKind::List(_) => "list",
+                TypeDefKind::FixedLengthList(_, _) => "fixed-length-list",
+                TypeDefKind::Map(_, _) => "map",
                 TypeDefKind::Option(_) => "option",
                 TypeDefKind::Result(_) => "result",
                 other => panic!("uncovered type definition in the conformance fixture: {other:?}"),
@@ -114,7 +124,12 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
                 }
                 TypeDefKind::Alias(target)
                 | TypeDefKind::List(target)
+                | TypeDefKind::FixedLengthList(target, _)
                 | TypeDefKind::Option(target) => collect_expr(target, &mut primitives, &mut nested),
+                TypeDefKind::Map(key, value) => {
+                    collect_expr(key, &mut primitives, &mut nested);
+                    collect_expr(value, &mut primitives, &mut nested);
+                }
                 TypeDefKind::Result(result) => {
                     if let Some(ok) = &result.ok {
                         collect_expr(ok, &mut primitives, &mut nested);

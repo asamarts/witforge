@@ -1648,7 +1648,7 @@ fn check_reports_only_the_subset_violation_when_a_lockfile_exists() {
         .unwrap();
     assert!(lock.status.success(), "{lock:?}");
     let source = fs::read_to_string(dir.join("contract.wit")).unwrap();
-    let changed = source.replace("start: u64,", "start: char,");
+    let changed = source.replace("start: u64,", "start: tuple<u8, u8>,");
     assert_ne!(changed, source);
     fs::write(dir.join("contract.wit"), changed).unwrap();
 
@@ -1658,7 +1658,7 @@ fn check_reports_only_the_subset_violation_when_a_lockfile_exists() {
     let lines: Vec<&str> = stderr.lines().collect();
     assert_eq!(lines.len(), 1, "{stderr}");
     assert!(lines[0].starts_with("error: "), "{stderr}");
-    assert!(lines[0].contains("char"), "{stderr}");
+    assert!(lines[0].contains("tuples"), "{stderr}");
     assert!(!stderr.contains("witforge lock"), "{stderr}");
     fs::remove_dir_all(&dir).unwrap();
 }
@@ -1677,7 +1677,7 @@ fn lock_exits_1_for_a_subset_violation_without_writing() {
     let source = fs::read_to_string(dir.join("contract.wit")).unwrap();
     fs::write(
         dir.join("contract.wit"),
-        source.replace("start: u64,", "start: char,"),
+        source.replace("start: u64,", "start: tuple<u8, u8>,"),
     )
     .unwrap();
     let lock = witforge().arg("lock").arg(&dir).output().unwrap();
@@ -1724,9 +1724,9 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
             "lockfile is stale",
         ),
         (
-            original.replace("name: string,", "name: char,"),
+            original.replace("name: string,", "name: tuple<u8, u8>,"),
             1,
-            "`char` is not supported",
+            "tuples are not supported",
         ),
         (
             original.replace("record user {", "record user {{"),

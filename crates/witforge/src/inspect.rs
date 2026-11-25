@@ -681,6 +681,19 @@ fn write_types(
                     json_string(&model.canonical_type(&list_ty)?)
                 )?;
             }
+            TypeDefKind::FixedLengthList(element, length) => {
+                writeln!(out, "{inner}\"kind\": \"fixed-length-list\",")?;
+                write!(out, "{inner}\"element\": ")?;
+                write_type_expr(out, element)?;
+                writeln!(out, ",")?;
+                writeln!(out, "{inner}\"length\": {length},")?;
+                let list_ty = TypeExpr::FixedLengthList(Box::new(element.clone()), *length);
+                writeln!(
+                    out,
+                    "{inner}\"canonical_type\": {}",
+                    json_string(&model.canonical_type(&list_ty)?)
+                )?;
+            }
             TypeDefKind::Option(payload) => {
                 writeln!(out, "{inner}\"kind\": \"option\",")?;
                 write!(out, "{inner}\"payload\": ")?;
@@ -712,6 +725,21 @@ fn write_types(
                     out,
                     "{inner}\"canonical_type\": {}",
                     json_string(&model.canonical_type(&res_ty)?)
+                )?;
+            }
+            TypeDefKind::Map(key, value) => {
+                writeln!(out, "{inner}\"kind\": \"map\",")?;
+                write!(out, "{inner}\"key\": ")?;
+                write_type_expr(out, key)?;
+                writeln!(out, ",")?;
+                write!(out, "{inner}\"value\": ")?;
+                write_type_expr(out, value)?;
+                writeln!(out, ",")?;
+                let map_ty = TypeExpr::Map(Box::new(key.clone()), Box::new(value.clone()));
+                writeln!(
+                    out,
+                    "{inner}\"canonical_type\": {}",
+                    json_string(&model.canonical_type(&map_ty)?)
                 )?;
             }
         }
@@ -1043,6 +1071,7 @@ fn write_type_expr(out: &mut String, ty: &TypeExpr) -> Result<()> {
         TypeExpr::S64 => write!(out, "{{\"kind\":\"s64\"}}")?,
         TypeExpr::F32 => write!(out, "{{\"kind\":\"f32\"}}")?,
         TypeExpr::F64 => write!(out, "{{\"kind\":\"f64\"}}")?,
+        TypeExpr::Char => write!(out, "{{\"kind\":\"char\"}}")?,
         TypeExpr::String => write!(out, "{{\"kind\":\"string\"}}")?,
         TypeExpr::Named(name) => {
             let pkg = name.package().map(|(ns, pkg)| format!("{ns}:{pkg}"));
@@ -1058,6 +1087,11 @@ fn write_type_expr(out: &mut String, ty: &TypeExpr) -> Result<()> {
             write!(out, "{{\"kind\":\"list\",\"element\":")?;
             write_type_expr(out, element)?;
             write!(out, "}}")?;
+        }
+        TypeExpr::FixedLengthList(element, length) => {
+            write!(out, "{{\"kind\":\"fixed-length-list\",\"element\":")?;
+            write_type_expr(out, element)?;
+            write!(out, ",\"length\":{length}}}")?;
         }
         TypeExpr::Option(payload) => {
             write!(out, "{{\"kind\":\"option\",\"payload\":")?;
@@ -1075,6 +1109,13 @@ fn write_type_expr(out: &mut String, ty: &TypeExpr) -> Result<()> {
                 Some(ty) => write_type_expr(out, ty)?,
                 None => write!(out, "null")?,
             }
+            write!(out, "}}")?;
+        }
+        TypeExpr::Map(key, value) => {
+            write!(out, "{{\"kind\":\"map\",\"key\":")?;
+            write_type_expr(out, key)?;
+            write!(out, ",\"value\":")?;
+            write_type_expr(out, value)?;
             write!(out, "}}")?;
         }
     }

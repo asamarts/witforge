@@ -43,9 +43,9 @@ the record must be updated.
   minors of the same major can actually decode each other's protobuf binary messages under the
   decode profile ([`non-rust.md`](non-rust.md) / generated Rust glue):
   - `new<-old` (`new_reads_old`): whether a newer reader accepts messages sent by an older writer.
-    Adding a required record field or parameter — including required `list<u8>` (`optional bytes`)
-    — breaks `new<-old` (`MissingField`), as does removing an enum case, variant case, or function.
-    Adding an `option<T>` field, a non-byte `list<T>` field, or a flag stays compatible.
+    Adding a required record field or parameter — including required `list<u8>` (`optional bytes`),
+    `list<T, N>`, or `char` — breaks `new<-old` (`MissingField` or `InvalidLength`), as does removing an enum case, variant case, or function.
+    Adding an `option<T>` field, a non-byte `list<T>` field, a `map<K, V>` field, or a flag stays compatible.
   - `old<-new` (`old_reads_new`): whether an older reader accepts messages sent by a newer writer.
     Adding an enum case, variant case, or function breaks `old<-new` (`UnknownEnumValue` /
     `UnknownCase`), as does removing a required field (`MissingField`). Adding any field or flag
@@ -62,7 +62,7 @@ the wire.
 
 `witforge rust` emits `convert.rs` for adjacent versions in both directions.
 
-Old-to-new conversion defaults an added record field only when its type is `option<T>` (to `None`) or `list<T>` (to an empty list), and sets a flag added to an existing flags type to `false`. A required addition of any other type, including a field whose type is a flags, record, or scalar type, is refused when the adapters are generated.
+Old-to-new conversion defaults an added record field only when its type is `option<T>` (to `None`), `list<T>` (to an empty list), or `map<K, V>` (to an empty `BTreeMap`), and sets a flag added to an existing flags type to `false`. A required addition of any other type, including a field whose type is a fixed-length list, flags, record, or scalar type, is refused when the adapters are generated.
 
 New-to-old conversion drops fields and flags that the older version does not have; it does not report them. It returns `MissingMember` when the older version requires a field the newer version removed. In either direction, a value whose enum or variant case the target version does not have returns `UnknownCase`. Retypes and kind changes are refused.
 

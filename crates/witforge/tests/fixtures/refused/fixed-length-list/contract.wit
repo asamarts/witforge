@@ -2,6 +2,7 @@ package example:bad@0.1.0;
 
 interface types {
     record point {
-        coords: list<f64, 3>,
+        empty: list<f64, 0>,
+        huge: list<u8, 65537>,
     }
 }

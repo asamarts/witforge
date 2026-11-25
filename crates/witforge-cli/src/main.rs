@@ -1871,7 +1871,7 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
                     "required-addition" => (
                         format!(
                             "note: conversion generation refuses `{}`: a required record field was \
-                             added without a default; use option<T>, list<T>, or a new member",
+                             added without a default; use option<T>, list<T>, map<K, V>, or a new member",
                             blocker.path
                         ),
                         format!(

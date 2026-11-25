@@ -17,8 +17,8 @@ use crate::emit::versions::{
 };
 use crate::lock::{MemberKey, WireLock};
 use crate::model::{
-    Case, Dependency, Field, Function, MAX_WRAPPER_NAME_BYTES, MemberKind, Model, QualifiedName,
-    ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr,
+    Case, Dependency, Field, Function, MAX_FIXED_LIST_LEN, MAX_WRAPPER_NAME_BYTES, MemberKind,
+    Model, QualifiedName, ResultExpr, Stability, TypeDef, TypeDefKind, TypeExpr,
 };
 
 /// Legacy pre-0.6.0 shared ownership header.
@@ -248,6 +248,8 @@ enum WrapperOwner {
 enum WrapperKind {
     List(TypeExpr),
     ListElement(String),
+    Map(TypeExpr, TypeExpr),
+    MapEntry(String, String),
     OptionValue(String),
     Result(ResultExpr),
 }
@@ -420,7 +422,9 @@ impl<'a> Emitter<'a> {
             if trimmed.starts_with("//") {
                 continue;
             }
-            for token in trimmed.split_whitespace() {
+            for token in
+                trimmed.split(|ch: char| ch.is_whitespace() || matches!(ch, '<' | '>' | ',' | ';'))
+            {
                 for (prefix, file_name) in &candidates {
                     if let Some(rest) = token.strip_prefix(prefix.as_str())
                         && !rest.is_empty()
@@ -445,6 +449,21 @@ impl<'a> Emitter<'a> {
                 // Glue covers every named type whether or not a member refers to it, so
                 // synthesize any wrappers the named list needs even when unreferenced.
                 let _ = self.direct(&TypeExpr::List(Box::new(element.clone())), true)?;
+                Ok(())
+            }
+            TypeDefKind::FixedLengthList(element, len) => {
+                check_fixed_len(*len)?;
+                let _ = self.direct(
+                    &TypeExpr::FixedLengthList(Box::new(element.clone()), *len),
+                    true,
+                )?;
+                Ok(())
+            }
+            TypeDefKind::Map(key, value) => {
+                let _ = self.direct(
+                    &TypeExpr::Map(Box::new(key.clone()), Box::new(value.clone())),
+                    true,
+                )?;
                 Ok(())
             }
             TypeDefKind::Option(payload) => {
@@ -533,6 +552,15 @@ impl<'a> Emitter<'a> {
                 );
             }
             let accessor_kind = self.prost_field_accessor_kind(None, &field.ty)?;
+            if accessor_kind == ident::ProstFieldAccessorKind::MapEnum
+                && prost_field.starts_with("r#")
+            {
+                contract_bail!(
+                    "record `{interface}/{}`: map-to-enum field `{}` uses Rust keyword `{prost_field}`, which prost-derive cannot compile",
+                    def.name,
+                    field.name
+                );
+            }
             for accessor in ident::prost_field_accessors(&field_name, accessor_kind) {
                 if let Some(previous) = prost_accessors.insert(accessor.clone(), field.name.clone())
                 {
@@ -875,6 +903,15 @@ impl<'a> Emitter<'a> {
                 );
             }
             let accessor_kind = self.prost_field_accessor_kind(None, &param.ty)?;
+            if accessor_kind == ident::ProstFieldAccessorKind::MapEnum
+                && prost_field.starts_with("r#")
+            {
+                contract_bail!(
+                    "function `{interface}#{}`: map-to-enum parameter `{}` uses Rust keyword `{prost_field}`, which prost-derive cannot compile",
+                    function.name,
+                    param.name
+                );
+            }
             for accessor in ident::prost_field_accessors(&name, accessor_kind) {
                 if let Some(previous) = prost_accessors.insert(accessor.clone(), param.name.clone())
                 {
@@ -1249,7 +1286,9 @@ impl<'a> Emitter<'a> {
     fn dependency_defined_singular(&mut self, owner: &Dependency, ty: &TypeExpr) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("uint32".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => {
+                Ok("uint32".to_string())
+            }
             TypeExpr::U64 => Ok("uint64".to_string()),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("sint32".to_string()),
             TypeExpr::S64 => Ok("sint64".to_string()),
@@ -1263,6 +1302,27 @@ impl<'a> Emitter<'a> {
                 let name = format!(
                     "WitforgeListOf{}",
                     self.owner_shape_name_ty(Some(owner), element)?
+                );
+                Ok(self.dependency_wrapper_ref(owner, &name))
+            }
+            TypeExpr::FixedLengthList(element, len) => {
+                check_fixed_len(*len)?;
+                if self.model.resolves_to_u8_in(Some(owner), element) {
+                    Ok("bytes".to_string())
+                } else {
+                    let name = format!(
+                        "WitforgeListOf{}",
+                        self.owner_shape_name_ty(Some(owner), element)?
+                    );
+                    Ok(self.dependency_wrapper_ref(owner, &name))
+                }
+            }
+            TypeExpr::Map(key, value) => {
+                let _ = proto_map_key(key)?;
+                let name = format!(
+                    "WitforgeMapOf{}And{}",
+                    self.owner_shape_name_ty(Some(owner), key)?,
+                    self.owner_shape_name_ty(Some(owner), value)?
                 );
                 Ok(self.dependency_wrapper_ref(owner, &name))
             }
@@ -1305,10 +1365,31 @@ impl<'a> Emitter<'a> {
                             );
                             Ok(self.dependency_wrapper_ref(owner, &wrapper))
                         }
+                        TypeDefKind::FixedLengthList(element, len) => {
+                            check_fixed_len(*len)?;
+                            if self.model.resolves_to_u8_in(Some(owner), element) {
+                                Ok("bytes".to_string())
+                            } else {
+                                let wrapper = format!(
+                                    "WitforgeListOf{}",
+                                    self.owner_shape_name_ty(Some(owner), element)?
+                                );
+                                Ok(self.dependency_wrapper_ref(owner, &wrapper))
+                            }
+                        }
+                        TypeDefKind::Map(key, value) => {
+                            let _ = proto_map_key(key)?;
+                            let wrapper = format!(
+                                "WitforgeMapOf{}And{}",
+                                self.owner_shape_name_ty(Some(owner), key)?,
+                                self.owner_shape_name_ty(Some(owner), value)?
+                            );
+                            Ok(self.dependency_wrapper_ref(owner, &wrapper))
+                        }
                         TypeDefKind::Option(payload) => {
                             let wrapper = if matches!(
                                 self.foreign_shape_ty(Some(owner), payload)?,
-                                Shape::List | Shape::Option
+                                Shape::List | Shape::Map | Shape::Option
                             ) {
                                 format!(
                                     "WitforgeOptionOf{}",
@@ -1340,7 +1421,22 @@ impl<'a> Emitter<'a> {
                         {
                             Ok("bytes".to_string())
                         }
-                        TypeDefKind::List(_) | TypeDefKind::Option(_) => {
+                        TypeDefKind::FixedLengthList(element, len)
+                            if self.model.resolves_to_u8_in(Some(other), element) =>
+                        {
+                            check_fixed_len(*len)?;
+                            Ok("bytes".to_string())
+                        }
+                        TypeDefKind::List(_)
+                        | TypeDefKind::FixedLengthList(_, _)
+                        | TypeDefKind::Map(_, _)
+                        | TypeDefKind::Option(_) => {
+                            if let TypeDefKind::FixedLengthList(_, len) = &kind {
+                                check_fixed_len(*len)?;
+                            }
+                            if let TypeDefKind::Map(key, _) = &kind {
+                                let _ = proto_map_key(key)?;
+                            }
                             let shape = self.foreign_shape_name_for_caller(
                                 Some(owner),
                                 other,
@@ -1369,9 +1465,12 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(false),
-            TypeExpr::List(element) => Ok(!self.model.resolves_to_u8_in(Some(owner), element)),
-            TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(true),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
+                Ok(!self.model.resolves_to_u8_in(Some(owner), element))
+            }
+            TypeExpr::Map(_, _) | TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(true),
             TypeExpr::Named(name) => {
                 let resolved = self.resolve_type(Some(owner), name)?;
                 match &resolved.def.kind {
@@ -1379,10 +1478,10 @@ impl<'a> Emitter<'a> {
                         let next_owner = resolved.dependency.unwrap_or(owner);
                         self.element_uses_dependency_wrapper(next_owner, target)
                     }
-                    TypeDefKind::List(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         Ok(!self.model.resolves_to_u8_in(resolved.dependency, element))
                     }
-                    TypeDefKind::Option(_) => Ok(true),
+                    TypeDefKind::Map(_, _) | TypeDefKind::Option(_) => Ok(true),
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Enum(_)
@@ -1420,8 +1519,24 @@ impl<'a> Emitter<'a> {
                 "repeated {}",
                 self.dependency_defined_singular(owner, element)?
             )),
+            TypeDefKind::FixedLengthList(element, len) => {
+                check_fixed_len(*len)?;
+                if self.model.resolves_to_u8_in(Some(owner), element) {
+                    Ok(optional("bytes", required))
+                } else {
+                    Ok(format!(
+                        "repeated {}",
+                        self.dependency_defined_singular(owner, element)?
+                    ))
+                }
+            }
+            TypeDefKind::Map(key, value) => Ok(format!(
+                "map<{}, {}>",
+                proto_map_key(key)?,
+                self.dependency_defined_singular(owner, value)?
+            )),
             TypeDefKind::Option(payload) => match self.foreign_shape_ty(Some(owner), payload)? {
-                Shape::List | Shape::Option => self.type_ref(Some(owner), name),
+                Shape::List | Shape::Map | Shape::Option => self.type_ref(Some(owner), name),
                 Shape::Scalar | Shape::Bytes => Ok(format!(
                     "optional {}",
                     self.dependency_defined_singular(owner, payload)?
@@ -1440,7 +1555,9 @@ impl<'a> Emitter<'a> {
         let owner = context.context("foreign type expression has no dependency context")?;
         match ty {
             TypeExpr::Bool => Ok(optional("bool", required)),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok(optional("uint32", required)),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => {
+                Ok(optional("uint32", required))
+            }
             TypeExpr::U64 => Ok(optional("uint64", required)),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok(optional("sint32", required)),
             TypeExpr::S64 => Ok(optional("sint64", required)),
@@ -1454,12 +1571,28 @@ impl<'a> Emitter<'a> {
                 "repeated {}",
                 self.dependency_defined_singular(owner, element)?
             )),
+            TypeExpr::FixedLengthList(element, len) => {
+                check_fixed_len(*len)?;
+                if self.model.resolves_to_u8_in(Some(owner), element) {
+                    Ok(optional("bytes", required))
+                } else {
+                    Ok(format!(
+                        "repeated {}",
+                        self.dependency_defined_singular(owner, element)?
+                    ))
+                }
+            }
+            TypeExpr::Map(key, value) => Ok(format!(
+                "map<{}, {}>",
+                proto_map_key(key)?,
+                self.dependency_defined_singular(owner, value)?
+            )),
             TypeExpr::Option(payload) => match self.foreign_shape_ty(Some(owner), payload)? {
                 Shape::Scalar | Shape::Bytes => Ok(format!(
                     "optional {}",
                     self.dependency_defined_singular(owner, payload)?
                 )),
-                Shape::Message | Shape::List | Shape::Option => {
+                Shape::Message | Shape::List | Shape::Map | Shape::Option => {
                     self.dependency_defined_singular(owner, payload)
                 }
             },
@@ -1482,6 +1615,7 @@ impl<'a> Emitter<'a> {
         self.foreign_singular_kind(dependency.as_ref(), name, &kind)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn foreign_singular_kind(
         &mut self,
         dependency: Option<&Dependency>,
@@ -1522,6 +1656,55 @@ impl<'a> Emitter<'a> {
                     WrapperOwner::Anonymous,
                 )
             }
+            TypeDefKind::FixedLengthList(element, len) => {
+                check_fixed_len(*len)?;
+                if self.model.resolves_to_u8_in(Some(owner), element) {
+                    return Ok("bytes".to_string());
+                }
+                let shape = self.foreign_shape_name_for_caller(None, owner, name, kind)?;
+                let wrapper_name = format!("Witforge{shape}");
+                let source = self.wrapper_source(
+                    Some(owner),
+                    &TypeExpr::FixedLengthList(Box::new(element.clone()), *len),
+                )?;
+                if wrapper_name.len() > MAX_WRAPPER_NAME_BYTES {
+                    contract_bail!(
+                        "wrapper message name is {} bytes, over the {MAX_WRAPPER_NAME_BYTES}-byte limit \
+                         (for `{source}`)",
+                        wrapper_name.len()
+                    );
+                }
+                let elem_ty = self.dependency_defined_singular(owner, element)?;
+                self.ensure_wrapper(
+                    wrapper_name,
+                    WrapperKind::ListElement(elem_ty),
+                    source,
+                    WrapperOwner::Anonymous,
+                )
+            }
+            TypeDefKind::Map(key, value) => {
+                let shape = self.foreign_shape_name_for_caller(None, owner, name, kind)?;
+                let wrapper_name = format!("Witforge{shape}");
+                let source = self.wrapper_source(
+                    Some(owner),
+                    &TypeExpr::Map(Box::new(key.clone()), Box::new(value.clone())),
+                )?;
+                if wrapper_name.len() > MAX_WRAPPER_NAME_BYTES {
+                    contract_bail!(
+                        "wrapper message name is {} bytes, over the {MAX_WRAPPER_NAME_BYTES}-byte limit \
+                         (for `{source}`)",
+                        wrapper_name.len()
+                    );
+                }
+                let key_ty = proto_map_key(key)?.to_string();
+                let val_ty = self.dependency_defined_singular(owner, value)?;
+                self.ensure_wrapper(
+                    wrapper_name,
+                    WrapperKind::MapEntry(key_ty, val_ty),
+                    source,
+                    WrapperOwner::Anonymous,
+                )
+            }
             TypeDefKind::Option(payload) => {
                 let shape = self.foreign_shape_name_for_caller(None, owner, name, kind)?;
                 let wrapper_name = format!("Witforge{shape}");
@@ -1535,7 +1718,7 @@ impl<'a> Emitter<'a> {
                     );
                 }
                 let some = match self.foreign_shape_ty(Some(owner), payload)? {
-                    Shape::List | Shape::Option => self.type_ref(Some(owner), name)?,
+                    Shape::List | Shape::Map | Shape::Option => self.type_ref(Some(owner), name)?,
                     Shape::Scalar | Shape::Bytes | Shape::Message => {
                         self.dependency_defined_singular(owner, payload)?
                     }
@@ -1588,16 +1771,19 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(true),
-            TypeExpr::List(element) => Ok(self.model.resolves_to_u8_in(context, element)),
-            TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(false),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
+                Ok(self.model.resolves_to_u8_in(context, element))
+            }
+            TypeExpr::Map(_, _) | TypeExpr::Option(_) | TypeExpr::Result(_) => Ok(false),
             TypeExpr::Named(name) => {
                 let resolved = self.resolve_type(context, name)?;
                 match &resolved.def.kind {
                     TypeDefKind::Alias(target) => {
                         self.resolves_to_scalar_or_bytes_in(resolved.dependency, target)
                     }
-                    TypeDefKind::List(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         Ok(self.model.resolves_to_u8_in(resolved.dependency, element))
                     }
                     _ => Ok(false),
@@ -1623,12 +1809,20 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(ident::ProstFieldAccessorKind::OptionalScalar),
-            TypeExpr::List(element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
                 if self.model.resolves_to_u8_in(context, element) {
                     Ok(ident::ProstFieldAccessorKind::OptionalScalar)
                 } else if self.resolves_to_enum_in(context, element)? {
                     Ok(ident::ProstFieldAccessorKind::RepeatedEnum)
+                } else {
+                    Ok(ident::ProstFieldAccessorKind::None)
+                }
+            }
+            TypeExpr::Map(_, value) => {
+                if self.resolves_to_enum_in(context, value)? {
+                    Ok(ident::ProstFieldAccessorKind::MapEnum)
                 } else {
                     Ok(ident::ProstFieldAccessorKind::None)
                 }
@@ -1650,11 +1844,18 @@ impl<'a> Emitter<'a> {
                         self.prost_field_accessor_kind(resolved.dependency, target)
                     }
                     TypeDefKind::Enum(_) => Ok(ident::ProstFieldAccessorKind::OptionalEnum),
-                    TypeDefKind::List(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         if self.model.resolves_to_u8_in(resolved.dependency, element) {
                             Ok(ident::ProstFieldAccessorKind::OptionalScalar)
                         } else if self.resolves_to_enum_in(resolved.dependency, element)? {
                             Ok(ident::ProstFieldAccessorKind::RepeatedEnum)
+                        } else {
+                            Ok(ident::ProstFieldAccessorKind::None)
+                        }
+                    }
+                    TypeDefKind::Map(_, value) => {
+                        if self.resolves_to_enum_in(resolved.dependency, value)? {
+                            Ok(ident::ProstFieldAccessorKind::MapEnum)
                         } else {
                             Ok(ident::ProstFieldAccessorKind::None)
                         }
@@ -1687,10 +1888,13 @@ impl<'a> Emitter<'a> {
         match kind {
             TypeDefKind::Alias(target) => self.foreign_shape_ty(context, target),
             TypeDefKind::Enum(_) => Ok(Shape::Scalar),
-            TypeDefKind::List(element) if self.model.resolves_to_u8_in(context, element) => {
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(context, element) =>
+            {
                 Ok(Shape::Bytes)
             }
-            TypeDefKind::List(_) => Ok(Shape::List),
+            TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _) => Ok(Shape::List),
+            TypeDefKind::Map(_, _) => Ok(Shape::Map),
             TypeDefKind::Option(_) => Ok(Shape::Option),
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
@@ -1712,11 +1916,15 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(Shape::Scalar),
-            TypeExpr::List(element) if self.model.resolves_to_u8_in(context, element) => {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8_in(context, element) =>
+            {
                 Ok(Shape::Bytes)
             }
-            TypeExpr::List(_) => Ok(Shape::List),
+            TypeExpr::List(_) | TypeExpr::FixedLengthList(_, _) => Ok(Shape::List),
+            TypeExpr::Map(_, _) => Ok(Shape::Map),
             TypeExpr::Option(_) => Ok(Shape::Option),
             TypeExpr::Result(_) => Ok(Shape::Message),
             TypeExpr::Named(name) => {
@@ -1747,10 +1955,16 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("S64".to_string()),
             TypeExpr::F32 => Ok("F32".to_string()),
             TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::Char => Ok("Char".to_string()),
             TypeExpr::String => Ok("String".to_string()),
-            TypeExpr::List(element) => Ok(format!(
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => Ok(format!(
                 "ListOf{}",
                 self.owner_shape_name_ty(owner, element)?
+            )),
+            TypeExpr::Map(key, value) => Ok(format!(
+                "MapOf{}And{}",
+                self.owner_shape_name_ty(owner, key)?,
+                self.owner_shape_name_ty(owner, value)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "OptionOf{}",
@@ -1762,14 +1976,21 @@ impl<'a> Emitter<'a> {
                 if self.is_same_package(owner, resolved.dependency) {
                     match &resolved.def.kind {
                         TypeDefKind::Alias(target) => self.owner_shape_name_ty(owner, target),
-                        TypeDefKind::List(element) => Ok(format!(
-                            "ListOf{}",
-                            self.owner_shape_name_ty(owner, element)?
+                        TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
+                            Ok(format!(
+                                "ListOf{}",
+                                self.owner_shape_name_ty(owner, element)?
+                            ))
+                        }
+                        TypeDefKind::Map(key, value) => Ok(format!(
+                            "MapOf{}And{}",
+                            self.owner_shape_name_ty(owner, key)?,
+                            self.owner_shape_name_ty(owner, value)?
                         )),
                         TypeDefKind::Option(payload) => {
                             if matches!(
                                 self.foreign_shape_ty(owner, payload)?,
-                                Shape::List | Shape::Option
+                                Shape::List | Shape::Map | Shape::Option
                             ) {
                                 Ok(format!(
                                     "OptionOf{}",
@@ -1825,7 +2046,7 @@ impl<'a> Emitter<'a> {
     ) -> Result<String> {
         match kind {
             TypeDefKind::Alias(target) => self.foreign_shape_name_expr(caller, owner, target),
-            TypeDefKind::List(element) => {
+            TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                 if self.element_uses_dependency_wrapper(owner, element)? {
                     Ok(format!(
                         "ListOf{}{}",
@@ -1839,10 +2060,23 @@ impl<'a> Emitter<'a> {
                     ))
                 }
             }
+            TypeDefKind::Map(key, value) => {
+                let k = self.foreign_shape_name_expr(caller, owner, key)?;
+                let v = if self.element_uses_dependency_wrapper(owner, value)? {
+                    format!(
+                        "{}{}",
+                        dependency_pkg_prefix(owner),
+                        self.owner_shape_name_ty(Some(owner), value)?
+                    )
+                } else {
+                    self.foreign_shape_name_expr(caller, owner, value)?
+                };
+                Ok(format!("MapOf{k}And{v}"))
+            }
             TypeDefKind::Option(payload) => {
                 if matches!(
                     self.foreign_shape_ty(Some(owner), payload)?,
-                    Shape::List | Shape::Option
+                    Shape::List | Shape::Map | Shape::Option
                 ) {
                     Ok(format!("OptionOf{}", dependency_shape_name(owner, name)))
                 } else {
@@ -1878,10 +2112,16 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("S64".to_string()),
             TypeExpr::F32 => Ok("F32".to_string()),
             TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::Char => Ok("Char".to_string()),
             TypeExpr::String => Ok("String".to_string()),
-            TypeExpr::List(element) => Ok(format!(
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => Ok(format!(
                 "ListOf{}",
                 self.foreign_shape_name_expr(caller, owner, element)?
+            )),
+            TypeExpr::Map(key, value) => Ok(format!(
+                "MapOf{}And{}",
+                self.foreign_shape_name_expr(caller, owner, key)?,
+                self.foreign_shape_name_expr(caller, owner, value)?
             )),
             TypeExpr::Option(payload) => Ok(format!(
                 "OptionOf{}",
@@ -1918,7 +2158,9 @@ impl<'a> Emitter<'a> {
     fn direct(&mut self, ty: &TypeExpr, required: bool) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok(optional("bool", required)),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok(optional("uint32", required)),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => {
+                Ok(optional("uint32", required))
+            }
             TypeExpr::U64 => Ok(optional("uint64", required)),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok(optional("sint32", required)),
             TypeExpr::S64 => Ok(optional("sint64", required)),
@@ -1929,6 +2171,19 @@ impl<'a> Emitter<'a> {
                 Ok(optional("bytes", required))
             }
             TypeExpr::List(element) => Ok(format!("repeated {}", self.singular(element)?)),
+            TypeExpr::FixedLengthList(element, len) => {
+                check_fixed_len(*len)?;
+                if self.model.resolves_to_u8(element) {
+                    Ok(optional("bytes", required))
+                } else {
+                    Ok(format!("repeated {}", self.singular(element)?))
+                }
+            }
+            TypeExpr::Map(key, value) => Ok(format!(
+                "map<{}, {}>",
+                proto_map_key(key)?,
+                self.singular(value)?
+            )),
             TypeExpr::Option(payload) => self.direct_option(payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
@@ -1952,6 +2207,19 @@ impl<'a> Emitter<'a> {
                     TypeDefKind::List(element) => {
                         Ok(format!("repeated {}", self.singular(element)?))
                     }
+                    TypeDefKind::FixedLengthList(element, len) => {
+                        check_fixed_len(*len)?;
+                        if self.model.resolves_to_u8(element) {
+                            Ok(optional("bytes", required))
+                        } else {
+                            Ok(format!("repeated {}", self.singular(element)?))
+                        }
+                    }
+                    TypeDefKind::Map(key, value) => Ok(format!(
+                        "map<{}, {}>",
+                        proto_map_key(key)?,
+                        self.singular(value)?
+                    )),
                     TypeDefKind::Option(payload) => self.direct_named_option(name, payload),
                 }
             }
@@ -1961,7 +2229,9 @@ impl<'a> Emitter<'a> {
     fn singular(&mut self, ty: &TypeExpr) -> Result<String> {
         match ty {
             TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 => Ok("uint32".to_string()),
+            TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => {
+                Ok("uint32".to_string())
+            }
             TypeExpr::U64 => Ok("uint64".to_string()),
             TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("sint32".to_string()),
             TypeExpr::S64 => Ok("sint64".to_string()),
@@ -1972,6 +2242,15 @@ impl<'a> Emitter<'a> {
                 Ok("bytes".to_string())
             }
             TypeExpr::List(element) => self.list_wrapper(element),
+            TypeExpr::FixedLengthList(element, len) => {
+                check_fixed_len(*len)?;
+                if self.model.resolves_to_u8(element) {
+                    Ok("bytes".to_string())
+                } else {
+                    self.list_wrapper(element)
+                }
+            }
+            TypeExpr::Map(key, value) => self.map_wrapper(key, value),
             TypeExpr::Option(payload) => self.option_wrapper(None, payload),
             TypeExpr::Result(result) => self.ensure_result_wrapper(result),
             TypeExpr::Named(name) => {
@@ -1990,6 +2269,15 @@ impl<'a> Emitter<'a> {
                         Ok("bytes".to_string())
                     }
                     TypeDefKind::List(element) => self.list_wrapper(element),
+                    TypeDefKind::FixedLengthList(element, len) => {
+                        check_fixed_len(*len)?;
+                        if self.model.resolves_to_u8(element) {
+                            Ok("bytes".to_string())
+                        } else {
+                            self.list_wrapper(element)
+                        }
+                    }
+                    TypeDefKind::Map(key, value) => self.map_wrapper(key, value),
                     TypeDefKind::Option(payload) => self.option_wrapper(Some(name), payload),
                 }
             }
@@ -1999,7 +2287,7 @@ impl<'a> Emitter<'a> {
     fn direct_option(&mut self, payload: &TypeExpr) -> Result<String> {
         match self.shape(payload)? {
             Shape::Scalar | Shape::Bytes => Ok(format!("optional {}", self.singular(payload)?)),
-            Shape::Message | Shape::List | Shape::Option => self.singular(payload),
+            Shape::Message | Shape::List | Shape::Map | Shape::Option => self.singular(payload),
         }
     }
 
@@ -2077,8 +2365,11 @@ impl<'a> Emitter<'a> {
         match self.shape(payload)? {
             Shape::List => {
                 let wrapper = Self::type_ident(&name.interface, &name.name)?;
-                if let Some((dep, _, TypeDefKind::List(element))) =
-                    self.resolve_foreign_named(payload)?
+                if let Some((
+                    dep,
+                    _,
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _),
+                )) = self.resolve_foreign_named(payload)?
                 {
                     let elem_ty = self.dependency_defined_singular(&dep, &element)?;
                     self.ensure_wrapper(
@@ -2098,13 +2389,39 @@ impl<'a> Emitter<'a> {
                 }
                 Ok(Some(wrapper))
             }
+            Shape::Map => {
+                let wrapper = Self::type_ident(&name.interface, &name.name)?;
+                if let Some((dep, _, TypeDefKind::Map(key, value))) =
+                    self.resolve_foreign_named(payload)?
+                {
+                    let key_ty = proto_map_key(&key)?.to_string();
+                    let val_ty = self.dependency_defined_singular(&dep, &value)?;
+                    self.ensure_wrapper(
+                        wrapper.clone(),
+                        WrapperKind::MapEntry(key_ty, val_ty),
+                        source,
+                        owner,
+                    )?;
+                } else {
+                    let (key, value) = self.map_types(payload)?;
+                    self.ensure_wrapper(
+                        wrapper.clone(),
+                        WrapperKind::Map(key, value),
+                        source,
+                        owner,
+                    )?;
+                }
+                Ok(Some(wrapper))
+            }
             Shape::Option => {
                 let wrapper = Self::type_ident(&name.interface, &name.name)?;
                 let some = if let Some((dep, foreign_name, TypeDefKind::Option(inner))) =
                     self.resolve_foreign_named(payload)?
                 {
                     match self.foreign_shape_ty(Some(&dep), &inner)? {
-                        Shape::List | Shape::Option => self.type_ref(Some(&dep), &foreign_name)?,
+                        Shape::List | Shape::Map | Shape::Option => {
+                            self.type_ref(Some(&dep), &foreign_name)?
+                        }
                         Shape::Scalar | Shape::Bytes | Shape::Message => {
                             self.dependency_defined_singular(&dep, &inner)?
                         }
@@ -2131,11 +2448,15 @@ impl<'a> Emitter<'a> {
 
     fn list_element_in(&self, context: Option<&Dependency>, ty: &TypeExpr) -> Result<TypeExpr> {
         match ty {
-            TypeExpr::List(element) => Ok(qualify_type(context, element)),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
+                Ok(qualify_type(context, element))
+            }
             TypeExpr::Named(name) => {
                 let (dependency, kind) = self.resolve_owned(context, name)?;
                 match kind {
-                    TypeDefKind::List(element) => Ok(qualify_type(dependency.as_ref(), &element)),
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
+                        Ok(qualify_type(dependency.as_ref(), &element))
+                    }
                     TypeDefKind::Alias(target) => {
                         self.list_element_in(dependency.as_ref(), &target)
                     }
@@ -2143,6 +2464,34 @@ impl<'a> Emitter<'a> {
                 }
             }
             _ => bail!("named option has a non-list shape"),
+        }
+    }
+
+    fn map_types(&self, ty: &TypeExpr) -> Result<(TypeExpr, TypeExpr)> {
+        self.map_types_in(None, ty)
+    }
+
+    fn map_types_in(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<(TypeExpr, TypeExpr)> {
+        match ty {
+            TypeExpr::Map(key, value) => {
+                Ok((qualify_type(context, key), qualify_type(context, value)))
+            }
+            TypeExpr::Named(name) => {
+                let (dependency, kind) = self.resolve_owned(context, name)?;
+                match kind {
+                    TypeDefKind::Map(key, value) => Ok((
+                        qualify_type(dependency.as_ref(), &key),
+                        qualify_type(dependency.as_ref(), &value),
+                    )),
+                    TypeDefKind::Alias(target) => self.map_types_in(dependency.as_ref(), &target),
+                    _ => bail!("named option `{name}` has a non-map shape"),
+                }
+            }
+            _ => bail!("named option has a non-map shape"),
         }
     }
 
@@ -2183,6 +2532,23 @@ impl<'a> Emitter<'a> {
         )
     }
 
+    fn map_wrapper(&mut self, key: &TypeExpr, value: &TypeExpr) -> Result<String> {
+        let _ = proto_map_key(key)?;
+        let wrapped = TypeExpr::Map(Box::new(key.clone()), Box::new(value.clone()));
+        let name = format!(
+            "WitforgeMapOf{}And{}",
+            self.shape_name(key)?,
+            self.shape_name(value)?
+        );
+        let source = self.wrapper_source(None, &wrapped)?;
+        self.ensure_wrapper(
+            name,
+            WrapperKind::Map(key.clone(), value.clone()),
+            source,
+            WrapperOwner::Anonymous,
+        )
+    }
+
     fn ensure_result_wrapper(&mut self, result: &ResultExpr) -> Result<String> {
         let wrapped = TypeExpr::Result(result.clone());
         let name = format!("Witforge{}", self.shape_name(&wrapped)?);
@@ -2218,6 +2584,14 @@ impl<'a> Emitter<'a> {
                 }
                 WrapperKind::ListElement(ty) => {
                     format!("message {name} {{\n  repeated {ty} values = 1;\n}}")
+                }
+                WrapperKind::Map(key, value) => {
+                    let key_ty = proto_map_key(&key)?;
+                    let val_ty = self.singular(&value)?;
+                    format!("message {name} {{\n  map<{key_ty}, {val_ty}> entries = 1;\n}}")
+                }
+                WrapperKind::MapEntry(key_ty, val_ty) => {
+                    format!("message {name} {{\n  map<{key_ty}, {val_ty}> entries = 1;\n}}")
                 }
                 WrapperKind::OptionValue(some) => {
                     format!(
@@ -2275,9 +2649,15 @@ impl<'a> Emitter<'a> {
             | TypeExpr::S64
             | TypeExpr::F32
             | TypeExpr::F64
+            | TypeExpr::Char
             | TypeExpr::String => Ok(Shape::Scalar),
-            TypeExpr::List(element) if self.model.resolves_to_u8(element) => Ok(Shape::Bytes),
-            TypeExpr::List(_) => Ok(Shape::List),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
+                if self.model.resolves_to_u8(element) =>
+            {
+                Ok(Shape::Bytes)
+            }
+            TypeExpr::List(_) | TypeExpr::FixedLengthList(_, _) => Ok(Shape::List),
+            TypeExpr::Map(_, _) => Ok(Shape::Map),
             TypeExpr::Option(_) => Ok(Shape::Option),
             TypeExpr::Result(_) => Ok(Shape::Message),
             TypeExpr::Named(name) => {
@@ -2288,10 +2668,13 @@ impl<'a> Emitter<'a> {
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.shape(target),
                     TypeDefKind::Enum(_) => Ok(Shape::Scalar),
-                    TypeDefKind::List(element) if self.model.resolves_to_u8(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
+                        if self.model.resolves_to_u8(element) =>
+                    {
                         Ok(Shape::Bytes)
                     }
-                    TypeDefKind::List(_) => Ok(Shape::List),
+                    TypeDefKind::List(_) | TypeDefKind::FixedLengthList(_, _) => Ok(Shape::List),
+                    TypeDefKind::Map(_, _) => Ok(Shape::Map),
                     TypeDefKind::Option(_) => Ok(Shape::Option),
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
@@ -2315,8 +2698,16 @@ impl<'a> Emitter<'a> {
             TypeExpr::S64 => Ok("S64".to_string()),
             TypeExpr::F32 => Ok("F32".to_string()),
             TypeExpr::F64 => Ok("F64".to_string()),
+            TypeExpr::Char => Ok("Char".to_string()),
             TypeExpr::String => Ok("String".to_string()),
-            TypeExpr::List(element) => Ok(format!("ListOf{}", self.shape_name(element)?)),
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
+                Ok(format!("ListOf{}", self.shape_name(element)?))
+            }
+            TypeExpr::Map(key, value) => Ok(format!(
+                "MapOf{}And{}",
+                self.shape_name(key)?,
+                self.shape_name(value)?
+            )),
             TypeExpr::Option(payload) => Ok(format!("OptionOf{}", self.shape_name(payload)?)),
             TypeExpr::Result(result) => self.result_shape_name(result),
             TypeExpr::Named(name) => {
@@ -2326,9 +2717,14 @@ impl<'a> Emitter<'a> {
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.shape_name(target),
-                    TypeDefKind::List(element) => {
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         Ok(format!("ListOf{}", self.shape_name(element)?))
                     }
+                    TypeDefKind::Map(key, value) => Ok(format!(
+                        "MapOf{}And{}",
+                        self.shape_name(key)?,
+                        self.shape_name(value)?
+                    )),
                     TypeDefKind::Option(payload) => {
                         Ok(format!("OptionOf{}", self.shape_name(payload)?))
                     }
@@ -2438,7 +2834,27 @@ enum Shape {
     Bytes,
     Message,
     List,
+    Map,
     Option,
+}
+
+fn check_fixed_len(len: u32) -> Result<()> {
+    if len == 0 || len > MAX_FIXED_LIST_LEN {
+        contract_bail!("fixed-length list length {len} must be between 1 and {MAX_FIXED_LIST_LEN}");
+    }
+    Ok(())
+}
+
+fn proto_map_key(ty: &TypeExpr) -> Result<&'static str> {
+    match ty {
+        TypeExpr::Bool => Ok("bool"),
+        TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => Ok("uint32"),
+        TypeExpr::U64 => Ok("uint64"),
+        TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 => Ok("sint32"),
+        TypeExpr::S64 => Ok("sint64"),
+        TypeExpr::String => Ok("string"),
+        _ => contract_bail!("map key `{ty:?}` is not a valid primitive map key"),
+    }
 }
 
 fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
@@ -2458,6 +2874,13 @@ fn qualify_type(dependency: Option<&Dependency>, ty: &TypeExpr) -> TypeExpr {
         TypeExpr::List(element) => {
             TypeExpr::List(Box::new(qualify_type(Some(dependency), element)))
         }
+        TypeExpr::FixedLengthList(element, len) => {
+            TypeExpr::FixedLengthList(Box::new(qualify_type(Some(dependency), element)), *len)
+        }
+        TypeExpr::Map(key, value) => TypeExpr::Map(
+            Box::new(qualify_type(Some(dependency), key)),
+            Box::new(qualify_type(Some(dependency), value)),
+        ),
         TypeExpr::Option(payload) => {
             TypeExpr::Option(Box::new(qualify_type(Some(dependency), payload)))
         }

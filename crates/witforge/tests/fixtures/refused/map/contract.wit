@@ -1,7 +1,0 @@
-package example:bad@0.1.0;
-
-interface types {
-    record table {
-        rows: map<string, u32>,
-    }
-}

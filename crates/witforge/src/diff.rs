@@ -614,20 +614,21 @@ fn is_absent_ok_in(
         return false;
     }
     match ty {
-        TypeExpr::Option(_) => true,
+        TypeExpr::Option(_) | TypeExpr::Map(..) => true,
         TypeExpr::List(elem) => !resolves_to_u8_in(model, context, elem, 0),
         TypeExpr::Named(name) => {
             let Some((resolved, def)) = model.type_def_in(context, name) else {
                 return false;
             };
             match &def.kind {
-                TypeDefKind::Option(_) => true,
+                TypeDefKind::Option(_) | TypeDefKind::Map(..) => true,
                 TypeDefKind::List(elem) => !resolves_to_u8_in(model, resolved, elem, 0),
                 TypeDefKind::Alias(target) => is_absent_ok_in(model, resolved, target, depth + 1),
                 TypeDefKind::Record(_)
                 | TypeDefKind::Variant(_)
                 | TypeDefKind::Enum(_)
                 | TypeDefKind::Flags(_)
+                | TypeDefKind::FixedLengthList(..)
                 | TypeDefKind::Result(_) => false,
             }
         }

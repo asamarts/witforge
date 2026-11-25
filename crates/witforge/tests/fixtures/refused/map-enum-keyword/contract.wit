@@ -1,0 +1,12 @@
+package example:bad@0.1.0;
+
+interface types {
+    enum status {
+        ok,
+        err,
+    }
+
+    record holder {
+        %type: map<string, status>,
+    }
+}

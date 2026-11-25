@@ -288,12 +288,16 @@ The `type` token is deterministic and contains no whitespace. The model specifie
 strings and does not reimplement type formatting.
 
 ```text
-type          = primitive | named | list | option | result
+type          = primitive | named | list | fixed-list | map | option | result
 primitive     = "bool" | "u8" | "u16" | "u32" | "u64"
-              | "s8" | "s16" | "s32" | "s64" | "f32" | "f64" | "string"
+              | "s8" | "s16" | "s32" | "s64" | "f32" | "f64" | "char" | "string"
+map-key       = "bool" | "u8" | "u16" | "u32" | "u64"
+              | "s8" | "s16" | "s32" | "s64" | "char" | "string"
 named         = interface "/" type
               | namespace ":" package "/" interface "/" type
 list          = "list<" type ">"
+fixed-list    = "list<" type "," length ">"     ; decimal 1..=65536, no leading zeros
+map           = "map<" map-key "," type ">"
 option        = "option<" type ">"
 result        = "result<" slot "," slot ">"
 slot          = type | "_"
@@ -314,18 +318,19 @@ Canonicalization rules:
   is an alias, a named `list`/`option`/`result`, or a member-bearing type:
   `ex:shared/types/id`, `ex:shared/types/items`. A local `use ... as ...` alias of a foreign
   type is expanded to that foreign name. The version is not part of the name.
-- Local named `list`, `option`, and `result` definitions are expanded structurally. For example,
-  `type tags = list<string>` is written as `list<string>` wherever it is used, not as `tags`.
+- Local named `list`, fixed-length `list<T, N>`, `map<K, V>`, `option`, and `result` definitions are expanded structurally. For example,
+  `type tags = list<string>` is written as `list<string>` wherever it is used, not as `tags`, and
+  `type hash = list<u8, 32>` is written as `list<u8,32>`.
   The named Rust alias is still emitted; the lockfile records the structure. A named structural
   type defined in a dependency keeps its dependency-qualified name
   (`ex:shared/types/items`), not its structural expansion.
 - `result` always has both slots. `result<T, _>`, `result<_, E>`, and bare `result` are written
   as `result<T,_>`, `result<_,E>`, and `result<_,_>`. There is no space after the comma.
-- `list<u8>` stays `list<u8>` in the lockfile; the protobuf `bytes` projection is an emitter
+- `list<u8>` stays `list<u8>` (and `list<u8, 32>` stays `list<u8,32>`) in the lockfile; the protobuf `bytes` projection is an emitter
   concern, not a wire-identity concern. A list spelled with an alias whose resolved element is
-  `u8` canonicalizes to the same `list<u8>` token, so the lockfile cannot distinguish the two
+  `u8` canonicalizes to the same `list<u8>` / `list<u8,N>` token, so the lockfile cannot distinguish the two
   spellings and every emitter must project both the same way.
-- Named list/option/result definitions have no locked members of their own; expanding them at
+- Named list/fixed-length list/map/option/result definitions have no locked members of their own; expanding them at
   use sites is what makes an inner type change visible. A foreign alias therefore does not
   expose its target's change through the canonical string; `check --against` compares the
   pinned dependency graph with the same rule the generators use (section 7), and the generators
@@ -333,11 +338,11 @@ Canonicalization rules:
 - A named type is always qualified (`types/reserved`, `types/field`), so the bare token
   `reserved` can only be the reserved flag. A bare `reserved` in the type position is a parse
   error.
-- `char`, tuples, maps, fixed-length lists, resources, handles, `future`, `stream`, and
-  `error-context` are refused by the subset checker. The canonicalizer treats them as internal
-  errors if they ever reach it.
+- Tuples, resources, handles, `future`, `stream`, `error-context`, invalid map keys, and
+  out-of-range fixed-length list lengths (`0` or `> 65536`) are refused by the subset checker.
+  The canonicalizer treats them as internal errors if they ever reach it.
 - No spaces, comments, or escapes appear inside a type token.
-- A type token is at most 1024 bytes and nests `list`/`option`/`result` at most 32 levels deep.
+- A type token is at most 1024 bytes and nests `list`/`list<T,N>`/`map`/`option`/`result` at most 32 levels deep.
   The reader refuses a longer or deeper token as a parse error (exit `2`) before recursive
   parsing, matching the model's expansion limits in [`model.md`](model.md#41-expansion-limits).
   A lockfile cannot hold an alias chain: aliases are already expanded in the canonical form.

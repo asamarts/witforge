@@ -102,22 +102,27 @@ pub(crate) fn type_kind_name(kind: &TypeDefKind) -> &'static str {
         TypeDefKind::Flags(_) => "flags",
         TypeDefKind::Alias(_) => "alias",
         TypeDefKind::List(_) => "list",
+        TypeDefKind::FixedLengthList(..) => "fixed-length list",
         TypeDefKind::Option(_) => "option",
         TypeDefKind::Result(_) => "result",
+        TypeDefKind::Map(..) => "map",
     }
 }
 
 /// Render a type definition's shape in the requested diagnostic style.
 pub(crate) fn type_shape(kind: &TypeDefKind, style: TypeRenderStyle) -> String {
+    let separator = match style {
+        TypeRenderStyle::Compact => ",",
+        TypeRenderStyle::Spaced => ", ",
+    };
     match kind {
         TypeDefKind::Alias(target) => render_type(target, style),
         TypeDefKind::List(element) => format!("list<{}>", render_type(element, style)),
+        TypeDefKind::FixedLengthList(element, len) => {
+            format!("list<{}{separator}{len}>", render_type(element, style))
+        }
         TypeDefKind::Option(payload) => format!("option<{}>", render_type(payload, style)),
         TypeDefKind::Result(result) => {
-            let separator = match style {
-                TypeRenderStyle::Compact => ",",
-                TypeRenderStyle::Spaced => ", ",
-            };
             format!(
                 "result<{}{separator}{}>",
                 result
@@ -130,6 +135,11 @@ pub(crate) fn type_shape(kind: &TypeDefKind, style: TypeRenderStyle) -> String {
                     .map_or_else(|| "_".to_string(), |ty| render_type(ty, style)),
             )
         }
+        TypeDefKind::Map(key, value) => format!(
+            "map<{}{separator}{}>",
+            render_type(key, style),
+            render_type(value, style)
+        ),
         TypeDefKind::Record(_)
         | TypeDefKind::Variant(_)
         | TypeDefKind::Enum(_)
@@ -139,6 +149,10 @@ pub(crate) fn type_shape(kind: &TypeDefKind, style: TypeRenderStyle) -> String {
 
 /// Render a type expression in the requested diagnostic style.
 pub(crate) fn render_type(ty: &TypeExpr, style: TypeRenderStyle) -> String {
+    let separator = match style {
+        TypeRenderStyle::Compact => ",",
+        TypeRenderStyle::Spaced => ", ",
+    };
     match ty {
         TypeExpr::Bool => "bool".to_string(),
         TypeExpr::U8 => "u8".to_string(),
@@ -151,15 +165,15 @@ pub(crate) fn render_type(ty: &TypeExpr, style: TypeRenderStyle) -> String {
         TypeExpr::S64 => "s64".to_string(),
         TypeExpr::F32 => "f32".to_string(),
         TypeExpr::F64 => "f64".to_string(),
+        TypeExpr::Char => "char".to_string(),
         TypeExpr::String => "string".to_string(),
         TypeExpr::Named(name) => name.to_string(),
         TypeExpr::List(element) => format!("list<{}>", render_type(element, style)),
+        TypeExpr::FixedLengthList(element, len) => {
+            format!("list<{}{separator}{len}>", render_type(element, style))
+        }
         TypeExpr::Option(payload) => format!("option<{}>", render_type(payload, style)),
         TypeExpr::Result(result) => {
-            let separator = match style {
-                TypeRenderStyle::Compact => ",",
-                TypeRenderStyle::Spaced => ", ",
-            };
             format!(
                 "result<{}{separator}{}>",
                 result
@@ -172,6 +186,11 @@ pub(crate) fn render_type(ty: &TypeExpr, style: TypeRenderStyle) -> String {
                     .map_or_else(|| "_".to_string(), |ty| render_type(ty, style)),
             )
         }
+        TypeExpr::Map(key, value) => format!(
+            "map<{}{separator}{}>",
+            render_type(key, style),
+            render_type(value, style)
+        ),
     }
 }
 

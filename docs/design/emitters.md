@@ -341,11 +341,15 @@ spellings where they differ (`r#extern` <-> `extern_`, `r#union` <-> `union`).
 
 `prost-derive` 0.14 also generates inherent accessor methods on message structs for scalar and
 enum fields (`<field>` for proto3 `optional` scalars/strings/bytes/enums, `set_<field>` for
-`optional` enums, and `<field>` + `push_<field>` for `repeated` enums, stripping a leading `r#`
-before adding `set_`/`push_`). When two fields of one record or two parameters of one function
-would generate the same prost accessor (for example `mode: my-enum` beside `set-mode: bool`, or
-`modes: list<my-enum>` beside `push-modes: bool`), `check` (`WF1003`), `proto`, and `glue` refuse
-the contract, naming both fields and the shared accessor.
+`optional` enums, `<field>` + `push_<field>` for `repeated` enums, and `get_<field>` +
+`insert_<field>` for `map<K, enum>`, stripping a leading `r#` before adding the prefix). When two
+fields of one record or two parameters of one function would generate the same prost accessor (for
+example `mode: my-enum` beside `set-mode: bool`, `modes: list<my-enum>` beside `push-modes: bool`,
+or `items: map<string, my-enum>` beside `get-items: bool`), `check` (`WF1003`), `proto`, and `glue`
+refuse the contract, naming both fields and the shared accessor. In addition, `prost-derive` 0.14
+panics on raw-identifier Rust-keyword field names with `map<K, enum>` (`r#type` -> `get_r#type`),
+so `check` (`WF1003`), `proto`, and `glue` refuse raw-identifier Rust-keyword `map<K, enum>` fields
+and parameters.
 
 ### 3.3 Derives
 
@@ -375,8 +379,13 @@ on.
 #### Format independence and `serde_json` limits
 
 `--serde` emits plain, format-independent derives with no `#[serde(...)]` rename, tag, or custom
-serializer attributes. Formats that tag `Option` (for example postcard or RON) round-trip
-`Some(None)`, and binary formats round-trip non-finite IEEE-754 floats.
+serializer attributes—except that when a record field or variant payload contains a fixed-length
+array `[T; N]` with `N > 32` (directly or nested inside `Option`, `Vec`, `BTreeMap`, `Result`, or
+another array), `witforge` emits a private `mod __witforge_serde` helper and short
+`#[serde(with = "...")]` attributes so arrays of length `33..=65536` serialize and deserialize
+identically to standard Serde arrays without adding external crate dependencies or `unsafe` code.
+Formats that tag `Option` (for example postcard or RON) round-trip `Some(None)`, and binary formats
+round-trip non-finite IEEE-754 floats.
 
 When a consumer uses `serde_json`, two values do not round-trip because JSON has no distinct
 representation for them:
@@ -436,9 +445,13 @@ these exact `serde_json` behaviours are pinned by `crates/witforge/tests/serde.r
 | `u8`, `u16`, `u32`, `u64` | `u8`, `u16`, `u32`, `u64` |
 | `s8`, `s16`, `s32`, `s64` | `i8`, `i16`, `i32`, `i64` |
 | `f32`, `f64` | `f32`, `f64` |
+| `char` | `char` |
 | `string` | `::std::string::String` |
 | `list<u8>` | `::std::vec::Vec<u8>` |
 | `list<T>` | `::std::vec::Vec<T>` |
+| `list<u8, N>` (`1 <= N <= 65536`) | `[u8; N]` |
+| `list<T, N>` (`1 <= N <= 65536`) | `[T; N]` |
+| `map<K, V>` | `::std::collections::BTreeMap<K, V>` (`::alloc::collections::BTreeMap<K, V>` under `--no-std`) |
 | `option<T>` | `::std::option::Option<T>` |
 | `result<T, E>` | `::std::result::Result<T, E>` |
 | `result<T, _>` | `::std::result::Result<T, ()>` |
@@ -450,7 +463,7 @@ these exact `serde_json` behaviours are pinned by `crates/witforge/tests/serde.r
 | flags | `pub struct` of `pub bool` fields |
 | `type a = b` | `pub type A = B;` |
 | `use ... as ...` alias | `pub type Alias = DefiningType;` in the using interface module |
-| named `list`/`option`/`result` | `pub type` alias |
+| named `list`/`list<T, N>`/`map`/`option`/`result` | `pub type` alias |
 
 A list whose resolved element type is `u8` uses the `list<u8>` row even when the element is
 spelled through one or more aliases, including a `use ... as ...` alias of a dependency type.
@@ -631,13 +644,17 @@ See Presence below for the required/optional distinction.
 | `s32` | `sint32` |
 | `s64` | `sint64` |
 | `f32`, `f64` | `float`, `double` |
+| `char` | `uint32` (validated as Unicode scalar value in glue) |
 | `string` | `string` |
 | `list<u8>` | `bytes` |
 | `list<T>` | `repeated singular(T)` |
+| `list<u8, N>` (`1 <= N <= 65536`) | `bytes` (length `N` enforced in glue) |
+| `list<T, N>` (`1 <= N <= 65536`) | `repeated singular(T)` (length `N` enforced in glue) |
+| `map<K, V>` | `map<proto_key(K), singular(V)>` (`WitforgeMapOf<K>And<V>` wrapper in singular position) |
 | `option<T>` (scalar, string, enum) | `optional T` |
 | `option<T>` (record, variant, flags, result) | message field (presence) |
-| `option<list<u8>>` | `optional bytes` |
-| `option<list<T>>`, `option<option<T>>` | synthesized wrapper message |
+| `option<list<u8>>`, `option<list<u8, N>>` | `optional bytes` |
+| `option<list<T>>`, `option<list<T, N>>`, `option<map<K, V>>`, `option<option<T>>` | synthesized wrapper message |
 | `result<T, E>` | message with `oneof value { singular(T) ok = 1; singular(E) err = 2; }` |
 | `result<T, _>` | `oneof value { singular(T) ok = 1; Empty err = 2; }` |
 | `result<_, E>` | `oneof value { Empty ok = 1; singular(E) err = 2; }` |
@@ -754,9 +771,9 @@ Wrapper field names and numbers are fixed (`values = 1`, `value = 1`, `none = 1`
 Anonymous wrappers are top-level messages with a reserved `Witforge` prefix and a structural
 name derived from the canonical type:
 
-- primitives use PascalCase WIT names (`Bool`, `U64`, `S64`, `F32`, `String`);
+- primitives use PascalCase WIT names (`Bool`, `U64`, `S64`, `F32`, `Char`, `String`);
 - a named type uses its interface and type in PascalCase (`TypesSpan`);
-- `list<T>` is `ListOf<T>`, `option<T>` is `OptionOf<T>`;
+- `list<T>` and `list<T, N>` are `ListOf<T>`, `map<K, V>` is `MapOf<K>And<V>`, `option<T>` is `OptionOf<T>`;
 - `result<ok,err>` is `ResultOf<Ok>And<Err>`, with `_` rendered as `Empty`;
 - nested expressions concatenate, for example `ListOfListOfTypesSpan`,
   `OptionOfListOfTypesSpan`, and `ResultOfListOfTypesFindingAndString`.
@@ -895,7 +912,8 @@ particular:
 - field names use lowerCamelCase JSON names;
 - `u64`/`s64` are decimal strings;
 - `list<u8>` is base64;
-- non-finite floats are `"NaN"` / `"Infinity"` strings;
+- non-finite floats are `"NaN"` / `"Infinity"` strings (note: `pbjson-build` 0.9 serializes
+  non-finite floats inside `map<K, f32|f64>` as `null`; keep finite floats in proto3-JSON maps);
 - enums are name strings;
 - `result` is `{"ok": ...}` or `{"err": ...}`;
 - option presence is absence or `null` for message fields, and absence for proto3 `optional`;
@@ -1254,6 +1272,15 @@ pub enum GlueError {
     InvalidState {
         message: &'static str,
     },
+    InvalidChar {
+        field: &'static str,
+        value: u32,
+    },
+    InvalidLength {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
 }
 ```
 
@@ -1505,9 +1532,10 @@ The source is the older version and the target is the newer one.
   expanded before comparison, so `type id = u32` and `u32`, or `type ids = list<u32>` and
   `list<u32>`, convert identically. A changed resolved type is a contract error.
 - A field added by the newer version is defaulted only when its type is `option<T>`, `list<T>`,
-  or a named alias/structural type that resolves to one: `option` defaults to `None`, `list` to
-  an empty vector. A required addition that is not defaultable is a contract error, so an
-  author must add a defaultable member instead of changing an existing shape.
+  `map<K, V>`, or a named alias/structural type that resolves to one: `option` defaults to `None`,
+  `list` to an empty vector, and `map` to an empty `BTreeMap`. A required addition that is not
+  defaultable (including fixed-length `list<T, N>` and `char`) is a contract error, so an author
+  must add a defaultable member instead of changing an existing shape.
 - A field removed by the newer version is dropped. The old value is not represented in the new
   type.
 - A record field whose name changes is a removal plus an addition; the addition follows the
@@ -1531,7 +1559,7 @@ The source is the newer version and the target is the older one.
   reporting it; the older type has nowhere to put it. The generated reverse-conversion modules and
   functions document this explicitly.
 - An older field removed by the newer version is defaulted when its type is defaultable
-  (`option<T>` to `None`, `list<T>` to empty). If it is required, the conversion returns
+  (`option<T>` to `None`, `list<T>` to empty, `map<K, V>` to empty `BTreeMap`). If it is required, the conversion returns
   `MissingMember` with that field's canonical path; it never invents a scalar or message value.
 - A variant or enum case added by the newer version makes that source value `UnknownCase`. A case
   removed by the newer version is unreachable in this direction.
@@ -1667,8 +1695,11 @@ The rest of the document is conventional JSON (Draft 7 shown):
 | `s8`, `s16`, `s32`, `s64` | `{"type":"integer","minimum":...,"maximum":...}` |
 | `f32` | `{"type":"number","minimum":-3.4028235e38,"maximum":3.4028235e38}` |
 | `f64` | `{"type":"number"}` |
+| `char` | `{"type":"string","minLength":1,"maxLength":1}` |
 | `string` | `{"type":"string"}` |
 | `list<T>` | `{"type":"array","items":<T>}` |
+| `list<T, N>` (`1 <= N <= 65536`) | `{"type":"array","items":<T>,"minItems":N,"maxItems":N}` |
+| `map<K, V>` | `{"type":"object","additionalProperties":<V>}` (plus `propertyNames` pattern/length for `bool`, integer, and `char` keys) |
 | `option<T>` | `{"anyOf":[<T>,{"type":"null"}]}` |
 | record | object with every field in `properties`, every field in `required`, and `additionalProperties:false` |
 | variant | `oneOf` of case objects; a case is one property named after the case, required, with its payload schema or `{"type":"null"}` |
@@ -1773,9 +1804,11 @@ proto-root = "crate::proto"
   optional `draft = "7" | "2020-12"` (default `"7"`); `glue` also has optional `plain-root`,
   `proto-root` strings, and `no-std = true|false`. When `no-std = true` (or `--no-std` on the CLI,
   overridden by `--std`), generated Rust, `convert.rs`, and glue emit `::alloc::string::String`,
-  `::alloc::vec::Vec`, `::core::option::Option`, `::core::result::Result`, and
-  `::core::error::Error` (requiring `extern crate alloc;` in the consuming `#![no_std]` crate); the
-  default (`no-std = false`) output is unchanged.
+  `::alloc::vec::Vec`, `::alloc::collections::BTreeMap`, `::core::option::Option`,
+  `::core::result::Result`, and `::core::error::Error` (requiring `extern crate alloc;` in the
+  consuming `#![no_std]` crate, and `prost_build::Config::btree_map(&["."])` when compiling
+  protobuf schemas containing `map<K, V>` for `#![no_std]` glue); the default (`no-std = false`)
+  output is unchanged.
 - Unknown keys or sections are errors, as are a missing/unsupported version, an empty project
   table, a missing project selected with `--project`, and a missing output section or CLI path
   needed by the selected command.

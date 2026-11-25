@@ -374,10 +374,14 @@ pub(crate) enum ProstFieldAccessorKind {
     /// Proto3 `repeated` enum (`list<enum>`): generates `pub fn <ident>(&self)` and
     /// `pub fn push_<ident_without_r#>(&mut self, ...)`.
     RepeatedEnum,
+    /// Proto3 `map<K, enum>`: generates `pub fn get_<ident>(&self, ...)` and
+    /// `pub fn insert_<ident>(&mut self, ...)`.
+    MapEnum,
 }
 
-/// Return the inherent accessor method names `prost-derive` 0.14 (`field/scalar.rs`) generates for
-/// a message field whose `.proto` name is `proto_field` and whose field kind is `kind`.
+/// Return the inherent accessor method names `prost-derive` 0.14 (`field/scalar.rs`, `field/map.rs`)
+/// generates for a message field whose `.proto` name is `proto_field` and whose field kind is
+/// `kind`.
 pub(crate) fn prost_field_accessors(
     proto_field: &str,
     kind: ProstFieldAccessorKind,
@@ -392,6 +396,12 @@ pub(crate) fn prost_field_accessors(
         }
         ProstFieldAccessorKind::RepeatedEnum => {
             vec![ident.clone(), format!("push_{raw_stripped}")]
+        }
+        ProstFieldAccessorKind::MapEnum => {
+            vec![
+                format!("get_{raw_stripped}"),
+                format!("insert_{raw_stripped}"),
+            ]
         }
     }
 }

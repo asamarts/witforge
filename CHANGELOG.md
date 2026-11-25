@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **WIT subset expansion (`W11-040`):** Added first-class support for `char`, fixed-length lists
+  `list<T, N>` (`1 <= N <= 65536`), and primitive-keyed maps `map<K, V>` (`bool`, integer, `char`,
+  or `string` keys) across the internal model (`TypeExpr::{Char, FixedLengthList, Map}`,
+  `TypeDefKind::{FixedLengthList, Map}`), lockfile v2 canonical type grammar (`char`, `list<T,N>`,
+  `map<K,V>`), `inspect` JSON IR (`version = 1`), `diff` (`map<K, V>` defaults to empty `BTreeMap`
+  and is `added-defaulted` + binary decode-compatible; `char` and `list<T, N>` are required and
+  decode-breaking on addition), Rust emission (including `no_std` + `alloc` and zero-dependency
+  `#[serde(with = "...")]` helpers for arrays with `N > 32`), `convert.rs`, protobuf (`uint32`,
+  `bytes`/`repeated`, `map<K', singular(V)>`, and `WitforgeMapOf...` wrappers), JSON Schema
+  (Draft 7 and Draft 2020-12 with `minLength`/`maxLength`, `minItems`/`maxItems`, and
+  `additionalProperties` + `propertyNames`), and protobuf glue (`GlueError::{InvalidChar,
+  InvalidLength}`, `prost` `HashMap` / `no_std` `BTreeMap` compatibility, and narrow/char map key
+  validation). Refuses out-of-range fixed-length lists (`0` or `> 65536`, `WF1021`), raw-identifier
+  Rust-keyword `map<K, enum>` fields/parameters (`WF1003`), and `prost-derive` `get_`/`insert_`
+  accessor collisions (`WF1003`).
+
 ### Fixed
 
 - **Seventh-wave audit hardening (`W10-128`):** Closed seven remaining CommonMark doctest and

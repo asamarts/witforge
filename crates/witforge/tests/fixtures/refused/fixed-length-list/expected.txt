@@ -1,1 +1,2 @@
-example:bad/types/point.coords: fixed-length lists are not supported; use `list`
+example:bad/types/point.empty: fixed-length list length `0` must be between 1 and 65536; use `list` for unbounded or empty lists
+example:bad/types/point.huge: fixed-length list length `65537` must be between 1 and 65536; use `list` for unbounded or empty lists

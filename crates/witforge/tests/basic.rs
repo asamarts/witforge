@@ -205,7 +205,10 @@ fn parse_rejects_bad_lockfiles() {
         format!("{HEADER}\na:b/i/t.x = 1 enum-case string\n"),
         format!("{HEADER}\na:b/i/t.x = 1 param\n"),
         format!("{HEADER}\na:b/i/t.x = 1 field list<>\n"),
-        format!("{HEADER}\na:b/i/t.x = 1 field char\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field list<u8,0>\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field list<u8,65537>\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field map<f32,u8>\n"),
+        format!("{HEADER}\na:b/i/t.x = 1 field tuple<u8,u8>\n"),
         format!("{HEADER}\na:b/i/t.x = 1 field result<u8>\n"),
         "nonsense\n".to_string(),
         "# witforge wire lockfile: append-only. Do not edit numbers by hand.\na:b/i/t.x = 1\n"

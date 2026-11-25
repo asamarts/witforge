@@ -93,7 +93,7 @@ values passed to freestanding functions.
 
 **Severity:** `error` · **Prior:** `WF1001`
 
-`char` is not supported; use `string`.
+Legacy code: `char` is now supported (retained for diagnostic code stability).
 
 ### WF1018
 
@@ -112,13 +112,15 @@ Tuples are not supported; define a named `record` so every field has a stable wi
 
 **Severity:** `error` · **Prior:** `WF1001`
 
-`map` is not supported yet; use `list<record>` with explicit key and value fields.
+Unsupported `map` key type. WIT `map<K, V>` keys must be `bool`, an integer (`u8`–`u64`,
+`s8`–`s64`), `char`, or `string`.
 
 ### WF1021
 
 **Severity:** `error` · **Prior:** `WF1001`
 
-Fixed-length lists are not supported; use `list<T>`.
+Invalid fixed-length list length (`list<T, N>`). Fixed-length lists must have length `1 <= N <= 65536`;
+use unbounded `list<T>` for zero-length or larger lists.
 
 ### WF1022
 

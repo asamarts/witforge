@@ -20,10 +20,13 @@ or a protocol with two non-Rust endpoints must enforce the same rules explicitly
 |---|---|---|
 | `u8`, `u16` | `uint32` | Reject values above the WIT type's maximum. |
 | `s8`, `s16` | `sint32` | Reject values outside the WIT type's signed range. |
-| required scalar, string, enum, or `list<u8>` | proto3 `optional` scalar/string/enum/bytes | Reject absence. A scalar's protobuf default is not a substitute for presence. |
+| `char` | `uint32` | Reject code points that are not valid Unicode scalar values (surrogates `0xD800..=0xDFFF` and values `> 0x10FFFF`). |
+| required scalar, string, enum, `list<u8>`, or `list<u8, N>` | proto3 `optional` scalar/string/enum/bytes | Reject absence. A scalar's protobuf default is not a substitute for presence. |
 | `option<T>` | the same optional or wrapper shape used for `T` | Permit absence as `None`; validate a present payload normally. |
 | required record, variant, flags, result, parameter, or message result | message field | Reject absence. |
 | `list<T>` | `repeated T`, or a wrapper when nested | Empty is valid. Validate every element recursively. |
+| `list<T, N>` | `optional bytes` (when `T` is `u8`) or `repeated singular(T)` (or list wrapper when nested) | Require exact length `N` (`1 <= N <= 65536`), rejecting shorter or longer payloads (`InvalidLength`). Validate every element recursively. |
+| `map<K, V>` | `map<K', singular(V)>`, or a `WitforgeMapOf...` wrapper when nested | Empty is valid. Validate narrow integer keys (`u8`/`u16`/`s8`/`s16`), `char` keys, and every value recursively. |
 | enum | protobuf enum with `UNSPECIFIED = 0` | Reject zero and unknown numeric values; WIT enums are closed. |
 | variant or result | message with a `oneof` | Require one known case. Reject an unset or unknown case. |
 | flags | message with one `bool` per flag | Treat missing/default `false` as an unset flag. |

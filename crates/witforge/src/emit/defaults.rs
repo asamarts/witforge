@@ -36,9 +36,15 @@ fn default_expr_inner(
     } else {
         "::std::vec::Vec::new()"
     };
+    let empty_map = if no_std {
+        "::alloc::collections::BTreeMap::new()"
+    } else {
+        "::std::collections::BTreeMap::new()"
+    };
     match ty {
         TypeExpr::Option(_) => Ok(Some("::core::option::Option::None")),
         TypeExpr::List(_) => Ok(Some(empty_vec)),
+        TypeExpr::Map(..) => Ok(Some(empty_map)),
         TypeExpr::Named(name) => {
             let Some((resolved, def)) = model.type_def_in(context, name) else {
                 bail!("type `{name}` is not in the model");
@@ -58,6 +64,7 @@ fn default_expr_inner(
             let result = match &def.kind {
                 TypeDefKind::Option(_) => Ok(Some("::core::option::Option::None")),
                 TypeDefKind::List(_) => Ok(Some(empty_vec)),
+                TypeDefKind::Map(..) => Ok(Some(empty_map)),
                 TypeDefKind::Alias(target) => {
                     default_expr_inner(model, resolved, target, no_std, visiting)
                 }

@@ -291,13 +291,21 @@ field witforge::model::TypeDef.name
 field witforge::model::TypeDef.stability
 field witforge::model::TypeDefKind::Alias.0
 field witforge::model::TypeDefKind::Enum.0
+field witforge::model::TypeDefKind::FixedLengthList.0
+field witforge::model::TypeDefKind::FixedLengthList.1
 field witforge::model::TypeDefKind::Flags.0
 field witforge::model::TypeDefKind::List.0
+field witforge::model::TypeDefKind::Map.0
+field witforge::model::TypeDefKind::Map.1
 field witforge::model::TypeDefKind::Option.0
 field witforge::model::TypeDefKind::Record.0
 field witforge::model::TypeDefKind::Result.0
 field witforge::model::TypeDefKind::Variant.0
+field witforge::model::TypeExpr::FixedLengthList.0
+field witforge::model::TypeExpr::FixedLengthList.1
 field witforge::model::TypeExpr::List.0
+field witforge::model::TypeExpr::Map.0
+field witforge::model::TypeExpr::Map.1
 field witforge::model::TypeExpr::Named.0
 field witforge::model::TypeExpr::Option.0
 field witforge::model::TypeExpr::Result.0
@@ -1338,14 +1346,22 @@ signature witforge::model::TypeDef::new {"function":{"sig":{"inputs":[["name",{"
 signature witforge::model::TypeDefKind {"params":[],"where_predicates":[]}
 signature witforge::model::TypeDefKind::Alias.0 {"struct_field":{"resolved_path":{"path":"TypeExpr","args":null}}}
 signature witforge::model::TypeDefKind::Enum.0 {"struct_field":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Case","args":null}}}],"constraints":[]}}}}}
+signature witforge::model::TypeDefKind::FixedLengthList.0 {"struct_field":{"resolved_path":{"path":"TypeExpr","args":null}}}
+signature witforge::model::TypeDefKind::FixedLengthList.1 {"struct_field":{"primitive":"u32"}}
 signature witforge::model::TypeDefKind::Flags.0 {"struct_field":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Flag","args":null}}}],"constraints":[]}}}}}
 signature witforge::model::TypeDefKind::List.0 {"struct_field":{"resolved_path":{"path":"TypeExpr","args":null}}}
+signature witforge::model::TypeDefKind::Map.0 {"struct_field":{"resolved_path":{"path":"TypeExpr","args":null}}}
+signature witforge::model::TypeDefKind::Map.1 {"struct_field":{"resolved_path":{"path":"TypeExpr","args":null}}}
 signature witforge::model::TypeDefKind::Option.0 {"struct_field":{"resolved_path":{"path":"TypeExpr","args":null}}}
 signature witforge::model::TypeDefKind::Record.0 {"struct_field":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Field","args":null}}}],"constraints":[]}}}}}
 signature witforge::model::TypeDefKind::Result.0 {"struct_field":{"resolved_path":{"path":"ResultExpr","args":null}}}
 signature witforge::model::TypeDefKind::Variant.0 {"struct_field":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Case","args":null}}}],"constraints":[]}}}}}
 signature witforge::model::TypeExpr {"params":[],"where_predicates":[]}
+signature witforge::model::TypeExpr::FixedLengthList.0 {"struct_field":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"generic":"Self"}}],"constraints":[]}}}}}
+signature witforge::model::TypeExpr::FixedLengthList.1 {"struct_field":{"primitive":"u32"}}
 signature witforge::model::TypeExpr::List.0 {"struct_field":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"generic":"Self"}}],"constraints":[]}}}}}
+signature witforge::model::TypeExpr::Map.0 {"struct_field":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"generic":"Self"}}],"constraints":[]}}}}}
+signature witforge::model::TypeExpr::Map.1 {"struct_field":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"generic":"Self"}}],"constraints":[]}}}}}
 signature witforge::model::TypeExpr::Named.0 {"struct_field":{"resolved_path":{"path":"QualifiedName","args":null}}}
 signature witforge::model::TypeExpr::Option.0 {"struct_field":{"resolved_path":{"path":"Box","args":{"angle_bracketed":{"args":[{"type":{"generic":"Self"}}],"constraints":[]}}}}}
 signature witforge::model::TypeExpr::Result.0 {"struct_field":{"resolved_path":{"path":"ResultExpr","args":null}}}
@@ -1521,16 +1537,21 @@ variant witforge::model::Stability::Unknown
 variant witforge::model::Stability::Unstable
 variant witforge::model::TypeDefKind::Alias
 variant witforge::model::TypeDefKind::Enum
+variant witforge::model::TypeDefKind::FixedLengthList
 variant witforge::model::TypeDefKind::Flags
 variant witforge::model::TypeDefKind::List
+variant witforge::model::TypeDefKind::Map
 variant witforge::model::TypeDefKind::Option
 variant witforge::model::TypeDefKind::Record
 variant witforge::model::TypeDefKind::Result
 variant witforge::model::TypeDefKind::Variant
 variant witforge::model::TypeExpr::Bool
+variant witforge::model::TypeExpr::Char
 variant witforge::model::TypeExpr::F32
 variant witforge::model::TypeExpr::F64
+variant witforge::model::TypeExpr::FixedLengthList
 variant witforge::model::TypeExpr::List
+variant witforge::model::TypeExpr::Map
 variant witforge::model::TypeExpr::Named
 variant witforge::model::TypeExpr::Option
 variant witforge::model::TypeExpr::Result

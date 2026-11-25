@@ -386,11 +386,17 @@ fn definition_schema(
                 type_schema(model, interface, &item, root_major, dep_layout, draft)?
             )
         }
+        TypeDefKind::FixedLengthList(element, len) => fixed_list_schema(
+            model, interface, element, *len, root_major, dep_layout, draft,
+        )?,
         TypeDefKind::Option(payload) => {
             option_schema(model, interface, payload, root_major, dep_layout, draft)?
         }
         TypeDefKind::Result(result) => {
             result_schema(model, interface, result, root_major, dep_layout, draft)?
+        }
+        TypeDefKind::Map(key, value) => {
+            map_schema(model, interface, key, value, root_major, dep_layout, draft)?
         }
     };
     Ok(with_metadata(&def.docs, &def.stability, schema))
@@ -428,6 +434,7 @@ fn type_schema(
             "{\"type\":\"number\",\"minimum\":-3.4028235e38,\"maximum\":3.4028235e38}".to_string(),
         ),
         TypeExpr::F64 => Ok("{\"type\":\"number\"}".to_string()),
+        TypeExpr::Char => Ok("{\"type\":\"string\",\"minLength\":1,\"maxLength\":1}".to_string()),
         TypeExpr::String => Ok("{\"type\":\"string\"}".to_string()),
         TypeExpr::Named(name) => {
             if let Some((namespace, package)) = name.package() {
@@ -469,13 +476,77 @@ fn type_schema(
                 type_schema(model, interface, &item, root_major, dep_layout, draft)?
             ))
         }
+        TypeExpr::FixedLengthList(element, len) => fixed_list_schema(
+            model, interface, element, *len, root_major, dep_layout, draft,
+        ),
         TypeExpr::Option(payload) => {
             option_schema(model, interface, payload, root_major, dep_layout, draft)
         }
         TypeExpr::Result(result) => {
             result_schema(model, interface, result, root_major, dep_layout, draft)
         }
+        TypeExpr::Map(key, value) => {
+            map_schema(model, interface, key, value, root_major, dep_layout, draft)
+        }
     }
+}
+
+fn fixed_list_schema(
+    model: &Model,
+    interface: &Interface,
+    element: &TypeExpr,
+    len: u32,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
+) -> Result<String> {
+    if len == 0 || len > crate::model::MAX_FIXED_LIST_LEN {
+        anyhow::bail!(
+            "fixed-length list length `{len}` must be between 1 and {}",
+            crate::model::MAX_FIXED_LIST_LEN
+        );
+    }
+    let item = if model.resolves_to_u8(element) {
+        TypeExpr::U8
+    } else {
+        element.clone()
+    };
+    Ok(format!(
+        "{{\"type\":\"array\",\"items\":{},\"minItems\":{len},\"maxItems\":{len}}}",
+        type_schema(model, interface, &item, root_major, dep_layout, draft)?
+    ))
+}
+
+fn map_schema(
+    model: &Model,
+    interface: &Interface,
+    key: &TypeExpr,
+    value: &TypeExpr,
+    root_major: u64,
+    dep_layout: Option<&DepLayout>,
+    draft: JsonSchemaDraft,
+) -> Result<String> {
+    let value_schema = type_schema(model, interface, value, root_major, dep_layout, draft)?;
+    let property_names = match key {
+        TypeExpr::String => None,
+        TypeExpr::Bool => Some("\"propertyNames\":{\"enum\":[\"false\",\"true\"]}"),
+        TypeExpr::Char => Some("\"propertyNames\":{\"minLength\":1,\"maxLength\":1}"),
+        TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::U64 => {
+            Some("\"propertyNames\":{\"pattern\":\"^(0|[1-9][0-9]*)$\"}")
+        }
+        TypeExpr::S8 | TypeExpr::S16 | TypeExpr::S32 | TypeExpr::S64 => {
+            Some("\"propertyNames\":{\"pattern\":\"^(0|-?[1-9][0-9]*)$\"}")
+        }
+        _ => anyhow::bail!(
+            "unsupported map key type in JSON Schema emitter; map keys must be `bool`, an integer, `char`, or `string`"
+        ),
+    };
+    Ok(match property_names {
+        Some(prop_names) => {
+            format!("{{\"type\":\"object\",{prop_names},\"additionalProperties\":{value_schema}}}")
+        }
+        None => format!("{{\"type\":\"object\",\"additionalProperties\":{value_schema}}}"),
+    })
 }
 
 fn option_schema(

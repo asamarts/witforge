@@ -28,14 +28,14 @@ pub(crate) fn needs_allow_type_complexity(ty: &str) -> bool {
     let mut generic_count = 0usize;
     for ch in ty.chars() {
         match ch {
-            '<' | '(' => {
+            '<' | '(' | '[' => {
                 depth += 1;
                 max_depth = max_depth.max(depth);
-                if ch == '<' {
+                if matches!(ch, '<' | '[') {
                     generic_count += 1;
                 }
             }
-            '>' | ')' => {
+            '>' | ')' | ']' => {
                 depth = depth.saturating_sub(1);
             }
             _ => {}
@@ -96,6 +96,22 @@ pub(crate) fn fmt_type(
         }
         let _ = write!(out, "{close_prefix})");
         return out;
+    }
+    // Array type `[Elem; N]`
+    if ty.starts_with('[')
+        && ty.ends_with(']')
+        && let Some(semi) = find_top_level_char(&ty[1..ty.len() - 1], ';')
+    {
+        let inner = &ty[1..ty.len() - 1];
+        let elem = inner[..semi].trim();
+        let len_str = inner[semi + 1..].trim();
+        let formatted_elem = fmt_type(
+            elem,
+            indent,
+            first_line_used + 1,
+            len_str.len() + 3 + suffix_len,
+        );
+        return format!("[{formatted_elem}; {len_str}]");
     }
     // Generic path `Head<Arg1, Arg2>`
     if let Some(open) = find_top_level_char(ty, '<')
@@ -614,8 +630,9 @@ pub(crate) fn fmt_let_call(
 fn find_top_level_char(text: &str, needle: char) -> Option<usize> {
     let mut angle = 0usize;
     let mut paren = 0usize;
+    let mut bracket = 0usize;
     for (idx, ch) in text.char_indices() {
-        if angle == 0 && paren == 0 && ch == needle {
+        if angle == 0 && paren == 0 && bracket == 0 && ch == needle {
             return Some(idx);
         }
         match ch {
@@ -623,6 +640,8 @@ fn find_top_level_char(text: &str, needle: char) -> Option<usize> {
             '>' => angle = angle.saturating_sub(1),
             '(' => paren += 1,
             ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
             _ => {}
         }
     }
@@ -633,6 +652,7 @@ fn split_top_level(text: &str, sep: char) -> Option<Vec<&str>> {
     let mut parts = Vec::new();
     let mut angle = 0usize;
     let mut paren = 0usize;
+    let mut bracket = 0usize;
     let mut start = 0;
     for (idx, ch) in text.char_indices() {
         match ch {
@@ -640,14 +660,16 @@ fn split_top_level(text: &str, sep: char) -> Option<Vec<&str>> {
             '>' => angle = angle.saturating_sub(1),
             '(' => paren += 1,
             ')' => paren = paren.saturating_sub(1),
-            c if c == sep && angle == 0 && paren == 0 => {
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            c if c == sep && angle == 0 && paren == 0 && bracket == 0 => {
                 parts.push(&text[start..idx]);
                 start = idx + c.len_utf8();
             }
             _ => {}
         }
     }
-    if angle != 0 || paren != 0 {
+    if angle != 0 || paren != 0 || bracket != 0 {
         return None;
     }
     parts.push(&text[start..]);
