@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Opt-in float-free `Eq`/`Hash` derives and `convert.rs` `TryFrom` impls (`W11-045`):** Added
+  `RustOptions::with_eq_hash` (`--eq-hash`/`--no-eq-hash`, `rust.eq-hash = true`) to derive `Eq`
+  and `Hash` on generated records, variants, enums, and flags whose constituent types transitively
+  contain no `f32`/`f64` (including across aliases, containers, and dependencies), and
+  `RustOptions::with_try_from` (`--try-from`/`--no-try-from`, `rust.try-from = true`) to emit
+  `TryFrom<&From>` and `TryFrom<From>` impls in `convert.rs` for converted nominal types (skipping
+  type aliases and structural aliases for Rust orphan/coherence safety). Evaluated and declined
+  `From`/`TryFrom` impls for protobuf `glue` due to Rust orphan-rule constraints (`E0117`) across
+  separate `plain`/`proto`/`glue` crates (`docs/design/emitters.md` section 7.9).
 - **Unreleased `deps/` sync helper (`W11-047`):** Added `witforge deps sync [<WIT_ROOT>]
   [--from VERSION] [--check] [--released PATH] [--config | --no-config] [--project NAME]` to
   atomically synchronize vendored `deps/` trees across unreleased versions within each major while

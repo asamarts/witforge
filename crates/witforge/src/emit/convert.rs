@@ -51,7 +51,18 @@ pub(crate) fn plan(versions: &[Version]) -> Result<Option<String>> {
 }
 
 /// Plan `convert.rs` for `versions`, optionally emitting `#![no_std]` + `alloc` paths.
+#[allow(dead_code)]
 pub(crate) fn plan_with_no_std(versions: &[Version], no_std: bool) -> Result<Option<String>> {
+    plan_with_options(versions, no_std, false)
+}
+
+/// Plan `convert.rs` for `versions`, optionally emitting `#![no_std]` + `alloc` paths and
+/// `TryFrom` trait impls for converted nominal types.
+pub(crate) fn plan_with_options(
+    versions: &[Version],
+    no_std: bool,
+    try_from: bool,
+) -> Result<Option<String>> {
     let pairs: Vec<(&Version, &Version)> = versions
         .windows(2)
         .map(|pair| (&pair[0], &pair[1]))
@@ -128,11 +139,27 @@ pub(crate) fn plan_with_no_std(versions: &[Version], no_std: bool) -> Result<Opt
             .get(&(new.model.package.version, old.model.package.version))
             .unwrap_or(&empty_omitted);
         writeln!(out)?;
-        emit_pair(&mut out, old, new, Direction::Forward, fwd_omitted, no_std)
-            .map_err(|err| attach_pair_locations(err, new, old))?;
+        emit_pair(
+            &mut out,
+            old,
+            new,
+            Direction::Forward,
+            fwd_omitted,
+            no_std,
+            try_from,
+        )
+        .map_err(|err| attach_pair_locations(err, new, old))?;
         writeln!(out)?;
-        emit_pair(&mut out, new, old, Direction::Reverse, rev_omitted, no_std)
-            .map_err(|err| attach_pair_locations(err, old, new))?;
+        emit_pair(
+            &mut out,
+            new,
+            old,
+            Direction::Reverse,
+            rev_omitted,
+            no_std,
+            try_from,
+        )
+        .map_err(|err| attach_pair_locations(err, old, new))?;
     }
     Ok(Some(out))
 }
@@ -619,6 +646,7 @@ fn emit_pair(
     direction: Direction,
     omitted: &BTreeSet<String>,
     no_std: bool,
+    try_from: bool,
 ) -> Result<()> {
     let source_module = version_module_name(&source.model);
     let target_module = version_module_name(&target.model);
@@ -689,6 +717,7 @@ fn emit_pair(
                 target_def,
                 direction,
                 no_std,
+                try_from,
             )?;
         }
         writeln!(out, "    }}")?;
@@ -758,6 +787,7 @@ fn emit_function(
     target_def: &TypeDef,
     direction: Direction,
     no_std: bool,
+    try_from: bool,
 ) -> Result<()> {
     let function = rust_ident(&snake_case(&source_def.name), "conversion function")?;
     let source_type = rust_type(source_interface, &source_def.name, "__witforge_from")?;
@@ -805,6 +835,57 @@ fn emit_function(
         no_std,
     )?;
     out.push_str(&body);
+    writeln!(out, "        }}")?;
+    let is_nominal = matches!(
+        (&source_def.kind, &target_def.kind),
+        (TypeDefKind::Record(_), TypeDefKind::Record(_))
+            | (TypeDefKind::Variant(_), TypeDefKind::Variant(_))
+            | (TypeDefKind::Enum(_), TypeDefKind::Enum(_))
+            | (TypeDefKind::Flags(_), TypeDefKind::Flags(_))
+    );
+    if try_from && is_nominal {
+        emit_try_from_impl(
+            out,
+            &format!("&{source_type}"),
+            &target_type,
+            &function,
+            "value",
+        )?;
+        emit_try_from_impl(out, &source_type, &target_type, &function, "&value")?;
+    }
+    Ok(())
+}
+
+fn emit_try_from_impl(
+    out: &mut String,
+    from_type: &str,
+    target_type: &str,
+    function: &str,
+    arg_expr: &str,
+) -> Result<()> {
+    writeln!(out)?;
+    let single = format!("        impl ::core::convert::TryFrom<{from_type}> for {target_type} {{");
+    let trait_line = format!("        impl ::core::convert::TryFrom<{from_type}>");
+    let for_line = format!("            for {target_type}");
+    if single.len() <= 100 || trait_line.len() > 100 || for_line.len() > 100 {
+        writeln!(out, "{single}")?;
+    } else {
+        writeln!(out, "{trait_line}")?;
+        writeln!(out, "{for_line}")?;
+        writeln!(out, "        {{")?;
+    }
+    writeln!(out, "            type Error = {ERROR};")?;
+    writeln!(out)?;
+    let fn_sig = rustfmt::fmt_fn_sig(
+        12,
+        "fn try_from",
+        &[format!("value: {from_type}")],
+        Some("::core::result::Result<Self, Self::Error>"),
+        " {",
+    );
+    writeln!(out, "{fn_sig}")?;
+    writeln!(out, "                {function}({arg_expr})")?;
+    writeln!(out, "            }}")?;
     writeln!(out, "        }}")?;
     Ok(())
 }

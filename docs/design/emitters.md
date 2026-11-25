@@ -1460,6 +1460,13 @@ Arity rules:
 - JSON helpers; JSON stays on the pbjson/prost side.
 - A leaner glue surface that skips structural aliases was evaluated for 1.0 and declined; no
   consumer requested it and the complete conversion surface is already stable and tested.
+- `From`/`TryFrom` trait impls for protobuf glue (`W11-045`) were evaluated and **declined**:
+  glue is explicitly designed to allow `plain`, `proto`, and `glue` to reside in separate crates
+  (`--plain-root other_crate::... --proto-root proto_crate::...`), where `impl From<&Plain> for
+  Proto` and `impl TryFrom<Proto> for Plain` violate Rust's orphan rules (`E0117` / RFC 2451).
+  Revisit only if consumers explicitly require a crate-local-only glue mode where both roots are
+  guaranteed to live under `crate::`. Opt-in `TryFrom` impls ARE provided for `convert.rs` (section
+  9.1), where all version modules reside in the same crate.
 
 ## 8. Deferred and pre-golive
 
@@ -1522,6 +1529,15 @@ comment notes what `#[non_exhaustive]` does and does not do: it binds only crate
 the one that includes the generated module, whereas inside the including crate it has no effect,
 so a `match` on `ConversionError` there needs a wildcard arm and struct patterns should include
 `..`.
+
+- Opt-in `TryFrom` impls (`W11-045`): when `--try-from` / `rust.try-from = true` /
+  `RustOptions::with_try_from(true)` is enabled, `convert.rs` additionally emits
+  `impl ::core::convert::TryFrom<&From> for To` and `impl ::core::convert::TryFrom<From> for To`
+  (with `type Error = ConversionError;`) delegating to the generated conversion function for every
+  converted **nominal** local type (`record`, `variant`, `enum`, `flags`). Aliases, `use` aliases,
+  and named structural type aliases (`list`, `list<T, N>`, `option`, `result`, `map`) are
+  deliberately skipped to avoid Rust orphan-rule (`E0117`) and overlapping-impl (`E0119`) errors,
+  and cross-major omitted types emit no `TryFrom` impl in the omitted direction.
 
 ### 9.2 Old-to-new rules
 
@@ -1818,7 +1834,13 @@ forbid-unstable-in-release = true
     without modifying the `released` manifest. CLI flags `--forbid-unstable` and `--allow-unstable`
     override the configured value.
 - `rust`, `proto`, `schema`, and `glue` sections are optional. Each output section has an `out`
-  path; `rust` also has optional `serde = true|false` and `no-std = true|false`; `schema` also has
+  path; `rust` also has optional `serde = true|false`, `no-std = true|false`,
+  `eq-hash = true|false` (derives `Eq, Hash` on generated records, variants, enums, and flags whose
+  constituent types transitively contain no `f32`/`f64`; note that adding a float field to a
+  previously float-free type in a newer minor removes `Eq`/`Hash` on that newer version's type, and
+  enabling `eq-hash` changes generated derives for all live per-version modules), and
+  `try-from = true|false` (emits `TryFrom<&From>` and `TryFrom<From>` impls in `convert.rs` for
+  converted nominal types); `schema` also has
   optional `draft = "7" | "2020-12"` (default `"7"`); `glue` also has optional `plain-root`,
   `proto-root` strings, and `no-std = true|false`. When `no-std = true` (or `--no-std` on the CLI,
   overridden by `--std`), generated Rust, `convert.rs`, and glue emit `::alloc::string::String`,
@@ -1856,8 +1878,9 @@ forbid-unstable-in-release = true
   invocation (`witforge rust <root> --out ...`) are both valid. An explicitly passed `--config`
   file is validated even when CLI flags override all of its values.
 - `--serde` and `--no-serde` override `rust.serde`; `--no-std` and `--std` override `rust.no-std`
-  and `glue.no-std`; `--draft` overrides `schema.draft`; `--check=<views>` overrides
-  `policy.diff-check`; `--forbid-unstable` and `--allow-unstable` override
+  and `glue.no-std`; `--eq-hash` and `--no-eq-hash` override `rust.eq-hash`; `--try-from` and
+  `--no-try-from` override `rust.try-from`; `--draft` overrides `schema.draft`; `--check=<views>`
+  overrides `policy.diff-check`; `--forbid-unstable` and `--allow-unstable` override
   `policy.forbid-unstable-in-release`. Bare `--check` remains an action flag, not a boolean
   config key; `policy.diff-check` only selects its default views when `--check` is passed.
 - When `witforge diff ... --check` or `witforge release <wit-dir>` runs without explicit

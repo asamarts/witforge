@@ -1510,3 +1510,79 @@ forbid-unstable-in-release = true
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn eq_hash_and_try_from_config_and_cli_overrides_work() {
+    let root = project("eq-hash-try-from");
+    let config = write_config(
+        &root,
+        r#"
+version = 1
+
+[project.demo]
+root = "wit"
+
+[project.demo.rust]
+out = "generated/rust"
+eq-hash = true
+try-from = true
+"#,
+    );
+
+    // 1. Config enables both `eq-hash` and `try-from`.
+    let gen_ok = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(gen_ok.status.success(), "{gen_ok:?}");
+    let v01 = fs::read_to_string(root.join("generated/rust/v0_1.rs")).unwrap();
+    assert!(v01.contains("PartialEq, Eq, Hash"), "{v01}");
+    let conv = fs::read_to_string(root.join("generated/rust/convert.rs")).unwrap();
+    assert!(conv.contains("impl ::core::convert::TryFrom<"), "{conv}");
+
+    // 2. `--no-eq-hash` and `--no-try-from` override config cleanly.
+    let no_flags = witforge()
+        .current_dir(&root)
+        .args(["rust", "--config"])
+        .arg(&config)
+        .args([
+            "--no-eq-hash",
+            "--no-try-from",
+            "--out",
+            "generated/rust-plain",
+        ])
+        .output()
+        .unwrap();
+    assert!(no_flags.status.success(), "{no_flags:?}");
+    let plain_v01 = fs::read_to_string(root.join("generated/rust-plain/v0_1.rs")).unwrap();
+    assert!(!plain_v01.contains("Eq, Hash"), "{plain_v01}");
+    let plain_conv = fs::read_to_string(root.join("generated/rust-plain/convert.rs")).unwrap();
+    assert!(!plain_conv.contains("TryFrom"), "{plain_conv}");
+
+    // 3. Direct CLI `--eq-hash --try-from` works without config.
+    let cli_flags = witforge()
+        .current_dir(&root)
+        .args([
+            "rust",
+            "wit",
+            "--out",
+            "generated/rust-cli",
+            "--eq-hash",
+            "--try-from",
+            "--no-config",
+        ])
+        .output()
+        .unwrap();
+    assert!(cli_flags.status.success(), "{cli_flags:?}");
+    let cli_v01 = fs::read_to_string(root.join("generated/rust-cli/v0_1.rs")).unwrap();
+    assert!(cli_v01.contains("PartialEq, Eq, Hash"), "{cli_v01}");
+    let cli_conv = fs::read_to_string(root.join("generated/rust-cli/convert.rs")).unwrap();
+    assert!(
+        cli_conv.contains("impl ::core::convert::TryFrom<"),
+        "{cli_conv}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

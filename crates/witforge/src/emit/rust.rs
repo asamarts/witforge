@@ -19,6 +19,7 @@ use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 /// Options controlling plain Rust and `convert.rs` code generation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RustOptions {
     /// Derive `serde::Serialize` and `serde::Deserialize` on generated records, enums, variants,
     /// and flags (default `false`).
@@ -27,15 +28,28 @@ pub struct RustOptions {
     /// `::alloc::vec::Vec`, `::core::option::Option`, `::core::result::Result`, and
     /// `::core::error::Error`) instead of `::std::*` (default `false`).
     pub no_std: bool,
+    /// Derive `Eq` and `Hash` on generated records, variants, enums, and flags whose constituent
+    /// types transitively contain no `f32` or `f64` fields (default `false`).
+    ///
+    /// Note that adding a floating-point field to a previously float-free type in a later minor
+    /// removes `Eq` and `Hash` on that newer version's generated type.
+    pub eq_hash: bool,
+    /// Emit `::core::convert::TryFrom<&From>` and `::core::convert::TryFrom<From>` impls in
+    /// `convert.rs` for converted nominal types (`record`, `variant`, `enum`, `flags`), delegating
+    /// to the generated conversion functions (default `false`).
+    pub try_from: bool,
 }
 
 impl RustOptions {
-    /// Create default Rust emission options (`serde: false`, `no_std: false`).
+    /// Create default Rust emission options (`serde: false`, `no_std: false`, `eq_hash: false`,
+    /// `try_from: false`).
     #[must_use]
     pub const fn new() -> Self {
         Self {
             serde: false,
             no_std: false,
+            eq_hash: false,
+            try_from: false,
         }
     }
 
@@ -50,6 +64,20 @@ impl RustOptions {
     #[must_use]
     pub const fn with_no_std(mut self, no_std: bool) -> Self {
         self.no_std = no_std;
+        self
+    }
+
+    /// Enable or disable float-free `Eq` and `Hash` derives.
+    #[must_use]
+    pub const fn with_eq_hash(mut self, eq_hash: bool) -> Self {
+        self.eq_hash = eq_hash;
+        self
+    }
+
+    /// Enable or disable `TryFrom` trait impls in `convert.rs` for nominal types.
+    #[must_use]
+    pub const fn with_try_from(mut self, try_from: bool) -> Self {
+        self.try_from = try_from;
         self
     }
 }
@@ -174,7 +202,9 @@ pub(crate) fn plan_versions_with_options(
             format!("pub mod {module};"),
         ));
     }
-    if let Some(converted) = super::convert::plan_with_no_std(versions, options.no_std)? {
+    if let Some(converted) =
+        super::convert::plan_with_options(versions, options.no_std, options.try_from)?
+    {
         files.insert("convert.rs", converted)?;
         module_entries.push((
             "Version-to-version adapters.".to_string(),
@@ -739,15 +769,108 @@ fn dependency_model(
     }
 }
 
-fn write_derives(out: &mut String, indent: usize, serde: bool) -> Result<()> {
+fn is_float_free_def(
+    model: &Model,
+    context: Option<&crate::model::Dependency>,
+    def: &TypeDef,
+    depth: usize,
+) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    match &def.kind {
+        TypeDefKind::Enum(_) | TypeDefKind::Flags(_) => true,
+        TypeDefKind::Record(fields) => fields
+            .iter()
+            .all(|field| is_float_free_expr(model, context, &field.ty, depth + 1)),
+        TypeDefKind::Variant(cases) => cases.iter().all(|case| {
+            case.payload
+                .as_ref()
+                .is_none_or(|payload| is_float_free_expr(model, context, payload, depth + 1))
+        }),
+        TypeDefKind::Alias(target)
+        | TypeDefKind::List(target)
+        | TypeDefKind::FixedLengthList(target, _)
+        | TypeDefKind::Option(target) => is_float_free_expr(model, context, target, depth + 1),
+        TypeDefKind::Map(key, value) => {
+            is_float_free_expr(model, context, key, depth + 1)
+                && is_float_free_expr(model, context, value, depth + 1)
+        }
+        TypeDefKind::Result(result) => {
+            result
+                .ok
+                .as_ref()
+                .is_none_or(|ok| is_float_free_expr(model, context, ok, depth + 1))
+                && result
+                    .err
+                    .as_ref()
+                    .is_none_or(|err| is_float_free_expr(model, context, err, depth + 1))
+        }
+    }
+}
+
+fn is_float_free_expr(
+    model: &Model,
+    context: Option<&crate::model::Dependency>,
+    expr: &TypeExpr,
+    depth: usize,
+) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    match expr {
+        TypeExpr::F32 | TypeExpr::F64 => false,
+        TypeExpr::Bool
+        | TypeExpr::U8
+        | TypeExpr::U16
+        | TypeExpr::U32
+        | TypeExpr::U64
+        | TypeExpr::S8
+        | TypeExpr::S16
+        | TypeExpr::S32
+        | TypeExpr::S64
+        | TypeExpr::Char
+        | TypeExpr::String => true,
+        TypeExpr::List(elem) | TypeExpr::FixedLengthList(elem, _) | TypeExpr::Option(elem) => {
+            is_float_free_expr(model, context, elem, depth + 1)
+        }
+        TypeExpr::Map(key, value) => {
+            is_float_free_expr(model, context, key, depth + 1)
+                && is_float_free_expr(model, context, value, depth + 1)
+        }
+        TypeExpr::Result(result) => {
+            result
+                .ok
+                .as_ref()
+                .is_none_or(|ok| is_float_free_expr(model, context, ok, depth + 1))
+                && result
+                    .err
+                    .as_ref()
+                    .is_none_or(|err| is_float_free_expr(model, context, err, depth + 1))
+        }
+        TypeExpr::Named(name) => {
+            let Some((resolved_ctx, def)) = model.type_def_in(context, name) else {
+                return false;
+            };
+            is_float_free_def(model, resolved_ctx, def, depth + 1)
+        }
+    }
+}
+
+fn write_derives(out: &mut String, indent: usize, serde: bool, eq_hash: bool) -> Result<()> {
     let prefix = " ".repeat(indent);
-    if serde {
-        writeln!(
+    match (eq_hash, serde) {
+        (true, true) => writeln!(
+            out,
+            "{prefix}#[derive(Debug, Clone, PartialEq, Eq, Hash, ::serde::Serialize, \
+             ::serde::Deserialize)]"
+        )?,
+        (true, false) => writeln!(out, "{prefix}#[derive(Debug, Clone, PartialEq, Eq, Hash)]")?,
+        (false, true) => writeln!(
             out,
             "{prefix}#[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]"
-        )?;
-    } else {
-        writeln!(out, "{prefix}#[derive(Debug, Clone, PartialEq)]")?;
+        )?,
+        (false, false) => writeln!(out, "{prefix}#[derive(Debug, Clone, PartialEq)]")?,
     }
     Ok(())
 }
@@ -768,7 +891,8 @@ fn emit_record(
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
     let field_prefix = " ".repeat(indent + 4);
-    write_derives(out, indent, options.serde)?;
+    let eq_hash = options.eq_hash && is_float_free_def(model, None, def, 0);
+    write_derives(out, indent, options.serde, eq_hash)?;
     if fields.is_empty() {
         writeln!(out, "{prefix}pub struct {name} {{}}")?;
         return Ok(());
@@ -872,7 +996,8 @@ fn emit_type_def(
             )?;
         }
         TypeDefKind::Variant(cases) => {
-            write_derives(out, indent, options.serde)?;
+            let eq_hash = options.eq_hash && is_float_free_def(model, None, def, 0);
+            write_derives(out, indent, options.serde, eq_hash)?;
             if has_large_variant_disparity(model, cases) {
                 writeln!(out, "{prefix}#[allow(clippy::large_enum_variant)]")?;
             }
@@ -953,7 +1078,7 @@ fn emit_type_def(
             writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Enum(cases) => {
-            write_derives(out, indent, options.serde)?;
+            write_derives(out, indent, options.serde, options.eq_hash)?;
             if cases.is_empty() {
                 writeln!(out, "{prefix}pub enum {name} {{}}")?;
                 return Ok(());
@@ -990,7 +1115,7 @@ fn emit_type_def(
             writeln!(out, "{prefix}}}")?;
         }
         TypeDefKind::Flags(flags) => {
-            write_derives(out, indent, options.serde)?;
+            write_derives(out, indent, options.serde, options.eq_hash)?;
             if flags.is_empty() {
                 writeln!(out, "{prefix}pub struct {name} {{}}")?;
                 return Ok(());

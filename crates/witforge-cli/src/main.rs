@@ -5,7 +5,8 @@
 //!                [--config PATH | --no-config] [--project NAME]
 //! witforge lock  <wit-dir> [--lock PATH] [--first | --against PATH] [--released PATH]
 //! witforge rust  [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
-//!                [--serde | --no-serde] [--no-std | --std] [--check] [--diff] [--released PATH]
+//!                [--serde | --no-serde] [--no-std | --std] [--eq-hash | --no-eq-hash]
+//!                [--try-from | --no-try-from] [--check] [--diff] [--released PATH]
 //! witforge proto [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
 //! witforge schema [<wit-root>] [--out DIR] [--draft 7|2020-12] [--config PATH | --no-config]
@@ -155,6 +156,18 @@ struct RustOptions {
     /// Emit default `std` Rust paths, overriding a configuration-file `no-std = true` setting.
     #[arg(long = "std", conflicts_with = "no_std")]
     std_mode: bool,
+    /// Derive `Eq` and `Hash` on generated float-free records, variants, enums, and flags.
+    #[arg(long = "eq-hash", conflicts_with = "no_eq_hash")]
+    eq_hash: bool,
+    /// Do not derive `Eq` and `Hash`, overriding a configuration-file `eq-hash = true` setting.
+    #[arg(long = "no-eq-hash", conflicts_with = "eq_hash")]
+    no_eq_hash: bool,
+    /// Emit `TryFrom` trait impls for converted nominal types in `convert.rs`.
+    #[arg(long = "try-from", conflicts_with = "no_try_from")]
+    try_from: bool,
+    /// Do not emit `TryFrom` impls, overriding a configuration-file `try-from = true` setting.
+    #[arg(long = "no-try-from", conflicts_with = "try_from")]
+    no_try_from: bool,
     /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
     #[arg(long, value_name = "PATH")]
     released: Option<PathBuf>,
@@ -349,6 +362,18 @@ struct GenerateOptions {
     /// Emit default `std` paths across configured Rust and glue outputs, overriding config.
     #[arg(long = "std", conflicts_with = "no_std")]
     std_mode: bool,
+    /// Derive `Eq` and `Hash` on float-free generated Rust types, overriding config.
+    #[arg(long = "eq-hash", conflicts_with = "no_eq_hash")]
+    eq_hash: bool,
+    /// Do not derive `Eq` and `Hash` on generated Rust types, overriding config.
+    #[arg(long = "no-eq-hash", conflicts_with = "eq_hash")]
+    no_eq_hash: bool,
+    /// Emit `TryFrom` trait impls in `convert.rs` for nominal types, overriding config.
+    #[arg(long = "try-from", conflicts_with = "no_try_from")]
+    try_from: bool,
+    /// Do not emit `TryFrom` trait impls in `convert.rs`, overriding config.
+    #[arg(long = "no-try-from", conflicts_with = "try_from")]
+    no_try_from: bool,
     /// JSON Schema dialect for configured schema outputs (`7` or `2020-12`), overriding config.
     #[arg(long, value_name = "DRAFT")]
     draft: Option<String>,
@@ -567,6 +592,12 @@ struct RustConfig {
     /// Emit `#![no_std]` + `alloc` compatible paths instead of `::std::*`.
     #[serde(rename = "no-std")]
     no_std: Option<bool>,
+    /// Derive `Eq` and `Hash` on float-free generated records, variants, enums, and flags.
+    #[serde(rename = "eq-hash")]
+    eq_hash: Option<bool>,
+    /// Emit `TryFrom` trait impls for converted nominal types in `convert.rs`.
+    #[serde(rename = "try-from")]
+    try_from: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -606,9 +637,12 @@ struct PathOverrides {
     proto_root: Option<String>,
     serde: Option<bool>,
     no_std: Option<bool>,
+    eq_hash: Option<bool>,
+    try_from: Option<bool>,
     schema_draft: Option<emit::json_schema::JsonSchemaDraft>,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct ResolvedPaths {
     root: PathBuf,
     out: PathBuf,
@@ -617,6 +651,8 @@ struct ResolvedPaths {
     proto_root: Option<String>,
     serde: bool,
     no_std: bool,
+    eq_hash: bool,
+    try_from: bool,
     schema_draft: emit::json_schema::JsonSchemaDraft,
 }
 
@@ -723,6 +759,8 @@ fn resolve_paths(
         proto_root,
         serde,
         no_std,
+        eq_hash,
+        try_from,
         schema_draft,
     } = overrides;
     let cli_complete = root.is_some()
@@ -766,6 +804,8 @@ fn resolve_paths(
             proto_root,
             serde: serde.unwrap_or(false),
             no_std: no_std.unwrap_or(false),
+            eq_hash: eq_hash.unwrap_or(false),
+            try_from: try_from.unwrap_or(false),
             schema_draft: schema_draft.unwrap_or_default(),
         });
     };
@@ -847,6 +887,12 @@ fn resolve_paths(
             Emitter::Proto | Emitter::Schema => None,
         })
         .unwrap_or(false);
+    let eq_hash = eq_hash
+        .or_else(|| project.rust.as_ref().and_then(|config| config.eq_hash))
+        .unwrap_or(false);
+    let try_from = try_from
+        .or_else(|| project.rust.as_ref().and_then(|config| config.try_from))
+        .unwrap_or(false);
     let config_schema_draft = match project
         .schema
         .as_ref()
@@ -868,6 +914,8 @@ fn resolve_paths(
         proto_root,
         serde,
         no_std,
+        eq_hash,
+        try_from,
         schema_draft,
     })
 }
@@ -1490,6 +1538,8 @@ fn regenerate_command(
     proto_root: Option<&str>,
     serde_flag: Option<bool>,
     no_std_flag: Option<bool>,
+    eq_hash_flag: Option<bool>,
+    try_from_flag: Option<bool>,
     schema_draft: Option<&str>,
 ) -> String {
     let mut command = format!("witforge {verb}");
@@ -1523,6 +1573,16 @@ fn regenerate_command(
         Some(false) => command.push_str(" --std"),
         None => {}
     }
+    match eq_hash_flag {
+        Some(true) => command.push_str(" --eq-hash"),
+        Some(false) => command.push_str(" --no-eq-hash"),
+        None => {}
+    }
+    match try_from_flag {
+        Some(true) => command.push_str(" --try-from"),
+        Some(false) => command.push_str(" --no-try-from"),
+        None => {}
+    }
     if let Some(draft) = schema_draft {
         let _ = write!(command, " --draft {}", shell_quote(Path::new(draft)));
     }
@@ -1553,6 +1613,20 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
     } else {
         None
     };
+    let eq_hash_override = if options.eq_hash {
+        Some(true)
+    } else if options.no_eq_hash {
+        Some(false)
+    } else {
+        None
+    };
+    let try_from_override = if options.try_from {
+        Some(true)
+    } else if options.no_try_from {
+        Some(false)
+    } else {
+        None
+    };
     let paths = resolve_paths(
         Emitter::Rust,
         &options.config,
@@ -1564,13 +1638,17 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             proto_root: None,
             serde: serde_override,
             no_std: no_std_override,
+            eq_hash: eq_hash_override,
+            try_from: try_from_override,
             schema_draft: None,
         },
     )?;
     guard_output_root(&paths)?;
     let rust_opts = emit::rust::RustOptions::new()
         .with_serde(paths.serde)
-        .with_no_std(paths.no_std);
+        .with_no_std(paths.no_std)
+        .with_eq_hash(paths.eq_hash)
+        .with_try_from(paths.try_from);
     let files = emit::rust::plan_with_options(&paths.root, paths.released.as_deref(), &rust_opts)?;
     let regen = regenerate_command(
         "rust",
@@ -1582,6 +1660,8 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         None,
         serde_override,
         no_std_override,
+        eq_hash_override,
+        try_from_override,
         None,
     );
     run_generator(
@@ -1606,6 +1686,8 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             proto_root: None,
             serde: None,
             no_std: None,
+            eq_hash: None,
+            try_from: None,
             schema_draft: None,
         },
     )?;
@@ -1617,6 +1699,8 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
+        None,
         None,
         None,
         None,
@@ -1650,6 +1734,8 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             proto_root: None,
             serde: None,
             no_std: None,
+            eq_hash: None,
+            try_from: None,
             schema_draft: draft_override,
         },
     )?;
@@ -1666,6 +1752,8 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
+        None,
         None,
         None,
         None,
@@ -1701,6 +1789,8 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             proto_root: options.proto_root.clone(),
             serde: None,
             no_std: no_std_override,
+            eq_hash: None,
+            try_from: None,
             schema_draft: None,
         },
     )?;
@@ -1734,6 +1824,8 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.proto_root.as_deref(),
         None,
         no_std_override,
+        None,
+        None,
         None,
     );
     run_generator(
@@ -2617,6 +2709,20 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
     } else {
         None
     };
+    let eq_hash_override = if options.eq_hash {
+        Some(true)
+    } else if options.no_eq_hash {
+        Some(false)
+    } else {
+        None
+    };
+    let try_from_override = if options.try_from {
+        Some(true)
+    } else if options.no_try_from {
+        Some(false)
+    } else {
+        None
+    };
     if let Some(raw) = options.draft.as_deref() {
         parse_schema_draft(raw, "`--draft`", None)?;
     }
@@ -2678,6 +2784,10 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                         no_serde: serde_override == Some(false),
                         no_std: no_std_override == Some(true),
                         std_mode: no_std_override == Some(false),
+                        eq_hash: eq_hash_override == Some(true),
+                        no_eq_hash: eq_hash_override == Some(false),
+                        try_from: try_from_override == Some(true),
+                        no_try_from: try_from_override == Some(false),
                         released: options.released.clone(),
                         config: ConfigArgs {
                             config: cfg_args.config.clone(),
