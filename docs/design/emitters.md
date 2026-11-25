@@ -922,6 +922,43 @@ particular:
 
 The glue tests in section 6 must cover these rules.
 
+### 4.8 Protobuf Editions 2023 readiness evaluation (`W11-046`)
+
+Protobuf Editions 2023 natively defaults to `features.field_presence = EXPLICIT` and supports
+`option features.enum_type = CLOSED;`, which closely mirror WIT's explicit presence and closed
+enums. An empirical evaluation against the pinned Rust protobuf stack on 2026-11-25 established
+both the target wire-compatibility mapping and four hard ecosystem blockers that **defer** an
+opt-in `--edition 2023` target until upstream catches up:
+
+- **Observed readiness blockers:**
+  1. **`protox` 0.10.0 (`protox-parse` 0.10.0):** rejects `edition = "2023";` at parse time
+     (`expected 'enum', 'extend', 'import', 'message', 'option', 'service', 'package' or ';', but
+     found 'edition'`). `witforge-build` depends on `protox` so consumers can compile generated
+     schemas without a system `protoc`.
+  2. **`prost-types` 0.14.6:** `FileDescriptorProto` lacks the `edition` and `FeatureSet` fields,
+     dropping them as unknown fields when decoding a descriptor set produced by `protoc`.
+  3. **`prost-build` 0.14.6:** panics when compiling a `protoc` (`libprotoc 36.1`) Editions 2023
+     `FileDescriptorSet` at `code_generator/syntax.rs:11:24` (`unknown syntax: editions`).
+  4. **`pbjson-build` 0.9.0:** has no Editions 2023 or `FeatureSet` support.
+- **Wire-compatibility analysis against existing proto3 output:**
+  - Editions 2023 defaults (`field_presence = EXPLICIT`, `repeated_field_encoding = PACKED`,
+    `utf8_validation = VERIFY`, `message_encoding = LENGTH_PREFIXED`, `json_format = ALLOW`) are
+    binary-wire-identical to witforge's proto3 `optional` scalar/string/bytes fields, `repeated`
+    fields, `map<K, V>`, and `oneof` fields.
+  - `flags` boolean fields would require `[features.field_presence = IMPLICIT]` under Editions
+    2023 to preserve proto3 wire parity (omitting `false` on the wire).
+  - `features.enum_type = CLOSED` preserves wire varint encoding, but routes unknown enum values
+    into protobuf unknown fields on decode instead of retaining the raw integer; glue decoding
+    under a future `--edition 2023` mode will need to verify unknown-field handling (or keep
+    `enum_type = OPEN` with glue `UnknownEnumValue` checks) so invalid enum tags are rejected
+    rather than silently dropped.
+- **Revisit trigger:** re-evaluate and implement an opt-in `--edition 2023` target once `protox`,
+  `prost-types`/`prost-build`, and `pbjson-build` all ship stable releases supporting
+  `edition = "2023"` (`features.field_presence` and `features.enum_type`) end-to-end without
+  panicking. `crates/witforge/tests/emit_proto.rs` carries a readiness probe test
+  (`editions_2023_ecosystem_readiness_probe_records_protox_and_prost_blockers`) that trips if a
+  future dependency update lifts these blockers.
+
 ## 5. Output, `--check`, and CLI
 
 ### 5.1 Commands
@@ -932,7 +969,8 @@ witforge check  [<path>] [--lock <path>] [--against <path> | --first]
 witforge lock   <version-dir> [--lock <path>] [--against <path> | --first]
                               [--released <path>]
 witforge rust   [<wit-root>] [--out <dir>] [--config <file> | --no-config] [--project <name>]
-                [--serde | --no-serde] [--no-std | --std] [--check] [--diff] [--released <path>]
+                [--serde | --no-serde] [--no-std | --std] [--eq-hash | --no-eq-hash]
+                [--try-from | --no-try-from] [--check] [--diff] [--released <path>]
                 # also writes convert.rs for adjacent versions
 witforge proto  [<wit-root>] [--out <dir>] [--config <file> | --no-config] [--project <name>]
                              [--check] [--diff] [--released <path>]
@@ -942,14 +980,21 @@ witforge schema [<wit-root>] [--out <dir>] [--draft 7|2020-12]
 witforge glue   [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <path>]
                              [--no-std | --std] [--config <file> | --no-config] [--project <name>]
                              [--check] [--diff] [--released <path>]
+witforge doc    [<wit-root>] [--out <dir>] [--config <file> | --no-config] [--project <name>]
+                             [--check] [--diff] [--released <path>]
 witforge generate [--config <file> | --no-config] [--project <name>] [--check] [--diff]
-                  [--serde | --no-serde] [--no-std | --std] [--draft 7|2020-12] [--released <path>]
-witforge diff   <old> <new> [--check[=<views>]] [--json]
+                  [--serde | --no-serde] [--no-std | --std] [--eq-hash | --no-eq-hash]
+                  [--try-from | --no-try-from] [--draft 7|2020-12] [--released <path>]
+witforge diff   <old> <new> [--check[=<views>]] [--json] [--config <file> | --no-config] [--project <name>]
+witforge diff   --git-base <rev> [<path>] [--check[=<views>]] [--json] [--config <file> | --no-config] [--project <name>]
 witforge inspect [<path>] [--json] [--released <path>] [--config <file> | --no-config] [--project <name>]
 witforge init   [<dir>] [--package <ns:name>] [--serde]
 witforge new-version [<wit-root>] [--major] [--from <version>] [--released <path>]
                      [--config <file> | --no-config] [--project <name>]
-witforge release <wit-dir> [--released <path>] [--config <file> | --no-config] [--project <name>]
+witforge deps sync [<wit-root>] [--from <version>] [--check] [--released <path>]
+                   [--config <file> | --no-config] [--project <name>]
+witforge release <wit-dir> [--released <path>] [--forbid-unstable | --allow-unstable]
+                 [--config <file> | --no-config] [--project <name>]
 witforge retire  <wit-dir> [--released <path>] [--config <file> | --no-config] [--project <name>]
 witforge freeze [<wit-root>] [--released <path>] [--base <rev>]
                 [--config <file> | --no-config] [--project <name>]

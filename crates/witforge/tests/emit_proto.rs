@@ -1277,3 +1277,57 @@ fn wrapper_stability_docs_unused_imports_and_json_name_collisions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+/// Readiness sentinel for `W11-046` (Protobuf Editions 2023).
+///
+/// Empirically verifies the upstream blockers recorded in `docs/design/emitters.md` section 4.8:
+/// `protox 0.10.0` rejects `edition = "2023";` at parse time and `prost-build 0.14.6` panics on a
+/// `FileDescriptorProto` whose `syntax` is `"editions"`. When future dependency upgrades lift
+/// these blockers, this test fails to signal that the `--edition 2023` revisit trigger has fired.
+#[test]
+fn editions_2023_ecosystem_readiness_probe_records_protox_and_prost_blockers() {
+    let base = std::env::temp_dir().join(format!("witforge-editions-2023-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. `protox 0.10.0` rejects `edition = "2023";` at parse time.
+    let ed2023 = base.join("ed2023.proto");
+    fs::write(
+        &ed2023,
+        "edition = \"2023\";\n\
+         package example.demo.v0;\n\
+         option features.field_presence = EXPLICIT;\n\
+         option features.enum_type = CLOSED;\n\
+         message Item { uint32 id = 1; }\n",
+    )
+    .unwrap();
+    let protox_err = protox::compile([&ed2023], [&base]).unwrap_err();
+    let protox_msg = format!("{protox_err:#}");
+    assert!(
+        protox_msg.contains("edition"),
+        "expected protox parser error mentioning `edition`: {protox_msg}"
+    );
+
+    // 2. `prost-build 0.14.6` panics on `syntax = Some("editions")`.
+    let proto3 = base.join("v0.proto");
+    fs::write(
+        &proto3,
+        "syntax = \"proto3\";\npackage example.demo.v0;\nmessage Item { optional uint32 id = 1; }\n",
+    )
+    .unwrap();
+    let mut fds = protox::compile([&proto3], [&base]).unwrap();
+    fds.file[0].syntax = Some("editions".to_string());
+    let prost_out = base.join("prost-out");
+    fs::create_dir_all(&prost_out).unwrap();
+    let panicked = std::panic::catch_unwind(move || {
+        let mut cfg = prost_build::Config::new();
+        cfg.out_dir(&prost_out);
+        let _ = cfg.compile_fds(fds);
+    });
+    assert!(
+        panicked.is_err(),
+        "expected prost-build 0.14.6 to panic on `syntax = \"editions\"`; if upgraded, revisit W11-046"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

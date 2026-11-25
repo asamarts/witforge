@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format follows
   (version table, retired versions, and adjacent version-diff + cross-major omission tables) and
   per-version `v<major>_<minor>.md` pages (normalized docs, stability badges, wire numbers,
   reserved wire slots, dependencies, interfaces, types, functions, and worlds).
+- **Protobuf Editions 2023 evaluation (`W11-046`):** Empirically evaluated `protox 0.10.0`,
+  `prost-types`/`prost-build 0.14.6`, and `pbjson-build 0.9.0` against `edition = "2023"` and
+  recorded the observed upstream blockers, wire-compatibility analysis, revisit trigger, and
+  automated readiness-probe test in `docs/design/emitters.md` section 4.8.
 - **Opt-in float-free `Eq`/`Hash` derives and `convert.rs` `TryFrom` impls (`W11-045`):** Added
   `RustOptions::with_eq_hash` (`--eq-hash`/`--no-eq-hash`, `rust.eq-hash = true`) to derive `Eq`
   and `Hash` on generated records, variants, enums, and flags whose constituent types transitively
