@@ -193,7 +193,8 @@ fn doc_emitter_renders_versions_stability_wire_numbers_reserved_diffs_and_enforc
     // 4. Generate, `--check` clean, detect drift, refuse unowned file, and refuse foreign header!
     let out = root.join("docs-out");
     doc::generate(&wit, &out).unwrap();
-    assert!(doc::check(&wit, &out).unwrap().is_empty());
+    let check_clean = doc::check(&wit, &out).unwrap();
+    assert!(check_clean.is_empty(), "{check_clean:?}");
 
     // Tamper with `v0_2.md` -> check detects Changed.
     let mut edited = fs::read_to_string(out.join("v0_2.md")).unwrap();

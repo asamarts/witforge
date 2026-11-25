@@ -363,8 +363,10 @@ fn subset_expansion_model_lockfile_inspect_diff_and_refusals() {
     let v02 = wit_root.join("v0.2");
 
     // 1. Subset check passes cleanly on both versions.
-    assert!(subset::check(&load(&v01).unwrap()).is_empty());
-    assert!(subset::check(&load(&v02).unwrap()).is_empty());
+    let v01_diags = subset::check(&load(&v01).unwrap());
+    assert!(v01_diags.is_empty(), "{v01_diags:?}");
+    let v02_diags = subset::check(&load(&v02).unwrap());
+    assert!(v02_diags.is_empty(), "{v02_diags:?}");
 
     // 2. Canonical lockfile tokens include `char`, `list<T,N>`, and `map<K,V>` and round-trip.
     let lock_text = fs::read_to_string(v01.join("wire.lock")).unwrap();
@@ -1014,7 +1016,6 @@ fn subset_expansion_no_std_with_serde_and_btree_map_glue_compiles_and_roundtrips
          mod tests {\n\
              use alloc::collections::BTreeMap;\n\
              use alloc::string::ToString as _;\n\
-             use alloc::vec;\n\
              use prost::Message as _;\n\
              use super::{glue, plain, proto};\n\
              \n\
