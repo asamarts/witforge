@@ -5,13 +5,14 @@ declaration-order boundaries 2026-11-18 (`W10-026`); conversion-impact notes 202
 (`W11-036`); conversion blockers and API hardening 2026-11-18 (`W10-035`, `W10-036`); kind
 changes and reused reserved numbers are wire-breaking 2026-11-19 (`W10-045`, `W10-048`); alias
 spellings and retyped conversion blockers 2026-11-20 (`W10-057`); released-manifest and
-dependency-alias endpoints 2026-11-20 (`W10-056`). The 2026-11-18 through 2026-11-20 items
+dependency-alias endpoints 2026-11-20 (`W10-056`); Git-ref base comparison (`--git-base`)
+2026-11-25 (`W11-043`). The 2026-11-18 through 2026-11-20 items
 (reversed-endpoint rejection, missing-lock guidance, `conversion_blockers`, kind changes, reused
 reserved numbers, alias spellings, released-manifest checks, and dependency-alias endpoints)
 shipped in 0.6.0.
 
-`witforge diff <old> <new>` compares two contract versions and reports what changed in four
-independent compatibility views:
+`witforge diff <old> <new>` (or `witforge diff --git-base <rev> <path>`) compares two contract
+versions and reports what changed in four independent compatibility views:
 
 - **wire identity** — the append-only lockfile's numbers, kinds, and canonical member types;
 - **source** — the WIT/component type shape;
@@ -71,6 +72,35 @@ each endpoint uses its own root's manifest, so two checkouts can be compared ind
 
 `diff` does not require the canonical lockfile rendering; `check` is the canonical-form gate.
 `diff` requires current entries, not a particular byte layout or comment set.
+
+### Comparing against a Git revision (`--git-base`)
+
+`witforge diff --git-base <rev> <path>` (and the library entry point
+`witforge::diff::compare_git_base`) compares a version directory or WIT root in the current working
+tree against its committed tree at `<rev>` (for example `origin/main` or `HEAD~1`):
+
+- **Safe temporary materialization:** witforge reads regular file blobs directly from Git's object
+  database (`git ls-tree -r -z` + `git cat-file --batch`) into a private temporary directory under
+  `std::env::temp_dir()` (respecting `TMPDIR`) and deletes that directory before returning, on both
+  success and error paths. No `git archive`, `tar`, or working-tree checkout is performed. When
+  `<path>` is a single version directory (`wit/v0.2`), its basename is preserved and any sibling
+  `<parent>/released` file at `<rev>` is materialized beside it.
+- **Symlink and submodule guards (`WF9004`, exit `2`):** symlinks or submodules anywhere in the
+  Git tree at `<rev>` (including the target path itself or a sibling `released` manifest) or in the
+  working-tree `<path>` are refused before comparison.
+- **Shallow-clone detection (`WF9004`, exit `2`):** if `<rev>` cannot be resolved and the enclosing
+  repository is a shallow clone, witforge refuses with `WF9004` and instructs the caller to fetch
+  full history or the base ref (`fetch-depth: 0` on `actions/checkout`). Missing revisions in a
+  non-shallow repository, leading-`-` revisions, or passing two positional paths alongside
+  `--git-base` are usage errors (`WF9001`, exit `2`). Paths outside any Git repository fail with
+  `WF9004`, and paths absent or non-directory at `<rev>` fail with `WF9002`.
+- **Deterministic endpoint labels:** the old endpoint path and physical locations in human,
+  `--json`, and `--format json|sarif` output are rewritten from the ephemeral temporary directory
+  to `<rev>:<repo-relative-path>` (for example `origin/main:wit/v0.1`), so reports are
+  deterministic and leak no temporary directory paths.
+- All other `diff` rules — version ordering (equal versions allowed; downgrades refused), `--json`,
+  `--format json|sarif`, `--check[=VIEWS]`, decode verdicts, conversion impacts, and cross-major
+  omissions — apply unchanged.
 
 Within one major (`old.major == new.major`), both endpoints must resolve the identical pinned
 dependency graph: package identities and versions, interface/type/function inventories and order,

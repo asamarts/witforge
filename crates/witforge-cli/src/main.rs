@@ -21,6 +21,7 @@
 //! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge retire  <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge diff  <old> <new> [--json] [--check[=VIEWS]]
+//! witforge diff  --git-base <rev> <path> [--json] [--check[=VIEWS]]
 //! witforge inspect [<path>] [--json] [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge freeze [<wit-root>] [--released PATH] [--config PATH | --no-config] [--project NAME] [--base REV]
 //! witforge completions <bash|zsh|fish>
@@ -240,12 +241,15 @@ struct GlueOptions {
 
 #[derive(Debug, Args)]
 struct DiffOptions {
-    /// Old version directory or WIT root.
+    /// Old version directory or WIT root (or target directory when `--git-base` is given).
     #[arg(value_name = "OLD")]
     old: PathBuf,
-    /// New version directory or WIT root.
+    /// New version directory or WIT root (omit when `--git-base` is given).
     #[arg(value_name = "NEW")]
-    new: PathBuf,
+    new: Option<PathBuf>,
+    /// Compare the target version directory or WIT root against its Git tree at `<REV>`.
+    #[arg(long = "git-base", value_name = "REV")]
+    git_base: Option<String>,
     /// Emit machine-readable JSON instead of the human report.
     #[arg(long)]
     json: bool,
@@ -1758,7 +1762,27 @@ fn diff_command(options: &DiffOptions, reporter: &mut Reporter) -> Result<ExitCo
         reporter.suppress();
     }
     let check_views = parse_check_views(options.check.as_deref())?;
-    let full = diff::compare_full(&options.old, &options.new)?;
+    let full = if let Some(git_base) = &options.git_base {
+        if options.new.is_some() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "`--git-base` takes a single target path (`witforge diff --git-base <REV> \
+                 <PATH>`), not both `<OLD>` and `<NEW>`",
+                None,
+            ));
+        }
+        diff::compare_git_base(git_base, &options.old)?
+    } else {
+        let Some(new) = &options.new else {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "missing NEW endpoint (pass `witforge diff <OLD> <NEW>` or `witforge diff \
+                 --git-base <REV> <PATH>`)",
+                None,
+            ));
+        };
+        diff::compare_full(&options.old, new)?
+    };
     let analysis = &full.analysis;
     let omissions = &full.conversion_omissions;
     let decode_verdicts = &full.decode_verdicts;

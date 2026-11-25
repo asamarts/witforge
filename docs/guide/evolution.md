@@ -22,6 +22,10 @@ witforge diff wit/v0.1 wit/v0.2
 witforge diff wit/v0.1 wit/v0.2 --check   # exits 1 if the change is breaking
 ```
 
+To compare your current working tree directly against a Git base revision without checking out a
+second tree (for example in a pull request), run
+`witforge diff --git-base origin/main wit --check=wire,decode`.
+
 The package version in `contract.wit` must match the directory name; with the copied `@0.1.0`
 still in place, every command refuses `wit/v0.2`. Copy every `.wit` file and the `deps/`
 directory when the version has more than one file or uses dependencies.

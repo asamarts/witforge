@@ -474,12 +474,204 @@ pub fn compare_full(old: &Path, new: &Path) -> Result<FullDiff> {
     compare_report(old, new, true)
 }
 
+/// Compare a version directory or WIT root on disk (`target`) against its committed Git tree at
+/// revision `git_base`.
+///
+/// The tree at `git_base` is materialized directly from Git's object database into a private
+/// temporary directory under `std::env::temp_dir()` (respecting `TMPDIR`) and removed before
+/// returning, on both success and error paths. Symlinks and submodules in either the Git tree or
+/// `target` are refused (`WF9004`), and missing revisions in shallow clones fail with `WF9004`
+/// and `fetch-depth: 0` guidance.
+///
+/// Reported endpoint paths and physical locations for the base revision are rewritten to
+/// `<git_base>:<repo-relative-path>` so no ephemeral temporary path appears in output.
+///
+/// # Errors
+///
+/// Returns an operational [`crate::DiagnosticError`] (exit `2` in the CLI) when `git_base` is
+/// invalid, `git` is missing from `PATH`, `target` is outside any Git repository, `git_base` is
+/// unavailable (including shallow clones), `target` did not exist as a directory at `git_base`, or
+/// a symlink/submodule guard fires; returns contract errors as in [`compare`].
+#[allow(clippy::too_many_lines)]
+pub fn compare_git_base(git_base: &str, target: &Path) -> Result<FullDiff> {
+    validate_git_base_arg(git_base)?;
+
+    let norm_target: PathBuf = target.components().collect();
+    let target_meta = fs::symlink_metadata(&norm_target).map_err(|err| {
+        operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: failed to inspect target `{}`: {err}",
+                target.display()
+            ),
+            Some(target.display().to_string()),
+        )
+    })?;
+    if target_meta.file_type().is_symlink() {
+        return Err(operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "diff --git-base: target `{}` is a symlink; pass the directory itself",
+                target.display()
+            ),
+            Some(target.display().to_string()),
+        ));
+    }
+    if !target_meta.is_dir() {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: target `{}` is not a directory",
+                target.display()
+            ),
+            Some(target.display().to_string()),
+        ));
+    }
+
+    let abs_target = fs::canonicalize(&norm_target)
+        .with_context(|| format!("failed to resolve target {}", target.display()))?;
+    let top_output = run_git_diff(&abs_target, &["rev-parse", "--show-toplevel"])?;
+    if !top_output.status.success() {
+        return Err(operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "diff --git-base: `{}` is not inside a git repository",
+                target.display()
+            ),
+            Some(target.display().to_string()),
+        ));
+    }
+    let top_text = String::from_utf8_lossy(&top_output.stdout)
+        .trim_end_matches(['\r', '\n'])
+        .to_string();
+    let repo = fs::canonicalize(Path::new(&top_text))
+        .with_context(|| format!("failed to resolve git repository root `{top_text}`"))?;
+    let rel_target = abs_target.strip_prefix(&repo).map_err(|_| {
+        operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "diff --git-base: `{}` is not inside the repository {}",
+                target.display(),
+                repo.display()
+            ),
+            Some(target.display().to_string()),
+        )
+    })?;
+    let rel_git = to_git_path(rel_target);
+    ensure_no_symlinks_in_target_dir(&norm_target, rel_git.is_empty())?;
+
+    let commit_spec = format!("{git_base}^{{commit}}");
+    let rev_out = run_git_diff(&repo, &["rev-parse", "--verify", "--quiet", &commit_spec])?;
+    if !rev_out.status.success() {
+        let shallow_out = run_git_diff(&repo, &["rev-parse", "--is-shallow-repository"])?;
+        if shallow_out.status.success()
+            && String::from_utf8_lossy(&shallow_out.stdout).trim() == "true"
+        {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: revision `{git_base}` is not available in this shallow \
+                     clone; fetch full history or the base ref (in GitHub Actions, set \
+                     `fetch-depth: 0` on `actions/checkout`)"
+                ),
+                Some(target.display().to_string()),
+            ));
+        }
+        return Err(operational_error(
+            codes::CLI_USAGE,
+            format!("diff --git-base: invalid revision `{git_base}`"),
+            None,
+        ));
+    }
+    let commit = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
+
+    let display_base = if rel_git.is_empty() {
+        format!("{git_base}:.")
+    } else {
+        format!("{git_base}:{rel_git}")
+    };
+
+    let tree_spec = if rel_git.is_empty() {
+        format!("{commit}^{{tree}}")
+    } else {
+        verify_git_target_is_tree(&repo, &commit, git_base, &rel_git)?;
+        format!("{commit}:{rel_git}")
+    };
+
+    let dir_name = abs_target
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| !name.is_empty() && !name.contains('/') && !name.contains('\\'))
+        .unwrap_or("root");
+
+    let temp_guard = TempDirGuard::create()?;
+    let materialized_dir = temp_guard.path().join(dir_name);
+    fs::create_dir_all(&materialized_dir).with_context(|| {
+        format!(
+            "failed to create temporary directory {}",
+            materialized_dir.display()
+        )
+    })?;
+
+    let mut blobs = collect_git_tree_blobs(&repo, &tree_spec, &display_base, rel_git.is_empty())?;
+    // When diffing a single version directory (`wit/v0.2`), also materialize any sibling
+    // `released` manifest beside it at `git_base` (refusing a symlink) so `load_endpoint` checks
+    // release metadata consistently.
+    let sibling_released = if rel_git.is_empty() {
+        None
+    } else {
+        let parent_released = match rel_git.rsplit_once('/') {
+            Some((parent, _)) => format!("{parent}/released"),
+            None => "released".to_string(),
+        };
+        inspect_git_sibling_released(&repo, &commit, git_base, &parent_released)?
+    };
+
+    let mut writes: Vec<(PathBuf, String)> = blobs
+        .drain(..)
+        .map(|(rel, oid)| (materialized_dir.join(rel), oid))
+        .collect();
+    if let Some(released_oid) = sibling_released {
+        writes.push((temp_guard.path().join("released"), released_oid));
+    }
+    materialize_git_blobs(&repo, &writes)?;
+
+    let mut full =
+        compare_report_with_labels(&materialized_dir, Some(&display_base), target, true)?;
+    if let Some(rewritten) = rewrite_git_display_path(
+        &full.analysis.report.old.path,
+        &materialized_dir,
+        git_base,
+        &rel_git,
+    ) {
+        full.analysis.report.old.path = PathBuf::from(rewritten);
+    }
+    for (file, _) in full.locations.values_mut() {
+        if let Some(rewritten) =
+            rewrite_git_display_path(Path::new(file), &materialized_dir, git_base, &rel_git)
+        {
+            *file = rewritten;
+        }
+    }
+    Ok(full)
+}
+
 /// Build the report, optionally collecting conversion-impact notes, cross-major omissions, and
 /// source locations.
-#[allow(clippy::too_many_lines)]
 fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Result<FullDiff> {
+    compare_report_with_labels(old_arg, None, new_arg, collect_impacts)
+}
+
+#[allow(clippy::too_many_lines)]
+fn compare_report_with_labels(
+    old_arg: &Path,
+    old_label: Option<&str>,
+    new_arg: &Path,
+    collect_impacts: bool,
+) -> Result<FullDiff> {
+    let old_display = old_label.map_or_else(|| old_arg.display().to_string(), str::to_string);
     let old = load_endpoint(old_arg)
-        .with_context(|| format!("failed to read the old contract {}", old_arg.display()))?;
+        .with_context(|| format!("failed to read the old contract {old_display}"))?;
     let new = load_endpoint(new_arg)
         .with_context(|| format!("failed to read the new contract {}", new_arg.display()))?;
     if old.endpoint.package != new.endpoint.package {
@@ -502,8 +694,14 @@ fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Resu
         bail!(ContractError::with_located_diagnostic(located));
     }
     if new.endpoint.version < old.endpoint.version {
-        return Err(operational_error(
-            codes::CLI_USAGE,
+        let message = if let Some(label) = old_label {
+            format!(
+                "cannot diff version {} (at `{label}`) against older version {} (at `{}`)",
+                old.endpoint.version,
+                new.endpoint.version,
+                new_arg.display(),
+            )
+        } else {
             format!(
                 "cannot diff version {} against older version {}; pass the older contract first \
                  (run `witforge diff {} {}`)",
@@ -511,9 +709,9 @@ fn compare_report(old_arg: &Path, new_arg: &Path, collect_impacts: bool) -> Resu
                 new.endpoint.version,
                 crate::shell_quote(new_arg),
                 crate::shell_quote(old_arg),
-            ),
-            None,
-        ));
+            )
+        };
+        return Err(operational_error(codes::CLI_USAGE, message, None));
     }
     if old.model.package.version.major == new.model.package.version.major {
         ensure_same_dependency_graph(&old.model.dependencies, &new.model.dependencies)?;
@@ -2147,4 +2345,529 @@ fn member_pairs(loaded: &Loaded, parent: &str, names: &[String]) -> Result<Vec<(
         .iter()
         .map(|name| Ok((name.clone(), loaded.member_type(parent, name)?)))
         .collect()
+}
+
+struct TempDirGuard(PathBuf);
+
+impl TempDirGuard {
+    fn create() -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let base = std::env::temp_dir();
+        fs::create_dir_all(&base)
+            .with_context(|| format!("failed to create temporary root {}", base.display()))?;
+        let pid = std::process::id();
+        for _ in 0..128 {
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let candidate = base.join(format!("witforge-git-base-{pid}-{seq}"));
+            match fs::create_dir(&candidate) {
+                Ok(()) => return Ok(Self(candidate)),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => {
+                    return Err(operational_error(
+                        codes::IO_ERROR,
+                        format!(
+                            "diff --git-base: failed to create temporary directory `{}`: {err}",
+                            candidate.display()
+                        ),
+                        Some(candidate.display().to_string()),
+                    ));
+                }
+            }
+        }
+        Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: could not allocate a unique temporary directory under `{}`",
+                base.display()
+            ),
+            Some(base.display().to_string()),
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn validate_git_base_arg(git_base: &str) -> Result<()> {
+    if git_base.trim().is_empty() {
+        return Err(operational_error(
+            codes::CLI_USAGE,
+            "diff --git-base: revision must not be empty",
+            None,
+        ));
+    }
+    if git_base.starts_with('-') {
+        return Err(operational_error(
+            codes::CLI_USAGE,
+            format!("diff --git-base: invalid revision `{git_base}` (must not start with `-`)"),
+            None,
+        ));
+    }
+    if git_base.chars().any(char::is_control) {
+        return Err(operational_error(
+            codes::CLI_USAGE,
+            format!("diff --git-base: invalid revision `{git_base}` (contains control characters)"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn run_git_diff(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new("git")
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .arg("-c")
+        .arg("core.quotePath=false")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                operational_error(
+                    codes::IO_ERROR,
+                    "diff --git-base: `git` executable not found on PATH",
+                    None,
+                )
+            } else {
+                anyhow::Error::new(err).context("failed to run `git`")
+            }
+        })
+}
+
+fn to_git_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn ensure_no_symlinks_in_target_dir(dir: &Path, skip_dot_git: bool) -> Result<()> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("failed to read target directory {}", dir.display()))?
+    {
+        entries.push(
+            entry.with_context(|| format!("failed to read target directory {}", dir.display()))?,
+        );
+    }
+    entries.sort_by(|left, right| {
+        left.file_name()
+            .as_encoded_bytes()
+            .cmp(right.file_name().as_encoded_bytes())
+    });
+    for entry in entries {
+        if skip_dot_git && entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: target directory contains symlink `{}`; witforge refuses \
+                     symlinks",
+                    path.display()
+                ),
+                Some(path.display().to_string()),
+            ));
+        }
+        if meta.is_dir() {
+            ensure_no_symlinks_in_target_dir(&path, false)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_git_target_is_tree(
+    repo: &Path,
+    commit: &str,
+    git_base: &str,
+    rel_git: &str,
+) -> Result<()> {
+    let output = run_git_diff(repo, &["ls-tree", "-z", commit, "--", rel_git])?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: `git ls-tree` failed for `{git_base}:{rel_git}`: {}",
+                stderr.trim()
+            ),
+            None,
+        ));
+    }
+    let mut found: Option<&str> = None;
+    for raw in output.stdout.split(|&byte| byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let text = std::str::from_utf8(raw).map_err(|_| {
+            operational_error(
+                codes::IO_ERROR,
+                format!("diff --git-base: non-UTF-8 path in `{git_base}:{rel_git}`"),
+                None,
+            )
+        })?;
+        if let Some((meta, path)) = text.split_once('\t')
+            && path == rel_git
+        {
+            found = Some(meta);
+            break;
+        }
+    }
+    let Some(meta) = found else {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!("diff --git-base: path `{rel_git}` does not exist at revision `{git_base}`"),
+            None,
+        ));
+    };
+    if meta.starts_with("120000 ") {
+        return Err(operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "diff --git-base: `{git_base}:{rel_git}` is a symlink; witforge refuses symlinks"
+            ),
+            None,
+        ));
+    }
+    if meta.starts_with("160000 ") {
+        return Err(operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "diff --git-base: `{git_base}:{rel_git}` is a git submodule; expected a directory"
+            ),
+            None,
+        ));
+    }
+    if !meta.starts_with("040000 tree ") {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!("diff --git-base: `{git_base}:{rel_git}` is not a directory"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_git_rel_path(rel_path: &str, display_base: &str) -> Result<PathBuf> {
+    if rel_path.is_empty()
+        || rel_path.starts_with('/')
+        || rel_path.contains('\\')
+        || rel_path.contains('\0')
+    {
+        return Err(operational_error(
+            codes::GUARD_REFUSED,
+            format!("diff --git-base: unsafe relative path `{rel_path}` in `{display_base}`"),
+            None,
+        ));
+    }
+    let mut out = PathBuf::new();
+    for segment in rel_path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!("diff --git-base: unsafe relative path `{rel_path}` in `{display_base}`"),
+                None,
+            ));
+        }
+        let seg_path = Path::new(segment);
+        let mut comps = seg_path.components();
+        match (comps.next(), comps.next()) {
+            (Some(std::path::Component::Normal(part)), None) => out.push(part),
+            _ => {
+                return Err(operational_error(
+                    codes::GUARD_REFUSED,
+                    format!(
+                        "diff --git-base: unsafe relative path `{rel_path}` in `{display_base}`"
+                    ),
+                    None,
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn collect_git_tree_blobs(
+    repo: &Path,
+    tree_spec: &str,
+    display_base: &str,
+    skip_dot_git: bool,
+) -> Result<Vec<(PathBuf, String)>> {
+    let output = run_git_diff(repo, &["ls-tree", "-r", "-z", tree_spec])?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: `git ls-tree` failed for `{display_base}`: {}",
+                stderr.trim()
+            ),
+            None,
+        ));
+    }
+    let mut entries = Vec::new();
+    for raw in output.stdout.split(|&byte| byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let text = std::str::from_utf8(raw).map_err(|_| {
+            operational_error(
+                codes::IO_ERROR,
+                format!("diff --git-base: non-UTF-8 path in `{display_base}`"),
+                None,
+            )
+        })?;
+        let Some((meta, rel_path)) = text.split_once('\t') else {
+            return Err(operational_error(
+                codes::IO_ERROR,
+                format!("diff --git-base: unexpected `git ls-tree` entry in `{display_base}`"),
+                None,
+            ));
+        };
+        if skip_dot_git && (rel_path == ".git" || rel_path.starts_with(".git/")) {
+            continue;
+        }
+        let mut meta_parts = meta.split(' ');
+        let mode = meta_parts.next().unwrap_or_default();
+        let kind = meta_parts.next().unwrap_or_default();
+        let oid = meta_parts.next().unwrap_or_default();
+        if mode == "120000" {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: tree at `{display_base}` contains symlink `{rel_path}`; \
+                     witforge refuses symlinks"
+                ),
+                None,
+            ));
+        }
+        if mode == "160000" {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: tree at `{display_base}` contains git submodule `{rel_path}`"
+                ),
+                None,
+            ));
+        }
+        if kind != "blob" || (mode != "100644" && mode != "100755") || oid.is_empty() {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: tree at `{display_base}` contains unsupported entry \
+                     `{rel_path}` (mode `{mode}`, type `{kind}`)"
+                ),
+                None,
+            ));
+        }
+        let rel_buf = validate_git_rel_path(rel_path, display_base)?;
+        entries.push((rel_buf, oid.to_string()));
+    }
+    Ok(entries)
+}
+
+fn inspect_git_sibling_released(
+    repo: &Path,
+    commit: &str,
+    git_base: &str,
+    released_rel: &str,
+) -> Result<Option<String>> {
+    let output = run_git_diff(repo, &["ls-tree", "-z", commit, "--", released_rel])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    for raw in output.stdout.split(|&byte| byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(raw) else {
+            continue;
+        };
+        let Some((meta, path)) = text.split_once('\t') else {
+            continue;
+        };
+        if path != released_rel {
+            continue;
+        }
+        let mut meta_parts = meta.split(' ');
+        let mode = meta_parts.next().unwrap_or_default();
+        let kind = meta_parts.next().unwrap_or_default();
+        let oid = meta_parts.next().unwrap_or_default();
+        if mode == "120000" {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: released manifest `{git_base}:{released_rel}` is a symlink; \
+                     witforge refuses symlinks"
+                ),
+                None,
+            ));
+        }
+        if kind == "blob" && (mode == "100644" || mode == "100755") && !oid.is_empty() {
+            return Ok(Some(oid.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+#[allow(clippy::too_many_lines)]
+fn materialize_git_blobs(repo: &Path, blobs: &[(PathBuf, String)]) -> Result<()> {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use std::process::{Command, Stdio};
+
+    if blobs.is_empty() {
+        return Ok(());
+    }
+    let mut child = Command::new("git")
+        .arg("cat-file")
+        .arg("--batch")
+        .current_dir(repo)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                operational_error(
+                    codes::IO_ERROR,
+                    "diff --git-base: `git` executable not found on PATH",
+                    None,
+                )
+            } else {
+                anyhow::Error::new(err).context("failed to run `git cat-file --batch`")
+            }
+        })?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("failed to open stdin for `git cat-file --batch`")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to open stdout for `git cat-file --batch`")?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .context("failed to open stderr for `git cat-file --batch`")?;
+
+    let read_result: Result<()> = std::thread::scope(|scope| {
+        let feeder = scope.spawn(move || -> std::io::Result<()> {
+            for (_, oid) in blobs {
+                stdin.write_all(oid.as_bytes())?;
+                stdin.write_all(b"\n")?;
+            }
+            stdin.flush()?;
+            drop(stdin);
+            Ok(())
+        });
+
+        let mut reader = BufReader::new(stdout);
+        let mut header = String::new();
+        for (dest, oid) in blobs {
+            header.clear();
+            let read_len = reader
+                .read_line(&mut header)
+                .context("failed to read header from `git cat-file --batch`")?;
+            if read_len == 0 {
+                return Err(operational_error(
+                    codes::IO_ERROR,
+                    format!("diff --git-base: unexpected EOF reading git blob `{oid}`"),
+                    None,
+                ));
+            }
+            let trimmed = header.trim_end_matches(['\r', '\n']);
+            let mut parts = trimmed.split(' ');
+            let _got_oid = parts.next();
+            let kind = parts.next().unwrap_or_default();
+            let size_str = parts.next().unwrap_or_default();
+            if kind != "blob" {
+                return Err(operational_error(
+                    codes::IO_ERROR,
+                    format!("diff --git-base: git object `{oid}` is not a blob (`{trimmed}`)"),
+                    None,
+                ));
+            }
+            let size: usize = size_str.parse().map_err(|_| {
+                operational_error(
+                    codes::IO_ERROR,
+                    format!("diff --git-base: invalid blob size in `{trimmed}`"),
+                    None,
+                )
+            })?;
+            let mut buf = vec![0u8; size];
+            reader
+                .read_exact(&mut buf)
+                .with_context(|| format!("failed to read {size} bytes for git blob `{oid}`"))?;
+            let mut nl = [0u8; 1];
+            reader
+                .read_exact(&mut nl)
+                .context("failed to read trailing newline from `git cat-file --batch`")?;
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            fs::write(dest, &buf).with_context(|| format!("failed to write {}", dest.display()))?;
+        }
+
+        match feeder.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(anyhow::Error::new(err)
+                .context("failed to write object IDs to `git cat-file --batch`")),
+            Err(_) => Err(operational_error(
+                codes::INTERNAL_ERROR,
+                "diff --git-base: git blob writer thread panicked",
+                None,
+            )),
+        }
+    });
+
+    let mut err_text = String::new();
+    let _ = stderr.read_to_string(&mut err_text);
+    let status = child
+        .wait()
+        .context("failed to wait for `git cat-file --batch`")?;
+    read_result?;
+    if !status.success() {
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: `git cat-file --batch` failed: {}",
+                err_text.trim()
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn rewrite_git_display_path(
+    path: &Path,
+    materialized_dir: &Path,
+    git_base: &str,
+    rel_git: &str,
+) -> Option<String> {
+    let tail = path.strip_prefix(materialized_dir).ok()?;
+    let tail_git = to_git_path(tail);
+    Some(match (rel_git.is_empty(), tail_git.is_empty()) {
+        (true, true) => format!("{git_base}:."),
+        (true, false) => format!("{git_base}:{tail_git}"),
+        (false, true) => format!("{git_base}:{rel_git}"),
+        (false, false) => format!("{git_base}:{rel_git}/{tail_git}"),
+    })
 }

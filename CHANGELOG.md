@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Git-ref contract diffing (`W11-043`):** Added `witforge diff --git-base <REV> <PATH>` and
+  `witforge::diff::compare_git_base` to compare a working-tree version directory or WIT root
+  against its committed tree at `<REV>`. Materializes blobs directly from Git's object database
+  (`git ls-tree -r -z` + `git cat-file --batch`) into a `TMPDIR`-respecting temporary directory
+  cleaned up on drop, enforces symlink and submodule guards (`WF9004`) on both the Git tree and
+  working-tree target, detects missing revisions in shallow clones (`WF9004` with `fetch-depth: 0`
+  guidance), and rewrites reported base paths and diagnostic locations to deterministic
+  `<REV>:<repo-relative-path>` labels.
 - **WIT subset expansion (`W11-040`):** Added first-class support for `char`, fixed-length lists
   `list<T, N>` (`1 <= N <= 65536`), and primitive-keyed maps `map<K, V>` (`bool`, integer, `char`,
   or `string` keys) across the internal model (`TypeExpr::{Char, FixedLengthList, Map}`,

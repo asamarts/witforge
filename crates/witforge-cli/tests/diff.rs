@@ -2007,3 +2007,371 @@ fn diff_decode_view_gates_only_when_selected_and_preserves_json_fields() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+fn run_git_cmd(repo: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed: stdout={} stderr={}",
+        args,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+fn init_git_repo(repo: &Path) {
+    run_git_cmd(repo, &["init", "-b", "main"]);
+    run_git_cmd(repo, &["config", "user.name", "Witforge Test"]);
+    run_git_cmd(repo, &["config", "user.email", "test@example.com"]);
+    run_git_cmd(repo, &["config", "commit.gpgsign", "false"]);
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn diff_git_base_compares_working_tree_respects_tmpdir_and_enforces_guards() {
+    let root = workspace("git-base");
+    let repo = root.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_git_repo(&repo);
+
+    // Commit 1: wit/v0.1 locked and committed.
+    contract(
+        &repo,
+        "wit/v0.1",
+        "package example:gitdiff@0.1.0;\n\
+         interface types {\n\
+           record item { id: u32 }\n\
+         }\n",
+    );
+    lock(&repo, "wit/v0.1");
+    run_git_cmd(&repo, &["add", "."]);
+    run_git_cmd(&repo, &["commit", "-m", "initial v0.1"]);
+
+    // Commit 2: add v0.2 with a defaultable optional field (wire+decode compatible, source/api breaking).
+    contract(
+        &repo,
+        "wit/v0.2",
+        "package example:gitdiff@0.2.0;\n\
+         interface types {\n\
+           record item { id: u32, note: option<string> }\n\
+         }\n",
+    );
+    fs::copy(
+        repo.join("wit/v0.1/wire.lock"),
+        repo.join("wit/v0.2/wire.lock"),
+    )
+    .unwrap();
+    let lock_v02 = witforge()
+        .args(["lock"])
+        .arg(repo.join("wit/v0.2"))
+        .args(["--against"])
+        .arg(repo.join("wit/v0.1/wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_v02.status.success(), "{lock_v02:?}");
+    run_git_cmd(&repo, &["add", "."]);
+    run_git_cmd(&repo, &["commit", "-m", "add v0.2"]);
+
+    // 1. Compare WIT root against HEAD~1 with private TMPDIR: verifies TMPDIR respect, cleanup,
+    // deterministic `<REV>:<path>` labels, `--json`, `--format sarif`, and `--check` views.
+    let private_tmp = root.join("private-tmp");
+    fs::create_dir_all(&private_tmp).unwrap();
+
+    let json_out = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&repo)
+        .args(["diff", "--git-base", "HEAD~1", "wit", "--json"])
+        .output()
+        .unwrap();
+    assert!(json_out.status.success(), "{json_out:?}");
+    let val: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(val["old"]["path"], "HEAD~1:wit/v0.1", "{val}");
+    assert_eq!(val["old"]["version"], "0.1.0");
+    assert_eq!(val["new"]["path"], "wit/v0.2", "{val}");
+    assert_eq!(val["new"]["version"], "0.2.0");
+    assert_eq!(val["summary"]["changes"], 1);
+    assert_eq!(val["summary"]["wire_breaking"], 0);
+    assert_eq!(val["summary"]["decode_breaking"], 0);
+    assert_eq!(val["changes"][0]["path"], "types/item.note");
+    assert_eq!(
+        fs::read_dir(&private_tmp).unwrap().count(),
+        0,
+        "temp dir must be cleaned up after success"
+    );
+
+    // `--check=wire,decode` passes, default `--check` fails (source/api breaking).
+    let wd_ok = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&repo)
+        .args(["diff", "--git-base", "HEAD~1", "wit", "--check=wire,decode"])
+        .output()
+        .unwrap();
+    assert!(wd_ok.status.success(), "{wd_ok:?}");
+    let human_stdout = String::from_utf8_lossy(&wd_ok.stdout);
+    assert!(
+        human_stdout.contains("old: HEAD~1:wit/v0.1 (example:gitdiff 0.1.0)"),
+        "{human_stdout}"
+    );
+    assert!(
+        !human_stdout.contains("witforge-git-base"),
+        "temp dir path must never leak into output: {human_stdout}"
+    );
+
+    let default_fail = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&repo)
+        .args(["diff", "--git-base", "HEAD~1", "wit", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(default_fail.status.code(), Some(1), "{default_fail:?}");
+
+    // 2. Single version directory diff with an uncommitted draft edit (removed field -> location
+    // points to `HEAD:wit/v0.2/contract.wit` with zero temp-path leak in SARIF).
+    contract(
+        &repo,
+        "wit/v0.2",
+        "package example:gitdiff@0.2.0;\n\
+         interface types {\n\
+           record item { id: u32, extra: string }\n\
+         }\n",
+    );
+    let lock_edit = witforge()
+        .args(["lock"])
+        .arg(repo.join("wit/v0.2"))
+        .args(["--against"])
+        .arg(repo.join("wit/v0.1/wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_edit.status.success(), "{lock_edit:?}");
+
+    let sarif_out = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&repo)
+        .args([
+            "diff",
+            "--git-base",
+            "HEAD",
+            "wit/v0.2",
+            "--check=decode",
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(sarif_out.status.code(), Some(1), "{sarif_out:?}");
+    let sarif_text = String::from_utf8_lossy(&sarif_out.stdout);
+    assert!(
+        !sarif_text.contains("witforge-git-base"),
+        "temp path must not leak into SARIF: {sarif_text}"
+    );
+    assert!(
+        sarif_text.contains("HEAD%3Awit/v0.2/contract.wit"),
+        "removed field SARIF URI should percent-encode HEAD:wit/v0.2/contract.wit: {sarif_text}"
+    );
+    let diag_json_out = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&repo)
+        .args([
+            "diff",
+            "--git-base",
+            "HEAD",
+            "wit/v0.2",
+            "--check=decode",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(diag_json_out.status.code(), Some(1), "{diag_json_out:?}");
+    let diag_text = String::from_utf8_lossy(&diag_json_out.stdout);
+    assert!(
+        diag_text.contains("HEAD:wit/v0.2/contract.wit"),
+        "removed field JSON diagnostic file should point to HEAD:wit/v0.2/contract.wit: {diag_text}"
+    );
+    assert_eq!(
+        fs::read_dir(&private_tmp).unwrap().count(),
+        0,
+        "temp dir must be cleaned up after failure"
+    );
+
+    // Restore clean working tree for shallow-clone & symlink tests.
+    run_git_cmd(&repo, &["checkout", "--", "wit/v0.2"]);
+
+    // 3. Shallow-clone missing revision detection (`WF9004`, exit 2, mentions shallow + fetch-depth).
+    let shallow_dir = root.join("shallow-clone");
+    let repo_url = format!("file://{}", fs::canonicalize(&repo).unwrap().display());
+    run_git_cmd(
+        &root,
+        &[
+            "clone",
+            "--depth=1",
+            &repo_url,
+            shallow_dir.to_str().unwrap(),
+        ],
+    );
+    let shallow_err = witforge()
+        .env("TMPDIR", &private_tmp)
+        .current_dir(&shallow_dir)
+        .args(["diff", "--git-base", "HEAD~1", "wit", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(shallow_err.status.code(), Some(2), "{shallow_err:?}");
+    let shallow_json: serde_json::Value = serde_json::from_slice(&shallow_err.stdout).unwrap();
+    assert_eq!(shallow_json["diagnostics"][0]["code"], "WF9004");
+    let shallow_msg = shallow_json["diagnostics"][0]["message"].as_str().unwrap();
+    assert!(
+        shallow_msg.contains("shallow clone") && shallow_msg.contains("fetch-depth: 0"),
+        "{shallow_msg}"
+    );
+
+    // 4. Usage & operational guards:
+    // - two positional paths with `--git-base` -> WF9001 (exit 2)
+    let two_paths = witforge()
+        .current_dir(&repo)
+        .args([
+            "diff",
+            "--git-base",
+            "HEAD~1",
+            "wit/v0.1",
+            "wit/v0.2",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(two_paths.status.code(), Some(2), "{two_paths:?}");
+    let two_json: serde_json::Value = serde_json::from_slice(&two_paths.stdout).unwrap();
+    assert_eq!(two_json["diagnostics"][0]["code"], "WF9001");
+
+    // - missing second positional path without `--git-base` -> WF9001 (exit 2)
+    let one_path = witforge()
+        .current_dir(&repo)
+        .args(["diff", "wit/v0.1", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(one_path.status.code(), Some(2), "{one_path:?}");
+    let one_json: serde_json::Value = serde_json::from_slice(&one_path.stdout).unwrap();
+    assert_eq!(one_json["diagnostics"][0]["code"], "WF9001");
+
+    // - leading-`-` flag injection in `--git-base` -> WF9001 (exit 2)
+    let dash_rev = witforge()
+        .current_dir(&repo)
+        .args(["diff", "--git-base=--all", "wit", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(dash_rev.status.code(), Some(2), "{dash_rev:?}");
+    let dash_json: serde_json::Value = serde_json::from_slice(&dash_rev.stdout).unwrap();
+    assert_eq!(dash_json["diagnostics"][0]["code"], "WF9001");
+
+    // - unknown revision on full clone -> WF9001 (exit 2)
+    let bad_rev = witforge()
+        .current_dir(&repo)
+        .args([
+            "diff",
+            "--git-base",
+            "no-such-ref-xyz",
+            "wit",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_rev.status.code(), Some(2), "{bad_rev:?}");
+    let bad_json: serde_json::Value = serde_json::from_slice(&bad_rev.stdout).unwrap();
+    assert_eq!(bad_json["diagnostics"][0]["code"], "WF9001");
+
+    // - outside any Git repository -> WF9004 (exit 2)
+    let outside = root.join("outside-git");
+    contract(
+        &outside,
+        "wit/v0.1",
+        "package example:out@0.1.0;\ninterface a { record r { id: u32 } }\n",
+    );
+    lock(&outside, "wit/v0.1");
+    let no_git = witforge()
+        .current_dir(&outside)
+        .args(["diff", "--git-base", "HEAD", "wit", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(no_git.status.code(), Some(2), "{no_git:?}");
+    let no_git_json: serde_json::Value = serde_json::from_slice(&no_git.stdout).unwrap();
+    assert_eq!(no_git_json["diagnostics"][0]["code"], "WF9004");
+
+    // - path absent at `<REV>` -> WF9002 (exit 2)
+    let missing_at_base = witforge()
+        .current_dir(&repo)
+        .args([
+            "diff",
+            "--git-base",
+            "HEAD~1",
+            "wit/v0.2",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        missing_at_base.status.code(),
+        Some(2),
+        "{missing_at_base:?}"
+    );
+    let missing_json: serde_json::Value = serde_json::from_slice(&missing_at_base.stdout).unwrap();
+    assert_eq!(missing_json["diagnostics"][0]["code"], "WF9002");
+
+    // 5. Symlink guards (Unix): working-tree target symlink, working-tree child symlink, and
+    // committed Git tree symlink (`120000`) all fail with WF9004 (exit 2).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let link_target = repo.join("wit-link");
+        symlink(repo.join("wit"), &link_target).unwrap();
+        let sym_target = witforge()
+            .current_dir(&repo)
+            .args(["diff", "--git-base", "HEAD", "wit-link", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(sym_target.status.code(), Some(2), "{sym_target:?}");
+        let sym_target_json: serde_json::Value =
+            serde_json::from_slice(&sym_target.stdout).unwrap();
+        assert_eq!(sym_target_json["diagnostics"][0]["code"], "WF9004");
+        fs::remove_file(&link_target).unwrap();
+
+        let child_link = repo.join("wit/v0.2/extra-link");
+        symlink("contract.wit", &child_link).unwrap();
+        let sym_child = witforge()
+            .current_dir(&repo)
+            .args(["diff", "--git-base", "HEAD", "wit", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(sym_child.status.code(), Some(2), "{sym_child:?}");
+        let sym_child_json: serde_json::Value = serde_json::from_slice(&sym_child.stdout).unwrap();
+        assert_eq!(sym_child_json["diagnostics"][0]["code"], "WF9004");
+
+        // Commit the symlink to HEAD, remove it from working tree, and diff against HEAD:
+        // Git tree symlink (`120000`) MUST be refused before materialization!
+        run_git_cmd(&repo, &["add", "wit/v0.2/extra-link"]);
+        run_git_cmd(&repo, &["commit", "-m", "commit symlink"]);
+        fs::remove_file(&child_link).unwrap();
+        let sym_git = witforge()
+            .env("TMPDIR", &private_tmp)
+            .current_dir(&repo)
+            .args(["diff", "--git-base", "HEAD", "wit", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(sym_git.status.code(), Some(2), "{sym_git:?}");
+        let sym_git_json: serde_json::Value = serde_json::from_slice(&sym_git.stdout).unwrap();
+        assert_eq!(sym_git_json["diagnostics"][0]["code"], "WF9004");
+        assert_eq!(
+            fs::read_dir(&private_tmp).unwrap().count(),
+            0,
+            "temp dir must be cleaned up when Git symlink guard fires"
+        );
+    }
+
+    fs::remove_dir_all(&root).unwrap();
+}
