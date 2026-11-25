@@ -14,6 +14,8 @@
 //! witforge glue  [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
 //!                [--no-std | --std] [--config PATH | --no-config] [--project NAME] [--check]
 //!                [--diff] [--released PATH]
+//! witforge doc   [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
+//!                [--check] [--diff] [--released PATH]
 //! witforge generate [--config PATH | --no-config] [--project NAME] [--check] [--diff]
 //!                   [--serde | --no-serde] [--no-std | --std] [--draft 7|2020-12] [--released PATH]
 //! witforge init  [DIR] [--package NS:NAME] [--serde]
@@ -104,6 +106,8 @@ enum Command {
     Schema(SchemaOptions),
     /// Generate protobuf glue conversions and function helpers.
     Glue(GlueOptions),
+    /// Generate deterministic Markdown contract reference documentation.
+    Doc(DocOptions),
     /// Run every generator configured in `witforge.toml`.
     Generate(GenerateOptions),
     /// Scaffold a starter `wit/v0.1/contract.wit`, initial `wire.lock`, and `witforge.toml`.
@@ -244,6 +248,28 @@ struct GlueOptions {
     /// Emit default `std` Rust paths, overriding a configuration-file `no-std = true` setting.
     #[arg(long = "std", conflicts_with = "no_std")]
     std_mode: bool,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct DocOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Output root for generated Markdown reference files.
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -562,6 +588,7 @@ struct ProjectConfig {
     proto: Option<OutConfig>,
     schema: Option<SchemaConfig>,
     glue: Option<GlueConfig>,
+    doc: Option<OutConfig>,
     policy: Option<PolicyConfig>,
 }
 
@@ -627,6 +654,7 @@ enum Emitter {
     Proto,
     Schema,
     Glue,
+    Doc,
 }
 
 struct PathOverrides {
@@ -849,6 +877,7 @@ fn resolve_paths(
             .as_ref()
             .map(|config| from_config(&config.out)),
         Emitter::Glue => project.glue.as_ref().map(|config| from_config(&config.out)),
+        Emitter::Doc => project.doc.as_ref().map(|config| from_config(&config.out)),
     });
     let Some(out) = out else {
         return Err(op_error(
@@ -884,7 +913,7 @@ fn resolve_paths(
         .or_else(|| match emitter {
             Emitter::Rust => project.rust.as_ref().and_then(|config| config.no_std),
             Emitter::Glue => project.glue.as_ref().and_then(|config| config.no_std),
-            Emitter::Proto | Emitter::Schema => None,
+            Emitter::Proto | Emitter::Schema | Emitter::Doc => None,
         })
         .unwrap_or(false);
     let eq_hash = eq_hash
@@ -950,6 +979,11 @@ fn validate_configured_outputs(
                 Emitter::Glue,
                 "glue",
                 proj.glue.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Doc,
+                "doc",
+                proj.doc.as_ref().map(|c| c.out.as_path()),
             ),
         ] {
             let is_selected = proj_name == selected_project
@@ -1021,6 +1055,13 @@ fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<
             check_config_path(
                 &format!("project.{proj_name}.glue.out"),
                 &glue.out,
+                config_path,
+            )?;
+        }
+        if let Some(doc) = &proj.doc {
+            check_config_path(
+                &format!("project.{proj_name}.doc.out"),
+                &doc.out,
                 config_path,
             )?;
         }
@@ -1213,6 +1254,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Proto(options) => proto(&options, &mut reporter),
         Command::Schema(options) => schema(&options, &mut reporter),
         Command::Glue(options) => glue(&options, &mut reporter),
+        Command::Doc(options) => doc_command(&options, &mut reporter),
         Command::Generate(options) => generate_command(&options, &mut reporter),
         Command::Init(options) => init_command(&options, &mut reporter),
         Command::NewVersion(options) => new_version_command(&options, &mut reporter),
@@ -1824,6 +1866,49 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.proto_root.as_deref(),
         None,
         no_std_override,
+        None,
+        None,
+        None,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
+}
+
+fn doc_command(options: &DocOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let paths = resolve_paths(
+        Emitter::Doc,
+        &options.config,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: None,
+            proto_root: None,
+            serde: None,
+            no_std: None,
+            eq_hash: None,
+            try_from: None,
+            schema_draft: None,
+        },
+    )?;
+    guard_output_root(&paths)?;
+    let files = emit::doc::plan_with_released(&paths.root, paths.released.as_deref())?;
+    let regen = regenerate_command(
+        "doc",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        None,
+        None,
+        None,
+        None,
         None,
         None,
         None,
@@ -2661,6 +2746,12 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                 from_config(&glue.out),
             ));
         }
+        if let Some(doc) = &proj.doc {
+            all_outs.push((
+                format!("project.{proj_name}.doc.out"),
+                from_config(&doc.out),
+            ));
+        }
     }
     let refs: Vec<(&str, &Path)> = all_outs
         .iter()
@@ -2742,12 +2833,15 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         if proj.glue.is_some() {
             emitters.push(Emitter::Glue);
         }
+        if proj.doc.is_some() {
+            emitters.push(Emitter::Doc);
+        }
         if emitters.is_empty() {
             return Err(op_error(
                 codes::CLI_USAGE,
                 format!(
                     "project `{proj_name}` in {} configures no generators (rust, proto, schema, \
-                     or glue)",
+                     glue, or doc)",
                     config_path.display()
                 ),
                 Some(config_path.display().to_string()),
@@ -2836,6 +2930,21 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                         proto_root: None,
                         no_std: no_std_override == Some(true),
                         std_mode: no_std_override == Some(false),
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::Doc => doc_command(
+                    &DocOptions {
+                        root: None,
+                        out: None,
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),

@@ -111,7 +111,7 @@ pub(crate) fn normalize_plain(docs: &str) -> String {
     normalize_lines(docs).join("\n")
 }
 
-fn normalize_lines(raw: &str) -> Vec<String> {
+pub(crate) fn normalize_lines(raw: &str) -> Vec<String> {
     if raw.is_empty() {
         return Vec::new();
     }

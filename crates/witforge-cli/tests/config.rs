@@ -1586,3 +1586,68 @@ try-from = true
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn doc_emitter_works_via_cli_config_generate_check_and_diff() {
+    let root = project("doc-emitter");
+    let config = write_config(
+        &root,
+        r#"
+version = 1
+
+[project.demo]
+root = "wit"
+
+[project.demo.doc]
+out = "generated/docs"
+"#,
+    );
+
+    // 1. `witforge generate` generates Markdown docs when `[project.<name>.doc]` is configured.
+    let gen_out = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(gen_out.status.success(), "{gen_out:?}");
+    assert!(root.join("generated/docs/index.md").is_file());
+    assert!(root.join("generated/docs/v0_1.md").is_file());
+    assert!(root.join("generated/docs/v0_2.md").is_file());
+
+    // 2. `witforge doc --check` passes cleanly.
+    let check_ok = witforge()
+        .current_dir(&root)
+        .args(["doc", "--check", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(check_ok.status.success(), "{check_ok:?}");
+
+    // 3. Tamper -> `witforge doc --check --diff` exits 1 and prints unified diff.
+    let mut index = fs::read_to_string(root.join("generated/docs/index.md")).unwrap();
+    index.push_str("\n# drift\n");
+    fs::write(root.join("generated/docs/index.md"), index).unwrap();
+    let check_drift = witforge()
+        .current_dir(&root)
+        .args(["doc", "--check", "--diff", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(check_drift.status.code(), Some(1), "{check_drift:?}");
+    assert!(
+        String::from_utf8_lossy(&check_drift.stdout).contains("-# drift"),
+        "{check_drift:?}"
+    );
+
+    // 4. Direct CLI invocation without config works cleanly.
+    let direct = witforge()
+        .current_dir(&root)
+        .args(["doc", "wit", "--out", "direct-docs", "--no-config"])
+        .output()
+        .unwrap();
+    assert!(direct.status.success(), "{direct:?}");
+    assert!(root.join("direct-docs/index.md").is_file());
+
+    fs::remove_dir_all(&root).unwrap();
+}
