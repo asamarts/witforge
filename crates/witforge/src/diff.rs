@@ -998,7 +998,9 @@ fn lock_remedy(path: &Path, released: bool) -> String {
 }
 
 fn load_endpoint(path: &Path) -> Result<Loaded> {
-    if path.join("wire.lock").is_file() {
+    let lock_path = path.join("wire.lock");
+    crate::ensure_lockfile_not_symlink(&lock_path)?;
+    if lock_path.is_file() {
         return load_version(path);
     }
     if looks_like_version_directory(path) {
@@ -1109,6 +1111,7 @@ fn load_version(path: &Path) -> Result<Loaded> {
     let model = crate::model::build(&contract)?;
     ensure_directory_version(path, &model)?;
     let lock_path = path.join("wire.lock");
+    crate::ensure_lockfile_not_symlink(&lock_path)?;
     let text = fs::read_to_string(&lock_path)
         .with_context(|| format!("failed to read {}", lock_path.display()))?;
     let lock = WireLock::parse(&text).map_err(|err| {

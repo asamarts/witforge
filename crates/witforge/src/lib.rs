@@ -561,6 +561,9 @@ fn parse_package_header_line(rest: &str) -> (Option<String>, Option<String>, boo
                         *pos += 1;
                     }
                 }
+                if depth > 0 {
+                    *pos = bytes.len();
+                }
             } else {
                 break;
             }
@@ -1876,6 +1879,7 @@ impl ReleasedManifest {
                     Some(directory.display().to_string()),
                 ));
             }
+            ensure_no_symlinks(&directory, entry_name)?;
             if !directory.join("wire.lock").is_file() {
                 return Err(operational_error(
                     diagnostic::codes::IO_ERROR,
@@ -1883,7 +1887,6 @@ impl ReleasedManifest {
                     Some(directory.join("wire.lock").display().to_string()),
                 ));
             }
-            ensure_no_symlinks(&directory, entry_name)?;
             directories.push(entry_name.to_string());
             if is_retired {
                 retired.insert(entry_name.to_string());
@@ -2247,6 +2250,69 @@ pub fn ensure_directory_version(wit_dir: &Path, model: &model::Model) -> Result<
 /// Returns an error for an invalid manifest or an explicitly missing manifest.
 pub fn load_released_manifest(wit_dir: &Path, explicit: Option<&Path>) -> Result<ReleasedManifest> {
     load_manifest_or_default(default_released_manifest(wit_dir), explicit)
+}
+
+/// Refuse a symlinked `wire.lock` path (including a dangling symlink or trailing separator).
+///
+/// Missing paths are ignored so callers can preserve their missing-lockfile hints and `--first`
+/// behavior.
+pub(crate) fn ensure_lockfile_not_symlink(path: &Path) -> Result<()> {
+    let normalized: PathBuf = path.components().collect();
+    if let Ok(meta) = fs::symlink_metadata(&normalized)
+        && meta.file_type().is_symlink()
+    {
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!("refusing to follow symlinked lockfile {}", path.display()),
+            Some(path.display().to_string()),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse an explicit `--released` manifest path whose parent directory is not `wit_root`.
+///
+/// Bare entry names inside a `released` manifest (such as `v0.1 retired`) are scoped to the
+/// manifest's own directory; applying a manifest from another WIT root would silently retire or
+/// treat matching version directory names in `wit_root` as released.
+pub(crate) fn ensure_manifest_in_wit_root(manifest_path: &Path, wit_root: &Path) -> Result<()> {
+    let manifest_file = manifest_path.display().to_string();
+    let normalized: PathBuf = manifest_path.components().collect();
+    if normalized.file_name().is_none() {
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!("released manifest `{manifest_file}` is not a file path"),
+            Some(manifest_file),
+        ));
+    }
+    let parent = normalized
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canon_parent = fs::canonicalize(parent).map_err(|err| {
+        operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{manifest_file}` parent `{}` cannot be resolved: {err}",
+                parent.display()
+            ),
+            Some(manifest_file.clone()),
+        )
+    })?;
+    let canon_wit_root = fs::canonicalize(wit_root)
+        .with_context(|| format!("failed to resolve WIT root {}", wit_root.display()))?;
+    if canon_parent != canon_wit_root {
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "released manifest `{manifest_file}` belongs to `{}`, not `{}`",
+                canon_parent.display(),
+                canon_wit_root.display()
+            ),
+            Some(manifest_file),
+        ));
+    }
+    Ok(())
 }
 
 /// Load the manifest for a WIT root, as the generators do; the default is `<wit-root>/released`.

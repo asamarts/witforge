@@ -2473,3 +2473,256 @@ interface api {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn fifth_wave_audit_docs_doctests_links_rustfmt_and_layout_depth_regressions() {
+    use std::fmt::Write as _;
+    use std::process::Command;
+    use witforge::emit::{glue, rust};
+    use witforge::workflow::{self, Baseline, VersionOptions};
+
+    let lock_first = |dir: &Path| {
+        let locked =
+            workflow::lock(&VersionOptions::new(dir.to_path_buf()).with_baseline(Baseline::First))
+                .unwrap();
+        fs::write(&locked.lockfile, locked.rendered.unwrap()).unwrap();
+    };
+
+    let base = std::env::temp_dir().join(format!("witforge-w10-126-emit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. `docs.rs`: doctest escapes (fence interrupting list, nested list, multi-space marker,
+    //    CommonMark §5.2 first-line indented code in list item) and malformed external link syntax
+    //    must compile cleanly under `cargo doc -D warnings` AND `cargo test --doc`.
+    let doc_root = base.join("doc-wit");
+    let doc_v01 = doc_root.join("v0.1");
+    fs::create_dir_all(&doc_v01).unwrap();
+    fs::write(
+        doc_v01.join("contract.wit"),
+        "package ex:docs@0.1.0;\n\
+         interface api {\n\
+             /// - item\n\
+             /// ```rust\n\
+             /// let x = 1;\n\
+             /// ```\n\
+             ///     compile_error!(\"escaped after fence in list\");\n\
+             record fence-in-list {\n\
+                 /// 10. outer\n\
+                 ///     - inner\n\
+                 ///         ```rust\n\
+                 ///         compile_error!(\"escaped nested list fence\");\n\
+                 ///         ```\n\
+                 nested-list: u32,\n\
+                 /// -   item\n\
+                 ///       ```rust\n\
+                 ///       compile_error!(\"escaped multi-space list fence\");\n\
+                 ///       ```\n\
+                 multi-space: u32,\n\
+                 /// -     compile_error!(\"escaped first-line indented code\");\n\
+                 first-line-code: u32,\n\
+                 /// Bad title escape: [a](https://example.com \"x\\\")\n\
+                 /// Bad unbalanced paren: [b](https://example.com/( \"y)\")\n\
+                 /// Bad angle escape: [c](<https://example.com\\>)\n\
+                 /// Non-ASCII space: [d](https://example.com\u{00a0}tail)\n\
+                 /// Valid link: [rust](https://en.wikipedia.org/wiki/Rust_(programming_language) \"ok \\\\\")\n\
+                 links: u32,\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_first(&doc_v01);
+
+    let doc_plan = rust::plan(&doc_root).unwrap();
+    let doc_rust = doc_plan.files().get("v0_1.rs").unwrap();
+    assert!(
+        doc_rust.contains(
+            "/// Valid link: [rust](https://en.wikipedia.org/wiki/Rust_(programming_language) \"ok \\\\\")"
+        ),
+        "valid parenthesized URL with escaped backslash in title must remain verbatim:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("\\[a\\](<https://example.com> \"x\\\")"),
+        "odd trailing backslash in link title must be escaped:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("\\[b\\](<https://example.com/(> \"y)\")"),
+        "unbalanced paren across URL and title must be escaped:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("\\[c\\](<https://example.com\\>)"),
+        "escaped angle bracket in destination must be escaped:\n{doc_rust}"
+    );
+
+    let doc_crate = base.join("doc-crate");
+    fs::create_dir_all(doc_crate.join("src")).unwrap();
+    fs::write(
+        doc_crate.join("Cargo.toml"),
+        "[package]\nname = \"wf-w10-126-docs\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        doc_crate.join("src/lib.rs"),
+        format!("#![deny(missing_docs)]\n//! Doc crate.\n{doc_rust}"),
+    )
+    .unwrap();
+    let doc_target = base.join("doc-target");
+    let rustdoc = Command::new(env!("CARGO"))
+        .args(["doc", "--offline", "--no-deps", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("RUSTDOCFLAGS", "-D warnings")
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        rustdoc.status.success(),
+        "cargo doc -D warnings failed:\n{}\n{}",
+        String::from_utf8_lossy(&rustdoc.stdout),
+        String::from_utf8_lossy(&rustdoc.stderr)
+    );
+    let doctest = Command::new(env!("CARGO"))
+        .args(["test", "--offline", "--doc", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        doctest.status.success(),
+        "cargo test --doc failed (doctest escaped!):\n{}\n{}",
+        String::from_utf8_lossy(&doctest.stdout),
+        String::from_utf8_lossy(&doctest.stderr)
+    );
+
+    // 2. `rust.rs`: 32-level nested option inside `variant inner` wrapped by `variant outer` must
+    //    still emit `#[allow(clippy::large_enum_variant)]` on BOTH enums (no depth+1 off-by-one).
+    let depth_root = base.join("depth-wit");
+    let depth_v01 = depth_root.join("v0.1");
+    fs::create_dir_all(&depth_v01).unwrap();
+    let mut depth_wit =
+        String::from("package ex:depth@0.1.0;\ninterface api {\n    record big {\n");
+    for i in 0..80 {
+        let _ = writeln!(depth_wit, "        x{i}: u64,");
+    }
+    depth_wit.push_str("    }\n    type opt0 = big;\n");
+    for level in 1..=32 {
+        let _ = writeln!(depth_wit, "    type opt{level} = option<opt{}>;", level - 1);
+    }
+    depth_wit.push_str(
+        "    variant inner {\n\
+             small,\n\
+             huge(opt32),\n\
+         }\n\
+         variant outer {\n\
+             tiny,\n\
+             wrapped(inner),\n\
+         }\n\
+     }\n",
+    );
+    fs::write(depth_v01.join("contract.wit"), depth_wit).unwrap();
+    lock_first(&depth_v01);
+    let depth_plan = rust::plan(&depth_root).unwrap();
+    let depth_rust = depth_plan.files().get("v0_1.rs").unwrap();
+    let inner_pos = depth_rust.find("pub enum Inner").unwrap();
+    let outer_pos = depth_rust.find("pub enum Outer").unwrap();
+    assert!(
+        depth_rust[..inner_pos]
+            .lines()
+            .rev()
+            .take(4)
+            .any(|line| line.contains("clippy::large_enum_variant")),
+        "Inner must carry #[allow(clippy::large_enum_variant)]:\n{depth_rust}"
+    );
+    assert!(
+        depth_rust[inner_pos..outer_pos]
+            .lines()
+            .rev()
+            .take(4)
+            .any(|line| line.contains("clippy::large_enum_variant")),
+        "Outer must carry #[allow(clippy::large_enum_variant)] without depth+1 truncation:\n{depth_rust}"
+    );
+
+    // 3. `convert.rs` (`wrap_ok` > 60 and == 100 in record_body & flags_body) and `glue.rs`
+    //    (`push_let_else_err` exact len 100/101 and deep `Wrapper { value: Some(...) }`) must
+    //    match `rustfmt --check` under BOTH Edition 2021 and Edition 2024.
+    let fmt_root = base.join("fmt-wit");
+    let fmt_v01 = fmt_root.join("v0.1");
+    let fmt_v02 = fmt_root.join("v0.2");
+    fs::create_dir_all(&fmt_v01).unwrap();
+    fs::create_dir_all(&fmt_v02).unwrap();
+    let make_fmt_wit = |ver: &str| {
+        format!(
+            "package ex:fmt@{ver};\n\
+             interface very-long-interface-name-for-convert-wrap-ok-check {{\n\
+                 record item {{\n\
+                     id: u32,\n\
+                 }}\n\
+                 flags perms {{\n\
+                     read,\n\
+                     write,\n\
+                 }}\n\
+             }}\n\
+             interface glue-edge {{\n\
+                 variant choice {{\n\
+                     a,\n\
+                     b(u32),\n\
+                 }}\n\
+                 record widths {{\n\
+                     f38-exact-width-test-field-for-let-el: choice,\n\
+                     f39-exact-width-test-field-for-let-els: choice,\n\
+                     f40-exact-width-test-field-for-let-else: choice,\n\
+                     f41-exact-width-test-field-for-let-else1: choice,\n\
+                     f42-exact-width-test-field-for-let-else12: choice,\n\
+                     d5: result<result<result<result<result<u8, u8>, u8>, u8>, u8>, u8>,\n\
+                     opt-deep: option<option<option<option<option<option<option<u8>>>>>>>,\n\
+                 }}\n\
+             }}\n"
+        )
+    };
+    fs::write(fmt_v01.join("contract.wit"), make_fmt_wit("0.1.0")).unwrap();
+    lock_first(&fmt_v01);
+
+    fs::write(fmt_v02.join("contract.wit"), make_fmt_wit("0.2.0")).unwrap();
+    fs::copy(fmt_v01.join("wire.lock"), fmt_v02.join("wire.lock")).unwrap();
+    let l2 = workflow::lock(
+        &VersionOptions::new(fmt_v02.clone())
+            .with_baseline(Baseline::Against(fmt_v01.join("wire.lock"))),
+    )
+    .unwrap();
+    fs::write(&l2.lockfile, l2.rendered.unwrap()).unwrap();
+
+    let fmt_rust = rust::plan(&fmt_root).unwrap();
+    let fmt_glue = glue::plan(&fmt_root, "crate::plain", "crate::proto").unwrap();
+    let check_dir = base.join("rustfmt-check");
+    for (prefix, files) in [("rust", fmt_rust.files()), ("glue", fmt_glue.files())] {
+        let sub_dir = check_dir.join(prefix);
+        fs::create_dir_all(&sub_dir).unwrap();
+        for (name, content) in files {
+            let file_path = sub_dir.join(name);
+            if let Some(parent) = file_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&file_path, content).unwrap();
+        }
+        for name in files.keys() {
+            let file_path = sub_dir.join(name);
+            for edition in ["2021", "2024"] {
+                let out = Command::new("rustfmt")
+                    .args(["--edition", edition, "--check"])
+                    .arg(&file_path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "rustfmt --edition {edition} --check failed for {prefix}/{name}:\n{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

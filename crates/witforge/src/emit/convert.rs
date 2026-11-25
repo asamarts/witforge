@@ -1048,7 +1048,8 @@ fn record_body(
     }
 
     let ok_prefix = "::core::result::Result::Ok(";
-    let wrap_ok = indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH;
+    let wrap_ok = target_path.len() + " {".len() > rustfmt::FN_CALL_WIDTH
+        || indent + ok_prefix.len() + target_path.len() + " {".len() >= rustfmt::MAX_WIDTH;
     let field_indent = if wrap_ok { indent + 8 } else { indent + 4 };
     let mut stmts = Vec::new();
     let mut fields = Vec::new();
@@ -1355,7 +1356,8 @@ fn flags_body(
     let mut next_id = 0usize;
     let mut used_value = false;
     let ok_prefix = "::core::result::Result::Ok(";
-    let wrap_ok = indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH;
+    let wrap_ok = target_path.len() + " {".len() > rustfmt::FN_CALL_WIDTH
+        || indent + ok_prefix.len() + target_path.len() + " {".len() >= rustfmt::MAX_WIDTH;
     let field_indent = if wrap_ok { indent + 8 } else { indent + 4 };
     for target_flag in target_flags {
         let target_name = rust_ident(&snake_case(&target_flag.name), "flag")?;
@@ -1383,8 +1385,7 @@ fn flags_body(
     for stmt in stmts {
         writeln!(out, "{stmt}")?;
     }
-    let ok_prefix = "::core::result::Result::Ok(";
-    if indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH {
+    if wrap_ok {
         let inner_indent = indent + 4;
         let inner_prefix = " ".repeat(inner_indent);
         let lit = rustfmt::fmt_struct_lit(inner_indent, &target_path, &fields, inner_indent, 1);

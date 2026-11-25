@@ -639,17 +639,29 @@ pub(crate) fn create_new_version(
     }
 
     let source_lock = latest_dir.join("wire.lock");
-    if !major_bump && !source_lock.is_file() {
-        return Err(op_error(
-            codes::IO_ERROR,
-            format!(
-                "source version directory `{}` has no `wire.lock`; lock `{}` before starting a \
-                 new minor version",
-                latest_dir.display(),
-                latest_dir.display()
-            ),
-            Some(source_lock.display().to_string()),
-        ));
+    if !major_bump {
+        if fs::symlink_metadata(&source_lock).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(op_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "source lockfile `{}` is a symlink; new-version refuses to copy symlinks",
+                    source_lock.display()
+                ),
+                Some(source_lock.display().to_string()),
+            ));
+        }
+        if !source_lock.is_file() {
+            return Err(op_error(
+                codes::IO_ERROR,
+                format!(
+                    "source version directory `{}` has no `wire.lock`; lock `{}` before starting a \
+                     new minor version",
+                    latest_dir.display(),
+                    latest_dir.display()
+                ),
+                Some(source_lock.display().to_string()),
+            ));
+        }
     }
 
     let old_ver = format!("{latest_major}.{latest_minor}.0");

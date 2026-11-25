@@ -664,9 +664,21 @@ pub(crate) fn load_versions_with_released(
     wit_root: &Path,
     explicit_released: Option<&Path>,
 ) -> Result<Vec<Version>> {
+    let manifest_path = explicit_released.map_or_else(
+        || wit_root.join(crate::RELEASED_MANIFEST),
+        Path::to_path_buf,
+    );
     let released = crate::load_root_released_manifest(wit_root, explicit_released)?;
+    if let Some(path) = explicit_released {
+        crate::ensure_manifest_in_wit_root(path, wit_root)?;
+    }
     let discovered = discover_versions(wit_root)?;
-    crate::validate_retirement_order(&discovered, &released, wit_root)?;
+    crate::validate_retirement_order_with_manifest(
+        &discovered,
+        &released,
+        wit_root,
+        &manifest_path,
+    )?;
     let mut since_history = model::SinceHistory::new(
         discovered
             .iter()
@@ -1017,6 +1029,7 @@ fn read_version_lock(
     lock_path: &Path,
     previous_dir: Option<&Path>,
 ) -> Result<String> {
+    crate::ensure_lockfile_not_symlink(lock_path)?;
     match fs::read_to_string(lock_path) {
         Ok(text) => Ok(text),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {

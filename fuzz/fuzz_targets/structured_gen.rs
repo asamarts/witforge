@@ -661,8 +661,8 @@ pub fn assert_invariants_for_version_dir(wit_root: &Path, version_dir: &Path) ->
             .expect("no_std rust::plan must succeed for subset-clean contract");
     for (name, content) in rust_no_std.files() {
         assert!(
-            !content.contains("::std::"),
-            "no_std rust file `{name}` must not reference `::std::`"
+            !code_contains_std_path(content),
+            "no_std rust file `{name}` must not reference `::std::` in generated code"
         );
     }
     let glue_no_std = glue::plan_with_options(
@@ -675,8 +675,8 @@ pub fn assert_invariants_for_version_dir(wit_root: &Path, version_dir: &Path) ->
     .expect("no_std glue::plan must succeed for subset-clean contract");
     for (name, content) in glue_no_std.files() {
         assert!(
-            !content.contains("::std::"),
-            "no_std glue file `{name}` must not reference `::std::`"
+            !code_contains_std_path(content),
+            "no_std glue file `{name}` must not reference `::std::` in generated code"
         );
     }
     let schema_2020_1 = json_schema::plan_with_options(
@@ -731,14 +731,17 @@ pub fn assert_invariants_for_version_dir(wit_root: &Path, version_dir: &Path) ->
             let path = entry.path();
             if path.extension().and_then(std::ffi::OsStr::to_str) == Some("wit") {
                 let text = fs::read_to_string(&path).expect("read wit");
-                if text.contains(&old_ver) {
-                    fs::write(&path, text.replacen(&old_ver, &new_ver, 1))
-                        .expect("write bumped wit");
+                if let Some(updated) = bump_package_header_version(&text, &old_ver, &new_ver) {
+                    fs::write(&path, updated).expect("write bumped wit");
                     bumped = true;
                 }
             }
         }
-        if bumped {
+        if bumped
+            && let Ok(next_contract) = load(&next_dir)
+            && let Ok(next_model) = model::build(&next_contract)
+            && next_model.package.version == model::Version::new(major, next_minor, 0)
+        {
             let multi_rust1 = rust::plan(wit_root)
                 .expect("two identical versions must generate convert.rs cleanly");
             let multi_rust2 = rust::plan(wit_root).expect("second multi-version rust::plan");
@@ -755,4 +758,78 @@ pub fn assert_invariants_for_version_dir(wit_root: &Path, version_dir: &Path) ->
     }
 
     true
+}
+
+fn code_contains_std_path(content: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.trim_start();
+        !trimmed.starts_with("//") && trimmed.contains("::std::")
+    })
+}
+
+fn bump_package_header_version(text: &str, old_ver: &str, new_ver: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let old_bytes = old_ver.as_bytes();
+    let mut i = 0usize;
+    let mut block_depth = 0usize;
+    let mut in_line_comment = false;
+    let mut in_package_header = false;
+    while i < bytes.len() {
+        if in_line_comment {
+            if bytes[i] == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if block_depth > 0 {
+            if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                block_depth += 1;
+                i += 2;
+            } else if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                block_depth -= 1;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            block_depth = 1;
+            i += 2;
+            continue;
+        }
+        if in_package_header {
+            if bytes[i..].starts_with(old_bytes) {
+                let mut out = String::with_capacity(text.len() + new_ver.len());
+                out.push_str(&text[..i]);
+                out.push_str(new_ver);
+                out.push_str(&text[i + old_bytes.len()..]);
+                return Some(out);
+            }
+            if matches!(bytes[i], b';' | b'{') {
+                in_package_header = false;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i..].starts_with(b"package") {
+            let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+            let after_ok = bytes
+                .get(i + 7)
+                .is_some_and(|b| b.is_ascii_whitespace() || *b == b'/');
+            if before_ok && after_ok {
+                in_package_header = true;
+                i += 7;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    None
 }

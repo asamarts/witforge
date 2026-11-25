@@ -398,7 +398,7 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len());
     let mut pending_paragraph: Vec<String> = Vec::new();
     let mut in_paragraph = false;
-    let mut list_content_col: Option<usize> = None;
+    let mut list_cols: Vec<usize> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -414,7 +414,7 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
         if is_blockquote(line) {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
             in_paragraph = false;
-            list_content_col = None;
+            list_cols.clear();
             let mut inner = Vec::new();
             while i < lines.len() && is_blockquote(&lines[i]) {
                 inner.push(strip_blockquote(&lines[i]));
@@ -432,17 +432,15 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
 
         let (_, col) = leading_columns(line);
         // After a blank line (not continuing a paragraph), any non-blank line indented less than
-        // `list_content_col` terminates the enclosing list in CommonMark. Clear it before fence /
-        // indented-code detection so a subsequent 4-space-indented fence cannot escape as a Rust
-        // doctest.
-        if !in_paragraph
-            && let Some(list_col) = list_content_col
-            && col < list_col
-        {
-            list_content_col = None;
+        // an enclosing list item's content column terminates that list level in CommonMark.
+        if !in_paragraph {
+            while list_cols.last().is_some_and(|&lc| col < lc) {
+                list_cols.pop();
+            }
         }
-        let indented_code_threshold = list_content_col.map_or(4, |c| c + 4);
-        let max_fence_indent = list_content_col.map_or(3, |c| c + 3);
+        let current_list_col = list_cols.last().copied();
+        let indented_code_threshold = current_list_col.map_or(4, |c| c + 4);
+        let max_fence_indent = current_list_col.map_or(3, |c| c + 3);
         let is_indented_code = !in_paragraph && col >= indented_code_threshold;
 
         if !is_indented_code
@@ -450,13 +448,19 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
         {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
             in_paragraph = false;
+            // In CommonMark §4.5, a fenced code block interrupting a paragraph at `col < lc`
+            // terminates the enclosing list level(s).
+            while list_cols.last().is_some_and(|&lc| col < lc) {
+                list_cols.pop();
+            }
+            let close_max_indent = list_cols.last().copied().map_or(3, |c| c + 3);
             let expanded_prefix = expand_leading_ws(prefix);
             let fence: String = std::iter::repeat_n(fence_char, fence_len).collect();
             out.push(format!("{expanded_prefix}{fence}text"));
             i += 1;
             let mut closed = false;
             while i < lines.len() {
-                if is_closing_fence(&lines[i], fence_char, fence_len, max_fence_indent) {
+                if is_closing_fence(&lines[i], fence_char, fence_len, close_max_indent) {
                     out.push(format!("{expanded_prefix}{fence}"));
                     i += 1;
                     closed = true;
@@ -473,7 +477,7 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
 
         if is_indented_code {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
-            let list_indent = list_content_col.unwrap_or(0);
+            let list_indent = current_list_col.unwrap_or(0);
             let indent_prefix = " ".repeat(list_indent);
             let start = i;
             while i < lines.len() {
@@ -516,24 +520,68 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
         if is_atx_heading_or_thematic_break(line) {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
             in_paragraph = false;
-            list_content_col = None;
+            while list_cols.last().is_some_and(|&lc| col < lc) {
+                list_cols.pop();
+            }
             out.extend(escape_paragraph_lines(std::slice::from_ref(line), target));
             i += 1;
             continue;
         }
 
-        if let Some(content_col) = list_marker_content_col(line) {
+        if let Some(marker) = parse_list_marker(line, max_fence_indent) {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
-            list_content_col = Some(content_col);
+            while list_cols.last().is_some_and(|&lc| col < lc) {
+                list_cols.pop();
+            }
+            if list_cols.last().copied() != Some(marker.content_col) {
+                list_cols.push(marker.content_col);
+            }
+            if let Some((marker_prefix, first_code)) = marker.first_line_code {
+                in_paragraph = false;
+                out.push(marker_prefix);
+                let code_threshold = marker.content_col + 4;
+                let indent_prefix = " ".repeat(marker.content_col);
+                let mut dedented = vec![first_code];
+                i += 1;
+                let cont_start = i;
+                while i < lines.len() {
+                    if lines[i].is_empty() || leading_columns(&lines[i]).1 >= code_threshold {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let mut cont_end = i;
+                while cont_end > cont_start && lines[cont_end - 1].is_empty() {
+                    cont_end -= 1;
+                }
+                i = cont_end;
+                for code_line in &lines[cont_start..cont_end] {
+                    if code_line.is_empty() {
+                        dedented.push(String::new());
+                    } else {
+                        dedented.push(strip_columns(code_line, code_threshold));
+                    }
+                }
+                let fence_len = max_backtick_run(&dedented).max(2) + 1;
+                let fence = "`".repeat(fence_len);
+                out.push(format!("{indent_prefix}{fence}text"));
+                for code_line in dedented {
+                    if code_line.is_empty() {
+                        out.push(String::new());
+                    } else {
+                        out.push(format!("{indent_prefix}{code_line}"));
+                    }
+                }
+                out.push(format!("{indent_prefix}{fence}"));
+                continue;
+            }
             in_paragraph = true;
             pending_paragraph.push(line.clone());
             i += 1;
             continue;
         }
 
-        if col == 0 {
-            list_content_col = None;
-        }
         in_paragraph = true;
         pending_paragraph.push(line.clone());
         i += 1;
@@ -712,32 +760,86 @@ fn is_atx_heading_or_thematic_break(line: &str) -> bool {
     false
 }
 
-fn list_marker_content_col(line: &str) -> Option<usize> {
+struct ListMarker {
+    content_col: usize,
+    first_line_code: Option<(String, String)>,
+}
+
+fn parse_list_marker(line: &str, max_marker_indent: usize) -> Option<ListMarker> {
     let (byte_off, col) = leading_columns(line);
-    if col > 3 {
+    if col > max_marker_indent {
         return None;
     }
     let rest = &line[byte_off..];
     let bytes = rest.as_bytes();
-    if let Some(&first) = bytes.first()
+    let marker_len = if let Some(&first) = bytes.first()
         && matches!(first, b'-' | b'+' | b'*')
     {
-        return match bytes.get(1) {
-            None | Some(b' ') => Some(col + 2),
-            Some(b'\t') => Some(col + 4 - ((col + 1) % 4)),
-            _ => None,
-        };
+        1
+    } else {
+        let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+        if (1..=9).contains(&digits) && matches!(bytes.get(digits), Some(b'.' | b')')) {
+            digits + 1
+        } else {
+            return None;
+        }
+    };
+    let marker_end_col = col + marker_len;
+    let after_marker = &rest[marker_len..];
+    if after_marker.is_empty() {
+        return Some(ListMarker {
+            content_col: marker_end_col + 1,
+            first_line_code: None,
+        });
     }
-    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
-    if (1..=9).contains(&digits) && matches!(bytes.get(digits), Some(b'.' | b')')) {
-        let marker_end = col + digits + 1;
-        return match bytes.get(digits + 1) {
-            None | Some(b' ') => Some(marker_end + 1),
-            Some(b'\t') => Some(marker_end + 4 - (marker_end % 4)),
-            _ => None,
-        };
+    if !matches!(after_marker.as_bytes()[0], b' ' | b'\t') {
+        return None;
     }
-    None
+    let mut ws_bytes = 0usize;
+    let mut ws_col = marker_end_col;
+    for b in after_marker.bytes() {
+        match b {
+            b' ' => {
+                ws_bytes += 1;
+                ws_col += 1;
+            }
+            b'\t' => {
+                ws_bytes += 1;
+                ws_col += 4 - (ws_col % 4);
+            }
+            _ => break,
+        }
+    }
+    let body = &after_marker[ws_bytes..];
+    if body.is_empty() {
+        return Some(ListMarker {
+            content_col: marker_end_col + 1,
+            first_line_code: None,
+        });
+    }
+    let ws_width = ws_col - marker_end_col;
+    if ws_width >= 5 {
+        // CommonMark §5.2: >= 5 columns of whitespace after a list marker begins an indented code
+        // block on the first line (content_col = marker_end_col + 1, code indent = content_col + 4).
+        let marker_prefix = format!(
+            "{}{}",
+            expand_leading_ws(&line[..byte_off]),
+            &rest[..marker_len]
+        );
+        let extra_spaces = " ".repeat(ws_width - 5);
+        return Some(ListMarker {
+            content_col: marker_end_col + 1,
+            first_line_code: Some((marker_prefix, format!("{extra_spaces}{body}"))),
+        });
+    }
+    Some(ListMarker {
+        content_col: ws_col,
+        first_line_code: None,
+    })
+}
+
+fn list_marker_content_col(line: &str) -> Option<usize> {
+    parse_list_marker(line, 3).map(|marker| marker.content_col)
 }
 
 fn escape_paragraph_lines(lines: &[String], target: Target) -> Vec<String> {
@@ -1010,7 +1112,11 @@ fn is_valid_link_title(title: &str) -> bool {
     let inner = &bytes[1..bytes.len() - 1];
     let mut i = 0;
     while i < inner.len() {
-        if inner[i] == b'\\' && i + 1 < inner.len() {
+        if inner[i] == b'\\' {
+            if i + 1 == inner.len() {
+                // An odd trailing backslash escapes the closing delimiter in CommonMark §6.3.
+                return false;
+            }
             i += 2;
             continue;
         }
@@ -1022,28 +1128,85 @@ fn is_valid_link_title(title: &str) -> bool {
     true
 }
 
+fn has_balanced_unescaped_parens(url: &str) -> bool {
+    let bytes = url.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                if i + 1 < bytes.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    depth == 0
+}
+
 fn is_external_link_dest(dest: &str) -> bool {
     let (url, rest) = if let Some(after_lt) = dest.strip_prefix('<') {
-        let Some(close) = after_lt.find('>') else {
+        // CommonMark §6.3: find the first unescaped `>`; reject `<`, newlines, and unclosed `\>`.
+        let bytes = after_lt.as_bytes();
+        let mut close = None;
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => {
+                    if i + 1 == bytes.len() {
+                        return false;
+                    }
+                    i += 2;
+                }
+                b'<' | b'\n' | b'\r' => return false,
+                b'>' => {
+                    close = Some(i);
+                    break;
+                }
+                _ => i += 1,
+            }
+        }
+        let Some(close) = close else {
             return false;
         };
         let url = &after_lt[..close];
-        if url.contains(|ch: char| ch.is_whitespace() || ch.is_control() || matches!(ch, '<' | '>'))
-        {
+        if url.contains(|ch: char| ch.is_whitespace() || ch.is_control()) {
             return false;
         }
         let rest = &after_lt[close + 1..];
-        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        if !rest.is_empty() && !rest.as_bytes()[0].is_ascii_whitespace() {
             return false;
         }
-        (url, rest.trim())
+        (url, rest.trim_matches(|ch: char| ch.is_ascii_whitespace()))
     } else {
-        let split = dest.find(char::is_whitespace).unwrap_or(dest.len());
+        let split = dest
+            .bytes()
+            .position(|b| b.is_ascii_whitespace())
+            .unwrap_or(dest.len());
         let url = &dest[..split];
-        if url.contains(|ch: char| ch.is_control() || matches!(ch, '<' | '>')) {
+        if url.contains(|ch: char| ch.is_whitespace() || ch.is_control() || matches!(ch, '<' | '>'))
+            || !has_balanced_unescaped_parens(url)
+        {
             return false;
         }
-        (url, dest[split..].trim())
+        (
+            url,
+            dest[split..].trim_matches(|ch: char| ch.is_ascii_whitespace()),
+        )
     };
     if !rest.is_empty() && !is_valid_link_title(rest) {
         return false;

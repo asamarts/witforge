@@ -82,10 +82,17 @@ frozen as a whole, which covers the remaining source-level cases.
   `generate`, `new-version`, `release`, `retire`, `inspect` on a WIT root, and `freeze`) validates
   the manifest it uses and fails with exit `2` if it is missing when given explicitly or is
   malformed (on `release`, an explicit nonexistent path is created once validation succeeds;
-  `inspect` refuses `--released` on a single version directory). `lock` refuses to edit any version
-  listed in the explicit manifest in addition to the default manifests; whole-root `check`,
+  `inspect` refuses `--released` on a single version directory). Whole-root commands (`check`,
+  `rust`, `proto`, `schema`, `glue`, `generate`, `new-version`, `release`, `retire`, and `inspect`
+  on a WIT root) require an explicit `--released` manifest to live in the target WIT root
+  (`WF9004` otherwise, and multi-project `witforge.toml` invocations of `check`, `generate`, and
+  `freeze` refuse `--released` without `--project <NAME>`), so bare directory entries from another
+  WIT root cannot silently retire or release versions in the wrong root. `lock` refuses to edit any
+  version listed in the explicit manifest in addition to the default manifests; whole-root `check`,
   `freeze`, and every generator (`rust`, `proto`, `schema`, `glue`, and `generate`) also enforce
   retirement order, and generators exclude entries marked `retired` in the manifest they use.
+  Every command that reads or writes `wire.lock` refuses a symlinked (or dangling-symlinked)
+  `wire.lock` with `WF9004` (`GUARD_REFUSED`).
   `diff` does not take `--released`; it reads and validates the default `released` manifest beside
   each endpoint (see [`diff.md`](diff.md)).
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version

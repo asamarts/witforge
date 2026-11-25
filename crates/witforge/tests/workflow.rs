@@ -1236,3 +1236,217 @@ fn fourth_wave_audit_freeze_tree_symlink_path_and_package_location_regressions()
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn fifth_wave_audit_cross_root_manifest_symlink_lock_and_header_comment_regressions() {
+    use witforge::diagnostic::codes;
+    use witforge::emit::{glue, json_schema, proto, rust};
+    use witforge::{diff, inspect};
+
+    let base =
+        std::env::temp_dir().join(format!("witforge-w10-126-workflow-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. Unclosed block comment ending with `{` on a `package` header line must not misclassify
+    //    the top-level package header as a nested `package { ... }` block.
+    let unclosed_comment_contract = witforge::load_sources(vec![witforge::SourceFile::new(
+        "contract.wit".to_string(),
+        "package ex:root /* note {\n\
+         */;\n\
+         interface a {\n\
+             record x { id: u32 }\n\
+         }\n"
+        .to_string(),
+    )])
+    .unwrap();
+    let diags = witforge::subset::check_located_diagnostics(&unclosed_comment_contract);
+    let ver_diag = diags
+        .iter()
+        .find(|d| d.diagnostic.code == codes::SUBSET_PACKAGE_VERSION)
+        .expect("expected SUBSET_PACKAGE_VERSION diagnostic");
+    assert_eq!(
+        ver_diag.diagnostic.position.map(|p| p.line),
+        Some(1),
+        "unclosed block comment ending in `{{` on line 1 must still resolve line 1: {ver_diag:?}"
+    );
+
+    // 2. Cross-root `--released` manifests must be refused with WF9004 across root commands so a
+    //    manifest from `root_a` cannot silently retire or mark versions released in `root_b`.
+    let make_two_version_root = |root: &Path, pkg: &str| {
+        let v01 = root.join("v0.1");
+        let v02 = root.join("v0.2");
+        fs::create_dir_all(&v01).unwrap();
+        fs::create_dir_all(&v02).unwrap();
+        fs::write(
+            v01.join("contract.wit"),
+            format!("package {pkg}@0.1.0;\ninterface api {{ record item {{ id: u64 }} }}\n"),
+        )
+        .unwrap();
+        let l1 = workflow::lock(
+            &workflow::VersionOptions::new(v01.clone()).with_baseline(Baseline::First),
+        )
+        .unwrap();
+        fs::write(&l1.lockfile, l1.rendered.unwrap()).unwrap();
+        fs::write(
+            v02.join("contract.wit"),
+            format!("package {pkg}@0.2.0;\ninterface api {{ record item {{ id: u64 }} }}\n"),
+        )
+        .unwrap();
+        fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+        let l2 = workflow::lock(
+            &workflow::VersionOptions::new(v02.clone())
+                .with_baseline(Baseline::Against(v01.join("wire.lock"))),
+        )
+        .unwrap();
+        fs::write(&l2.lockfile, l2.rendered.unwrap()).unwrap();
+    };
+    let root_a = base.join("root-a");
+    let root_b = base.join("root-b");
+    make_two_version_root(&root_a, "ex:alpha");
+    make_two_version_root(&root_b, "ex:beta");
+    let foreign_manifest = root_a.join("released");
+    fs::write(&foreign_manifest, "v0.1 retired\nv0.2\n").unwrap();
+
+    let assert_guard_refused = |label: &str, err: anyhow::Error| {
+        let diag = witforge::error_diagnostics(&err)
+            .and_then(|ds| ds.first())
+            .unwrap_or_else(|| panic!("{label}: expected structured diagnostic, got {err:#}"));
+        assert_eq!(
+            diag.code,
+            codes::GUARD_REFUSED,
+            "{label}: expected WF9004, got {diag:?}"
+        );
+    };
+    assert_guard_refused(
+        "rust::plan_with_released",
+        rust::plan_with_released(&root_b, false, Some(&foreign_manifest)).unwrap_err(),
+    );
+    assert_guard_refused(
+        "proto::plan_with_released",
+        proto::plan_with_released(&root_b, Some(&foreign_manifest)).unwrap_err(),
+    );
+    assert_guard_refused(
+        "json_schema::plan_with_released",
+        json_schema::plan_with_released(&root_b, Some(&foreign_manifest)).unwrap_err(),
+    );
+    assert_guard_refused(
+        "glue::plan_with_released",
+        glue::plan_with_released(
+            &root_b,
+            "crate::plain",
+            "crate::proto",
+            Some(&foreign_manifest),
+        )
+        .unwrap_err(),
+    );
+    assert_guard_refused(
+        "workflow::check_root",
+        workflow::check_root(&root_b, Some(&foreign_manifest)).unwrap_err(),
+    );
+    assert_guard_refused(
+        "workflow::check_release",
+        workflow::check_release(&root_b.join("v0.1"), Some(&foreign_manifest)).unwrap_err(),
+    );
+    assert_guard_refused(
+        "inspect::inspect_root_json",
+        inspect::inspect_root_json(&root_b, Some(&foreign_manifest)).unwrap_err(),
+    );
+
+    // 3. Explicit in-root `--released` retirement-order violation in `load_versions_with_released`
+    //    must cite the explicit manifest path rather than `<wit_root>/released`.
+    let custom_manifest = root_b.join("custom-released");
+    fs::write(&custom_manifest, "v0.1\nv0.2 retired\n").unwrap();
+    let retire_err = rust::plan_with_released(&root_b, false, Some(&custom_manifest)).unwrap_err();
+    let retire_located = witforge::error_located_diagnostics(&retire_err).unwrap();
+    assert_eq!(retire_located[0].diagnostic.code, codes::LOCKFILE_ERROR);
+    assert!(
+        retire_located[0]
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("custom-released")),
+        "expected diagnostic file to name custom-released, got {:?}",
+        retire_located[0]
+    );
+    let inspect_retire_err =
+        inspect::inspect_root_json(&root_b, Some(&custom_manifest)).unwrap_err();
+    let inspect_located = witforge::error_located_diagnostics(&inspect_retire_err).unwrap();
+    assert!(
+        inspect_located[0]
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("custom-released")),
+        "expected inspect diagnostic file to name custom-released, got {:?}",
+        inspect_located[0]
+    );
+
+    // 4. Symlinked and dangling-symlinked `wire.lock` files must be refused with WF9004 across
+    //    every reader/writer (`check`, `check_root`, `lock`, generators, `inspect`, `diff`,
+    //    `WireLock::write_atomic`, and `ReleasedManifest::load`).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let sym_root = base.join("sym-lock");
+        make_two_version_root(&sym_root, "ex:symlock");
+        let v01 = sym_root.join("v0.1");
+        let real_lock = base.join("external-wire.lock");
+        fs::rename(v01.join("wire.lock"), &real_lock).unwrap();
+        symlink(&real_lock, v01.join("wire.lock")).unwrap();
+
+        assert_guard_refused(
+            "workflow::check(symlink wire.lock)",
+            workflow::check(&workflow::VersionOptions::new(v01.clone())).unwrap_err(),
+        );
+        assert_guard_refused(
+            "workflow::check_root(symlink wire.lock)",
+            workflow::check_root(&sym_root, None).unwrap_err(),
+        );
+        assert_guard_refused(
+            "workflow::lock(symlink wire.lock)",
+            workflow::lock(
+                &workflow::VersionOptions::new(v01.clone()).with_baseline(Baseline::First),
+            )
+            .unwrap_err(),
+        );
+        assert_guard_refused(
+            "rust::plan(symlink wire.lock)",
+            rust::plan(&sym_root).unwrap_err(),
+        );
+        assert_guard_refused(
+            "inspect::inspect_root_json(symlink wire.lock)",
+            inspect::inspect_root_json(&sym_root, None).unwrap_err(),
+        );
+        assert_guard_refused(
+            "diff::compare(symlink wire.lock)",
+            diff::compare(&v01, &v01).unwrap_err(),
+        );
+        let parsed =
+            witforge::lock::WireLock::parse(&fs::read_to_string(&real_lock).unwrap()).unwrap();
+        assert_guard_refused(
+            "WireLock::write_atomic(symlink wire.lock)",
+            parsed.write_atomic(&v01.join("wire.lock")).unwrap_err(),
+        );
+
+        // Dangling symlink `wire.lock` must report WF9004 (not WF9002).
+        fs::remove_file(v01.join("wire.lock")).unwrap();
+        symlink(base.join("nonexistent-wire.lock"), v01.join("wire.lock")).unwrap();
+        fs::write(sym_root.join("released"), "v0.1\n").unwrap();
+        assert_guard_refused(
+            "ReleasedManifest::load(dangling symlink wire.lock)",
+            witforge::ReleasedManifest::load(&sym_root.join("released")).unwrap_err(),
+        );
+        assert_guard_refused(
+            "diff::compare(dangling symlink wire.lock)",
+            diff::compare(&v01, &v01).unwrap_err(),
+        );
+        fs::remove_file(sym_root.join("released")).unwrap();
+        assert_guard_refused(
+            "workflow::check_root(dangling symlink predecessor wire.lock)",
+            workflow::check_root(&sym_root, None).unwrap_err(),
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

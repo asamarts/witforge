@@ -5718,3 +5718,145 @@ fn fourth_wave_audit_trailing_slash_manifest_and_dangling_symlink_regressions() 
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn fifth_wave_audit_multi_project_released_and_dangling_lock_cli_regressions() {
+    let base = std::env::temp_dir().join(format!("witforge-w10-126-cli-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. Multi-project `witforge.toml` + `--released` without `--project` must be refused with
+    //    WF9001 (exit 2) across `check`, `generate`, and `freeze`, while `--project <NAME>` works.
+    let init_project = |root: &Path, pkg: &str| {
+        let v01 = root.join("v0.1");
+        fs::create_dir_all(&v01).unwrap();
+        fs::write(
+            v01.join("contract.wit"),
+            format!("package {pkg}@0.1.0;\ninterface api {{ record item {{ id: u64 }} }}\n"),
+        )
+        .unwrap();
+        assert!(
+            witforge()
+                .args(["lock"])
+                .arg(&v01)
+                .arg("--first")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(
+            witforge()
+                .args(["release"])
+                .arg(&v01)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    };
+    let wit_a = base.join("wit-a");
+    let wit_b = base.join("wit-b");
+    init_project(&wit_a, "ex:alpha");
+    init_project(&wit_b, "ex:beta");
+    let cfg = base.join("witforge.toml");
+    fs::write(
+        &cfg,
+        "version = 1\n\
+         [project.a]\n\
+         root = \"wit-a\"\n\
+         [project.a.rust]\n\
+         out = \"gen-a\"\n\
+         [project.b]\n\
+         root = \"wit-b\"\n\
+         [project.b.rust]\n\
+         out = \"gen-b\"\n",
+    )
+    .unwrap();
+    for sub in ["check", "generate", "freeze"] {
+        let out = witforge()
+            .args([sub, "--config"])
+            .arg(&cfg)
+            .arg("--released")
+            .arg(wit_a.join("released"))
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{sub}: {out:?}");
+        let val: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            val["diagnostics"][0]["code"], "WF9001",
+            "{sub} multi-project --released without --project must report WF9001: {val}"
+        );
+    }
+    let single_check = witforge()
+        .args(["check", "--config"])
+        .arg(&cfg)
+        .args(["--project", "a", "--released"])
+        .arg(wit_a.join("released"))
+        .output()
+        .unwrap();
+    assert!(
+        single_check.status.success(),
+        "check --project a --released failed: {}",
+        String::from_utf8_lossy(&single_check.stderr)
+    );
+    let single_gen = witforge()
+        .args(["generate", "--config"])
+        .arg(&cfg)
+        .args(["--project", "a", "--released"])
+        .arg(wit_a.join("released"))
+        .output()
+        .unwrap();
+    assert!(
+        single_gen.status.success(),
+        "generate --project a --released failed: {}",
+        String::from_utf8_lossy(&single_gen.stderr)
+    );
+
+    // 2. Dangling-symlink `wire.lock` must report WF9004 (not WF9002) in `release` and
+    //    `new-version`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let dangling_wit = base.join("dangling-wit");
+        let v01 = dangling_wit.join("v0.1");
+        fs::create_dir_all(&v01).unwrap();
+        fs::write(
+            v01.join("contract.wit"),
+            "package ex:dangle@0.1.0;\ninterface api { record item { id: u64 } }\n",
+        )
+        .unwrap();
+        symlink(base.join("missing-wire.lock"), v01.join("wire.lock")).unwrap();
+
+        let rel = witforge()
+            .args(["release"])
+            .arg(&v01)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(rel.status.code(), Some(2), "release: {rel:?}");
+        let rel_val: serde_json::Value = serde_json::from_slice(&rel.stdout).unwrap();
+        assert_eq!(
+            rel_val["diagnostics"][0]["code"], "WF9004",
+            "release with dangling wire.lock must report WF9004: {rel_val}"
+        );
+
+        let nv = witforge()
+            .args(["new-version"])
+            .arg(&dangling_wit)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(nv.status.code(), Some(2), "new-version: {nv:?}");
+        let nv_val: serde_json::Value = serde_json::from_slice(&nv.stdout).unwrap();
+        assert_eq!(
+            nv_val["diagnostics"][0]["code"], "WF9004",
+            "new-version with dangling wire.lock must report WF9004: {nv_val}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

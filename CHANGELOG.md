@@ -24,7 +24,7 @@ Generated output changes:
   world-only dependency interface not referenced by any proto message) are omitted while preserving
   every dependency transitively referenced in non-comment message/field bodies. Regenerate and
   commit `.proto` files if affected.
-- **Plain Rust & Glue (`W10-107`, `W10-120`, `W10-124`, `W10-125`):** Deeply nested generic type
+- **Plain Rust & Glue (`W10-107`, `W10-120`, `W10-124`, `W10-125`, `W10-126`):** Deeply nested generic type
   signatures gain `#[allow(clippy::type_complexity)]` where required for `-D warnings`,
   generated enums gain conditional `#[allow(clippy::enum_variant_names)]`, memoized cycle- and
   overflow-safe alignment-aware layout sizing covers padded records and deep/cross-package alias
@@ -199,6 +199,21 @@ Generated output changes:
     extraction for Windows GNU `tar` compatibility, and documented `failed-command: "sarif"`;
     documented `witforge-build`'s public API and 1.0 versioning boundary; extended conformance,
     fuzzing, and `ci/check-public-api-policy.sh` auto-advancing tag protection.
+  - Fixed fifth-wave audit defects (`W10-126`): closed `docs.rs` doctest escapes (fenced code
+    interrupting list items, nested/multi-space lists, and CommonMark §5.2 first-line indented code
+    in list items) and link-destination validation bypasses (odd trailing `\` in titles, unbalanced
+    parens across URL+title, escaped `\>` in angle-bracket destinations, non-ASCII whitespace);
+    fixed `glue.rs` `push_let_else_err` exact-100/101 thresholds and deep
+    `Wrapper { value: Some(...) }` wrapping plus `convert.rs` `record_body`/`flags_body` `wrap_ok`
+    thresholds for Editions 2021 and 2024 `rustfmt --check`; fixed `rust.rs` max-depth (32)
+    `estimate_variant_layout` off-by-one; fixed unclosed block comments on `package` header lines
+    in `lib.rs`; rejected cross-root `--released` manifests (`WF9004`) across root commands and
+    multi-project `--released` without `--project` (`WF9001`); cited explicit `--released` paths on
+    `WF1100` retirement-order diagnostics; refused symlinked and dangling-symlinked `wire.lock`
+    files (`WF9004`) consistently across `check`, `lock`, `diff`, `inspect`, `release`,
+    `new-version`, generators, `ReleasedManifest::load`, and atomic lockfile writes; and hardened
+    `fuzz/fuzz_targets/structured_gen.rs` against doc comments containing `::std::` or version
+    tokens.
 
 ## [0.7.0] - 2026-11-23
 

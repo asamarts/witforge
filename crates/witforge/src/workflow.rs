@@ -497,6 +497,9 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
         Path::to_path_buf,
     );
     let manifest = load_root_released_manifest(wit_root, explicit_released)?;
+    if let Some(path) = explicit_released {
+        crate::ensure_manifest_in_wit_root(path, wit_root)?;
+    }
     let versions = discover_version_directories(wit_root)?;
     let mut result = Report::default();
     if let Err(error) =
@@ -527,6 +530,7 @@ pub fn check_root(wit_root: &Path, explicit_released: Option<&Path>) -> Result<R
             Baseline::Default
         } else if let Some(predecessor) = &predecessor {
             let predecessor_lock = predecessor.join("wire.lock");
+            crate::ensure_lockfile_not_symlink(&predecessor_lock)?;
             if !predecessor_lock.is_file() {
                 result.error(
                     codes::LOCKFILE_ERROR,
@@ -756,13 +760,6 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
             Some(manifest_path.display().to_string()),
         ));
     }
-    let manifest = if manifest_meta.is_some() {
-        crate::ReleasedManifest::load(&manifest_path)?
-    } else {
-        crate::ReleasedManifest::default()
-    };
-    let already_listed = manifest.contains(&entry_name);
-
     let wit_root = canonical_dir.parent().ok_or_else(|| {
         operational_error(
             codes::IO_ERROR,
@@ -773,6 +770,15 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
             Some(version_dir.display().to_string()),
         )
     })?;
+    if let Some(path) = explicit_released {
+        crate::ensure_manifest_in_wit_root(path, wit_root)?;
+    }
+    let manifest = if manifest_meta.is_some() {
+        crate::ReleasedManifest::load(&manifest_path)?
+    } else {
+        crate::ReleasedManifest::default()
+    };
+    let already_listed = manifest.contains(&entry_name);
     let versions = discover_version_directories(wit_root)?;
     let mut result = Report::default();
     if let Err(error) =
@@ -794,6 +800,7 @@ pub fn check_release(version_dir: &Path, explicit_released: Option<&Path>) -> Re
         Baseline::Default
     } else if let Some(pred) = &predecessor {
         let predecessor_lock = pred.join("wire.lock");
+        crate::ensure_lockfile_not_symlink(&predecessor_lock)?;
         if !predecessor_lock.is_file() {
             result.error(
                 codes::LOCKFILE_ERROR,
@@ -1309,6 +1316,7 @@ fn read_previous(path: Option<&Path>) -> Result<(Option<WireLock>, BTreeMap<Stri
 }
 
 fn read_lock(path: &Path, options: &VersionOptions) -> Result<(WireLock, Option<String>)> {
+    crate::ensure_lockfile_not_symlink(path)?;
     match fs::read_to_string(path) {
         Ok(text) => {
             let lock = parse_lock(&text, path)?;
@@ -1364,6 +1372,7 @@ fn read_lock(path: &Path, options: &VersionOptions) -> Result<(WireLock, Option<
 }
 
 fn read_required_lock(path: &Path) -> Result<(WireLock, BTreeMap<String, Position>)> {
+    crate::ensure_lockfile_not_symlink(path)?;
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let lock = parse_lock(&text, path)?;

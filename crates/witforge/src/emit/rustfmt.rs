@@ -282,6 +282,7 @@ pub(crate) fn fmt_struct_lit(
 /// inside a multi-line call or tuple when `rustfmt` would break at `.`.
 fn fmt_multiline_arg(inner_indent: usize, arg: &str) -> String {
     if !arg.contains('\n')
+        && !arg.starts_with('"')
         && inner_indent + arg.len() + 1 > MAX_WIDTH
         && let Some((recv, field)) = arg.split_once('.')
         && !field.contains('.')
@@ -430,6 +431,9 @@ pub(crate) fn fmt_let_stmt(indent: usize, binding: &str, expr: &str) -> String {
             let wrapped = fmt_call(indent, callee, &trimmed, head.len(), call_suffix.len() + 1);
             return format!("{head}{wrapped}{call_suffix};");
         }
+        if expr.starts_with('"') {
+            return format!("{prefix}let {binding} = {expr};");
+        }
         // Single-dot field access (`&value.<long_field>` or `value.<long_field>`): when breaking
         // after `=` still exceeds `MAX_WIDTH`, `rustfmt` breaks at `.` if that fits and otherwise
         // keeps the assignment on a single line.
@@ -468,7 +472,31 @@ pub(crate) fn fmt_match_arm(indent: usize, pat: &str, stmts: &[String], tail: &s
         }
     }
     let inner_prefix = " ".repeat(indent + 4);
-    let mut out = format!("{prefix}{pat} => {{\n");
+    let wrapped_pat = if !pat.contains('\n')
+        && indent + pat.len() + " => {".len() > MAX_WIDTH
+        && let Some(open) = pat.find('(')
+        && pat.ends_with(')')
+        && indent + open < MAX_WIDTH
+    {
+        let callee = &pat[..open];
+        let arg = &pat[open + 1..pat.len() - 1];
+        Some(format!(
+            "{prefix}{callee}(\n{inner_prefix}{arg},\n{prefix})"
+        ))
+    } else {
+        None
+    };
+    if let Some(ref wrapped) = wrapped_pat
+        && stmts.is_empty()
+        && !tail.contains('\n')
+        && indent + ") => ".len() + tail.len() < MAX_WIDTH
+    {
+        return format!("{wrapped} => {tail},");
+    }
+    let mut out = match wrapped_pat {
+        Some(wrapped) => format!("{wrapped} => {{\n"),
+        None => format!("{prefix}{pat} => {{\n"),
+    };
     for stmt in stmts {
         let _ = writeln!(out, "{stmt}");
     }

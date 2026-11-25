@@ -2176,35 +2176,65 @@ fn push_let_else_err(
     let body_indent = indent + 4;
     let body_prefix = " ".repeat(body_indent);
     let err_prefix = "return ::core::result::Result::Err(";
-    let return_stmt = if body_indent + err_prefix.len() + err_path.len() + 4 >= rustfmt::MAX_WIDTH {
+    let wrap_err = body_indent + err_prefix.len() + err_path.len() + 4 >= rustfmt::MAX_WIDTH;
+    let field_indent = if wrap_err {
+        body_indent + 8
+    } else {
+        body_indent + 4
+    };
+    let mut else_prefix_stmts: Vec<String> = Vec::new();
+    let mut hoisted_fields: Vec<(String, String)> = Vec::with_capacity(err_fields.len());
+    for (k, v) in err_fields {
+        if !v.contains('\n')
+            && v.starts_with('"')
+            && k != v
+            && field_indent + k.len() + 2 + v.len() >= rustfmt::MAX_WIDTH
+            && field_indent + 4 + v.len() < rustfmt::MAX_WIDTH
+            && !err_fields
+                .iter()
+                .any(|(ok, ov)| ok != k && ov.contains(k.as_str()))
+        {
+            else_prefix_stmts.push(rustfmt::fmt_let_stmt(body_indent, k, v));
+            hoisted_fields.push((k.clone(), k.clone()));
+        } else {
+            hoisted_fields.push((k.clone(), v.clone()));
+        }
+    }
+    let return_stmt = if wrap_err {
         let arg_indent = body_indent + 4;
         let arg_prefix = " ".repeat(arg_indent);
-        let err_expr = rustfmt::fmt_struct_lit(arg_indent, err_path, err_fields, arg_indent, 1);
+        let err_expr =
+            rustfmt::fmt_struct_lit(arg_indent, err_path, &hoisted_fields, arg_indent, 1);
         format!("{body_prefix}{err_prefix}\n{arg_prefix}{err_expr},\n{body_prefix});")
     } else {
         let err_expr = rustfmt::fmt_struct_lit(
             body_indent,
             err_path,
-            err_fields,
+            &hoisted_fields,
             body_indent + err_prefix.len(),
             2,
         );
         format!("{body_prefix}{err_prefix}{err_expr});")
     };
+    let else_body = if else_prefix_stmts.is_empty() {
+        return_stmt
+    } else {
+        format!("{}\n{return_stmt}", else_prefix_stmts.join("\n"))
+    };
     let header = format!("{prefix}let {pat} = {scrutinee} else {{");
-    if !scrutinee.contains('\n') && header.len() <= rustfmt::MAX_WIDTH {
-        stmts.push(format!("{header}\n{return_stmt}\n{prefix}}};"));
+    if !scrutinee.contains('\n') && header.len() < rustfmt::MAX_WIDTH {
+        stmts.push(format!("{header}\n{else_body}\n{prefix}}};"));
     } else {
         let tmp = temps.fresh();
         stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, scrutinee));
         let hoisted_header = format!("{prefix}let {pat} = {tmp} else {{");
         let let_eq_tmp = format!("{prefix}let {pat} = {tmp}");
         let let_eq = format!("{prefix}let {pat} =");
-        let stmt_header = if hoisted_header.len() <= rustfmt::MAX_WIDTH {
+        let stmt_header = if hoisted_header.len() < rustfmt::MAX_WIDTH {
             hoisted_header
-        } else if let_eq_tmp.len() <= rustfmt::MAX_WIDTH {
+        } else if let_eq_tmp.len() < rustfmt::MAX_WIDTH {
             format!("{let_eq_tmp}\n{prefix}else {{")
-        } else if let_eq.len() <= rustfmt::MAX_WIDTH {
+        } else if indent + 4 + pat.len() < rustfmt::MAX_WIDTH {
             format!("{let_eq}\n{body_prefix}{tmp}\n{prefix}else {{")
         } else if let Some(open) = pat.find('(')
             && pat.ends_with(')')
@@ -2218,8 +2248,31 @@ fn push_let_else_err(
         } else {
             hoisted_header
         };
-        stmts.push(format!("{stmt_header}\n{return_stmt}\n{prefix}}};"));
+        stmts.push(format!("{stmt_header}\n{else_body}\n{prefix}}};"));
     }
+}
+
+/// Format `Wrapper { value: ::core::option::Option::Some(<inner_var>) }` matching `rustfmt`
+/// (Editions 2021 and 2024) across arbitrary nesting depths.
+fn fmt_wrapper_lit(inner_indent: usize, inner_var: &str) -> String {
+    let inner_pad = " ".repeat(inner_indent);
+    let field_indent = inner_indent + 4;
+    let field_pad = " ".repeat(field_indent);
+    let callee = "::core::option::Option::Some";
+    let single = format!("{callee}({inner_var})");
+    let field_line = if field_indent + "value: ".len() + single.len() < rustfmt::MAX_WIDTH {
+        format!("{field_pad}value: {single},")
+    } else if field_indent + "value: ".len() + callee.len() < rustfmt::MAX_WIDTH {
+        let arg_pad = " ".repeat(field_indent + 4);
+        format!("{field_pad}value: {callee}(\n{arg_pad}{inner_var},\n{field_pad}),")
+    } else if field_indent + 4 + callee.len() <= rustfmt::MAX_WIDTH {
+        let arg_pad = " ".repeat(field_indent + 4);
+        let deep_pad = " ".repeat(field_indent + 8);
+        format!("{field_pad}value:\n{arg_pad}{callee}(\n{deep_pad}{inner_var},\n{arg_pad}),")
+    } else {
+        format!("{field_pad}value: {single},")
+    };
+    format!("Wrapper {{\n{field_line}\n{inner_pad}}}")
 }
 
 fn hoist_if_long(
@@ -4491,20 +4544,7 @@ impl Emitter<'_> {
             &[],
             "Case::None(Empty {})",
         );
-        let some_val = rustfmt::fmt_call(
-            inner_indent + 4,
-            "::core::option::Option::Some",
-            std::slice::from_ref(&inner_var),
-            inner_indent + 4 + "value: ".len(),
-            1,
-        );
-        let lit = rustfmt::fmt_struct_lit(
-            inner_indent,
-            "Wrapper",
-            &[("value".to_string(), some_val)],
-            inner_indent,
-            0,
-        );
+        let lit = fmt_wrapper_lit(inner_indent, &inner_var);
         let wrapper_alias = rustfmt::fmt_type_alias(inner_indent, "type Wrapper", wrapper);
         let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
         let empty_alias = rustfmt::fmt_type_alias(inner_indent, "type Empty", empty);
@@ -4561,20 +4601,7 @@ impl Emitter<'_> {
             &[],
             "Case::None(Empty {})",
         );
-        let some_val = rustfmt::fmt_call(
-            inner_indent + 4,
-            "::core::option::Option::Some",
-            std::slice::from_ref(&inner_var),
-            inner_indent + 4 + "value: ".len(),
-            1,
-        );
-        let lit = rustfmt::fmt_struct_lit(
-            inner_indent,
-            "Wrapper",
-            &[("value".to_string(), some_val)],
-            inner_indent,
-            0,
-        );
+        let lit = fmt_wrapper_lit(inner_indent, &inner_var);
         let wrapper_alias = rustfmt::fmt_type_alias(inner_indent, "type Wrapper", wrapper);
         let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
         let empty_alias = rustfmt::fmt_type_alias(inner_indent, "type Empty", empty);
@@ -5223,20 +5250,7 @@ impl Emitter<'_> {
             }
         }
         writeln!(out, "{inner_pad}}};")?;
-        let some_val = rustfmt::fmt_call(
-            inner_indent + 4,
-            "::core::option::Option::Some",
-            &["inner".to_string()],
-            inner_indent + 4 + "value: ".len(),
-            1,
-        );
-        let lit = rustfmt::fmt_struct_lit(
-            inner_indent,
-            "Wrapper",
-            &[("value".to_string(), some_val)],
-            inner_indent,
-            0,
-        );
+        let lit = fmt_wrapper_lit(inner_indent, "inner");
         writeln!(out, "{inner_pad}{lit}")?;
         write!(out, "{pad}}}")?;
         Ok(out)
@@ -5301,7 +5315,16 @@ impl Emitter<'_> {
                     "::core::result::Result::".len() + side.len() + 2,
                 );
                 let pat = format!("Case::{variant}(v)");
-                let tail = format!("::core::result::Result::{side}({val})");
+                let callee = format!("::core::result::Result::{side}");
+                let tail = if arm_body_indent + callee.len() + 2 + val.len() > rustfmt::MAX_WIDTH
+                    && arm_body_indent + callee.len() < rustfmt::MAX_WIDTH
+                {
+                    let body_pad = " ".repeat(arm_body_indent);
+                    let arg_pad = " ".repeat(arm_body_indent + 4);
+                    format!("{callee}(\n{arg_pad}{val},\n{body_pad})")
+                } else {
+                    format!("{callee}({val})")
+                };
                 arms.push(rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail));
             } else {
                 let pat = format!("Case::{variant}(_)");

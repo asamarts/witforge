@@ -1330,7 +1330,7 @@ fn estimate_variant_layout(
     for case in cases {
         if let Some(t) = &case.payload {
             let ((cmin, cmax, cal), case_exact) =
-                estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting);
+                estimate_type_layout(model, context, t, depth, alias_hops, memo, visiting);
             exact &= case_exact;
             max_min = max_min.max(cmin);
             max_max = max_max.max(cmax);

@@ -1176,6 +1176,7 @@ impl WireLock {
     }
 
     pub(crate) fn write_rendered_atomic(path: &Path, rendered: &str) -> Result<()> {
+        crate::ensure_lockfile_not_symlink(path)?;
         if fs::read(path).is_ok_and(|existing| existing == rendered.as_bytes()) {
             return Ok(());
         }

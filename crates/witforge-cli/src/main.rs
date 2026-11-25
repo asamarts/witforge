@@ -1233,6 +1233,14 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
     } else {
         config.project.iter().collect()
     };
+    if selected.len() > 1 && options.released.is_some() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "`--released` cannot be used with multiple projects in `witforge.toml`; pass \
+             `--project <NAME>` or configure `released` per project",
+            Some(config_path.display().to_string()),
+        ));
+    }
     let mut failed = false;
     for (_, project) in selected {
         let root = resolve_config_path(&base, &project.root);
@@ -2177,6 +2185,14 @@ fn resolve_freeze_roots(options: &FreezeOptions) -> Result<Vec<(PathBuf, Option<
         });
         return Ok(vec![(resolve_config_path(&base, &project.root), released)]);
     }
+    if config.project.len() > 1 && options.released.is_some() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "`--released` cannot be used with multiple projects in `witforge.toml`; pass \
+             `--project <NAME>` or configure `released` per project",
+            Some(config_path.display().to_string()),
+        ));
+    }
     Ok(config
         .project
         .values()
@@ -2254,6 +2270,15 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
             .map(|(name, proj)| (name.clone(), proj.clone()))
             .collect()
     };
+
+    if selected.len() > 1 && options.released.is_some() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "`--released` cannot be used with multiple projects in `witforge.toml`; pass \
+             `--project <NAME>` or configure `released` per project",
+            Some(config_path.display().to_string()),
+        ));
+    }
 
     let serde_override = if options.serde {
         Some(true)
@@ -2669,7 +2694,9 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
         }
     }
 
-    // Released directories must hold a real wire.lock and contain no symlinks.
+    // Released directories must contain no symlinks (checked before `is_file()` so a dangling
+    // `wire.lock` symlink reports WF9004 rather than WF9002) and must hold a real wire.lock.
+    ensure_no_symlinks_in_dir(&options.dir, &entry_name)?;
     let lock_path = options.dir.join("wire.lock");
     if !lock_path.is_file() {
         return Err(op_error(
@@ -2682,7 +2709,6 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
             Some(lock_path.display().to_string()),
         ));
     }
-    ensure_no_symlinks_in_dir(&options.dir, &entry_name)?;
 
     // Validate the version directory and enclosing WIT-root invariants (package identity,
     // `@since` history, dependency-graph identity, and retirement order) before recording.
