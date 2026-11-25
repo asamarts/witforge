@@ -13,9 +13,12 @@ supported MSRV **1.88**):
 mkdir -p "$HOME/.tmp"
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
+cargo clippy -p witforge-build --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps
 TMPDIR="$HOME/.tmp" cargo test --workspace --locked
+TMPDIR="$HOME/.tmp" cargo test -p witforge-build --all-features --locked
 TMPDIR="$HOME/.tmp" cargo +1.88 test --workspace --locked
+TMPDIR="$HOME/.tmp" cargo +1.88 test -p witforge-build --all-features --locked
 ```
 
 Also run the fuzz-manifest, Action, and repository-script checks when touching those areas:

@@ -307,7 +307,8 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
 
 - Golden tests: one fixture contract per mapping row, with committed expected Rust, protobuf,
   JSON Schema, and glue output; at least one generated Rust/glue fixture is compiled, one proto
-  schema is parsed, and Draft 7 schemas validate representative valid and invalid instances.
+  schema is parsed, and Draft 7 / opt-in Draft 2020-12 schemas validate representative valid and
+  invalid instances.
 - Round-trip tests: generated Rust values encoded to protobuf and proto3-JSON and decoded back;
   glue conversions and per-function request/response helpers are exercised through the same path.
 - Lockfile property tests with `proptest`: reconcile is idempotent, never renumbers, and the
@@ -318,9 +319,10 @@ interfaces, worlds, type definitions, docs, stability). Gotchas found:
   `--check`, `--format`, and `witforge.toml` configuration and flag precedence.
 - Diff and diagnostics tests: human, `--json`, and `--format json|sarif` output, stable
   diagnostic codes, and compatibility verdicts for every change category.
-- Fuzzing: `cargo-fuzz` targets for arbitrary WIT packages and lockfiles, with stable CI
-  formatting/checking and advisory/license scanning of the fuzz workspace; the campaign remains
-  a manual nightly run (`fuzz/README.md`, `ci/README.md`).
+- Fuzzing: `cargo-fuzz` targets for arbitrary WIT packages, lockfiles, and grammar-guided
+  multi-version contracts (`wit-package`, `lockfile`, `structured-contract`), with stable CI
+  formatting/checking, advisory/license scanning of the fuzz workspace, and weekly bounded
+  `fuzz-smoke` runs in CI alongside manual nightly campaigns (`fuzz/README.md`, `ci/README.md`).
 - Subset tests: every refused construct has a fixture (`tests/fixtures/refused/<construct>/`)
   with the exact violations it must produce.
 - CI: MSRV 1.88; `cargo fmt`, pedantic Clippy, and rustdoc with warnings denied; Linux, macOS,

@@ -27,7 +27,7 @@ use crate::model::{
 };
 
 /// Options controlling protobuf glue code generation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GlueOptions {
     /// Emit `#![no_std]` + `alloc` compatible paths (`::alloc::string::String`,
@@ -174,7 +174,7 @@ pub fn plan_with_options(
         &load_versions_with_released(wit_root, released)?,
         plain_root,
         proto_root,
-        *options,
+        options,
     )
 }
 
@@ -191,14 +191,14 @@ pub(crate) fn plan_versions(
     plain_root: &str,
     proto_root: &str,
 ) -> Result<GeneratedFiles> {
-    plan_versions_with_options(versions, plain_root, proto_root, GlueOptions::default())
+    plan_versions_with_options(versions, plain_root, proto_root, &GlueOptions::default())
 }
 
 pub(crate) fn plan_versions_with_options(
     versions: &[Version],
     plain_root: &str,
     proto_root: &str,
-    options: GlueOptions,
+    options: &GlueOptions,
 ) -> Result<GeneratedFiles> {
     let dep_layout = DepLayout::from_versions(versions)?;
     // Versions are in ascending order, so the last one of each major is its highest minor.
@@ -2198,13 +2198,27 @@ fn push_let_else_err(
         let tmp = temps.fresh();
         stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, scrutinee));
         let hoisted_header = format!("{prefix}let {pat} = {tmp} else {{");
-        if hoisted_header.len() <= rustfmt::MAX_WIDTH {
-            stmts.push(format!("{hoisted_header}\n{return_stmt}\n{prefix}}};"));
+        let let_eq_tmp = format!("{prefix}let {pat} = {tmp}");
+        let let_eq = format!("{prefix}let {pat} =");
+        let stmt_header = if hoisted_header.len() <= rustfmt::MAX_WIDTH {
+            hoisted_header
+        } else if let_eq_tmp.len() <= rustfmt::MAX_WIDTH {
+            format!("{let_eq_tmp}\n{prefix}else {{")
+        } else if let_eq.len() <= rustfmt::MAX_WIDTH {
+            format!("{let_eq}\n{body_prefix}{tmp}\n{prefix}else {{")
+        } else if let Some(open) = pat.find('(')
+            && pat.ends_with(')')
+            && indent + 4 + open < rustfmt::MAX_WIDTH
+        {
+            let callee = &pat[..open];
+            let arg = &pat[open + 1..pat.len() - 1];
+            format!(
+                "{prefix}let {callee}(\n{body_prefix}{arg},\n{prefix}) = {tmp}\n{prefix}else {{"
+            )
         } else {
-            stmts.push(format!(
-                "{prefix}let {pat} = {tmp}\n{prefix}else {{\n{return_stmt}\n{prefix}}};"
-            ));
-        }
+            hoisted_header
+        };
+        stmts.push(format!("{stmt_header}\n{return_stmt}\n{prefix}}};"));
     }
 }
 
@@ -2216,6 +2230,26 @@ fn hoist_if_long(
     surrounding_len: usize,
 ) -> String {
     if !expr.contains('\n') && indent + surrounding_len + expr.len() <= rustfmt::MAX_WIDTH {
+        return expr;
+    }
+    let tmp = temps.fresh();
+    stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &expr));
+    tmp
+}
+
+/// Like [`hoist_if_long`], for expressions passed directly as a single function/tuple-variant
+/// argument where `rustfmt` wraps calls whose argument exceeds [`rustfmt::FN_CALL_WIDTH`].
+fn hoist_if_long_call_arg(
+    stmts: &mut Vec<String>,
+    indent: usize,
+    temps: &mut TempGen,
+    expr: String,
+    surrounding_len: usize,
+) -> String {
+    if !expr.contains('\n')
+        && expr.len() <= rustfmt::FN_CALL_WIDTH
+        && indent + surrounding_len + expr.len() <= rustfmt::MAX_WIDTH
+    {
         return expr;
     }
     let tmp = temps.fresh();
@@ -3151,7 +3185,7 @@ impl Emitter<'_> {
                         &sub_var,
                         &inner,
                     )?;
-                    let encoded = hoist_if_long(
+                    let encoded = hoist_if_long_call_arg(
                         &mut arm_stmts,
                         arm_body_indent,
                         &mut temps,
@@ -3263,7 +3297,7 @@ impl Emitter<'_> {
                     }
                 };
                 let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
-                let decoded = hoist_if_long(
+                let decoded = hoist_if_long_call_arg(
                     &mut stmts,
                     inner_indent,
                     &mut temps,
@@ -3349,7 +3383,7 @@ impl Emitter<'_> {
                         &inner,
                         &label,
                     )?;
-                    let decoded = hoist_if_long(
+                    let decoded = hoist_if_long_call_arg(
                         &mut arm_stmts,
                         arm_body_indent,
                         &mut temps,
@@ -3969,7 +4003,7 @@ impl Emitter<'_> {
         let mut loop_stmts = Vec::new();
         let encoded =
             self.emit_encode_singular(&mut loop_stmts, inner_indent, temps, &item_var, element)?;
-        let encoded = hoist_if_long(
+        let encoded = hoist_if_long_call_arg(
             &mut loop_stmts,
             inner_indent,
             temps,
@@ -4029,7 +4063,7 @@ impl Emitter<'_> {
             element,
             identity,
         )?;
-        let decoded = hoist_if_long(
+        let decoded = hoist_if_long_call_arg(
             &mut loop_stmts,
             inner_indent,
             temps,
@@ -4067,7 +4101,7 @@ impl Emitter<'_> {
         let encoded =
             self.emit_encode_singular(&mut if_stmts, inner_indent, temps, &item_var, payload)?;
         let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
-        let encoded = hoist_if_long(
+        let encoded = hoist_if_long_call_arg(
             &mut if_stmts,
             inner_indent,
             temps,
@@ -4125,7 +4159,7 @@ impl Emitter<'_> {
             identity,
         )?;
         let assign_prefix = format!("{out_var} = ::core::option::Option::Some(");
-        let decoded = hoist_if_long(
+        let decoded = hoist_if_long_call_arg(
             &mut if_stmts,
             inner_indent,
             temps,
@@ -4161,7 +4195,7 @@ impl Emitter<'_> {
             Form::List | Form::Option => self.emit_encode_value(stmts, indent, temps, expr, ty),
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
                 let inner = self.emit_encode_value(stmts, indent, temps, expr, ty)?;
-                let inner = hoist_if_long(
+                let inner = hoist_if_long_call_arg(
                     stmts,
                     indent,
                     temps,
@@ -4438,7 +4472,7 @@ impl Emitter<'_> {
         let mut arm_stmts = Vec::new();
         let encoded =
             self.emit_encode_singular(&mut arm_stmts, arm_body_indent, temps, &sub_var, payload)?;
-        let encoded = hoist_if_long(
+        let encoded = hoist_if_long_call_arg(
             &mut arm_stmts,
             arm_body_indent,
             temps,
@@ -4628,7 +4662,7 @@ impl Emitter<'_> {
         let mut stmts = Vec::new();
         let mut temps = TempGen::new();
         let decoded = self.emit_decode_value(&mut stmts, indent, &mut temps, expr, ty, identity)?;
-        let decoded = hoist_if_long(
+        let decoded = hoist_if_long_call_arg(
             &mut stmts,
             indent,
             &mut temps,
@@ -4956,7 +4990,7 @@ impl Emitter<'_> {
             payload,
             identity,
         )?;
-        let decoded = hoist_if_long(
+        let decoded = hoist_if_long_call_arg(
             &mut arm_stmts,
             arm_body_indent,
             temps,
@@ -5189,13 +5223,17 @@ impl Emitter<'_> {
             }
         }
         writeln!(out, "{inner_pad}}};")?;
+        let some_val = rustfmt::fmt_call(
+            inner_indent + 4,
+            "::core::option::Option::Some",
+            &["inner".to_string()],
+            inner_indent + 4 + "value: ".len(),
+            1,
+        );
         let lit = rustfmt::fmt_struct_lit(
             inner_indent,
             "Wrapper",
-            &[(
-                "value".to_string(),
-                "::core::option::Option::Some(inner)".to_string(),
-            )],
+            &[("value".to_string(), some_val)],
             inner_indent,
             0,
         );
@@ -5255,7 +5293,7 @@ impl Emitter<'_> {
                     ty,
                     identity,
                 )?;
-                let val = hoist_if_long(
+                let val = hoist_if_long_call_arg(
                     &mut arm_stmts,
                     arm_body_indent,
                     &mut arm_temps,
@@ -5292,17 +5330,13 @@ impl Emitter<'_> {
         match ty {
             TypeExpr::List(element) => Ok(qualify_type(context, element)),
             TypeExpr::Named(name) => {
-                let (dependency, kind) = if name.is_foreign() {
-                    let (dependency, def) = self
-                        .foreign_type_def(None, name)?
-                        .context("foreign type needs a dependency package")?;
-                    (Some(dependency), def.kind.clone())
-                } else {
-                    (None, self.named(name)?.kind.clone())
-                };
-                match kind {
-                    TypeDefKind::List(element) => Ok(qualify_type(dependency, &element)),
-                    TypeDefKind::Alias(target) => self.list_element_in(dependency, &target),
+                let (dependency, def) = self.resolve_type_def(context, name)?;
+                match &def.kind {
+                    TypeDefKind::List(element) => Ok(qualify_type(dependency, element)),
+                    TypeDefKind::Alias(target) => {
+                        let target = target.clone();
+                        self.list_element_in(dependency, &target)
+                    }
                     _ => bail!("type `{name}` is not a list"),
                 }
             }
@@ -5318,17 +5352,13 @@ impl Emitter<'_> {
         match ty {
             TypeExpr::Option(payload) => Ok(qualify_type(context, payload)),
             TypeExpr::Named(name) => {
-                let (dependency, kind) = if name.is_foreign() {
-                    let (dependency, def) = self
-                        .foreign_type_def(None, name)?
-                        .context("foreign type needs a dependency package")?;
-                    (Some(dependency), def.kind.clone())
-                } else {
-                    (None, self.named(name)?.kind.clone())
-                };
-                match kind {
-                    TypeDefKind::Option(payload) => Ok(qualify_type(dependency, &payload)),
-                    TypeDefKind::Alias(target) => self.option_payload_in(dependency, &target),
+                let (dependency, def) = self.resolve_type_def(context, name)?;
+                match &def.kind {
+                    TypeDefKind::Option(payload) => Ok(qualify_type(dependency, payload)),
+                    TypeDefKind::Alias(target) => {
+                        let target = target.clone();
+                        self.option_payload_in(dependency, &target)
+                    }
                     _ => bail!("type `{name}` is not an option"),
                 }
             }

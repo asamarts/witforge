@@ -329,7 +329,8 @@ with the `derive` feature. `--serde` and `--no-serde` override the configuration
 
 ## JSON projections
 
-Plain Rust Serde, Draft 7 JSON Schema, and proto3-JSON project the same WIT values differently:
+Plain Rust Serde, JSON Schema (Draft 7 default, opt-in Draft 2020-12), and proto3-JSON project the
+same WIT values differently:
 
 - generated Rust Serde uses Rust identifiers, so `start-byte` becomes `start_byte`;
 - JSON Schema preserves the WIT name `start-byte`, requires every record property, and permits

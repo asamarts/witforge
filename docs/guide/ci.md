@@ -113,7 +113,7 @@ request diffs regardless of `format`.
 
 | Output | Description |
 |---|---|
-| `failed-command` | Empty on success; names the failing stage (`validate`, `install`, or `witforge <subcommand>`, such as `witforge diff`) on failure. |
+| `failed-command` | Empty on success; names the failing stage (`validate`, `install`, `sarif`, or `witforge <subcommand>`, such as `witforge diff`) on failure. |
 | `sarif-file` | Path to the combined SARIF 2.1.0 file when `format: sarif` was requested. |
 
 ### Release freeze and `diff` upgrade notes

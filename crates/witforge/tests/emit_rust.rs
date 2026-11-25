@@ -2205,3 +2205,271 @@ fn third_wave_audit_dag_memo_enum_names_and_rustfmt_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn fourth_wave_audit_layout_overflow_memo_rustfmt_and_rustdoc_regressions() {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    use witforge::emit::{glue, rust};
+    use witforge::lock::WireLock;
+    use witforge::{SourceFile, load, load_sources, model};
+
+    // 1. 62-step `u64` (align 8) binary record DAG saturates `usize` size without panicking in
+    //    `next_multiple_of`, and still emits `#[allow(clippy::large_enum_variant)]`.
+    let mut dag =
+        String::from("package ex:overflow@0.1.0;\ninterface api {\n    record r0 { a: u64 }\n");
+    for i in 1..=61 {
+        let _ = writeln!(dag, "    record r{i} {{ a: r{}, b: r{} }}", i - 1, i - 1);
+    }
+    dag.push_str("    variant v { small, big(r61) }\n}\n");
+    let dag_contract =
+        load_sources(vec![SourceFile::new("contract.wit".to_string(), dag)]).unwrap();
+    let dag_model = model::build(&dag_contract).unwrap();
+    let dag_rust = rust::emit_version(&dag_model).unwrap();
+    assert!(
+        dag_rust.contains("#[allow(clippy::large_enum_variant)]\n    pub enum V"),
+        "expected large_enum_variant allow on 62-step u64 DAG:\n{dag_rust}"
+    );
+
+    // 2. Cross-package alias chain (>32 total hops split across root + dep) preserves both
+    //    `#[allow(clippy::result_unit_err)]` and `#[allow(clippy::large_enum_variant)]` without
+    //    memo-cache poisoning or non-canonical dependency keys.
+    let mut dep_wit = String::from(
+        "package ex:dep@0.1.0;\n\
+         interface t {\n\
+             record big {\n\
+                 a0: string, a1: string, a2: string, a3: string, a4: string,\n\
+                 a5: string, a6: string, a7: string, a8: string, a9: string,\n\
+             }\n\
+             type b0 = big;\n\
+             type r0 = result<u32>;\n",
+    );
+    for i in 1..=25 {
+        let _ = writeln!(dep_wit, "    type b{i} = b{};", i - 1);
+        let _ = writeln!(dep_wit, "    type r{i} = r{};", i - 1);
+    }
+    dep_wit.push_str("}\n");
+    let mut root_wit = String::from(
+        "package ex:root@0.1.0;\n\
+         interface api {\n\
+             use ex:dep/t@0.1.0.{b25, r25};\n\
+             type rb0 = b25;\n\
+             type rr0 = r25;\n",
+    );
+    for i in 1..=25 {
+        let _ = writeln!(root_wit, "    type rb{i} = rb{};", i - 1);
+        let _ = writeln!(root_wit, "    type rr{i} = rr{};", i - 1);
+    }
+    root_wit.push_str(
+        "    variant v1 { a(rb25), tiny }\n\
+             variant v2 { b(b25), tiny }\n\
+             call-it: func() -> rr25;\n\
+         }\n",
+    );
+    let cross_contract = load_sources(vec![
+        SourceFile::new("contract.wit".to_string(), root_wit),
+        SourceFile::new("deps/dep.wit".to_string(), dep_wit),
+    ])
+    .unwrap();
+    let cross_model = model::build(&cross_contract).unwrap();
+    let cross_rust = rust::emit_version(&cross_model).unwrap();
+    assert!(
+        cross_rust.contains("#[allow(clippy::large_enum_variant)]\n    pub enum V1"),
+        "cross-package >32-hop alias chain must keep large_enum_variant allow:\n{cross_rust}"
+    );
+    assert!(
+        cross_rust.contains("#[allow(clippy::large_enum_variant)]\n    pub enum V2"),
+        "direct dep alias chain must not be poisoned in memo:\n{cross_rust}"
+    );
+    assert!(
+        cross_rust.contains("#[allow(clippy::result_unit_err)]\n        fn call_it"),
+        "cross-package >32-hop alias chain to result<u32> must keep result_unit_err allow:\n{cross_rust}"
+    );
+
+    // 3. `convert.rs` `wrap_ok` record field indentation, `glue.rs` `FN_CALL_WIDTH` list-push
+    //    hoisting, deep `format_inline_result_encode`, and deep `push_let_else_err` must all pass
+    //    `rustfmt --check` under BOTH Edition 2021 and Edition 2024.
+    let base = std::env::temp_dir().join(format!("witforge-w10-125-fmt-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+
+    let wit_body = |ver: &str| {
+        format!(
+            "package ex:fmt@0.{ver}.0;\n\
+             interface very-long-interface-name-for-convert-and-glue {{\n\
+                 record very-long-target-record-name-triggering-wrap-ok {{\n\
+                     field-name-sized-for-indent-twenty: string,\n\
+                 }}\n\
+             }}\n\
+             interface holder {{\n\
+                 use very-long-interface-name-for-convert-and-glue.{{very-long-target-record-name-triggering-wrap-ok}};\n\
+                 record container {{\n\
+                     items: list<very-long-target-record-name-triggering-wrap-ok>,\n\
+                     deep: option<option<option<option<option<option<result<option<option<u32>>, u32>>>>>>>,\n\
+                 }}\n\
+             }}\n"
+        )
+    };
+    fs::write(v01.join("contract.wit"), wit_body("1")).unwrap();
+    fs::write(v02.join("contract.wit"), wit_body("2")).unwrap();
+    for dir in [&v01, &v02] {
+        let contract = load(dir).unwrap();
+        let m = model::build(&contract).unwrap();
+        let mut lock = WireLock::default();
+        lock.reconcile(&m.members().unwrap()).unwrap();
+        fs::write(dir.join("wire.lock"), lock.render()).unwrap();
+    }
+
+    let rust_files = rust::plan(&wit_root).unwrap();
+    let glue_files = glue::plan(&wit_root, "crate::plain", "crate::proto").unwrap();
+    for (label, source) in [
+        ("convert.rs", rust_files.files().get("convert.rs").unwrap()),
+        ("glue/v0.rs", glue_files.files().get("v0.rs").unwrap()),
+    ] {
+        for edition in ["2021", "2024"] {
+            let mut child = Command::new("rustfmt")
+                .args(["--edition", edition, "--check"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(source.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{label} failed rustfmt --edition {edition} --check:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    // 4. `docs.rs`: list-state doctest escape, indented continuation paragraphs, invalid link
+    //    destinations, `\https://...`, symmetric `/**** ... ****/`, and `/// ***` thematic breaks
+    //    must compile cleanly under `rustdoc -D warnings` AND `cargo test --doc` with zero doctest
+    //    executions.
+    let doc_wit = r#"package ex:docs@0.1.0;
+
+interface api {
+    /// - item
+    ///
+    ///  closing paragraph
+    ///
+    ///     ```rust
+    ///     compile_error!("doctest must not escape");
+    ///     ```
+    ///
+    ///   * First bullet.
+    ///
+    ///     Continuation paragraph inside two-space bullet.
+    ///
+    /// See [Foo](https://example.com bar), [docs](https://example.com <script>),
+    /// [bad](https://example.com/a<b>c), and \https://example.com for details.
+    record tricky-docs {
+        /**** Symmetric banner text. ****/
+        banner: u32,
+        /// Heading
+        /// * alpha
+        /// * beta
+        /// ***
+        thematic-after-bullets: u32,
+        /// ***
+        /// * gamma
+        /// * delta
+        thematic-before-bullets: u32,
+        /// Trailing prose.
+        ///
+        /// ***
+        thematic-after-prose: u32,
+    }
+}
+"#;
+    let doc_model = model::build(
+        &load_sources(vec![SourceFile::new(
+            "contract.wit".to_string(),
+            doc_wit.to_string(),
+        )])
+        .unwrap(),
+    )
+    .unwrap();
+    let doc_rust = rust::emit_version(&doc_model).unwrap();
+    assert!(
+        doc_rust.contains("/// Symmetric banner text."),
+        "symmetric /**** ... ****/ banner should strip cleanly:\n{doc_rust}"
+    );
+    assert!(
+        !doc_rust.contains("/// ** Symmetric"),
+        "symmetric /**** ... ****/ must not leave dangling **:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("/// * alpha\n        /// * beta\n        /// ***"),
+        "bullet list followed by *** thematic break must stay intact:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("/// ***\n        /// * gamma\n        /// * delta"),
+        "*** thematic break followed by bullet list must stay intact:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("/// Trailing prose.\n        ///\n        /// ***"),
+        "prose followed by *** thematic break must stay intact:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("///     Continuation paragraph inside two-space bullet."),
+        "2-space list continuation paragraph must not be turned into a code block:\n{doc_rust}"
+    );
+
+    let doc_crate = base.join("doc-crate");
+    fs::create_dir_all(doc_crate.join("src")).unwrap();
+    fs::write(
+        doc_crate.join("Cargo.toml"),
+        "[package]\nname = \"wf-w10-125-docs\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        doc_crate.join("src/lib.rs"),
+        format!("#![deny(missing_docs)]\n//! Doc crate.\n{doc_rust}"),
+    )
+    .unwrap();
+    let doc_target = base.join("doc-target");
+    let rustdoc = Command::new(env!("CARGO"))
+        .args(["doc", "--offline", "--no-deps", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("RUSTDOCFLAGS", "-D warnings")
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        rustdoc.status.success(),
+        "cargo doc -D warnings failed:\n{}\n{}",
+        String::from_utf8_lossy(&rustdoc.stdout),
+        String::from_utf8_lossy(&rustdoc.stderr)
+    );
+    let doctest = Command::new(env!("CARGO"))
+        .args(["test", "--offline", "--doc", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        doctest.status.success(),
+        "cargo test --doc failed (doctest escaped!):\n{}\n{}",
+        String::from_utf8_lossy(&doctest.stdout),
+        String::from_utf8_lossy(&doctest.stderr)
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

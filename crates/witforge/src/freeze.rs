@@ -677,11 +677,13 @@ pub fn check_root_with_manifest(
 }
 
 fn canonicalize_best_effort(path: &Path) -> Result<PathBuf> {
+    use std::path::Component;
+
     // Strip trailing separators without collapsing `..` across symlinks, then resolve through
     // the OS so `<symlink>/..` follows OS semantics rather than lexical cancellation.
     let stripped: PathBuf = path.components().collect();
     let abs = std::path::absolute(&stripped).context("failed to resolve path")?;
-    let mut missing = Vec::new();
+    let mut missing: Vec<Component<'_>> = Vec::new();
     let mut cursor = abs.as_path();
     if let Ok(meta) = fs::symlink_metadata(&abs) {
         if !meta.file_type().is_symlink() {
@@ -689,13 +691,13 @@ fn canonicalize_best_effort(path: &Path) -> Result<PathBuf> {
         }
         // Preserve the final symlink component so downstream symlink checks see the symlink
         // itself instead of canonicalizing it to its target.
-        let Some(name) = cursor.file_name() else {
+        let Some(last) = cursor.components().next_back() else {
             return Err(anyhow::anyhow!(
                 "cannot resolve ancestor of {}",
                 path.display()
             ));
         };
-        missing.push(name.to_os_string());
+        missing.push(last);
         let Some(parent) = cursor.parent() else {
             return Err(anyhow::anyhow!(
                 "cannot resolve ancestor of {}",
@@ -706,19 +708,58 @@ fn canonicalize_best_effort(path: &Path) -> Result<PathBuf> {
     }
     loop {
         if let Ok(canon) = fs::canonicalize(cursor) {
-            let mut resolved = canon;
+            let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
             for part in missing.into_iter().rev() {
-                resolved.push(part);
+                match part {
+                    Component::Normal(name) => tail.push(name),
+                    Component::ParentDir => {
+                        if tail.pop().is_none() {
+                            return Err(anyhow::anyhow!(
+                                "cannot resolve `..` above existing ancestor of {}",
+                                path.display()
+                            ));
+                        }
+                    }
+                    Component::CurDir => {}
+                    Component::RootDir | Component::Prefix(_) => {
+                        return Err(anyhow::anyhow!(
+                            "cannot resolve ancestor of {}",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+            let mut resolved = canon;
+            for name in tail {
+                resolved.push(name);
             }
             return Ok(resolved);
         }
-        let Some(name) = cursor.file_name() else {
+        // Never collapse `..` through a dangling symlink on disk.
+        if !missing.is_empty()
+            && fs::symlink_metadata(cursor).is_ok_and(|meta| meta.file_type().is_symlink())
+        {
+            return Err(anyhow::anyhow!(
+                "cannot traverse dangling symlink in {}",
+                path.display()
+            ));
+        }
+        let Some(last) = cursor.components().next_back() else {
             return Err(anyhow::anyhow!(
                 "cannot resolve ancestor of {}",
                 path.display()
             ));
         };
-        missing.push(name.to_os_string());
+        match last {
+            Component::Normal(_) | Component::ParentDir => missing.push(last),
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(anyhow::anyhow!(
+                    "cannot resolve ancestor of {}",
+                    path.display()
+                ));
+            }
+        }
         let Some(parent) = cursor.parent() else {
             return Err(anyhow::anyhow!(
                 "cannot resolve ancestor of {}",
@@ -875,7 +916,13 @@ fn short_sha(commit: &str) -> &str {
 }
 
 fn to_git_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn parse_manifest_entries_with_lines(text: &str) -> Vec<(usize, String, String)> {
@@ -957,7 +1004,7 @@ fn git_nul_paths(dir: &Path, args: &[&str]) -> Result<Vec<String>> {
         .stdout
         .split(|&byte| byte == 0)
         .filter(|slice| !slice.is_empty())
-        .map(|slice| String::from_utf8_lossy(slice).replace('\\', "/"))
+        .map(|slice| String::from_utf8_lossy(slice).into_owned())
         .collect())
 }
 
@@ -999,11 +1046,23 @@ fn manifest_commits(repo: &Path, manifest: &str, base: Option<&str>) -> Result<V
 }
 
 fn git_show_file(repo: &Path, commit: &str, path: &str) -> Result<Option<String>> {
-    let spec = format!("{commit}:{path}");
-    let exists = run_git(repo, &["cat-file", "-e", &spec])?;
-    if !exists.status.success() {
+    let tree_entry = run_git(repo, &["ls-tree", "-z", commit, "--", path])?;
+    if !tree_entry.status.success() {
         return Ok(None);
     }
+    // Accept only regular file blobs (`100644` / `100755`), ignoring historical directories
+    // (`040000 tree`) and symlinks (`120000 blob`) so they are never parsed as manifest entries.
+    let is_regular_blob = tree_entry.stdout.split(|&byte| byte == 0).any(|entry| {
+        let text = String::from_utf8_lossy(entry);
+        let Some((meta, entry_path)) = text.split_once('\t') else {
+            return false;
+        };
+        entry_path == path && (meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "))
+    });
+    if !is_regular_blob {
+        return Ok(None);
+    }
+    let spec = format!("{commit}:{path}");
     let output = run_git(repo, &["show", &spec])?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1101,7 +1160,7 @@ fn parse_no_rename_name_status_z(bytes: &[u8]) -> Vec<String> {
         if let Some(path) = parts.next()
             && !path.is_empty()
         {
-            out.push(String::from_utf8_lossy(path).replace('\\', "/"));
+            out.push(String::from_utf8_lossy(path).into_owned());
         }
     }
     out
@@ -1130,7 +1189,7 @@ fn tracked_symlinks(repo: &Path, dir_rel: &str) -> Result<BTreeSet<String>> {
         if let Some((meta, path)) = text.split_once('\t')
             && meta.starts_with("120000 ")
         {
-            links.insert(path.replace('\\', "/"));
+            links.insert(path.to_string());
         }
     }
     Ok(links)
@@ -1209,7 +1268,7 @@ fn follow_renamed_manifests(
         if status.starts_with('R') {
             if let Some(old_path) = parts.next() {
                 let _new_path = parts.next();
-                let old = String::from_utf8_lossy(old_path).replace('\\', "/");
+                let old = String::from_utf8_lossy(old_path).into_owned();
                 if !old.is_empty() && old != manifest {
                     earlier.insert(old);
                 }

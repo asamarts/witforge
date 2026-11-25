@@ -84,7 +84,8 @@ Report `aplan` bugs, workflow friction, documentation gaps, and feature requests
 1. Search first: `gh issue list -R asamarts/aplan --state all --search "<words>"`. If an issue already exists, add new reproduction details there.
 2. Reproduce on a minimal generic scratch plan under `~/.tmp`.
 3. File with exact command, exit code, output, and `aplan --version` (plus `aplan facts --identity` when relevant): `gh issue create -R asamarts/aplan --title "..." --label bug|enhancement --body-file <file>`.
-4. **Keep public issues sanitized:** `witforge` is private and `asamarts/aplan` is public. Never include `witforge`'s name, tasks, internal paths, or confidential data in a public issue; reproduce on a generic scratch plan instead.
+4. **Keep public issues minimal and generic:** reproduce on a generic scratch plan under `~/.tmp`
+   rather than attaching repository-specific task files or local host paths.
 5. **Do not edit `~/projects/aplan` directly** as a workaround from here.
 
 ## Build and test
@@ -93,9 +94,12 @@ Report `aplan` bugs, workflow friction, documentation gaps, and feature requests
 mkdir -p "$HOME/.tmp"
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p witforge-build --all-targets --all-features -- -D warnings
 TMPDIR="$HOME/.tmp" cargo test --workspace --locked
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
+TMPDIR="$HOME/.tmp" cargo test -p witforge-build --all-features --locked
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps
 TMPDIR="$HOME/.tmp" cargo +1.88 test --workspace --locked   # MSRV
+TMPDIR="$HOME/.tmp" cargo +1.88 test -p witforge-build --all-features --locked
 ```
 
 - The tests create their scratch directories under `std::env::temp_dir()`, which

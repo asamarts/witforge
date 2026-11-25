@@ -91,8 +91,8 @@ inputs:
 outputs:
   failed-command:
     description: >-
-      Empty on success; names the failing stage (`validate`, `install`, or `witforge <subcommand>`,
-      such as `witforge diff`) when the step fails.
+      Empty on success; names the failing stage (`validate`, `install`, `sarif`, or
+      `witforge <subcommand>`, such as `witforge diff`) when the step fails.
   sarif-file:
     description: >-
       Path to the written SARIF 2.1.0 report when `format: sarif` was requested.

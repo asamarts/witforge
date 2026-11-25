@@ -601,9 +601,7 @@ impl Copy for witforge::diff::ChangeElement
 impl Copy for witforge::diff::DecodeSummary
 impl Copy for witforge::diff::DecodeVerdict
 impl Copy for witforge::diff::Summary
-impl Copy for witforge::emit::glue::GlueOptions
 impl Copy for witforge::emit::json_schema::JsonSchemaDraft
-impl Copy for witforge::emit::rust::RustOptions
 impl Copy for witforge::lock::LockMode
 impl Copy for witforge::model::MemberKind
 impl Copy for witforge::model::Version

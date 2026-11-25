@@ -15,17 +15,31 @@ head="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
 tag_commit="$(git -C "${ROOT}" rev-parse --verify --quiet "refs/tags/${TAG}^{commit}" || true)"
 if [[ -n "${head}" && -n "${tag_commit}" && "${head}" != "${tag_commit}" ]] \
     && git -C "${ROOT}" merge-base --is-ancestor "${tag_commit}" "${head}"; then
+    # Protect every item from the newest published release tag at or after TAG (excluding any tag
+    # pointing at HEAD itself), so additive items from 0.8.0+ are automatically protected once
+    # tagged rather than only freezing v0.7.0.
+    baseline_tag="${TAG}"
+    while IFS= read -r candidate; do
+        [[ "${candidate}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+        cand_commit="$(git -C "${ROOT}" rev-parse --verify --quiet "refs/tags/${candidate}^{commit}" || true)"
+        [[ -n "${cand_commit}" && "${cand_commit}" != "${head}" ]] || continue
+        if git -C "${ROOT}" merge-base --is-ancestor "${tag_commit}" "${cand_commit}" \
+            && git -C "${ROOT}" cat-file -e "${candidate}:docs/design/public-api-inventory.txt" 2>/dev/null; then
+            baseline_tag="${candidate}"
+            break
+        fi
+    done <<<"$(git -C "${ROOT}" tag --merged "${head}" --list 'v*' --sort=-v:refname)"
     tagged="${SCRATCH}/tagged.txt"
     git -C "${ROOT}" show \
-        "${TAG}:docs/design/public-api-inventory.txt" >"${tagged}"
+        "${baseline_tag}:docs/design/public-api-inventory.txt" >"${tagged}"
     removed="${SCRATCH}/removed.txt"
     LC_ALL=C comm -23 "${tagged}" "${ACTUAL}" >"${removed}"
     if [[ -s "${removed}" ]]; then
-        echo "the public API removed or changed entries from ${TAG}:" >&2
+        echo "the public API removed or changed entries from ${baseline_tag}:" >&2
         cat "${removed}" >&2
         exit 1
     fi
-    echo "public API retains every ${TAG} inventory entry"
+    echo "public API retains every ${baseline_tag} inventory entry"
     exit 0
 fi
 

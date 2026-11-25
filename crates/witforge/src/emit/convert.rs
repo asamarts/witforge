@@ -1047,6 +1047,9 @@ fn record_body(
         }
     }
 
+    let ok_prefix = "::core::result::Result::Ok(";
+    let wrap_ok = indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH;
+    let field_indent = if wrap_ok { indent + 8 } else { indent + 4 };
     let mut stmts = Vec::new();
     let mut fields = Vec::new();
     let mut used_value = false;
@@ -1074,7 +1077,7 @@ fn record_body(
                 no_std,
             )?;
             let mut field_expr = val.expr;
-            if indent + 4 + target_name.len() + 2 + field_expr.len() + 1 > rustfmt::MAX_WIDTH {
+            if field_indent + target_name.len() + 2 + field_expr.len() + 1 > rustfmt::MAX_WIDTH {
                 let tmp = fresh(next_id);
                 stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &field_expr));
                 field_expr = tmp;
@@ -1089,7 +1092,7 @@ fn record_body(
                 );
             };
             let mut field_expr = default.to_string();
-            if indent + 4 + target_name.len() + 2 + field_expr.len() + 1 > rustfmt::MAX_WIDTH {
+            if field_indent + target_name.len() + 2 + field_expr.len() + 1 > rustfmt::MAX_WIDTH {
                 let tmp = fresh(next_id);
                 stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &field_expr));
                 field_expr = tmp;
@@ -1104,8 +1107,7 @@ fn record_body(
     for stmt in stmts {
         writeln!(out, "{stmt}")?;
     }
-    let ok_prefix = "::core::result::Result::Ok(";
-    if indent + ok_prefix.len() + target_path.len() + " {".len() > rustfmt::MAX_WIDTH {
+    if wrap_ok {
         let inner_indent = indent + 4;
         let inner_prefix = " ".repeat(inner_indent);
         let lit = rustfmt::fmt_struct_lit(inner_indent, &target_path, &fields, inner_indent, 1);

@@ -79,14 +79,15 @@ frozen as a whole, which covers the remaining source-level cases.
   their real parent's manifest) and `<wit-root>/released` for generation. A missing default
   manifest means no version is treated as released. An explicitly supplied missing manifest is an
   error. Every command that takes `--released` (`check`, `lock`, `rust`, `proto`, `schema`, `glue`,
-  `generate`, `release`, `retire`, `inspect` on a WIT root, and `freeze`) validates the manifest it
-  uses and fails with exit `2` if it is missing when given explicitly or is malformed (on `release`,
-  an explicit nonexistent path is created once validation succeeds; `inspect` refuses `--released`
-  on a single version directory). `lock` refuses to edit any version listed in the explicit manifest
-  in addition to the default manifests; whole-root `check`, `freeze`, and every generator (`rust`,
-  `proto`, `schema`, `glue`, and `generate`) also enforce retirement order, and generators exclude
-  entries marked `retired` in the manifest they use. `diff` does not take `--released` and does not
-  read the manifest.
+  `generate`, `new-version`, `release`, `retire`, `inspect` on a WIT root, and `freeze`) validates
+  the manifest it uses and fails with exit `2` if it is missing when given explicitly or is
+  malformed (on `release`, an explicit nonexistent path is created once validation succeeds;
+  `inspect` refuses `--released` on a single version directory). `lock` refuses to edit any version
+  listed in the explicit manifest in addition to the default manifests; whole-root `check`,
+  `freeze`, and every generator (`rust`, `proto`, `schema`, `glue`, and `generate`) also enforce
+  retirement order, and generators exclude entries marked `retired` in the manifest they use.
+  `diff` does not take `--released`; it reads and validates the default `released` manifest beside
+  each endpoint (see [`diff.md`](diff.md)).
 - A version listed in `wit/released` is frozen: its WIT, `wire.lock`, and its own per-version
   generated Rust module are immutable. Shared generated files (`mod.rs`, the per-major
   `v<major>.proto`, and the per-major glue module) may change when a new minor is added; their
@@ -139,12 +140,14 @@ frozen as a whole, which covers the remaining source-level cases.
   with the same number, kind, and canonical type, and must keep reserved entries reserved (rule
   1 of `check --against`, section 8). A lockfile that does not continue its predecessor fails
   generation with exit `1`, so a new minor cannot silently renumber the shared per-major proto
-  schema. `check` and `lock` take a single version directory, so their continuity baseline is
-  the `--against` lockfile.
-- Docs-only patch versions are out of scope for 0.x and declined for 1.0. A directory named
-  `v0.1.1` is not a version directory and is ignored by root discovery. A docs-only change uses a
-  new minor, or is caught by the release freeze if it edits a released directory; an explicit
-  patch shape would need a documented semantic-diff rule.
+  schema. Single-directory `check` and `lock` take one version directory and use `--against` as
+  their continuity baseline; whole-root `check` (or `check --config`) checks every discovered
+  version directory and enforces intra-major continuity across the root automatically.
+- Docs-only patch versions are out of scope for 0.x and declined for 1.0. A directory or file
+  named like `v0.1.1` (starting with `v` or `V` followed by a digit, without matching
+  `v<major>.<minor>`) is refused by root discovery with `WF9004` (exit `2`) rather than silently
+  ignored. A docs-only change uses a new minor, or is caught by the release freeze if it edits a
+  released directory; an explicit patch shape would need a documented semantic-diff rule.
 
 For ad-hoc directories such as test fixtures, the path need not be a version directory: a
 directory whose name is not spelled `v<major>.<minor>` may hold any version, and output names
@@ -503,8 +506,8 @@ The update order is:
    reintroduction is detected.
 8. Render and write atomically (temporary file in the same directory, then rename).
 
-`lock` prints one line per change (`added`, `reserved`, `updated`, `dropped`) and exits `0`. A
-restored draft removal is simply un-reserved and has no change line.
+`lock` prints one line per change (`added`, `reserved`, `updated`, `dropped`, `restored`) and exits
+`0` (see `WF1205` in [`diagnostics.md`](diagnostics.md)).
 It uses the same exit codes as `check`: when it writes nothing because of a contract or lockfile
 violation (subset violations, reintroduced members, a changed, renumbered, missing, or
 un-reserved released entry, a mismatched `--against` baseline, or an exhausted number space) it

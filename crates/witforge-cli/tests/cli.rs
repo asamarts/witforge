@@ -5612,3 +5612,109 @@ fn third_wave_audit_new_version_major_cross_root_and_symlink_guards() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn fourth_wave_audit_trailing_slash_manifest_and_dangling_symlink_regressions() {
+    use std::os::unix::fs::symlink;
+
+    let base =
+        std::env::temp_dir().join(format!("witforge-w10-125-trailing-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit = base.join("wit");
+    let v01 = wit.join("v0.1");
+    let v02 = wit.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:trail@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        "package ex:trail@0.2.0;\ninterface api { record item { id: u64, note: option<string> } }\n",
+    )
+    .unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v01)
+            .arg("--first")
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::copy(v01.join("wire.lock"), v02.join("wire.lock")).unwrap();
+    assert!(
+        witforge()
+            .args(["lock"])
+            .arg(&v02)
+            .arg("--against")
+            .arg(v01.join("wire.lock"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let manifest_slash = format!("{}/", wit.join("released").display());
+    // 1. `release` creates a new manifest cleanly even with a trailing slash.
+    let rel1 = witforge()
+        .args(["release"])
+        .arg(&v01)
+        .args(["--released", &manifest_slash])
+        .output()
+        .unwrap();
+    assert!(
+        rel1.status.success(),
+        "release v0.1 with trailing-slash manifest failed: {}",
+        String::from_utf8_lossy(&rel1.stderr)
+    );
+    // 2. `release` appends to an existing manifest with a trailing slash.
+    let rel2 = witforge()
+        .args(["release"])
+        .arg(&v02)
+        .args(["--released", &manifest_slash])
+        .output()
+        .unwrap();
+    assert!(
+        rel2.status.success(),
+        "release v0.2 with trailing-slash manifest failed: {}",
+        String::from_utf8_lossy(&rel2.stderr)
+    );
+    // 3. `retire` updates an existing manifest with a trailing slash.
+    let retire_v01 = witforge()
+        .args(["retire"])
+        .arg(&v01)
+        .args(["--released", &manifest_slash])
+        .output()
+        .unwrap();
+    assert!(
+        retire_v01.status.success(),
+        "retire v0.1 with trailing-slash manifest failed: {}",
+        String::from_utf8_lossy(&retire_v01.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(wit.join("released")).unwrap(),
+        "v0.1 retired\nv0.2\n"
+    );
+
+    // 4. `check` and `inspect` refuse a dangling symlink with a trailing slash using `WF9004`.
+    let dangling = base.join("dangling_link");
+    symlink(base.join("does-not-exist"), &dangling).unwrap();
+    let dangling_slash = format!("{}/", dangling.display());
+    for sub in ["check", "inspect"] {
+        let out = witforge()
+            .args([sub, &dangling_slash, "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{sub}: {out:?}");
+        let val: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            val["diagnostics"][0]["code"], "WF9004",
+            "{sub} dangling_link/ should report WF9004: {val}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

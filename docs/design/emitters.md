@@ -165,8 +165,11 @@ wit/
     wire.lock
 ```
 
-- Every directory named `v<major>.<minor>` is a contract version. Files and other directories
-  are ignored. A root with no version directories is an error.
+- Every directory named `v<major>.<minor>` is a contract version. Any other entry whose name starts
+  with `v` or `V` followed by a digit (for example `v0.1.1`, `V0.2`, or `v1`) is refused with
+  `WF9004` (exit `2`) rather than silently skipped; unrelated files and directories (such as
+  `released`, `README.md`, or hidden files) are ignored. A root with no version directories is an
+  error.
 - All version directories in a root MUST share the package namespace and name; only the version
   may differ. A mismatch is an error.
 - The package version in each directory MUST be exactly `@<major>.<minor>.0`. A mismatch is an
@@ -956,8 +959,9 @@ Every command also accepts the global `--format human|json|sarif`
 - The released manifest default is `<version-dir>/../released` for `check`/`lock`, and
   `<wit-root>/released` for generation. `check`, `lock`, `rust`, `proto`, `schema`, and `glue`
   validate the manifest: an explicitly given missing manifest or a malformed one is an error
-  (exit `2`). Generation reproduces released versions without modifying them, so for `rust`,
-  `proto`, `schema`, and `glue` the manifest only has to be valid. `diff` has no `--released`
+  (exit `2`). Generation reproduces live released versions without modifying them, enforces
+  contiguous retirement order on the manifest, and excludes entries marked `retired` from emitted
+  output (section 2). `diff` has no `--released`
   option; it reads the default manifest beside each version-directory endpoint (or beside the
   WIT-root endpoint), so a released directory and its contents are validated as they are for
   `check`.
@@ -1706,7 +1710,8 @@ Numeric and option boundaries in Draft 7 JSON Schema:
 ### 10.3 Dependencies and testing
 
 The emitter writes JSON directly and adds no runtime dependency. Tests use `serde_json` and the
-dev-only `jsonschema` validator to compile the Draft 7 document and validate representative
+dev-only `jsonschema` validator to compile both Draft 7 and opt-in Draft 2020-12 documents and
+validate representative
 instances, including required fields, primitive bounds, nested lists/options, result cases,
 variant cases, closed enums, aliases, and named structural types. Golden output covers every
 mapping row.

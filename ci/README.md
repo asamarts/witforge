@@ -124,11 +124,16 @@ a release, after a parser or emitter change, or when investigating a crash. Stab
 ```sh
 cargo install cargo-fuzz --version 0.13.2
 rustup toolchain install nightly-2026-09-11 --component rust-src
-cargo +nightly-2026-09-11 fuzz run wit-package \
-  --target x86_64-unknown-linux-gnu -- -runs=100
-cargo +nightly-2026-09-11 fuzz run lockfile \
+mkdir -p "$HOME/.tmp/witforge-fuzz"
+cp -R fuzz/seeds/wit-package "$HOME/.tmp/witforge-fuzz/wit-package"
+cp -R fuzz/seeds/lockfile "$HOME/.tmp/witforge-fuzz/lockfile"
+cp -R fuzz/seeds/structured-contract "$HOME/.tmp/witforge-fuzz/structured-contract"
+cargo +nightly-2026-09-11 fuzz run wit-package "$HOME/.tmp/witforge-fuzz/wit-package" \
+  --target x86_64-unknown-linux-gnu -- -dict=fuzz/wit.dict -runs=100
+cargo +nightly-2026-09-11 fuzz run lockfile "$HOME/.tmp/witforge-fuzz/lockfile" \
   --target x86_64-unknown-linux-gnu -- -runs=100
 cargo +nightly-2026-09-11 fuzz run structured-contract \
+  "$HOME/.tmp/witforge-fuzz/structured-contract" \
   --target x86_64-unknown-linux-gnu -- -runs=100
 ```
 
@@ -136,12 +141,12 @@ Use the GNU target on Linux: cargo-fuzz's default musl target is incompatible wi
 sanitizer unless static linking is disabled.
 
 `wit-package` writes the input as a temporary `v0.1/contract.wit`, runs `load`, the subset
-checker, model construction, lockfile reconciliation, and all four emitters. `lockfile` parses
-arbitrary lockfile text and re-renders anything that parses. `structured-contract` synthesizes
-valid grammar-guided multi-version WIT contracts through `arbitrary` and runs the full check,
-lock, emitter, and `diff` pipeline. A discovered crash should become a
-committed regression fixture under the relevant test suite, not only an artifact in
-`fuzz/artifacts/`.
+checker, model construction, lockfile reconciliation, and all emitters (including `no_std`, Draft
+2020-12, and `inspect`). `lockfile` parses arbitrary lockfile text and re-renders anything that
+parses. `structured-contract` synthesizes valid grammar-guided multi-version WIT contracts from
+fuzz bytes using a deterministic cursor and runs the full check, lock, emitter, `inspect`, and
+`diff` pipeline. A discovered crash should become a committed regression fixture under the relevant
+test suite, not only an artifact in `fuzz/artifacts/`.
 
 ## Local test scratch
 

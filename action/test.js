@@ -18,6 +18,7 @@ const {
   download,
   input,
   install,
+  latestVersion,
   normalizeFormat,
   normalizeVersion,
   parseAgainst,
@@ -568,9 +569,8 @@ test('install names `version` on 404, never retries checksum mismatch, and clean
             fs.writeFileSync(dest, payload);
           }
         },
-        execFileSync: (_cmd, args) => {
-          const destDir = args[args.indexOf('-C') + 1];
-          fs.writeFileSync(path.join(destDir, 'witforge'), '#!/bin/sh\n');
+        execFileSync: (_cmd, _args, opts) => {
+          fs.writeFileSync(path.join(opts.cwd, 'witforge'), '#!/bin/sh\n');
         },
       },
     );
@@ -598,9 +598,8 @@ test('install names `version` on 404, never retries checksum mismatch, and clean
           }
         },
         verifyExecFileSync: () => {},
-        execFileSync: (_cmd, args) => {
-          const destDir = args[args.indexOf('-C') + 1];
-          fs.writeFileSync(path.join(destDir, 'witforge'), '#!/bin/sh\n');
+        execFileSync: (_cmd, _args, opts) => {
+          fs.writeFileSync(path.join(opts.cwd, 'witforge'), '#!/bin/sh\n');
         },
       },
     );
@@ -631,9 +630,8 @@ test('install names `version` on 404, never retries checksum mismatch, and clean
           }
         },
         verifyExecFileSync: () => {},
-        execFileSync: (_cmd, args) => {
-          const destDir = args[args.indexOf('-C') + 1];
-          fs.writeFileSync(path.join(destDir, 'witforge'), '#!/bin/sh\n');
+        execFileSync: (_cmd, _args, opts) => {
+          fs.writeFileSync(path.join(opts.cwd, 'witforge'), '#!/bin/sh\n');
         },
       },
     );
@@ -1034,6 +1032,90 @@ test('workflow annotations and failed-command/sarif outputs are emitted from dia
     assert.match(spawnOutputs, new RegExp(`sarif-file=${spawnErrSarif.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
     const flushedSarif = JSON.parse(fs.readFileSync(spawnErrSarif, 'utf8'));
     assert.equal(flushedSarif.runs.length, 1);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('download and latestVersion retry mid-body failures and Windows tar uses relative cwd extraction', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'witforge-action-w10-125-'));
+  try {
+    // 1. Mid-body arrayBuffer() failure in download() retries cleanly inside request().
+    let dlAttempts = 0;
+    const dest = path.join(tmp, 'asset.tar.gz');
+    await download('https://example.test/asset.tar.gz', dest, {
+      maxAttempts: 3,
+      retryDelayMs: 1,
+      sleep: async () => {},
+      fetch: async () => {
+        dlAttempts += 1;
+        return {
+          ok: true,
+          status: 200,
+          arrayBuffer: async () => {
+            if (dlAttempts === 1) {
+              throw new Error('socket hang up mid-body');
+            }
+            return new TextEncoder().encode('archive-bytes').buffer;
+          },
+        };
+      },
+    });
+    assert.equal(dlAttempts, 2);
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'archive-bytes');
+
+    // 2. Mid-body json() failure in latestVersion() retries cleanly inside request().
+    let jsonAttempts = 0;
+    const latest = await latestVersion('tok', {
+      maxAttempts: 3,
+      retryDelayMs: 1,
+      sleep: async () => {},
+      fetch: async () => {
+        jsonAttempts += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            if (jsonAttempts === 1) {
+              throw new Error('ECONNRESET while reading JSON');
+            }
+            return { tag_name: 'v0.8.0' };
+          },
+        };
+      },
+    });
+    assert.equal(jsonAttempts, 2);
+    assert.equal(latest, '0.8.0');
+
+    // 3. Windows tar extraction passes relative asset filename with cwd: temporary (safe under
+    //    both Windows bsdtar and GNU tar where `C:\...` would be parsed as a remote host).
+    const payload = Buffer.from('fake-win-archive');
+    const digest = crypto.createHash('sha256').update(payload).digest('hex');
+    let tarCall = null;
+    const installed = await install(
+      { version: '0.8.0', token: 'tok' },
+      {
+        platform: 'win32',
+        arch: 'x64',
+        env: { RUNNER_TEMP: tmp },
+        download: async (url, outPath) => {
+          if (url.endsWith('.sha256')) {
+            fs.writeFileSync(outPath, `${digest}  witforge-0.8.0-x86_64-pc-windows-msvc.tar.gz\n`);
+          } else {
+            fs.writeFileSync(outPath, payload);
+          }
+        },
+        verifyExecFileSync: () => {},
+        execFileSync: (cmd, args, opts) => {
+          tarCall = { cmd, args, opts };
+          fs.writeFileSync(path.join(opts.cwd, 'witforge.exe'), 'exe');
+        },
+      },
+    );
+    assert.equal(tarCall.cmd, 'tar');
+    assert.deepEqual(tarCall.args, ['-xf', 'witforge-0.8.0-x86_64-pc-windows-msvc.tar.gz']);
+    assert.ok(tarCall.opts.cwd && tarCall.opts.cwd.startsWith(tmp));
+    assert.equal(path.basename(installed), 'witforge.exe');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

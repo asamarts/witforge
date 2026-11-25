@@ -216,8 +216,9 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
         if trimmed_start.len() >= 2 && trimmed_start.bytes().all(|b| b == b'*') {
             return Some(String::new());
         }
-        // Symmetric `/*** Hello. ***/` (or `/*** ***/`) -> `* Hello. *` / `* **`.
-        if let Some(after_lead) = trimmed_start.strip_prefix('*')
+        // Symmetric `/*** Hello. ***/`, `/**** Hello. ****/` (or `/*** ***/`).
+        let after_lead = trimmed_start.trim_start_matches('*');
+        if after_lead.len() < trimmed_start.len()
             && (after_lead.is_empty() || after_lead.starts_with([' ', '\t']))
         {
             let no_stars = after_lead.trim_end_matches('*');
@@ -300,10 +301,18 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
             Some(_) => {}
         }
     }
-    if all_match
-        && let Some(ws) = gutter
-        && (!ws.is_empty() || has_bare_star || has_closing_banner || has_opening_banner)
-    {
+    // For a zero-space `*` gutter (`ws.is_empty()`), a single `***`+ line at either edge is a
+    // valid CommonMark thematic break adjacent to a `/// * bullet` list, so strip only when
+    // disambiguated by a non-empty gutter, bare `*` blank line, both banners, or `< 3` stars.
+    let strip_form1 = all_match
+        && gutter.is_some_and(|ws| {
+            !ws.is_empty()
+                || has_bare_star
+                || (has_opening_banner && has_closing_banner)
+                || (has_opening_banner && lines[0].len() < 3)
+                || (has_closing_banner && lines[last_idx].trim().len() < 3)
+        });
+    if strip_form1 {
         if has_opening_banner {
             lines[0].clear();
         }
@@ -320,7 +329,8 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
     // Form 2: `/** First line\n * Second line\n */` (and 2-line `/** First line.\n ***/`) where
     // line 0 is prose and every non-empty continuation line shares a `<spaces/tabs>*` gutter
     // (optionally followed by an aligned closing `*`-only banner line). Preserve 0-space (`*`),
-    // 2-space (`  *`), and colon-introduced 1-space (`Options:\n * a`) `///` Markdown bullet lists.
+    // 2-space (`  *`), and colon-introduced 1-space (`Options:\n * a`) `///` Markdown bullet lists,
+    // as well as `/// ***` thematic breaks after `///` prose or 0-space bullet lists.
     if lines.len() >= 2 && list_marker_content_col(&lines[0]).is_none() {
         let mut tail_match = true;
         let mut tail_gutter: Option<&str> = None;
@@ -355,6 +365,8 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
                 Some(_) => {}
             }
         }
+        let closing_disambiguated = tail_closing_banner
+            && (lines[0].starts_with([' ', '\t']) || lines[last_idx].trim().len() < 3);
         let strip_form2 = tail_match
             && match tail_gutter {
                 Some(ws) => {
@@ -363,9 +375,10 @@ fn strip_block_comment_asterisks(lines: &mut [String]) {
                         || ws.len() >= 3
                         || (ws == " " && !lines[0].trim_end().ends_with(':'))
                         || tail_bare_star
-                        || tail_closing_banner
+                        || (!ws.is_empty() && tail_closing_banner)
+                        || closing_disambiguated
                 }
-                None => tail_closing_banner,
+                None => tail_closing_banner && (lines.len() == 2 || closing_disambiguated),
             };
         if strip_form2 {
             lines[0] = lines[0].trim_start_matches([' ', '\t']).to_string();
@@ -418,8 +431,19 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
         }
 
         let (_, col) = leading_columns(line);
+        // After a blank line (not continuing a paragraph), any non-blank line indented less than
+        // `list_content_col` terminates the enclosing list in CommonMark. Clear it before fence /
+        // indented-code detection so a subsequent 4-space-indented fence cannot escape as a Rust
+        // doctest.
+        if !in_paragraph
+            && let Some(list_col) = list_content_col
+            && col < list_col
+        {
+            list_content_col = None;
+        }
+        let indented_code_threshold = list_content_col.map_or(4, |c| c + 4);
         let max_fence_indent = list_content_col.map_or(3, |c| c + 3);
-        let is_indented_code = !in_paragraph && col >= 4 && list_content_col.is_none();
+        let is_indented_code = !in_paragraph && col >= indented_code_threshold;
 
         if !is_indented_code
             && let Some((prefix, fence_char, fence_len)) = detect_fence(line, max_fence_indent)
@@ -447,12 +471,13 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
             continue;
         }
 
-        if !in_paragraph && col >= 4 {
+        if is_indented_code {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
-            list_content_col = None;
+            let list_indent = list_content_col.unwrap_or(0);
+            let indent_prefix = " ".repeat(list_indent);
             let start = i;
             while i < lines.len() {
-                if lines[i].is_empty() || leading_columns(&lines[i]).1 >= 4 {
+                if lines[i].is_empty() || leading_columns(&lines[i]).1 >= indented_code_threshold {
                     i += 1;
                 } else {
                     break;
@@ -470,15 +495,21 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
                     if code_line.is_empty() {
                         String::new()
                     } else {
-                        strip_columns(code_line, 4)
+                        strip_columns(code_line, indented_code_threshold)
                     }
                 })
                 .collect();
             let fence_len = max_backtick_run(&dedented).max(2) + 1;
             let fence = "`".repeat(fence_len);
-            out.push(format!("{fence}text"));
-            out.extend(dedented);
-            out.push(fence);
+            out.push(format!("{indent_prefix}{fence}text"));
+            for code_line in dedented {
+                if code_line.is_empty() {
+                    out.push(String::new());
+                } else {
+                    out.push(format!("{indent_prefix}{code_line}"));
+                }
+            }
+            out.push(format!("{indent_prefix}{fence}"));
             continue;
         }
 
@@ -735,6 +766,15 @@ fn escape_inline(text: &str, target: Target, allow_links: bool) -> String {
                 } else if bytes[pos + 1].is_ascii_punctuation() {
                     out.push_str(&text[pos..pos + 2]);
                     pos += 2;
+                } else if allow_links && scan_bare_url(&text[pos + 1..]).is_some() {
+                    // `\<https://...>` escapes `<` in CommonMark, turning the autolink back into
+                    // a bare URL that fails `rustdoc::bare_urls`. Double the backslash in Rust
+                    // docs so CommonMark renders a literal `\` followed by the `<url>` autolink.
+                    match target {
+                        Target::Rust => out.push_str("\\\\"),
+                        Target::Proto => out.push('\\'),
+                    }
+                    pos += 1;
                 } else {
                     out.push('\\');
                     pos += 1;
@@ -956,20 +996,66 @@ fn parse_external_link(slice: &str) -> Option<(&str, &str, usize)> {
     Some((&slice[1..label_end], dest, dest_end + 1))
 }
 
+fn is_valid_link_title(title: &str) -> bool {
+    let bytes = title.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    let (open, close) = match (bytes[0], bytes[bytes.len() - 1]) {
+        (b'"', b'"') => (b'"', b'"'),
+        (b'\'', b'\'') => (b'\'', b'\''),
+        (b'(', b')') => (b'(', b')'),
+        _ => return false,
+    };
+    let inner = &bytes[1..bytes.len() - 1];
+    let mut i = 0;
+    while i < inner.len() {
+        if inner[i] == b'\\' && i + 1 < inner.len() {
+            i += 2;
+            continue;
+        }
+        if inner[i] == close || (open == b'(' && inner[i] == b'(') {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 fn is_external_link_dest(dest: &str) -> bool {
-    let url = dest.split_whitespace().next().unwrap_or_default();
-    let url = url
-        .strip_prefix('<')
-        .and_then(|s| s.strip_suffix('>'))
-        .unwrap_or(url);
-    if let Some(rest) = url
+    let (url, rest) = if let Some(after_lt) = dest.strip_prefix('<') {
+        let Some(close) = after_lt.find('>') else {
+            return false;
+        };
+        let url = &after_lt[..close];
+        if url.contains(|ch: char| ch.is_whitespace() || ch.is_control() || matches!(ch, '<' | '>'))
+        {
+            return false;
+        }
+        let rest = &after_lt[close + 1..];
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            return false;
+        }
+        (url, rest.trim())
+    } else {
+        let split = dest.find(char::is_whitespace).unwrap_or(dest.len());
+        let url = &dest[..split];
+        if url.contains(|ch: char| ch.is_control() || matches!(ch, '<' | '>')) {
+            return false;
+        }
+        (url, dest[split..].trim())
+    };
+    if !rest.is_empty() && !is_valid_link_title(rest) {
+        return false;
+    }
+    if let Some(after_scheme) = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
     {
-        return !rest.is_empty();
+        return !after_scheme.is_empty();
     }
-    if let Some(rest) = url.strip_prefix("mailto:") {
-        return !rest.is_empty();
+    if let Some(after_scheme) = url.strip_prefix("mailto:") {
+        return !after_scheme.is_empty();
     }
     false
 }

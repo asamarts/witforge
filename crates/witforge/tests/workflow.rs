@@ -1091,3 +1091,148 @@ fn third_wave_audit_freeze_manifest_and_package_location_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn fourth_wave_audit_freeze_tree_symlink_path_and_package_location_regressions() {
+    use std::process::Command;
+
+    let base =
+        std::env::temp_dir().join(format!("witforge-w10-125-workflow-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. Historical directory (`040000 tree`) and symlink (`120000`) at `wit/released` in earlier
+    //    commits must NOT be parsed as released manifest entries when replaced by a regular file.
+    let repo = base.join("hist-repo");
+    let wit = repo.join("wit");
+    let v01 = wit.join("v0.1");
+    fs::create_dir_all(&v01).unwrap();
+    fs::write(
+        v01.join("contract.wit"),
+        "package ex:hist@0.1.0;\ninterface api { record item { id: u64 } }\n",
+    )
+    .unwrap();
+    let locked =
+        workflow::lock(&workflow::VersionOptions::new(v01.clone()).with_baseline(Baseline::First))
+            .unwrap();
+    fs::write(&locked.lockfile, locked.rendered.unwrap()).unwrap();
+
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.name", "witforge-test"]);
+    run_git(&["config", "user.email", "witforge-test@example.invalid"]);
+
+    // Commit 1: `wit/released` is a directory (`040000 tree`).
+    fs::create_dir_all(wit.join("released")).unwrap();
+    fs::write(wit.join("released/placeholder.txt"), "not a manifest\n").unwrap();
+    run_git(&["add", "."]);
+    run_git(&["commit", "-qm", "dir-at-released"]);
+
+    // Commit 2 (Unix): `wit/released` is a symlink (`120000 blob`).
+    #[cfg(unix)]
+    {
+        fs::remove_dir_all(wit.join("released")).unwrap();
+        std::os::unix::fs::symlink("elsewhere", wit.join("released")).unwrap();
+        run_git(&["add", "-A"]);
+        run_git(&["commit", "-qm", "symlink-at-released"]);
+        fs::remove_file(wit.join("released")).unwrap();
+    }
+    #[cfg(not(unix))]
+    {
+        fs::remove_dir_all(wit.join("released")).unwrap();
+    }
+
+    // Commit 3: `wit/released` becomes a regular manifest listing `v0.1`.
+    fs::write(wit.join("released"), "v0.1\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-qm", "regular-manifest"]);
+
+    let report = witforge::freeze::check_root(&wit, &witforge::freeze::FreezeOptions::default())
+        .expect("freeze must ignore historical tree/symlink at wit/released");
+    assert!(
+        report.is_ok(),
+        "unexpected freeze violations: {:?}",
+        report.violations
+    );
+
+    // 2. `canonicalize_best_effort` resolves `--released wit/deleted_dir/../released` cleanly
+    //    instead of failing with `"cannot resolve ancestor"`.
+    let report_dotdot = witforge::freeze::check_root_with_manifest(
+        &wit,
+        Some(&wit.join("deleted_dir/../released")),
+        &witforge::freeze::FreezeOptions::default(),
+    )
+    .expect("freeze must handle missing intermediate `..` in --released");
+    assert!(report_dotdot.is_ok(), "{:?}", report_dotdot.violations);
+
+    // 3. `ReleasedManifest::load` with trailing slash on Unix reads the normalized path cleanly.
+    #[cfg(unix)]
+    {
+        let trailing = PathBuf::from(format!("{}/", wit.join("released").display()));
+        let loaded = witforge::ReleasedManifest::load(&trailing)
+            .expect("ReleasedManifest::load should normalize trailing slash consistently");
+        assert!(loaded.contains("v0.1"));
+    }
+
+    // 4. `package_location` locates nested packages at their own `package` line (not line 1) and
+    //    multi-file roots at the file declaring the root package (not an earlier file's nested
+    //    package).
+    let nested_contract = witforge::load_sources(vec![witforge::SourceFile::new(
+        "contract.wit".to_string(),
+        "package ex:root@0.1.0;\n\
+         interface a {\n\
+             record x { id: u32 }\n\
+         }\n\
+         package nested:dep@0.1.0 {\n\
+             interface b {}\n\
+         }\n"
+        .to_string(),
+    )])
+    .unwrap();
+    let diags = witforge::subset::check_located_diagnostics(&nested_contract);
+    let nested_diag = diags
+        .iter()
+        .find(|d| d.diagnostic.code == witforge::diagnostic::codes::SUBSET_NESTED_PACKAGE)
+        .expect("expected SUBSET_NESTED_PACKAGE diagnostic");
+    assert_eq!(
+        nested_diag.diagnostic.position.map(|p| p.line),
+        Some(5),
+        "nested package diagnostic must point at line 5, got {nested_diag:?}"
+    );
+
+    let multi_contract = witforge::load_sources(vec![
+        witforge::SourceFile::new(
+            "a.wit".to_string(),
+            "package nested:dep@0.1.0 {\n    interface b {}\n}\n".to_string(),
+        ),
+        witforge::SourceFile::new(
+            "z.wit".to_string(),
+            "package ex:root;\ninterface a { record x { id: u32 } }\n".to_string(),
+        ),
+    ])
+    .unwrap();
+    let multi_diags = witforge::subset::check_located_diagnostics(&multi_contract);
+    let ver_diag = multi_diags
+        .iter()
+        .find(|d| d.diagnostic.code == witforge::diagnostic::codes::SUBSET_PACKAGE_VERSION)
+        .expect("expected SUBSET_PACKAGE_VERSION diagnostic");
+    assert_eq!(
+        ver_diag.file.as_deref(),
+        Some("z.wit"),
+        "root package diagnostic must point at z.wit, not a.wit: {ver_diag:?}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

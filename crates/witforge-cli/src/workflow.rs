@@ -516,12 +516,12 @@ pub(crate) fn create_new_version(
     // silently ignored.
     let canon_wit_root = fs::canonicalize(wit_root)
         .with_context(|| format!("failed to resolve WIT root {}", wit_root.display()))?;
-    let (manifest_path, explicit_manifest) = match released_manifest {
+    let (raw_manifest_path, explicit_manifest) = match released_manifest {
         Some((path, explicit)) => (path.to_path_buf(), explicit),
         None => (wit_root.join("released"), false),
     };
-    let normalized_manifest: PathBuf = manifest_path.components().collect();
-    let manifest_meta = match fs::symlink_metadata(&normalized_manifest) {
+    let manifest_path: PathBuf = raw_manifest_path.components().collect();
+    let manifest_meta = match fs::symlink_metadata(&manifest_path) {
         Ok(meta) => Some(meta),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             if explicit_manifest {
@@ -529,9 +529,9 @@ pub(crate) fn create_new_version(
                     codes::IO_ERROR,
                     format!(
                         "released manifest `{}` does not exist",
-                        manifest_path.display()
+                        raw_manifest_path.display()
                     ),
-                    Some(manifest_path.display().to_string()),
+                    Some(raw_manifest_path.display().to_string()),
                 ));
             }
             None
@@ -541,9 +541,9 @@ pub(crate) fn create_new_version(
                 codes::IO_ERROR,
                 format!(
                     "failed to inspect released manifest `{}`: {err}",
-                    manifest_path.display()
+                    raw_manifest_path.display()
                 ),
-                Some(manifest_path.display().to_string()),
+                Some(raw_manifest_path.display().to_string()),
             ));
         }
     };
@@ -554,9 +554,9 @@ pub(crate) fn create_new_version(
             codes::GUARD_REFUSED,
             format!(
                 "released manifest `{}` is a symlink; commit a regular file",
-                manifest_path.display()
+                raw_manifest_path.display()
             ),
-            Some(manifest_path.display().to_string()),
+            Some(raw_manifest_path.display().to_string()),
         ));
     }
     if explicit_manifest || manifest_meta.is_some() {
@@ -968,7 +968,8 @@ pub(crate) fn retire_released_entry_text(raw: &str, entry: &str) -> Result<Strin
 /// Append `entry` to `manifest_path` atomically, refusing symlinks and preserving LF line endings
 /// and a final newline.
 pub(crate) fn append_released_entry(manifest_path: &Path, entry: &str) -> Result<()> {
-    if let Ok(meta) = fs::symlink_metadata(manifest_path)
+    let normalized: PathBuf = manifest_path.components().collect();
+    if let Ok(meta) = fs::symlink_metadata(&normalized)
         && meta.file_type().is_symlink()
     {
         return Err(op_error(
@@ -980,8 +981,8 @@ pub(crate) fn append_released_entry(manifest_path: &Path, entry: &str) -> Result
             Some(manifest_path.display().to_string()),
         ));
     }
-    let mut contents = if manifest_path.exists() {
-        fs::read_to_string(manifest_path)
+    let mut contents = if normalized.exists() {
+        fs::read_to_string(&normalized)
             .with_context(|| format!("failed to read {}", manifest_path.display()))?
             .replace("\r\n", "\n")
     } else {
@@ -992,7 +993,7 @@ pub(crate) fn append_released_entry(manifest_path: &Path, entry: &str) -> Result
     }
     contents.push_str(entry);
     contents.push('\n');
-    write_atomic_manifest(manifest_path, &contents)
+    write_atomic_manifest(&normalized, &contents)
 }
 
 /// Atomically replace `manifest_path` with `contents`, refusing symlinks and preserving existing
@@ -1003,7 +1004,8 @@ pub(crate) fn write_atomic_manifest(manifest_path: &Path, contents: &str) -> Res
 
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    if let Ok(meta) = fs::symlink_metadata(manifest_path)
+    let normalized: PathBuf = manifest_path.components().collect();
+    if let Ok(meta) = fs::symlink_metadata(&normalized)
         && meta.file_type().is_symlink()
     {
         return Err(op_error(
@@ -1015,13 +1017,13 @@ pub(crate) fn write_atomic_manifest(manifest_path: &Path, contents: &str) -> Res
             Some(manifest_path.display().to_string()),
         ));
     }
-    let existing_perms = fs::metadata(manifest_path).ok().map(|m| m.permissions());
+    let existing_perms = fs::metadata(&normalized).ok().map(|m| m.permissions());
 
-    let parent = manifest_path
+    let parent = normalized
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let file_name = manifest_path
+    let file_name = normalized
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("released");
@@ -1058,7 +1060,7 @@ pub(crate) fn write_atomic_manifest(manifest_path: &Path, contents: &str) -> Res
         if let Some(perms) = existing_perms {
             let _ = fs::set_permissions(&tmp_path, perms);
         }
-        fs::rename(&tmp_path, manifest_path).with_context(|| {
+        fs::rename(&tmp_path, &normalized).with_context(|| {
             format!(
                 "failed to replace {} with {}",
                 manifest_path.display(),

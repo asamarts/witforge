@@ -14,10 +14,10 @@
 //!                [--no-std | --std] [--config PATH | --no-config] [--project NAME] [--check]
 //!                [--diff] [--released PATH]
 //! witforge generate [--config PATH | --no-config] [--project NAME] [--check] [--diff]
-//!                   [--serde | --no-serde] [--no-std | --std] [--released PATH]
+//!                   [--serde | --no-serde] [--no-std | --std] [--draft 7|2020-12] [--released PATH]
 //! witforge init  [DIR] [--package NS:NAME] [--serde]
-//! witforge new-version [<wit-root>] [--major] [--from VERSION] [--config PATH | --no-config]
-//!                      [--project NAME]
+//! witforge new-version [<wit-root>] [--major] [--from VERSION] [--released PATH]
+//!                      [--config PATH | --no-config] [--project NAME]
 //! witforge release <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge retire  <wit-dir> [--released PATH] [--config PATH | --no-config] [--project NAME]
 //! witforge diff  <old> <new> [--json] [--check[=VIEWS]]
@@ -1132,21 +1132,22 @@ fn check_command(options: &CheckOptions, reporter: &mut Reporter) -> Result<Exit
                 None,
             ));
         }
-        let link_meta = fs::symlink_metadata(dir)
+        let normalized_dir: PathBuf = dir.components().collect();
+        let link_meta = fs::symlink_metadata(&normalized_dir)
             .with_context(|| format!("failed to read version directory {}", dir.display()))?;
         if link_meta.file_type().is_symlink() {
             // A WIT root may be a symlink, but a symlinked version directory or dangling symlink
             // is refused with WF9004.
-            let is_wit_root = fs::metadata(dir)
+            let is_wit_root = fs::metadata(&normalized_dir)
                 .ok()
                 .filter(fs::Metadata::is_dir)
-                .and_then(|_| contract_workflow::classify_check_target(dir).ok())
+                .and_then(|_| contract_workflow::classify_check_target(&normalized_dir).ok())
                 == Some(contract_workflow::CheckTargetKind::WitRoot);
             if !is_wit_root {
-                ensure_version_directory(dir)?;
+                ensure_version_directory(&normalized_dir)?;
             }
         } else if !link_meta.is_dir() {
-            ensure_version_directory(dir)?;
+            ensure_version_directory(&normalized_dir)?;
         }
         return match contract_workflow::classify_check_target(dir)? {
             contract_workflow::CheckTargetKind::VersionDirectory => {
@@ -2016,19 +2017,20 @@ fn inspect_command(options: &InspectOptions, reporter: &mut Reporter) -> Result<
         (root, released)
     };
 
-    let link_meta = fs::symlink_metadata(&target)
+    let normalized_target: PathBuf = target.components().collect();
+    let link_meta = fs::symlink_metadata(&normalized_target)
         .with_context(|| format!("failed to read {}", target.display()))?;
     if link_meta.file_type().is_symlink() {
-        let is_wit_root = fs::metadata(&target)
+        let is_wit_root = fs::metadata(&normalized_target)
             .ok()
             .filter(fs::Metadata::is_dir)
-            .and_then(|_| contract_workflow::classify_check_target(&target).ok())
+            .and_then(|_| contract_workflow::classify_check_target(&normalized_target).ok())
             == Some(contract_workflow::CheckTargetKind::WitRoot);
         if !is_wit_root {
-            ensure_version_directory(&target)?;
+            ensure_version_directory(&normalized_target)?;
         }
     } else if !link_meta.is_dir() {
-        ensure_version_directory(&target)?;
+        ensure_version_directory(&normalized_target)?;
     }
 
     let rendered = match contract_workflow::classify_check_target(&target)? {
@@ -2617,21 +2619,20 @@ fn release_command(options: &ReleaseOptions, reporter: &mut Reporter) -> Result<
         )
     })?;
 
-    let (manifest_path, _) = resolve_manifest_for_version_dir(
+    let (raw_manifest_path, _) = resolve_manifest_for_version_dir(
         &options.dir,
         options.released.as_deref(),
         &options.config,
     )?;
-
-    let normalized_manifest: PathBuf = manifest_path.components().collect();
-    if fs::symlink_metadata(&normalized_manifest).is_ok_and(|meta| meta.file_type().is_symlink()) {
+    let manifest_path: PathBuf = raw_manifest_path.components().collect();
+    if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(op_error(
             codes::GUARD_REFUSED,
             format!(
                 "released manifest `{}` is a symlink; commit a regular file",
-                manifest_path.display()
+                raw_manifest_path.display()
             ),
-            Some(manifest_path.display().to_string()),
+            Some(raw_manifest_path.display().to_string()),
         ));
     }
     ensure_manifest_belongs_to_wit_root(&manifest_path, wit_root)?;
@@ -2746,15 +2747,15 @@ fn retire_command(options: &RetireOptions, reporter: &mut Reporter) -> Result<Ex
         )
     })?;
 
-    let (manifest_path, explicit_manifest) = resolve_manifest_for_version_dir(
+    let (raw_manifest_path, explicit_manifest) = resolve_manifest_for_version_dir(
         &options.dir,
         options.released.as_deref(),
         &options.config,
     )?;
-    let manifest_file = manifest_path.display().to_string();
+    let manifest_path: PathBuf = raw_manifest_path.components().collect();
+    let manifest_file = raw_manifest_path.display().to_string();
 
-    let normalized_manifest: PathBuf = manifest_path.components().collect();
-    if fs::symlink_metadata(&normalized_manifest).is_ok_and(|meta| meta.file_type().is_symlink()) {
+    if fs::symlink_metadata(&manifest_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(op_error(
             codes::GUARD_REFUSED,
             format!("released manifest `{manifest_file}` is a symlink; commit a regular file"),

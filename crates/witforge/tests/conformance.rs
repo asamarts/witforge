@@ -176,16 +176,64 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
 
     let mut lock = WireLock::default();
     lock.reconcile(&members).unwrap();
+    let rust_no_std =
+        rust::emit_version_with_options(&model, &rust::RustOptions::new().with_no_std(true))
+            .unwrap();
+    assert!(!rust_no_std.contains("::std::"));
+    let schema_2020 = json_schema::emit_version_with_options(
+        &model,
+        &json_schema::SchemaOptions::new().with_draft(json_schema::JsonSchemaDraft::Draft202012),
+    )
+    .unwrap();
+    assert!(schema_2020.contains("https://json-schema.org/draft/2020-12/schema"));
+    let glue_no_std = glue::emit_version_with_options(
+        &model,
+        &lock,
+        "crate::plain",
+        "crate::proto",
+        &glue::GlueOptions::new().with_no_std(true),
+    )
+    .unwrap();
+    assert!(!glue_no_std.contains("::std::"));
+    let ir_json = witforge::inspect::emit_version_json(&model, Some(&lock)).unwrap();
+    assert!(ir_json.contains("\"version\": 1"));
     let generated = [
         rust::emit_version(&model).unwrap(),
+        rust_no_std,
         json_schema::emit_version(&model).unwrap(),
+        schema_2020,
         proto::emit_major(&model, &lock).unwrap(),
         glue::emit_version(&model, &lock, "crate::plain", "crate::proto").unwrap(),
+        glue_no_std,
+        ir_json,
     ];
     for source in generated {
         assert_ne!(source, "");
         assert!(!source.contains('\r'));
     }
+
+    // Confirm `Stability::Deprecated` also round-trips through model, emitters, and inspect IR.
+    let deprecated_contract = witforge::load_sources(vec![witforge::SourceFile::new(
+        "contract.wit".to_string(),
+        "package example:dep@0.2.0;\n\
+         @since(version = 0.1.0)\n\
+         interface api {\n\
+             @since(version = 0.1.0)\n\
+             @deprecated(version = 0.2.0)\n\
+             record old-item { id: u32 }\n\
+         }\n"
+        .to_string(),
+    )])
+    .unwrap();
+    let deprecated_model = model::build(&deprecated_contract).unwrap();
+    assert!(matches!(
+        deprecated_model.interfaces[0].types[0].stability,
+        model::Stability::Deprecated { .. }
+    ));
+    let dep_rust = rust::emit_version(&deprecated_model).unwrap();
+    assert!(dep_rust.contains("#[deprecated("));
+    let dep_ir = witforge::inspect::emit_version_json(&deprecated_model, None).unwrap();
+    assert!(dep_ir.contains("\"kind\":\"deprecated\""));
 }
 
 #[test]

@@ -126,8 +126,8 @@ Every input and output is documented publicly on [`docs/guide/ci.md`](../guide/c
 | `sarif-file` | empty | Combined SARIF 2.1.0 output file path when `format: sarif` is set (default `witforge.sarif`). |
 | `github-token` | `${{ github.token }}` (from `v0.8.0`) | Token for GitHub API calls (`version: latest` and `gh attestation verify`); defaults to the workflow token from `v0.8.0` and is never sent with asset downloads. |
 
-Outputs: `failed-command` (`validate`, `install`, or `witforge <subcommand>` on failure; empty on
-success) and `sarif-file` (path to the written SARIF file when `format: sarif` is set).
+Outputs: `failed-command` (`validate`, `install`, `sarif`, or `witforge <subcommand>` on failure;
+empty on success) and `sarif-file` (path to the written SARIF file when `format: sarif` is set).
 
 With `diff-old` and `diff-new` set and `diff-check` left at its default, the step fails on any
 wire-, source-, or generated-API-breaking change. That includes an added record field, so a

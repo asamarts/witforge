@@ -29,17 +29,20 @@ root = "wit"
 [project.example.rust]
 out = "generated/rust"
 serde = true
+# no-std = true  # opt-in `#![no_std]` + `alloc` paths (CLI: `--no-std` / `--std`)
 
 [project.example.proto]
 out = "generated/proto"
 
 [project.example.schema]
 out = "generated/schema"
+# draft = "2020-12"  # Draft 7 default, opt-in Draft 2020-12 (CLI: `--draft 7|2020-12`)
 
 [project.example.glue]
 out = "generated/glue"
 plain-root = "crate::plain"
 proto-root = "crate::proto"
+# no-std = true  # opt-in `#![no_std]` + `alloc` paths (CLI: `--no-std` / `--std`)
 ```
 
 Then run every configured emitter at once (or run individual emitters):

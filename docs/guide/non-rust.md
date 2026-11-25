@@ -57,8 +57,9 @@ behavioral tests.
 ## JSON is a separate choice
 
 Proto3-JSON follows protobuf naming and presence rules. It is not the JSON shape described by
-witforge's Draft 7 JSON Schema and it is not necessarily the shape produced by Serde on generated
-plain Rust types. See [JSON projections](json-projections.md) before choosing a JSON boundary.
+witforge's JSON Schema (Draft 7 default, opt-in Draft 2020-12) and it is not necessarily the shape
+produced by Serde on generated plain Rust types. See [JSON projections](json-projections.md) before
+choosing a JSON boundary.
 
 Protovalidate annotations and generated cross-language fixture bundles are not emitted today.
 Adding either would expand the generated contract and runtime/tooling requirements, so they should

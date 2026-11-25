@@ -16,7 +16,25 @@ consume it. Paths are relative to `crates/witforge/tests/`.
 | `fixtures/emit/rust/all/contract.wit` | every Rust mapping row, including nested wrappers, aliases, named structural types, and a function with every parameter shape |
 | `fixtures/emit/proto/mapping/contract.wit` | every protobuf mapping row, wrappers, oneofs, method ids, and reserved members |
 | `fixtures/emit/glue/contract/contract.wit` | every glue type, request/response helper, presence rule, closed enum, and round-trip case |
-| `fixtures/emit/json/all.schema.json` | every JSON Schema mapping row—including all four `result` forms (`result<T, E>`, `result<T>`, `result<_, E>`, and bare `result`) and integer/`f32` bounds: the golden Draft 7 output for `fixtures/emit/rust/all/contract.wit`, whose definitions `tests/emit_json_schema.rs` also compiles and validates instances against |
+| `fixtures/emit/json/all.schema.json` | every JSON Schema mapping row—including all four `result` forms (`result<T, E>`, `result<T>`, `result<_, E>`, and bare `result`), member-level `description` fields, and integer/`f32` bounds: the golden Draft 7 output for `fixtures/emit/rust/all/contract.wit`; `tests/emit_json_schema.rs` compiles and validates instances against both Draft 7 and opt-in Draft 2020-12 |
+
+## Emitter options, IR, and tooling surface
+
+- **Opt-in `no_std` + `alloc` (`0.8.0`):** `tests/emit_rust.rs` and `tests/emit_glue.rs` verify
+  `RustOptions::new().with_no_std(true)` and `GlueOptions::new().with_no_std(true)` emit zero
+  `::std::` references across plain modules, `convert.rs`, `worlds.rs`, `witforge_deps.rs`, and
+  glue, and compile under `#![no_std]` + `extern crate alloc;`.
+- **JSON Schema Draft 2020-12 (`0.8.0`):** `tests/emit_json_schema.rs` validates
+  `SchemaOptions::new().with_draft(JsonSchemaDraft::Draft202012)` output (`$defs`, `prefixItems`,
+  Draft 2020-12 `$schema`, and `$ref` resolution across `deps/`) against `jsonschema`.
+- **Contract IR (`inspect`, `0.8.0`):** `tests/inspect.rs` validates deterministic versioned JSON
+  IR (`IR_VERSION = 1`) for single versions, multi-version roots, dependencies, stability metadata
+  (including `@deprecated`), reserved lockfile entries, and order fingerprints.
+- **`witforge-build` (`0.8.0`):** `crates/witforge-build/tests/compile.rs` compiles standalone and
+  dependency `.proto` outputs with `protox` + `prost-build` and (under `--all-features`)
+  `pbjson-build` round-trips.
+- **Static `musl` archives (`0.8.0`):** CI's `musl` job and `release.yml` verify zero `INTERP` /
+  `NEEDED` dynamic dependencies on `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
 
 ## Version and evolution surface
 

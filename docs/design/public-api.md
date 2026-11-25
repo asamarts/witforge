@@ -53,8 +53,11 @@ model values, lockfile inputs, and diagnostic locations through the documented `
 and mutable. Adding a field or variant is compatible within 1.x; changing or removing an existing
 field or variant remains breaking.
 
-The new `ChangeElement`, generated-file finding, and `workflow` enums and records are also
-`#[non_exhaustive]`; their constructors and builders are the downstream construction boundary.
+The new `ChangeElement`, generated-file finding, `workflow`, and `0.8.0` emitter-option types
+(`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`) are also `#[non_exhaustive]`;
+their constructors and builders are the downstream construction boundary. `RustOptions`,
+`GlueOptions`, and `SchemaOptions` deliberately omit `Copy` so future additive options may carry
+non-`Copy` values without breaking SemVer.
 
 The explicit trait implementations in the checked inventory are promised API, including derived
 `Debug`, `Clone`, `Copy`, equality, ordering, hashing, and `Default` implementations. Adding a
@@ -83,6 +86,27 @@ surface. For a root with dependencies, `emit::rust::plan`, `emit::proto::plan`,
 `emit::json_schema::plan`, and `emit::glue::plan` are the complete entry points: they emit the
 shared dependency files. The lower-level `emit_version`, `emit_major`, and `emit_root` functions
 emit one local file and do not create the shared dependency files themselves.
+
+## Companion crate: `witforge-build`
+
+`witforge-build` is an optional `build-dependencies` helper crate (first published in `0.8.0`) that
+wraps `protox`, `prost-build`, and optional `pbjson-build` (behind feature `pbjson`) for compiling
+`witforge proto` output.
+
+- **Public surface:** `DEFAULT_INCLUDE_FILE`, `Config`, `BuildOutput`, `Error` (`#[non_exhaustive]`),
+  `discover_protos`, and `compile_protos`.
+- **Direct 0.x third-party dependency exposure:** `witforge-build` intentionally exposes
+  `protox::Error` (via `Error::Protox`), `&mut prost_build::Config` (via `Config::prost_config` /
+  `Config::with_prost_config`), and `&mut pbjson_build::Builder` (via `Config::pbjson_builder` /
+  `Config::with_pbjson_builder` under feature `pbjson`) so build scripts can customize prost/pbjson
+  options directly. Because `protox`, `prost-build`, and `pbjson-build` are currently `0.x` crates,
+  any upstream breaking bump of those crates is a SemVer-breaking change for `witforge-build`.
+- **1.0 versioning boundary:** The `1.0` public API promise and `public-api-inventory.txt` gate in
+  this document apply to the `witforge` compiler library crate. Before `witforge` cuts `1.0.0`,
+  either `witforge-build` will decouple its version from the workspace lockstep (`0.x` until its
+  underlying protobuf build dependencies reach `1.0`) or its public surface will be inventoried and
+  gated separately so an upstream `prost-build`/`protox`/`pbjson-build` bump never forces a
+  `witforge` `2.0.0`.
 
 ## Configuration boundary
 

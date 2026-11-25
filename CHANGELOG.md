@@ -24,12 +24,14 @@ Generated output changes:
   world-only dependency interface not referenced by any proto message) are omitted while preserving
   every dependency transitively referenced in non-comment message/field bodies. Regenerate and
   commit `.proto` files if affected.
-- **Plain Rust & Glue (`W10-107`, `W10-120`):** Deeply nested generic type signatures gain
-  `#[allow(clippy::type_complexity)]` where required for `-D warnings`, alignment-aware layout
-  sizing covers padded records and long alias chains for `#[allow(clippy::large_enum_variant)]`,
-  and generated plain/convert/glue output matches `rustfmt` (Editions 2021 and 2024) for long
-  identifiers, defaulted fields, `if let` scrutinees, and `result<_, _>` expressions. Regenerate if
-  affected.
+- **Plain Rust & Glue (`W10-107`, `W10-120`, `W10-124`, `W10-125`):** Deeply nested generic type
+  signatures gain `#[allow(clippy::type_complexity)]` where required for `-D warnings`,
+  generated enums gain conditional `#[allow(clippy::enum_variant_names)]`, memoized cycle- and
+  overflow-safe alignment-aware layout sizing covers padded records and deep/cross-package alias
+  chains for `#[allow(clippy::large_enum_variant)]`, and generated plain/convert/glue output
+  matches `rustfmt` (Editions 2021 and 2024) for long identifiers, defaulted fields, `if let`
+  scrutinees, `for` list pushes, `let-else` deep nesting, and `result<_, _>` expressions.
+  Regenerate if affected.
 
 ### Added
 
@@ -40,8 +42,9 @@ Generated output changes:
   - Added `witforge retire <WIT_DIR>` (with `--released` and `witforge.toml` resolution) to mark
     the oldest live released version `retired` in the released manifest while enforcing contiguous
     prefix and non-empty live-set rules.
-  - Added `--from <VERSION>` to `witforge new-version` so a new minor or major can branch from an
-    explicit base version rather than only the highest version.
+  - Added `--from <VERSION>` and `--released <PATH>` to `witforge new-version` so a new minor or
+    major can branch from an explicit base version and validate an explicit released manifest
+    rather than only the highest version and default manifest.
 - **Versioned contract IR export (`W10-110`, `W10-118`):**
   - Added `witforge::inspect` (`IR_VERSION = 1`, `emit_version_json`, `inspect_version_json`,
     `inspect_root_json`, `summarize_version`, `summarize_root`) with zero new runtime dependencies.
@@ -177,6 +180,25 @@ Generated output changes:
     `docs.rs` aligned block-comment banner normalization without corrupting single-line ` *` prose
     or Markdown bullet lists, and `#![no_std]` + `serde` header/test coverage (`W10-120`,
     `W10-122`, `W10-124`).
+
+  - Fixed fourth-wave audit defects (`W10-125`): removed `Copy` from `#[non_exhaustive]`
+    `RustOptions` and `GlueOptions` before `0.8.0` publication so future non-`Copy` options stay
+    SemVer-compatible; replaced `usize::next_multiple_of` with saturating alignment rounding and
+    exact-only memoization with canonical dependency keys and cross-package alias handling in
+    `rust.rs`; fixed `docs.rs` list-state doctest escapes, continuation paragraphs, link
+    destination validation, `\https://...` autolinks, `/**** ... ****/` symmetric banners, and
+    `/// ***` thematic-break preservation; fixed `glue.rs` `FN_CALL_WIDTH` list-push hoisting,
+    inline-result `Some(...)` wrapping, deep `let-else` wrapping, and dependency-context resolution
+    in `list_element_in`/`option_payload_in`; fixed `convert.rs` `wrap_ok` record-field
+    indentation; restricted `freeze.rs` `git_show_file` to regular file blobs (`100644`/`100755`),
+    handled missing intermediate `..` in `canonicalize_best_effort`, and preserved POSIX literal
+    backslashes; fixed trailing-slash normalization across manifest and `check`/`inspect` paths and
+    target-matched `package_location` for nested/multi-file WIT packages; fixed `witforge-build`
+    custom `default_package_filename`, duplicate root major case collisions, and POSIX backslash
+    paths; moved `action/index.js` response body reads inside the retry loop, used relative `cwd`
+    extraction for Windows GNU `tar` compatibility, and documented `failed-command: "sarif"`;
+    documented `witforge-build`'s public API and 1.0 versioning boundary; extended conformance,
+    fuzzing, and `ci/check-public-api-policy.sh` auto-advancing tag protection.
 
 ## [0.7.0] - 2026-11-23
 

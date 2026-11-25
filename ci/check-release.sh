@@ -39,7 +39,9 @@ requirement="$(jq -r '.packages[] | select(.name == "witforge-cli") | .dependenc
 # Keep the standalone fuzz workspace lockfile aligned with the workspace crate version; CI runs
 # `cargo check --manifest-path fuzz/Cargo.toml --locked`. Parse fuzz/Cargo.lock directly so this
 # script stays completely offline (matching `cargo metadata --no-deps --locked` above).
-if [[ -f "${ROOT}/fuzz/Cargo.lock" ]]; then
+if [[ -f "${ROOT}/fuzz/Cargo.toml" ]]; then
+    [[ -f "${ROOT}/fuzz/Cargo.lock" ]] \
+        || fail "fuzz/Cargo.lock is missing while fuzz/Cargo.toml exists"
     fuzz_version="$(awk '
         /^\[\[package\]\]/ { in_pkg = 0 }
         /^name = "witforge"$/ { in_pkg = 1; next }
@@ -63,7 +65,7 @@ count="$(wc -l <<<"${heading}")"
 dated="^## \[${escaped}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$"
 [[ "${heading}" =~ ${dated} ]] || fail "the CHANGELOG.md heading for ${version} has no date: ${heading}"
 date="${heading##* - }"
-parsed="$(date -u -d "${date}" +%F 2>/dev/null || true)"
+parsed="$(date -u -d "${date}" +%F 2>/dev/null || date -u -j -f "%Y-%m-%d" "${date}" +%F 2>/dev/null || true)"
 [[ "${parsed}" == "${date}" ]] \
     || fail "the CHANGELOG.md date for ${version} is not a valid date: ${date}"
 

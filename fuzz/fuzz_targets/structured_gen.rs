@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use witforge::emit::{glue, json_schema, proto, rust};
 use witforge::lock::WireLock;
-use witforge::{diff, load, model, subset};
+use witforge::{diff, inspect, load, model, subset};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -125,6 +125,8 @@ const WIT_KEYWORDS: &[&str] = &[
     "async",
     "error-context",
     "map",
+    "constructor",
+    "_",
 ];
 
 fn wit_escape(ident: &str) -> String {
@@ -651,6 +653,62 @@ pub fn assert_invariants_for_version_dir(wit_root: &Path, version_dir: &Path) ->
         glue1.files(),
         glue2.files(),
         "glue::plan must be deterministic"
+    );
+
+    // Also exercise 0.8.0 emitter options (`no_std`, Draft 2020-12) and `inspect` JSON IR.
+    let rust_no_std =
+        rust::plan_with_options(wit_root, None, &rust::RustOptions::new().with_no_std(true))
+            .expect("no_std rust::plan must succeed for subset-clean contract");
+    for (name, content) in rust_no_std.files() {
+        assert!(
+            !content.contains("::std::"),
+            "no_std rust file `{name}` must not reference `::std::`"
+        );
+    }
+    let glue_no_std = glue::plan_with_options(
+        wit_root,
+        "crate::plain",
+        "crate::proto",
+        None,
+        &glue::GlueOptions::new().with_no_std(true),
+    )
+    .expect("no_std glue::plan must succeed for subset-clean contract");
+    for (name, content) in glue_no_std.files() {
+        assert!(
+            !content.contains("::std::"),
+            "no_std glue file `{name}` must not reference `::std::`"
+        );
+    }
+    let schema_2020_1 = json_schema::plan_with_options(
+        wit_root,
+        None,
+        &json_schema::SchemaOptions::new().with_draft(json_schema::JsonSchemaDraft::Draft202012),
+    )
+    .expect("Draft 2020-12 json_schema::plan must succeed for subset-clean contract");
+    let schema_2020_2 = json_schema::plan_with_options(
+        wit_root,
+        None,
+        &json_schema::SchemaOptions::new().with_draft(json_schema::JsonSchemaDraft::Draft202012),
+    )
+    .expect("second Draft 2020-12 json_schema::plan must succeed");
+    assert_eq!(
+        schema_2020_1.files(),
+        schema_2020_2.files(),
+        "Draft 2020-12 json_schema::plan must be deterministic"
+    );
+    let ir_v1 = inspect::emit_version_json(&model, Some(&lock))
+        .expect("inspect::emit_version_json must succeed");
+    let ir_v2 = inspect::emit_version_json(&model, Some(&lock))
+        .expect("second inspect::emit_version_json must succeed");
+    assert_eq!(
+        ir_v1, ir_v2,
+        "inspect::emit_version_json must be deterministic"
+    );
+    let ir_root = inspect::inspect_root_json(wit_root, None)
+        .expect("inspect::inspect_root_json must succeed");
+    assert!(
+        ir_root.contains("\"version\": 1"),
+        "inspect root IR must declare version 1"
     );
 
     // `diff` of a version with itself must be empty.

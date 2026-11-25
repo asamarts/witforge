@@ -533,14 +533,94 @@ fn resolve_span_location_with_sources(
     resolve_span_cached_with_sources(source_map, span, &mut cache, virtual_sources)
 }
 
-/// Locate an explicit `package ...` header line inside `file`, skipping line and nested block
-/// comments, returning `None` if `file` has no `package` declaration.
-fn find_explicit_package_header_position(
+struct PackageHeaderMatch {
+    ns_name: Option<String>,
+    version: Option<String>,
+    is_nested_block: bool,
+    position: diagnostic::Position,
+}
+
+fn parse_package_header_line(rest: &str) -> (Option<String>, Option<String>, bool) {
+    let bytes = rest.as_bytes();
+    let mut i = "package".len();
+    let skip_ws_and_comments = |pos: &mut usize| {
+        while *pos < bytes.len() {
+            if matches!(bytes[*pos], b' ' | b'\t' | b'\r') {
+                *pos += 1;
+            } else if *pos + 1 < bytes.len() && bytes[*pos] == b'/' && bytes[*pos + 1] == b'*' {
+                *pos += 2;
+                let mut depth = 1usize;
+                while *pos + 1 < bytes.len() && depth > 0 {
+                    if bytes[*pos] == b'/' && bytes[*pos + 1] == b'*' {
+                        depth += 1;
+                        *pos += 2;
+                    } else if bytes[*pos] == b'*' && bytes[*pos + 1] == b'/' {
+                        depth -= 1;
+                        *pos += 2;
+                    } else {
+                        *pos += 1;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    };
+    skip_ws_and_comments(&mut i);
+    let name_start = i;
+    while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t' | b'\r' | b';' | b'{' | b'@' | b'/') {
+        i += 1;
+    }
+    let raw_name = &rest[name_start..i];
+    let ns_name = raw_name.split_once(':').map(|(ns, name)| {
+        let ns = ns.strip_prefix('%').unwrap_or(ns);
+        let name = name.strip_prefix('%').unwrap_or(name);
+        format!("{ns}:{name}")
+    });
+    skip_ws_and_comments(&mut i);
+    let version = if i < bytes.len() && bytes[i] == b'@' {
+        i += 1;
+        let ver_start = i;
+        while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t' | b'\r' | b';' | b'{' | b'/') {
+            i += 1;
+        }
+        let ver = &rest[ver_start..i];
+        (!ver.is_empty()).then(|| ver.to_string())
+    } else {
+        None
+    };
+    let mut is_nested_block = false;
+    while i < bytes.len() {
+        skip_ws_and_comments(&mut i);
+        if i >= bytes.len() {
+            break;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            break;
+        }
+        if bytes[i] == b'{' {
+            is_nested_block = true;
+            break;
+        }
+        if bytes[i] == b';' {
+            break;
+        }
+        i += 1;
+    }
+    (ns_name, version, is_nested_block)
+}
+
+/// Collect all explicit `package ...` header lines inside `file`, skipping line and nested block
+/// comments.
+fn collect_package_headers(
     file: &str,
     cache: &mut BTreeMap<String, LineIndex>,
     virtual_sources: Option<&BTreeMap<String, String>>,
-) -> Option<diagnostic::Position> {
-    let index = load_line_index(file, cache, virtual_sources)?;
+) -> Vec<PackageHeaderMatch> {
+    let Some(index) = load_line_index(file, cache, virtual_sources) else {
+        return Vec::new();
+    };
+    let mut matches = Vec::new();
     let mut block_comment_depth = 0usize;
     for (line_idx, raw) in index.body.lines().enumerate() {
         let line_no = line_idx + 1;
@@ -577,7 +657,13 @@ fn find_explicit_package_header_position(
             if rest.strip_prefix("package").is_some_and(|after| {
                 after.is_empty() || matches!(after.as_bytes()[0], b' ' | b'\t' | b'\r' | b'/')
             }) {
-                return Some(line_position(line_no, raw));
+                let (ns_name, version, is_nested_block) = parse_package_header_line(rest);
+                matches.push(PackageHeaderMatch {
+                    ns_name,
+                    version,
+                    is_nested_block,
+                    position: line_position(line_no, raw),
+                });
             }
             // Still advance nested block-comment state across the rest of the line.
             while i + 1 < bytes.len() {
@@ -603,7 +689,44 @@ fn find_explicit_package_header_position(
             }
         }
     }
-    None
+    matches
+}
+
+fn find_matching_package_header(
+    candidates: &[String],
+    target: &wit_parser::PackageName,
+    prefer_top_level: bool,
+    cache: &mut BTreeMap<String, LineIndex>,
+    virtual_sources: Option<&BTreeMap<String, String>>,
+) -> Option<(String, diagnostic::Position)> {
+    let expected_name = format!("{}:{}", target.namespace, target.name);
+    let expected_version = target.version.as_ref().map(ToString::to_string);
+    let mut best: Option<(u8, String, diagnostic::Position)> = None;
+    for candidate in candidates {
+        for m in collect_package_headers(candidate, cache, virtual_sources) {
+            if m.ns_name.as_deref() != Some(expected_name.as_str()) {
+                continue;
+            }
+            let version_matches = m.version == expected_version;
+            let level_matches = !prefer_top_level || !m.is_nested_block;
+            let rank = match (level_matches, version_matches) {
+                (true, true) => 0,
+                (true, false) => 1,
+                (false, true) => 2,
+                (false, false) => 3,
+            };
+            if rank == 0 {
+                return Some((candidate.clone(), m.position));
+            }
+            if best
+                .as_ref()
+                .is_none_or(|(best_rank, _, _)| rank < *best_rank)
+            {
+                best = Some((rank, candidate.clone(), m.position));
+            }
+        }
+    }
+    best.map(|(_, file, pos)| (file, pos))
 }
 
 /// Locate the `package ...;` declaration line inside `file`, skipping comments and falling back
@@ -613,8 +736,11 @@ pub(crate) fn find_package_header_position(
     cache: &mut BTreeMap<String, LineIndex>,
     virtual_sources: Option<&BTreeMap<String, String>>,
 ) -> Option<(String, diagnostic::Position)> {
-    if let Some(pos) = find_explicit_package_header_position(file, cache, virtual_sources) {
-        return Some((file.to_string(), pos));
+    if let Some(first) = collect_package_headers(file, cache, virtual_sources)
+        .into_iter()
+        .next()
+    {
+        return Some((file.to_string(), first.position));
     }
     let index = load_line_index(file, cache, virtual_sources)?;
     let first_line = index.body.lines().next().unwrap_or("");
@@ -623,13 +749,22 @@ pub(crate) fn find_package_header_position(
 
 fn pick_package_header_file(
     candidates: &[String],
+    target: &wit_parser::PackageName,
+    prefer_top_level: bool,
     cache: &mut BTreeMap<String, LineIndex>,
     virtual_sources: Option<&BTreeMap<String, String>>,
 ) -> Option<(String, diagnostic::Position)> {
+    if let Some(found) =
+        find_matching_package_header(candidates, target, prefer_top_level, cache, virtual_sources)
+    {
+        return Some(found);
+    }
     for candidate in candidates {
-        if let Some(pos) = find_explicit_package_header_position(candidate, cache, virtual_sources)
+        if let Some(first) = collect_package_headers(candidate, cache, virtual_sources)
+            .into_iter()
+            .next()
         {
-            return Some((candidate.clone(), pos));
+            return Some((candidate.clone(), first.position));
         }
     }
     let first = candidates.first()?;
@@ -637,6 +772,7 @@ fn pick_package_header_file(
 }
 
 /// Find the declaring file and `package` header position for `package_id` in `contract`.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn package_location(
     contract: &Contract,
     package_id: PackageId,
@@ -645,6 +781,7 @@ pub(crate) fn package_location(
     let resolve = &contract.resolve;
     let package = &resolve.packages[package_id];
     let virtual_sources = contract.source_contents.as_ref();
+    let prefer_top_level = package_id == contract.package;
     let mut file: Option<String> = None;
     for &iface_id in package.interfaces.values() {
         if let Some(loc) = resolve
@@ -667,15 +804,27 @@ pub(crate) fn package_location(
         }
     }
     if let Some(file) = &file
-        && let Some(pos) = find_explicit_package_header_position(file, cache, virtual_sources)
+        && let Some(found) = find_matching_package_header(
+            std::slice::from_ref(file),
+            &package.name,
+            prefer_top_level,
+            cache,
+            virtual_sources,
+        )
     {
-        return Some((file.clone(), pos));
+        return Some(found);
     }
     if let Some(entry) = contract.dependency_entry(package_id) {
         if let Some(sources) = virtual_sources {
             let entry_key = entry.to_string_lossy().replace('\\', "/");
             if sources.contains_key(entry_key.as_str()) {
-                return find_package_header_position(&entry_key, cache, Some(sources));
+                return pick_package_header_file(
+                    &[entry_key],
+                    &package.name,
+                    false,
+                    cache,
+                    Some(sources),
+                );
             }
             let prefix = format!("{entry_key}/");
             let candidates: Vec<String> = sources
@@ -683,11 +832,19 @@ pub(crate) fn package_location(
                 .filter(|key| key.starts_with(&prefix))
                 .cloned()
                 .collect();
-            if let Some(found) = pick_package_header_file(&candidates, cache, Some(sources)) {
+            if let Some(found) =
+                pick_package_header_file(&candidates, &package.name, false, cache, Some(sources))
+            {
                 return Some(found);
             }
         } else if entry.is_file() {
-            return find_package_header_position(&entry.display().to_string(), cache, None);
+            return pick_package_header_file(
+                &[entry.display().to_string()],
+                &package.name,
+                false,
+                cache,
+                None,
+            );
         } else if entry.is_dir()
             && let Ok(wit_files) = sorted_wit_files(entry)
         {
@@ -695,28 +852,45 @@ pub(crate) fn package_location(
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            if let Some(found) = pick_package_header_file(&candidates, cache, None) {
+            if let Some(found) =
+                pick_package_header_file(&candidates, &package.name, false, cache, None)
+            {
                 return Some(found);
             }
         }
     }
-    if package_id == contract.package {
-        let candidates: Vec<String> = if let Some(sources) = virtual_sources {
-            sources
-                .keys()
-                .filter(|key| !key.starts_with("deps/"))
-                .cloned()
-                .collect()
-        } else {
-            resolve
-                .source_map
-                .source_files()
-                .map(|p| p.display().to_string())
-                .collect()
-        };
-        if let Some(found) = pick_package_header_file(&candidates, cache, virtual_sources) {
-            return Some(found);
-        }
+    let root_candidates: Vec<String> = if let Some(sources) = virtual_sources {
+        sources
+            .keys()
+            .filter(|key| !key.starts_with("deps/"))
+            .cloned()
+            .collect()
+    } else {
+        resolve
+            .source_map
+            .source_files()
+            .map(|p| p.display().to_string())
+            .collect()
+    };
+    if let Some(found) = find_matching_package_header(
+        &root_candidates,
+        &package.name,
+        prefer_top_level,
+        cache,
+        virtual_sources,
+    ) {
+        return Some(found);
+    }
+    if prefer_top_level
+        && let Some(found) = pick_package_header_file(
+            &root_candidates,
+            &package.name,
+            true,
+            cache,
+            virtual_sources,
+        )
+    {
+        return Some(found);
     }
     if let Some(file) = file {
         return find_package_header_position(&file, cache, virtual_sources);
@@ -1648,10 +1822,11 @@ impl ReleasedManifest {
     /// or directory content.
     pub fn load(path: &Path) -> Result<Self> {
         let _ = inspect_manifest_path(path)?;
-        let text = fs::read_to_string(path)
+        let normalized: PathBuf = path.components().collect();
+        let text = fs::read_to_string(&normalized)
             .with_context(|| format!("failed to read released manifest {}", path.display()))?;
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let parent = normalized.parent().unwrap_or_else(|| Path::new("."));
         let mut directories = Vec::new();
         let mut retired = BTreeSet::new();
         let mut seen = BTreeSet::new();

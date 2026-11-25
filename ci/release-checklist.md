@@ -16,10 +16,10 @@ hand, because crates.io cannot trust a repository for a crate that does not exis
       (the pre-rewrite history is kept privately), and the commits cited as task evidence were
       remapped.
 - [x] `cargo fmt --check`
-- [x] `cargo clippy --workspace --all-targets -- -D warnings`
-- [x] `cargo test --workspace --locked`
-- [x] `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`
-- [x] `cargo +1.88 test --workspace --locked`
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` (plus `-p witforge-build --all-targets --all-features`)
+- [x] `cargo test --workspace --locked` (plus `-p witforge-build --all-features --locked`)
+- [x] `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps`
+- [x] `cargo +1.88 test --workspace --locked` (plus `-p witforge-build --all-features --locked`)
 - [x] `ci/check-generated.sh`
 - [x] `ci/check-release-freeze.sh crates/witforge/tests/fixtures/versions/wit`
       (the seven checks above: CI run 41255894743 on `main` at `546cec1`, the published commit,
@@ -125,13 +125,20 @@ explicit release-owner action.
       builds and `witforge-build --all-features`). Record the commit SHA and job URL;
       `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push --status success`
       must identify that run.
+- [ ] Run `release.yml` via `workflow_dispatch` on `main` (unprivileged `verify` dry run covering
+      `ci/check-release.sh`, workspace + `witforge-build --all-features` tests,
+      `ci/check-semver.sh`, uncached `BUF_REQUIRED=1 ci/check-buf-history.sh`,
+      `ci/publish.sh --dry-run`, and `.crate` digest recording) **before** hand-publishing any new
+      crate or tagging, so a `verify` failure can never strand a newly bootstrapped crate version
+      on crates.io.
 - [ ] *(One-time bootstrap for a new workspace crate such as `witforge-build` in 0.8.0, only after
-      `main` `ci ok` is green)*: crates.io cannot configure Trusted Publishing for a crate that does
-      not exist yet. Mint a short-lived crates.io token scoped strictly to `publish-new` for the
-      new crate, run `cargo publish --locked -p witforge-build` from that exact clean `main` commit
-      (never `ci/publish.sh`, which would also attempt to upload `witforge` and `witforge-cli`),
-      add the Trusted Publisher on crates.io (GitHub, `asamarts/witforge`, `release.yml`,
-      environment `release`), revoke the temporary token, and `unset CARGO_REGISTRY_TOKEN`.
+      `main` `ci ok` and `release.yml` `workflow_dispatch` `verify` are green)*: crates.io cannot
+      configure Trusted Publishing for a crate that does not exist yet. Mint a short-lived
+      crates.io token scoped strictly to `publish-new` for the new crate, run
+      `cargo publish --locked -p witforge-build` from that exact clean `main` commit (never
+      `ci/publish.sh`, which would also attempt to upload `witforge` and `witforge-cli`), add the
+      Trusted Publisher on crates.io (GitHub, `asamarts/witforge`, `release.yml`, environment
+      `release`), revoke the temporary token, and `unset CARGO_REGISTRY_TOKEN`.
 - [ ] Tag that exact commit `vX.Y.Z` (annotated; signed with `git tag -s` when a signing key is
       available, while tag-protection rulesets, exact-commit `ci ok`, and SLSA provenance
       attestations provide the CI-verifiable chain) and push the tag. `release.yml` independently
@@ -183,11 +190,11 @@ affected crates, and re-running `release.yml` then only creates the GitHub relea
 
 ## After publishing
 
-- [x] Record the release commit and CI run in the changelog or release notes (0.1.0: commit
-      `546cec1`, CI run 41255894743, release run 41261961612; 0.1.1: commit `978c985`, CI run
-      41274574941, release run 41274576724; 0.1.2: commit `3f89ec4`, CI run 41341872998,
-      release run 41342094380; 0.2.0: commit `dfb06de`, CI run 41936185007, release run
-      41936720164; 0.3.0: commit `9ee341a`, CI run 42135517669, release run 42135977082).
+- [x] Record the release commit and CI run in the changelog or release notes (0.1.0–0.1.2 inline
+      below; 0.2.0 and later in their dedicated `## 0.x.0 record` sections below):
+      0.1.0 commit `546cec1`, CI run 41255894743, release run 41261961612;
+      0.1.1 commit `978c985`, CI run 41274574941, release run 41274576724;
+      0.1.2 commit `3f89ec4`, CI run 41341872998, release run 41342094380.
 - [x] Keep the released fixtures and generated-output checks in CI.
 - [ ] Move the next contract change to a new minor version directory with `--against`.
 

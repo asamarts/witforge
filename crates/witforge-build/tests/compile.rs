@@ -707,3 +707,65 @@ fn third_wave_audit_empty_proto_pbjson_prefix_and_backslash_guards() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn fourth_wave_audit_custom_default_filename_and_duplicate_major_guards() {
+    let base = std::env::temp_dir().join(format!("witforge-build-w10-125-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+
+    // 1. Standalone package-less `v0.proto` with custom `default_package_filename("custom")`
+    //    must include `custom.rs` rather than emitting an empty `pub mod v0 {}`.
+    let proto_dir = base.join("custom-proto");
+    let out_dir = base.join("custom-out");
+    fs::create_dir_all(&proto_dir).unwrap();
+    fs::create_dir_all(&out_dir).unwrap();
+    fs::write(
+        proto_dir.join("v0.proto"),
+        "syntax = \"proto3\";\nmessage Ping { uint64 seq = 1; }\n",
+    )
+    .unwrap();
+    let result = witforge_build::Config::new()
+        .out_dir(&out_dir)
+        .with_prost_config(|cfg| {
+            cfg.default_package_filename("custom");
+        })
+        .compile_protos(&proto_dir)
+        .unwrap();
+    assert!(out_dir.join("custom.rs").is_file());
+    let include_text = fs::read_to_string(result.include_file.as_ref().unwrap()).unwrap();
+    assert!(
+        include_text.contains("pub mod v0 {\n    include!(\"custom.rs\");\n}"),
+        "expected custom.rs include in standalone module:\n{include_text}"
+    );
+
+    // 2. Duplicate root major case collision (`v0.proto` + `v0.PROTO`) on case-sensitive Unix
+    //    returns an explicit error rather than silently overwriting one major entry.
+    #[cfg(target_os = "linux")]
+    {
+        let dup_proto = base.join("dup-proto");
+        let dup_out = base.join("dup-out");
+        fs::create_dir_all(&dup_proto).unwrap();
+        fs::create_dir_all(&dup_out).unwrap();
+        fs::write(
+            dup_proto.join("v0.proto"),
+            "syntax = \"proto3\";\npackage ex.one.v0;\nmessage A { uint64 id = 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dup_proto.join("v0.PROTO"),
+            "syntax = \"proto3\";\npackage ex.two.v0;\nmessage B { uint64 id = 1; }\n",
+        )
+        .unwrap();
+        let err = witforge_build::Config::new()
+            .out_dir(&dup_out)
+            .compile_protos(&dup_proto)
+            .unwrap_err();
+        assert!(
+            matches!(err, witforge_build::Error::Io { .. })
+                && err.to_string().contains("duplicate root major"),
+            "expected duplicate root major error, got {err:?}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

@@ -28,10 +28,13 @@ completeness alone is not enough.
       dependency glue, version conversion with foreign values, and opt-in Serde
 - [ ] the release test matrix is green on Linux, macOS, and Windows, and on MSRV 1.88
 - [ ] `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-      `cargo test --workspace --locked`, `RUSTDOCFLAGS='-D warnings' cargo doc --workspace
-      --no-deps`, `ci/check-generated.sh`, `ci/check-release-freeze.sh
+      `cargo clippy -p witforge-build --all-targets --all-features -- -D warnings`,
+      `cargo test --workspace --locked`, `cargo test -p witforge-build --all-features --locked`,
+      `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps`,
+      `ci/check-generated.sh`, `ci/check-release-freeze.sh
       crates/witforge/tests/fixtures/versions/wit`, and `ci/check-security.sh` pass; cargo-deny
-      refuses yanked crates
+      refuses yanked crates; `witforge-build`'s versioning relationship to `witforge` 1.0 (given its
+      0.x `prost-build`/`protox`/`pbjson-build` surface) is resolved per [`public-api.md`](public-api.md#companion-crate-witforge-build)
 - [ ] the checked-out Action and the pinned published Action pass on Linux x86_64, Linux arm64,
       macOS arm64, macOS Intel, and Windows x86_64; each platform installs and verifies its own
       release archive (checksum + build provenance attestation)

@@ -438,6 +438,7 @@ async function request(url, token, options = {}) {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   const sleepImpl = options.sleep ?? sleep;
+  const parseResponse = options.parseResponse;
 
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -455,7 +456,17 @@ async function request(url, token, options = {}) {
       if (!response.ok) {
         throw new HttpStatusError(url, response.status);
       }
-      return response;
+      if (!parseResponse) {
+        return response;
+      }
+      try {
+        return await parseResponse(response);
+      } catch (error) {
+        if (signal.aborted) {
+          throw new Error(`GET ${url} timed out after ${timeoutMs}ms`);
+        }
+        throw error;
+      }
     } catch (error) {
       lastError = error;
       if (attempt >= maxAttempts || !isRetryableError(error)) {
@@ -468,12 +479,11 @@ async function request(url, token, options = {}) {
 }
 
 async function latestVersion(token, options = {}) {
-  const response = await request(
+  const release = await request(
     `https://api.github.com/repos/${REPOSITORY}/releases/latest`,
     token,
-    options,
+    { ...options, parseResponse: (response) => response.json() },
   );
-  const release = await response.json();
   const tag = String(release.tag_name || '');
   return tag.startsWith('v') ? tag.slice(1) : tag;
 }
@@ -481,8 +491,11 @@ async function latestVersion(token, options = {}) {
 // Release assets are public and are fetched without credentials: `github-token` is for the
 // rate limit of the latest-release API query and attestation verification, never asset downloads.
 async function download(url, destination, options = {}) {
-  const response = await request(url, '', options);
-  fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
+  const bytes = await request(url, '', {
+    ...options,
+    parseResponse: async (response) => Buffer.from(await response.arrayBuffer()),
+  });
+  fs.writeFileSync(destination, bytes);
 }
 
 async function install(options, runtime = {}) {
@@ -546,9 +559,9 @@ async function install(options, runtime = {}) {
 
     const tarArgs =
       (runtime.platform ?? process.platform) === 'win32'
-        ? ['-xf', archive, '-C', temporary]
-        : ['-xzf', archive, '-C', temporary];
-    execFn('tar', tarArgs, { stdio: 'inherit' });
+        ? ['-xf', asset]
+        : ['-xzf', asset];
+    execFn('tar', tarArgs, { cwd: temporary, stdio: 'inherit' });
     // Remove the archive and checksum scratch files while keeping the extracted executable under
     // RUNNER_TEMP on PATH for subsequent workflow steps.
     fs.rmSync(archive, { force: true });
@@ -846,6 +859,7 @@ module.exports = {
   formatAnnotationLine,
   input,
   install,
+  latestVersion,
   normalizeFormat,
   normalizeVersion,
   parseAgainst,

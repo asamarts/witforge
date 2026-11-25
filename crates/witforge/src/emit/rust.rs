@@ -17,7 +17,7 @@ use crate::emit::{
 use crate::model::{Model, TypeDef, TypeDefKind, TypeExpr};
 
 /// Options controlling plain Rust and `convert.rs` code generation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RustOptions {
     /// Derive `serde::Serialize` and `serde::Deserialize` on generated records, enums, variants,
@@ -117,7 +117,7 @@ pub fn plan_with_options(
     released: Option<&Path>,
     options: &RustOptions,
 ) -> Result<GeneratedFiles> {
-    plan_versions_with_options(&load_versions_with_released(wit_root, released)?, *options)
+    plan_versions_with_options(&load_versions_with_released(wit_root, released)?, options)
 }
 
 /// Plan the Rust output for validated `versions`, which [`load_versions`] returns.
@@ -128,12 +128,12 @@ pub(crate) fn plan_versions_with_serde(
     versions: &[Version],
     serde: bool,
 ) -> Result<GeneratedFiles> {
-    plan_versions_with_options(versions, RustOptions::new().with_serde(serde))
+    plan_versions_with_options(versions, &RustOptions::new().with_serde(serde))
 }
 
 pub(crate) fn plan_versions_with_options(
     versions: &[Version],
-    options: RustOptions,
+    options: &RustOptions,
 ) -> Result<GeneratedFiles> {
     let dep_layout = DepLayout::from_versions(versions)?;
     let package = &versions
@@ -319,10 +319,10 @@ pub fn emit_version_with_options(model: &Model, options: &RustOptions) -> Result
         )?;
         Ok(format!("super::super::witforge_deps::{pkg_mod}"))
     };
-    emit_version_with_resolver(model, *options, &resolver)
+    emit_version_with_resolver(model, options, &resolver)
 }
 
-fn write_option_header_comments(out: &mut String, options: RustOptions) -> Result<()> {
+fn write_option_header_comments(out: &mut String, options: &RustOptions) -> Result<()> {
     if options.serde {
         if options.no_std {
             writeln!(
@@ -347,7 +347,7 @@ fn write_option_header_comments(out: &mut String, options: RustOptions) -> Resul
 
 fn emit_version_with_resolver(
     model: &Model,
-    options: RustOptions,
+    options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<String> {
     let mut out = String::new();
@@ -447,7 +447,7 @@ fn emit_interface(
     indent: usize,
     model: &Model,
     interface: &crate::model::Interface,
-    options: RustOptions,
+    options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let mut type_names: BTreeMap<String, String> = BTreeMap::new();
@@ -513,14 +513,14 @@ fn emit_dependency_bindings(
             dep.clone(),
         );
     }
-    emit_dependency_bindings_layout(header, &layout, RustOptions::new().with_serde(serde))
+    emit_dependency_bindings_layout(header, &layout, &RustOptions::new().with_serde(serde))
 }
 
 #[allow(clippy::too_many_lines)]
 fn emit_dependency_bindings_layout(
     header: &str,
     layout: &DepLayout,
-    options: RustOptions,
+    options: &RustOptions,
 ) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{header}")?;
@@ -599,7 +599,7 @@ fn emit_dep_group(
     parent_mod: &str,
     emitted: &[crate::model::Dependency],
     all_in_scope: &[crate::model::Dependency],
-    options: RustOptions,
+    options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
     scoped_context: Option<(u64, &DepLayout)>,
 ) -> Result<()> {
@@ -735,7 +735,7 @@ fn emit_record(
     def: &TypeDef,
     name: &str,
     fields: &[crate::model::Field],
-    options: RustOptions,
+    options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
@@ -795,7 +795,7 @@ fn emit_type_def(
     model: &Model,
     interface: &crate::model::Interface,
     def: &TypeDef,
-    options: RustOptions,
+    options: &RustOptions,
     foreign_resolver: &dyn Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let prefix = " ".repeat(indent);
@@ -1135,16 +1135,31 @@ fn emit_trait(
 fn resolves_to_unit_err_result(model: &Model, ty: &TypeExpr) -> bool {
     let mut context = None;
     let mut current = ty;
-    for _ in 0..=crate::model::MAX_ALIAS_CHAIN {
+    let mut visited: BTreeSet<LayoutKey> = BTreeSet::new();
+    let mut alias_hops = 0usize;
+    loop {
         match current {
             TypeExpr::Result(result) => return result.err.is_none(),
             TypeExpr::Named(name) => {
                 let Some((resolved_dep, def)) = model.type_def_in(context, name) else {
                     return false;
                 };
+                let same_pkg = match (context, resolved_dep) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.package == b.package,
+                    _ => false,
+                };
+                let key = layout_key(resolved_dep, name, def);
+                if !visited.insert(key) {
+                    return false;
+                }
                 match &def.kind {
                     TypeDefKind::Result(result) => return result.err.is_none(),
                     TypeDefKind::Alias(target) => {
+                        alias_hops = if same_pkg { alias_hops + 1 } else { 1 };
+                        if alias_hops > crate::model::MAX_ALIAS_CHAIN {
+                            return false;
+                        }
                         context = resolved_dep;
                         current = target;
                     }
@@ -1154,7 +1169,6 @@ fn resolves_to_unit_err_result(model: &Model, ty: &TypeExpr) -> bool {
             _ => return false,
         }
     }
-    false
 }
 
 fn split_pascal_words(ident: &str) -> Vec<&str> {
@@ -1214,6 +1228,33 @@ fn needs_allow_enum_variant_names(enum_name: &str, variant_names: &[&str]) -> bo
 }
 
 type LayoutKey = (Option<String>, String, String);
+type LayoutEstimate = (usize, usize, usize);
+
+fn layout_key(
+    resolved_dep: Option<&crate::model::Dependency>,
+    name: &crate::model::QualifiedName,
+    def: &TypeDef,
+) -> LayoutKey {
+    let dep_key = resolved_dep.map(|d| {
+        format!(
+            "{}:{}@{}",
+            d.package.namespace, d.package.name, d.package.version
+        )
+    });
+    (dep_key, name.interface_name().to_string(), def.name.clone())
+}
+
+const fn saturating_next_multiple_of(value: usize, align: usize) -> usize {
+    if align <= 1 {
+        return value;
+    }
+    let rem = value % align;
+    if rem == 0 {
+        value
+    } else {
+        value.saturating_add(align - rem)
+    }
+}
 
 /// Conservative 64-bit size estimate for `clippy::large_enum_variant` (default threshold 200 bytes).
 /// Emits `#[allow(clippy::large_enum_variant)]` whenever a variant case's upper-bound size exceeds
@@ -1222,13 +1263,13 @@ fn has_large_variant_disparity(model: &Model, cases: &[crate::model::Case]) -> b
     if cases.len() < 2 {
         return false;
     }
-    let mut memo: BTreeMap<LayoutKey, (usize, usize, usize)> = BTreeMap::new();
+    let mut memo: BTreeMap<LayoutKey, LayoutEstimate> = BTreeMap::new();
     let mut visiting: BTreeSet<LayoutKey> = BTreeSet::new();
     let bounds: Vec<(usize, usize)> = cases
         .iter()
         .map(|case| {
             case.payload.as_ref().map_or((0, 0), |ty| {
-                let (min_sz, max_sz, _) =
+                let ((min_sz, max_sz, _), _) =
                     estimate_type_layout(model, None, ty, 0, 0, &mut memo, &mut visiting);
                 (min_sz, max_sz)
             })
@@ -1252,24 +1293,25 @@ fn estimate_result_layout(
     result: &crate::model::ResultExpr,
     depth: usize,
     alias_hops: usize,
-    memo: &mut BTreeMap<LayoutKey, (usize, usize, usize)>,
+    memo: &mut BTreeMap<LayoutKey, LayoutEstimate>,
     visiting: &mut BTreeSet<LayoutKey>,
-) -> (usize, usize, usize) {
-    let (ok_min, ok_max, ok_al) = result.ok.as_deref().map_or((0, 0, 1), |t| {
+) -> (LayoutEstimate, bool) {
+    let ((ok_min, ok_max, ok_al), ok_exact) = result.ok.as_deref().map_or(((0, 0, 1), true), |t| {
         estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting)
     });
-    let (err_min, err_max, err_al) = result.err.as_deref().map_or((0, 0, 1), |t| {
-        estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting)
-    });
+    let ((err_min, err_max, err_al), err_exact) =
+        result.err.as_deref().map_or(((0, 0, 1), true), |t| {
+            estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting)
+        });
     let al = ok_al.max(err_al).max(1);
     let min_raw = ok_min.max(err_min);
     let min_sz = if min_raw == 0 {
         1
     } else {
-        min_raw.next_multiple_of(al)
+        saturating_next_multiple_of(min_raw, al)
     };
-    let max_sz = ok_max.max(err_max).saturating_add(al).next_multiple_of(al);
-    (min_sz, max_sz, al)
+    let max_sz = saturating_next_multiple_of(ok_max.max(err_max).saturating_add(al), al);
+    ((min_sz, max_sz, al), ok_exact && err_exact)
 }
 
 fn estimate_variant_layout(
@@ -1278,16 +1320,18 @@ fn estimate_variant_layout(
     cases: &[crate::model::Case],
     depth: usize,
     alias_hops: usize,
-    memo: &mut BTreeMap<LayoutKey, (usize, usize, usize)>,
+    memo: &mut BTreeMap<LayoutKey, LayoutEstimate>,
     visiting: &mut BTreeSet<LayoutKey>,
-) -> (usize, usize, usize) {
+) -> (LayoutEstimate, bool) {
     let mut max_min = 0usize;
     let mut max_max = 0usize;
     let mut max_align = 1usize;
+    let mut exact = true;
     for case in cases {
         if let Some(t) = &case.payload {
-            let (cmin, cmax, cal) =
+            let ((cmin, cmax, cal), case_exact) =
                 estimate_type_layout(model, context, t, depth + 1, alias_hops, memo, visiting);
+            exact &= case_exact;
             max_min = max_min.max(cmin);
             max_max = max_max.max(cmax);
             max_align = max_align.max(cal);
@@ -1295,9 +1339,12 @@ fn estimate_variant_layout(
     }
     if cases.len() <= 1 {
         return (
-            max_min.next_multiple_of(max_align),
-            max_max.next_multiple_of(max_align),
-            max_align,
+            (
+                saturating_next_multiple_of(max_min, max_align),
+                saturating_next_multiple_of(max_max, max_align),
+                max_align,
+            ),
+            exact,
         );
     }
     let tag_align = if cases.len() <= 256 {
@@ -1311,18 +1358,19 @@ fn estimate_variant_layout(
     let min_sz = if max_min == 0 {
         tag_align
     } else {
-        max_min.next_multiple_of(al)
+        saturating_next_multiple_of(max_min, al)
     };
-    let max_sz = max_max.saturating_add(al).next_multiple_of(al);
-    (min_sz, max_sz, al)
+    let max_sz = saturating_next_multiple_of(max_max.saturating_add(al), al);
+    ((min_sz, max_sz, al), exact)
 }
 
 /// Conservative `(min_size, max_size, align)` estimate for `clippy::large_enum_variant` detection.
 ///
-/// Memoizes every nominal type definition `(dep_key, interface, name)` with a cycle-guard set and
-/// resets structural `depth` and `alias_hops` on entering nominal `Record`/`Variant` definitions so
-/// DAG-shaped records cannot trigger exponential recursion and deep nominal record chains or
-/// multi-record alias chains never truncate prematurely.
+/// Returns `(estimate, exact)` where `exact == false` indicates depth/alias truncation or a cycle
+/// fallback so truncated estimates never poison `memo`. Memoizes every nominal type definition by
+/// canonical `(dep_key, interface_name, def_name)`, resets structural `depth` and `alias_hops` on
+/// entering nominal `Record`/`Variant` definitions or crossing package boundaries, and uses
+/// saturating alignment rounding so arbitrarily deep record DAGs never panic.
 #[allow(clippy::too_many_lines)]
 fn estimate_type_layout(
     model: &Model,
@@ -1330,50 +1378,52 @@ fn estimate_type_layout(
     ty: &TypeExpr,
     depth: usize,
     alias_hops: usize,
-    memo: &mut BTreeMap<LayoutKey, (usize, usize, usize)>,
+    memo: &mut BTreeMap<LayoutKey, LayoutEstimate>,
     visiting: &mut BTreeSet<LayoutKey>,
-) -> (usize, usize, usize) {
+) -> (LayoutEstimate, bool) {
     if depth > crate::model::MAX_TYPE_NESTING || alias_hops > crate::model::MAX_ALIAS_CHAIN {
-        return (24, 24, 8);
+        return ((24, 24, 8), false);
     }
     match ty {
-        TypeExpr::Bool | TypeExpr::U8 | TypeExpr::S8 => (1, 1, 1),
-        TypeExpr::U16 | TypeExpr::S16 => (2, 2, 2),
-        TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 => (4, 4, 4),
-        TypeExpr::U64 | TypeExpr::S64 | TypeExpr::F64 => (8, 8, 8),
-        TypeExpr::String | TypeExpr::List(_) => (24, 24, 8),
+        TypeExpr::Bool | TypeExpr::U8 | TypeExpr::S8 => ((1, 1, 1), true),
+        TypeExpr::U16 | TypeExpr::S16 => ((2, 2, 2), true),
+        TypeExpr::U32 | TypeExpr::S32 | TypeExpr::F32 => ((4, 4, 4), true),
+        TypeExpr::U64 | TypeExpr::S64 | TypeExpr::F64 => ((8, 8, 8), true),
+        TypeExpr::String | TypeExpr::List(_) => ((24, 24, 8), true),
         TypeExpr::Option(inner) => {
-            let (min_sz, max_sz, al) =
+            let ((min_sz, max_sz, al), exact) =
                 estimate_type_layout(model, context, inner, depth + 1, alias_hops, memo, visiting);
-            (min_sz, max_sz.saturating_add(al), al)
+            ((min_sz, max_sz.saturating_add(al), al), exact)
         }
         TypeExpr::Result(result) => {
             estimate_result_layout(model, context, result, depth, alias_hops, memo, visiting)
         }
         TypeExpr::Named(name) => {
             let Some((resolved_dep, def)) = model.type_def_in(context, name) else {
-                return (8, 8, 8);
+                return ((8, 8, 8), true);
             };
-            let dep_key = resolved_dep.map(|d| {
-                format!(
-                    "{}:{}@{}",
-                    d.package.namespace, d.package.name, d.package.version
-                )
-            });
-            let key: LayoutKey = (dep_key, name.interface.clone(), def.name.clone());
+            let key = layout_key(resolved_dep, name, def);
             if let Some(&cached) = memo.get(&key) {
-                return cached;
+                return (cached, true);
             }
             if !visiting.insert(key.clone()) {
-                return (24, 24, 8);
+                return ((24, 24, 8), false);
             }
-            let computed = match &def.kind {
+            let crossed_pkg = match (context, resolved_dep) {
+                (None, None) => false,
+                (Some(a), Some(b)) => a.package != b.package,
+                _ => true,
+            };
+            let next_depth = if crossed_pkg { 0 } else { depth };
+            let next_alias_hops = if crossed_pkg { 0 } else { alias_hops };
+            let (computed, exact) = match &def.kind {
                 TypeDefKind::Record(fields) => {
                     let mut min_sum = 0usize;
                     let mut max_sum = 0usize;
                     let mut max_align = 1usize;
+                    let mut rec_exact = true;
                     for field in fields {
-                        let (fmin, fmax, fal) = estimate_type_layout(
+                        let ((fmin, fmax, fal), field_exact) = estimate_type_layout(
                             model,
                             resolved_dep,
                             &field.ty,
@@ -1382,20 +1432,24 @@ fn estimate_type_layout(
                             memo,
                             visiting,
                         );
+                        rec_exact &= field_exact;
                         max_align = max_align.max(fal);
                         min_sum = min_sum.saturating_add(fmin);
                         max_sum = max_sum.saturating_add(fmax);
                     }
                     (
-                        min_sum.next_multiple_of(max_align),
-                        max_sum.next_multiple_of(max_align),
-                        max_align,
+                        (
+                            saturating_next_multiple_of(min_sum, max_align),
+                            saturating_next_multiple_of(max_sum, max_align),
+                            max_align,
+                        ),
+                        rec_exact,
                     )
                 }
                 TypeDefKind::Variant(cases) => {
                     estimate_variant_layout(model, resolved_dep, cases, 0, 0, memo, visiting)
                 }
-                TypeDefKind::Enum(cases) => {
+                TypeDefKind::Enum(cases) => (
                     if cases.len() <= 1 {
                         (0, 0, 1)
                     } else if cases.len() <= 256 {
@@ -1404,44 +1458,47 @@ fn estimate_type_layout(
                         (2, 2, 2)
                     } else {
                         (4, 4, 4)
-                    }
-                }
-                TypeDefKind::Flags(flags) => (flags.len(), flags.len(), 1),
+                    },
+                    true,
+                ),
+                TypeDefKind::Flags(flags) => ((flags.len(), flags.len(), 1), true),
                 TypeDefKind::Alias(target) => estimate_type_layout(
                     model,
                     resolved_dep,
                     target,
-                    depth,
-                    alias_hops + 1,
+                    next_depth,
+                    next_alias_hops + 1,
                     memo,
                     visiting,
                 ),
-                TypeDefKind::List(_) => (24, 24, 8),
+                TypeDefKind::List(_) => ((24, 24, 8), true),
                 TypeDefKind::Option(inner) => {
-                    let (min_sz, max_sz, al) = estimate_type_layout(
+                    let ((min_sz, max_sz, al), opt_exact) = estimate_type_layout(
                         model,
                         resolved_dep,
                         inner,
-                        depth + 1,
-                        alias_hops,
+                        next_depth + 1,
+                        next_alias_hops,
                         memo,
                         visiting,
                     );
-                    (min_sz, max_sz.saturating_add(al), al)
+                    ((min_sz, max_sz.saturating_add(al), al), opt_exact)
                 }
                 TypeDefKind::Result(result) => estimate_result_layout(
                     model,
                     resolved_dep,
                     result,
-                    depth,
-                    alias_hops,
+                    next_depth,
+                    next_alias_hops,
                     memo,
                     visiting,
                 ),
             };
             visiting.remove(&key);
-            memo.insert(key, computed);
-            computed
+            if exact {
+                memo.insert(key, computed);
+            }
+            (computed, exact)
         }
     }
 }

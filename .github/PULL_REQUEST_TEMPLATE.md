@@ -8,8 +8,10 @@
 - [ ] Ran local checks with disk-backed scratch (`TMPDIR="$HOME/.tmp"`):
   - `cargo fmt --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
-  - `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`
+  - `cargo clippy -p witforge-build --all-targets --all-features -- -D warnings`
+  - `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps`
   - `TMPDIR="$HOME/.tmp" cargo test --workspace --locked`
+  - `TMPDIR="$HOME/.tmp" cargo test -p witforge-build --all-features --locked`
 - [ ] No released contract directories listed in `wit/released` were modified in place.
 - [ ] If generated output or CLI flags changed: updated golden files / committed `examples/` (`ci/check-generated.sh`), updated `docs/guide/reference.md`, and noted migration impact under `## [Unreleased]` in `CHANGELOG.md`.
 - [ ] If `aplan` is installed locally: `aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and `aplan check-docs` pass.

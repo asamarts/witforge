@@ -45,4 +45,20 @@ if bash "${policy}" "${repo}" "${repo}/actual.txt" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Tag a subsequent additive minor (v0.8.0) carrying `item c` and verify a later commit protects it.
+printf 'item a\nitem b\nitem c\n' >"${repo}/docs/design/public-api-inventory.txt"
+git -C "${repo}" add docs/design/public-api-inventory.txt
+git -C "${repo}" commit -qm release-0.8.0
+git -C "${repo}" tag -a v0.8.0 -m v0.8.0
+printf 'post-0.8\n' >"${repo}/marker2"
+git -C "${repo}" add marker2
+git -C "${repo}" commit -qm post-0.8.0
+printf 'item a\nitem b\nitem c\nitem d\n' >"${repo}/actual.txt"
+bash "${policy}" "${repo}" "${repo}/actual.txt"
+printf 'item a\nitem b\n' >"${repo}/actual.txt"
+if bash "${policy}" "${repo}" "${repo}/actual.txt" >/dev/null 2>&1; then
+    echo "post-0.8.0 policy accepted removal of a v0.8.0 API entry" >&2
+    exit 1
+fi
+
 echo "public API release policy tests passed"
