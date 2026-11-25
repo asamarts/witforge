@@ -2726,3 +2726,221 @@ fn fifth_wave_audit_docs_doctests_links_rustfmt_and_layout_depth_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn sixth_wave_audit_commonmark_doctests_and_rustfmt_regressions() {
+    use std::process::Command;
+    use witforge::emit::{glue, rust};
+    use witforge::workflow::{self, Baseline, VersionOptions};
+
+    let lock_first = |dir: &Path| {
+        let locked =
+            workflow::lock(&VersionOptions::new(dir.to_path_buf()).with_baseline(Baseline::First))
+                .unwrap();
+        fs::write(&locked.lockfile, locked.rendered.unwrap()).unwrap();
+    };
+
+    let base = std::env::temp_dir().join(format!("witforge-w10-127-emit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. `docs.rs`: all six sixth-wave CommonMark doctest escapes + non-ASCII leading whitespace
+    //    inside link destination must pass REAL `cargo doc -D warnings` AND `cargo test --doc`.
+    let doc_root = base.join("doc-wit");
+    let doc_v01 = doc_root.join("v0.1");
+    fs::create_dir_all(&doc_v01).unwrap();
+    fs::write(
+        doc_v01.join("contract.wit"),
+        "package ex:docs6@0.1.0;\n\
+         interface api {\n\
+             /// -\n\
+             ///       compile_error!(\"repro1 bare marker indented code\");\n\
+             record repro1 {\n\
+                 /// -\n\
+                 ///\n\
+                 ///     compile_error!(\"repro2 empty list item blank line\");\n\
+                 r2: u32,\n\
+                 /// - ~~~rust\n\
+                 ///   compile_error!(\"repro3a first-line tilde fence\");\n\
+                 ///   ~~~\n\
+                 r3a: u32,\n\
+                 /// - -     compile_error!(\"repro3b chained nested first-line code\");\n\
+                 r3b: u32,\n\
+                 /// - - item\n\
+                 ///       ```rust\n\
+                 ///       compile_error!(\"repro3c chained nested fence\");\n\
+                 ///       ```\n\
+                 r3c: u32,\n\
+                 /// paragraph\n\
+                 /// 2. not a list\n\
+                 ///\n\
+                 ///     compile_error!(\"repro4 non-1 ordered list interrupting paragraph\");\n\
+                 r4: u32,\n\
+                 /// hello\n\
+                 ///   -     compile_error!(\"repro5 paragraph followed by 2-space dash code\");\n\
+                 r5: u32,\n\
+                 /// 10. outer\n\
+                 ///     # heading\n\
+                 ///         compile_error!(\"repro6a heading inside col-4 list\");\n\
+                 r6a: u32,\n\
+                 /// heading\n\
+                 /// ===\n\
+                 ///     compile_error!(\"repro6b setext heading underline\");\n\
+                 r6b: u32,\n\
+                 /// - >     compile_error!(\"repro7 first-line blockquote code in list\");\n\
+                 r7: u32,\n\
+                 /// Non-ASCII leading space in link: [d](\u{00a0}https://example.com)\n\
+                 r8: u32,\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_first(&doc_v01);
+
+    let doc_plan = rust::plan(&doc_root).unwrap();
+    let doc_rust = doc_plan.files().get("v0_1.rs").unwrap();
+    assert!(
+        doc_rust.contains("\\[d\\](\u{00a0}<https://example.com>)"),
+        "non-ASCII leading space in link dest must escape label:\n{doc_rust}"
+    );
+    let doc_crate = base.join("doc-crate");
+    fs::create_dir_all(doc_crate.join("src")).unwrap();
+    fs::write(
+        doc_crate.join("Cargo.toml"),
+        "[package]\nname = \"wf-w10-127-docs\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        doc_crate.join("src/lib.rs"),
+        format!("#![deny(missing_docs)]\n//! Doc crate.\n{doc_rust}"),
+    )
+    .unwrap();
+    let doc_target = base.join("doc-target");
+    let rustdoc = Command::new(env!("CARGO"))
+        .args(["doc", "--offline", "--no-deps", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("RUSTDOCFLAGS", "-D warnings")
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        rustdoc.status.success(),
+        "cargo doc -D warnings failed:\n{}\n{}",
+        String::from_utf8_lossy(&rustdoc.stdout),
+        String::from_utf8_lossy(&rustdoc.stderr)
+    );
+    let doctest = Command::new(env!("CARGO"))
+        .args(["test", "--offline", "--doc", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        doctest.status.success(),
+        "cargo test --doc failed (doctest escaped!):\n{}\n{}",
+        String::from_utf8_lossy(&doctest.stdout),
+        String::from_utf8_lossy(&doctest.stderr)
+    );
+
+    // 2. `glue.rs` & `convert.rs` Edition 2021 & 2024 `rustfmt --check` edge cases:
+    //    - `push_let_else_err` exact `field_indent + 4 + v.len() == 100` (78-char identity)
+    //    - `convert.rs` `MissingMember` exact `12 + 4 + 84 == 100` (82-char `type_path.field`)
+    //    - `emit_decode_inline_result` payload-less `Ok(())`/`Err(())` at `arm_body_indent = 72`
+    //    - `emit_decode_option_wrapper` `Option::Some(v10)` at `arm_body_indent = 68`
+    let fmt_root = base.join("fmt-wit");
+    let fmt_v01 = fmt_root.join("v0.1");
+    let fmt_v02 = fmt_root.join("v0.2");
+    fs::create_dir_all(&fmt_v01).unwrap();
+    fs::create_dir_all(&fmt_v02).unwrap();
+
+    // `api-long-name-twenty-chars/rec-long-name-twenty-five.field-name-exact-24-ch` => 78 chars
+    // `api-long-name-twenty-chars/rec-long-name-twenty-five.missing-field-exact-28-chars` => 82 chars
+    let iface = "api-long-name-twenty-chars";
+    let rec = "rec-long-name-twenty-five";
+    let f78 = "field-name-exact-twenty-five"; // 26 + 1 + 25 + 1 + 25 = 78? Check exact len below!
+    let f78 = &f78[..78 - (iface.len() + 1 + rec.len() + 1)];
+    let f82 = "missing-field-exact-twenty-nine-xx";
+    let f82 = &f82[..82 - (iface.len() + 1 + rec.len() + 1)];
+    assert_eq!(format!("{iface}/{rec}.{f78}").len(), 78);
+    assert_eq!(format!("{iface}/{rec}.{f82}").len(), 82);
+
+    let wit_v01 = format!(
+        "package ex:fmt6@0.1.0;\n\
+         interface {iface} {{\n\
+             record inner {{ x: u32 }}\n\
+             record {rec} {{\n\
+                 {f78}: inner,\n\
+                 {f82}: u32,\n\
+             }}\n\
+         }}\n\
+         interface deep {{\n\
+             variant holder {{\n\
+                 unit-res(result<result<result<result<result<_, u8>, u8>, u8>, u8>, u8>),\n\
+                 unit-err(result<result<result<result<result<u8>, u8>, u8>, u8>, u8>),\n\
+                 nested-opt(option<option<option<option<option<option<u8>>>>>>),\n\
+             }}\n\
+         }}\n"
+    );
+    let wit_v02 = format!(
+        "package ex:fmt6@0.2.0;\n\
+         interface {iface} {{\n\
+             record inner {{ x: u32 }}\n\
+             record {rec} {{\n\
+                 {f78}: inner,\n\
+             }}\n\
+         }}\n\
+         interface deep {{\n\
+             variant holder {{\n\
+                 unit-res(result<result<result<result<result<_, u8>, u8>, u8>, u8>, u8>),\n\
+                 unit-err(result<result<result<result<result<u8>, u8>, u8>, u8>, u8>),\n\
+                 nested-opt(option<option<option<option<option<option<u8>>>>>>),\n\
+             }}\n\
+         }}\n"
+    );
+    fs::write(fmt_v01.join("contract.wit"), wit_v01).unwrap();
+    lock_first(&fmt_v01);
+    fs::write(fmt_v02.join("contract.wit"), wit_v02).unwrap();
+    fs::copy(fmt_v01.join("wire.lock"), fmt_v02.join("wire.lock")).unwrap();
+    let l2 = workflow::lock(
+        &VersionOptions::new(fmt_v02.clone())
+            .with_baseline(Baseline::Against(fmt_v01.join("wire.lock"))),
+    )
+    .unwrap();
+    fs::write(&l2.lockfile, l2.rendered.unwrap()).unwrap();
+
+    let fmt_rust = rust::plan(&fmt_root).unwrap();
+    let fmt_glue = glue::plan(&fmt_root, "crate::plain", "crate::proto").unwrap();
+    let check_dir = base.join("rustfmt-check");
+    for (prefix, files) in [("rust", fmt_rust.files()), ("glue", fmt_glue.files())] {
+        let sub_dir = check_dir.join(prefix);
+        fs::create_dir_all(&sub_dir).unwrap();
+        for (name, content) in files {
+            let file_path = sub_dir.join(name);
+            if let Some(parent) = file_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&file_path, content).unwrap();
+        }
+        for name in files.keys() {
+            let file_path = sub_dir.join(name);
+            for edition in ["2021", "2024"] {
+                let out = Command::new("rustfmt")
+                    .args(["--edition", edition, "--check"])
+                    .arg(&file_path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "rustfmt --edition {edition} --check failed for {prefix}/{name}:\n{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

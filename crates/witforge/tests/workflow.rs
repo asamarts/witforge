@@ -1451,3 +1451,25 @@ fn fifth_wave_audit_cross_root_manifest_symlink_lock_and_header_comment_regressi
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn sixth_wave_audit_root_path_manifest_guard_regression() {
+    use witforge::diagnostic::codes;
+
+    // A root path such as `/` (having no file name) must be refused with WF9004 (GUARD_REFUSED)
+    // rather than failing with EISDIR (WF9002).
+    let root_path = if cfg!(windows) {
+        Path::new("C:\\")
+    } else {
+        Path::new("/")
+    };
+    let err = witforge::ReleasedManifest::load(root_path).unwrap_err();
+    let diag = witforge::error_diagnostics(&err)
+        .and_then(|ds| ds.first())
+        .unwrap_or_else(|| panic!("expected structured diagnostic, got {err:#}"));
+    assert_eq!(
+        diag.code,
+        codes::GUARD_REFUSED,
+        "root path manifest must report WF9004, got {diag:?}"
+    );
+}

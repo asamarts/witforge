@@ -38,8 +38,9 @@ variant, field and function signature, associated item, explicit trait implement
 `#[non_exhaustive]` promise. `ci/check-public-api.sh` regenerates it from rustdoc JSON under the
 pinned `nightly-2026-09-11` toolchain. Before and on the 0.7.0 tag commit, the complete delta
 from the checked 0.6.0 inventory must equal the reviewed pre-1.0 break inventory. On descendants
-of the tag, the tag's own inventory becomes the signature-aware baseline: every tagged entry
-must remain while additive entries are allowed. Cargo-semver-checks independently enforces Rust
+of `v0.7.0`, the newest published release tag at or after `v0.7.0` (excluding a tag on `HEAD`
+itself) becomes the signature-aware baseline: every entry from that tagged release must remain
+while additive entries are allowed. Cargo-semver-checks independently enforces Rust
 semver against the newest published release. An undocumented addition, removal, signature/type
 change, or extensibility change therefore fails. The module table above is the human map; the
 checked inventory is the exhaustive surface.

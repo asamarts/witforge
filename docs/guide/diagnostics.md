@@ -71,8 +71,9 @@ Duplicate dependency package identity under `deps/`, or a dependency declaring t
 
 **Severity:** `error` · **Prior:** `WF1001`
 
-Unsupported WIT annotation (such as `@external-id`). Only `@since`, `@unstable`, and `@deprecated`
-are accepted.
+Unsupported or invalid WIT stability annotation (such as `@external-id`, `@deprecated` without
+`@since`, `@deprecated` paired with `@unstable`, or `@deprecated(version)` earlier than
+`@since(version)`). Only valid `@since`, `@unstable`, and `@deprecated` annotations are accepted.
 
 ### WF1015
 

@@ -49,7 +49,8 @@ EOF
 - uses: ./
   with:
     version: 9.9.9
-- uses: asamarts/witforge@v9.9.9
+- name: Smoke the published 9.9.9 Action
+  uses: asamarts/witforge@v9.9.9
   with:
     version: 9.9.9
 EOF
@@ -140,6 +141,8 @@ expect_failure "the bug-report version placeholder" .github/ISSUE_TEMPLATE/bug_r
 # throughout the workflow.
 expect_failure "a workflow Action reference that disagrees with its version inputs" \
     .github/workflows/ci.yml 's|@v9\.9\.9|@v9.9.8|'
+expect_failure "a workflow published Action step name that disagrees with its Action ref" \
+    .github/workflows/ci.yml 's/Smoke the published 9\.9\.9 Action/Smoke the published 9.9.8 Action/'
 expect_failure "workflow version inputs that disagree with the Action reference" \
     .github/workflows/ci.yml 's/version: 9\.9\.9/version: 9.9.8/'
 expect_failure "a local-smoke version input that disagrees with the published Action" \
@@ -190,9 +193,15 @@ previous_workflow
 scratch_git init --quiet
 scratch_git add --all
 scratch_git commit --quiet --message "prepare 9.9.9"
+pre_tag_sha="$(scratch_git rev-parse HEAD)"
 expect_pass
+scratch_git commit --quiet --allow-empty --message "tag commit"
 scratch_git tag v9.9.9
 expect_pass
+# Checking out a pre-tag commit when v9.9.9 exists on a descendant must still accept 9.9.8.
+scratch_git checkout --quiet "${pre_tag_sha}"
+expect_pass
+scratch_git checkout --quiet -
 scratch_git commit --quiet --allow-empty --message "after the release"
 if report="$(bash "${SCRIPT}" "${tmp}/case" 9.9.9 2>&1)"; then
     echo "version reference check accepted the previous release in CI after 9.9.9 was tagged" >&2

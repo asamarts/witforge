@@ -43,6 +43,26 @@ if [[ -n "${head}" && -n "${tag_commit}" && "${head}" != "${tag_commit}" ]] \
     exit 0
 fi
 
+if [[ -z "${tag_commit}" && -f "${ROOT}/Cargo.toml" ]]; then
+    workspace_version="$(awk '
+        /^\[workspace\.package\]$/ { section = 1; next }
+        /^\[/ { section = 0 }
+        section && /^version[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*"/, "", value)
+            sub(/"[[:space:]]*$/, "", value)
+            print value
+            exit
+        }
+    ' "${ROOT}/Cargo.toml" || true)"
+    if [[ -n "${workspace_version}" \
+        && "${workspace_version}" != "0.6.0" \
+        && "${workspace_version}" != "0.7.0" ]]; then
+        echo "missing release tag ${TAG} in ${ROOT} (workspace version is ${workspace_version}); run \`git fetch --tags\` so public API compatibility can compare against the tagged baseline" >&2
+        exit 1
+    fi
+fi
+
 baseline="${ROOT}/ci/public-api-baseline-0.6.0.txt"
 approved="${ROOT}/ci/public-api-breaking-0.6.0.diff"
 actual_break="${SCRATCH}/breaking.diff"

@@ -25,7 +25,7 @@ consume it. Paths are relative to `crates/witforge/tests/`.
   `::std::` references across plain modules, `convert.rs`, `worlds.rs`, `witforge_deps.rs`, and
   glue, and compile under `#![no_std]` + `extern crate alloc;`.
 - **JSON Schema Draft 2020-12 (`0.8.0`):** `tests/emit_json_schema.rs` validates
-  `SchemaOptions::new().with_draft(JsonSchemaDraft::Draft202012)` output (`$defs`, `prefixItems`,
+  `SchemaOptions::new().with_draft(JsonSchemaDraft::Draft202012)` output (`$defs`, `deprecated: true`,
   Draft 2020-12 `$schema`, and `$ref` resolution across `deps/`) against `jsonschema`.
 - **Contract IR (`inspect`, `0.8.0`):** `tests/inspect.rs` validates deterministic versioned JSON
   IR (`IR_VERSION = 1`) for single versions, multi-version roots, dependencies, stability metadata

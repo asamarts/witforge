@@ -1026,20 +1026,33 @@ fn record_body(
                 missing.name,
             ),
             Direction::Reverse => {
+                let path_lit = format!("{:?}", format!("{type_path}.{}", missing.name));
+                let field_indent = indent + 4;
+                let hoist_path = field_indent + "path: ".len() + path_lit.len()
+                    >= rustfmt::MAX_WIDTH
+                    && field_indent + 4 + path_lit.len() <= rustfmt::MAX_WIDTH;
+                let path_val = if hoist_path {
+                    "path".to_string()
+                } else {
+                    path_lit.clone()
+                };
                 let err = rustfmt::fmt_struct_lit(
                     indent,
                     &format!("{ERROR}::MissingMember"),
                     &[
                         ("from".to_string(), format!("{:?}", from_ver.to_string())),
                         ("to".to_string(), format!("{:?}", to_ver.to_string())),
-                        (
-                            "path".to_string(),
-                            format!("{:?}", format!("{type_path}.{}", missing.name)),
-                        ),
+                        ("path".to_string(), path_val),
                     ],
                     indent + "::core::result::Result::Err(".len(),
                     1,
                 );
+                if hoist_path {
+                    let let_path = rustfmt::fmt_let_stmt(indent, "path", &path_lit);
+                    return Ok(format!(
+                        "{prefix}let _ = value;\n{let_path}\n{prefix}::core::result::Result::Err({err})\n"
+                    ));
+                }
                 return Ok(format!(
                     "{prefix}let _ = value;\n{prefix}::core::result::Result::Err({err})\n"
                 ));

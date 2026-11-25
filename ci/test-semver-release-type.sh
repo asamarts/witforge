@@ -36,6 +36,7 @@ expect_type() {
 write_version 0.6.0
 git -C "${REPO}" add Cargo.toml ci/semver-breaking-release
 git -C "${REPO}" commit -qm base
+BASE_SHA="$(git -C "${REPO}" rev-parse HEAD)"
 expect_type major
 
 write_version 0.7.0
@@ -44,6 +45,10 @@ git -C "${REPO}" commit -qm release-preparation
 expect_type major
 git -C "${REPO}" tag v0.7.0
 expect_type major
+# Checking out a pre-tag commit after v0.7.0 exists must still return major (not minor).
+git -C "${REPO}" checkout -q "${BASE_SHA}"
+expect_type major
+git -C "${REPO}" checkout -q -
 
 echo post-release >"${REPO}/post-release"
 git -C "${REPO}" add post-release

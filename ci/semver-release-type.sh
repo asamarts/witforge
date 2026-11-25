@@ -36,7 +36,8 @@ fi
 # tag is on an ancestor of HEAD, normal minor compatibility is restored without a cleanup edit.
 TAG_COMMIT="$(git -C "${ROOT}" rev-list -n 1 "refs/tags/v${BREAKING_VERSION}" 2>/dev/null || true)"
 HEAD_COMMIT="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
-if [[ -n "${TAG_COMMIT}" && "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]]; then
+if [[ -n "${TAG_COMMIT}" && -n "${HEAD_COMMIT}" && "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]] \
+  && git -C "${ROOT}" merge-base --is-ancestor "${TAG_COMMIT}" "${HEAD_COMMIT}"; then
   echo minor
 elif [[ "${WORKSPACE_VERSION}" == "${BASE_VERSION}" \
   || "${WORKSPACE_VERSION}" == "${BREAKING_VERSION}" ]]; then

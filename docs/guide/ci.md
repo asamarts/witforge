@@ -31,6 +31,7 @@ additive minor evolution; this exact combination passes on `examples/evolved`:
     config: examples/evolved/witforge.toml
     generators: rust,proto,schema,glue
     freeze: "true"
+    # Optional from v0.8.0 (defaults to github.token); pass explicitly on <= v0.7.x.
     github-token: ${{ github.token }}
 ```
 
@@ -67,6 +68,7 @@ steps:
       freeze: "true"
       format: sarif
       sarif-file: witforge.sarif
+      # Optional from v0.8.0 (defaults to github.token); pass explicitly on <= v0.7.x.
       github-token: ${{ github.token }}
   - if: always() && steps.witforge.outputs.sarif-file != ''
     uses: github/codeql-action/upload-sarif@v3

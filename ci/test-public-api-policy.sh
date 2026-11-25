@@ -61,4 +61,25 @@ if bash "${policy}" "${repo}" "${repo}/actual.txt" >/dev/null 2>&1; then
     exit 1
 fi
 
+# A tagless local clone at 0.8.0+ must fail with a clear `git fetch --tags` hint rather than
+# falling back to the legacy 0.6.0 -> 0.7.0 delta error.
+tagless="${TMP}/tagless"
+cp -R "${repo}" "${tagless}"
+cat >"${tagless}/Cargo.toml" <<'EOF'
+[workspace]
+members = []
+
+[workspace.package]
+version = "0.8.0"
+EOF
+git -C "${tagless}" tag -d v0.7.0 v0.8.0 >/dev/null
+if out="$(bash "${policy}" "${tagless}" "${tagless}/docs/design/public-api-inventory.txt" 2>&1)"; then
+    echo "tagless 0.8.0 clone unexpectedly passed policy check" >&2
+    exit 1
+fi
+if [[ "${out}" != *"git fetch --tags"* ]]; then
+    echo "tagless 0.8.0 clone did not print git fetch --tags guidance: ${out}" >&2
+    exit 1
+fi
+
 echo "public API release policy tests passed"

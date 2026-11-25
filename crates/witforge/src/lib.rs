@@ -2332,6 +2332,13 @@ pub fn load_root_released_manifest(
 
 fn inspect_manifest_path(path: &Path) -> Result<Option<fs::Metadata>> {
     let normalized: PathBuf = path.components().collect();
+    if normalized.file_name().is_none() {
+        return Err(operational_error(
+            diagnostic::codes::GUARD_REFUSED,
+            format!("released manifest `{}` is not a file path", path.display()),
+            Some(path.display().to_string()),
+        ));
+    }
     match fs::symlink_metadata(&normalized) {
         Ok(meta) => {
             if meta.file_type().is_symlink() {

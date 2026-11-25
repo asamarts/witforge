@@ -52,7 +52,9 @@ if [[ -f CHANGELOG.md ]]; then
 fi
 if [[ -n "${PREVIOUS}" && -e .git ]]; then
     tagged="$(git rev-parse --verify --quiet "refs/tags/v${VERSION}^{commit}" 2>/dev/null || true)"
-    if [[ -n "${tagged}" && "${tagged}" != "$(git rev-parse --verify --quiet HEAD 2>/dev/null || true)" ]]; then
+    head_commit="$(git rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+    if [[ -n "${tagged}" && -n "${head_commit}" && "${tagged}" != "${head_commit}" ]] \
+        && git merge-base --is-ancestor "${tagged}" "${head_commit}"; then
         WHY_NOT_PREVIOUS="v${VERSION} is published (its tag is on an earlier commit), so CI must run it; the release checklist's last step moves the pinned Action"
         PREVIOUS=""
     fi
@@ -116,6 +118,7 @@ action_ref='asamarts/witforge@v([0-9]+\.[0-9]+\.[0-9]+)'
 action_comment='installs witforge ([0-9]+\.[0-9]+\.[0-9]+)'
 action_version='VERSION=([0-9]+\.[0-9]+\.[0-9]+)'
 action_input='[[:space:]]version: ([0-9]+\.[0-9]+\.[0-9]+)'
+published_action_step='Smoke the published ([0-9]+\.[0-9]+\.[0-9]+) Action'
 issue_version='placeholder: "witforge ([0-9]+\.[0-9]+\.[0-9]+)"'
 
 check_pattern README.md "${current_release}" "current release"
@@ -135,6 +138,7 @@ check_pattern docs/design/action.md "${action_input}" "Action input example"
 check_pattern .github/ISSUE_TEMPLATE/bug_report.yml "${issue_version}" "bug-report version placeholder"
 check_workflow_pattern .github/workflows/ci.yml "${action_ref}" "Action reference"
 check_workflow_pattern .github/workflows/ci.yml "${action_input}" "Action input"
+check_workflow_pattern .github/workflows/ci.yml "${published_action_step}" "published Action step name"
 
 if [[ "${WORKFLOW_RELEASE}" == "${VERSION}" ]]; then
     echo "version references match ${VERSION}"

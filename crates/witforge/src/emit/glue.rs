@@ -2189,7 +2189,7 @@ fn push_let_else_err(
             && v.starts_with('"')
             && k != v
             && field_indent + k.len() + 2 + v.len() >= rustfmt::MAX_WIDTH
-            && field_indent + 4 + v.len() < rustfmt::MAX_WIDTH
+            && field_indent + 4 + v.len() <= rustfmt::MAX_WIDTH
             && !err_fields
                 .iter()
                 .any(|(ok, ov)| ok != k && ov.contains(k.as_str()))
@@ -2273,6 +2273,18 @@ fn fmt_wrapper_lit(inner_indent: usize, inner_var: &str) -> String {
         format!("{field_pad}value: {single},")
     };
     format!("Wrapper {{\n{field_line}\n{inner_pad}}}")
+}
+
+fn fmt_single_arg_call_tail(indent: usize, callee: &str, arg: &str) -> String {
+    if indent + callee.len() + 2 + arg.len() > rustfmt::MAX_WIDTH
+        && indent + callee.len() < rustfmt::MAX_WIDTH
+    {
+        let pad = " ".repeat(indent);
+        let arg_pad = " ".repeat(indent + 4);
+        format!("{callee}(\n{arg_pad}{arg},\n{pad})")
+    } else {
+        format!("{callee}({arg})")
+    }
 }
 
 fn hoist_if_long(
@@ -5030,11 +5042,13 @@ impl Emitter<'_> {
             &[],
             "::core::option::Option::None",
         );
+        let some_tail =
+            fmt_single_arg_call_tail(arm_body_indent, "::core::option::Option::Some", &decoded);
         let some_arm = rustfmt::fmt_match_arm(
             arm_indent,
             &format!("Case::Some({sub_var})"),
             &arm_stmts,
-            &format!("::core::option::Option::Some({decoded})"),
+            &some_tail,
         );
         let case_alias = rustfmt::fmt_type_alias(inner_indent, "type Case", oneof);
         stmts.push(format!(
@@ -5316,19 +5330,12 @@ impl Emitter<'_> {
                 );
                 let pat = format!("Case::{variant}(v)");
                 let callee = format!("::core::result::Result::{side}");
-                let tail = if arm_body_indent + callee.len() + 2 + val.len() > rustfmt::MAX_WIDTH
-                    && arm_body_indent + callee.len() < rustfmt::MAX_WIDTH
-                {
-                    let body_pad = " ".repeat(arm_body_indent);
-                    let arg_pad = " ".repeat(arm_body_indent + 4);
-                    format!("{callee}(\n{arg_pad}{val},\n{body_pad})")
-                } else {
-                    format!("{callee}({val})")
-                };
+                let tail = fmt_single_arg_call_tail(arm_body_indent, &callee, &val);
                 arms.push(rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail));
             } else {
                 let pat = format!("Case::{variant}(_)");
-                let tail = format!("::core::result::Result::{side}(())");
+                let callee = format!("::core::result::Result::{side}");
+                let tail = fmt_single_arg_call_tail(arm_body_indent, &callee, "()");
                 arms.push(rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail));
             }
         }
