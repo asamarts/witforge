@@ -58,5 +58,5 @@ aplan check-docs               # documents name only existing tasks
 ```
 
 CI runs `aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
-`aplan check-docs` in the `plan` job, using the pinned published aplan release (0.6.0). Run the
+`aplan check-docs` in the `plan` job, using the pinned published aplan release (0.7.0). Run the
 same commands locally before committing plan changes.

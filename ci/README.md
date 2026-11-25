@@ -174,7 +174,7 @@ The Action's own temporary directory is inside the disposable GitHub runner, not
 
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
 `aplan check-docs`) runs in the **plan** job on a GitHub-hosted Ubuntu runner. The job installs
-the pinned published release, **aplan 0.6.0**, from crates.io with `cargo install --locked`; no
+the pinned published release, **aplan 0.7.0**, from crates.io with `cargo install --locked`; no
 aplan binary is committed to this repository. The job is part of `ci ok`.
 
 ## Releases
