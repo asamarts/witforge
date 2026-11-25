@@ -82,4 +82,36 @@ if [[ "${out}" != *"git fetch --tags"* ]]; then
     exit 1
 fi
 
+# A shallow 0.8.0+ clone carrying `v0.7.0` as a non-ancestor commit must fail with explicit
+# `git fetch --unshallow --tags` guidance rather than falling back to the legacy 0.6.0 delta.
+shallow="${TMP}/shallow"
+mkdir -p "${shallow}/ci" "${shallow}/docs/design"
+git -C "${shallow}" init -q
+git -C "${shallow}" config user.name witforge-test
+git -C "${shallow}" config user.email witforge-test@example.invalid
+printf 'item a\n' >"${shallow}/ci/public-api-baseline-0.6.0.txt"
+cp "${repo}/ci/public-api-breaking-0.6.0.diff" "${shallow}/ci/public-api-breaking-0.6.0.diff"
+printf 'item a\nitem b\n' >"${shallow}/docs/design/public-api-inventory.txt"
+git -C "${shallow}" add .
+git -C "${shallow}" commit -qm unrelated-v0.7.0
+git -C "${shallow}" tag -a v0.7.0 -m v0.7.0
+git -C "${shallow}" checkout --orphan shallow-head -q
+cat >"${shallow}/Cargo.toml" <<'EOF'
+[workspace]
+members = []
+
+[workspace.package]
+version = "0.8.0"
+EOF
+git -C "${shallow}" add .
+git -C "${shallow}" commit -qm shallow-0.8.0
+if out="$(bash "${policy}" "${shallow}" "${shallow}/docs/design/public-api-inventory.txt" 2>&1)"; then
+    echo "shallow 0.8.0 clone with non-ancestor v0.7.0 unexpectedly passed policy check" >&2
+    exit 1
+fi
+if [[ "${out}" != *"git fetch --unshallow --tags"* ]]; then
+    echo "shallow 0.8.0 clone did not print git fetch --unshallow --tags guidance: ${out}" >&2
+    exit 1
+fi
+
 echo "public API release policy tests passed"

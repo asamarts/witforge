@@ -421,25 +421,6 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
             continue;
         }
 
-        if is_blockquote(line) {
-            flush_paragraph(&mut pending_paragraph, &mut out, target);
-            in_paragraph = false;
-            list_stack.clear();
-            let mut inner = Vec::new();
-            while i < lines.len() && is_blockquote(&lines[i]) {
-                inner.push(strip_blockquote(&lines[i]));
-                i += 1;
-            }
-            for sanitized in sanitize_markdown_lines(&inner, target) {
-                if sanitized.is_empty() {
-                    out.push(">".to_string());
-                } else {
-                    out.push(format!("> {sanitized}"));
-                }
-            }
-            continue;
-        }
-
         let (_, col) = leading_columns(line);
         // After a blank line (not continuing a paragraph), any non-blank line indented less than
         // an enclosing list item's content column terminates that list level in CommonMark.
@@ -453,11 +434,55 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
         }
         let current_list_col = list_stack.last().map(|frame| frame.content_col);
         let indented_code_threshold = current_list_col.map_or(4, |c| c + 4);
-        let max_fence_indent = current_list_col.map_or(3, |c| c + 3);
         let is_indented_code = !in_paragraph && col >= indented_code_threshold;
+        // Block openers that can interrupt a paragraph (`>`, fenced code, ATX heading, thematic
+        // break, HTML block, list marker) terminate any list levels with `content_col > col`, so
+        // their maximum indentation is relative to the deepest list level that still contains
+        // `col` rather than an outer/deeper unpopped paragraph list level.
+        let effective_list_col = list_stack
+            .iter()
+            .rev()
+            .find(|frame| frame.content_col <= col)
+            .map(|frame| frame.content_col);
+        let effective_max_indent = effective_list_col.map_or(3, |c| c + 3);
+
+        if !is_indented_code && is_blockquote_at(line, effective_max_indent) {
+            flush_paragraph(&mut pending_paragraph, &mut out, target);
+            in_paragraph = false;
+            while list_stack
+                .last()
+                .is_some_and(|frame| col < frame.content_col)
+            {
+                list_stack.pop();
+            }
+            for frame in &mut list_stack {
+                frame.has_content = true;
+            }
+            let bq_list_col = list_stack.last().map_or(0, |frame| frame.content_col);
+            let bq_max_indent = bq_list_col + 3;
+            let bq_prefix = " ".repeat(bq_list_col);
+            let mut inner = Vec::new();
+            while i < lines.len() {
+                let (_, next_col) = leading_columns(&lines[i]);
+                if next_col >= bq_list_col && is_blockquote_at(&lines[i], bq_max_indent) {
+                    inner.push(strip_blockquote_from(&lines[i], 0));
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            for sanitized in sanitize_markdown_lines(&inner, target) {
+                if sanitized.is_empty() {
+                    out.push(format!("{bq_prefix}>"));
+                } else {
+                    out.push(format!("{bq_prefix}> {sanitized}"));
+                }
+            }
+            continue;
+        }
 
         if !is_indented_code
-            && let Some((prefix, fence_char, fence_len)) = detect_fence(line, max_fence_indent)
+            && let Some((prefix, fence_char, fence_len)) = detect_fence(line, effective_max_indent)
         {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
             in_paragraph = false;
@@ -472,13 +497,24 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
             for frame in &mut list_stack {
                 frame.has_content = true;
             }
-            let close_max_indent = list_stack.last().map_or(3, |frame| frame.content_col + 3);
+            let enclosing_list_col = list_stack.last().map(|frame| frame.content_col);
+            let close_max_indent = enclosing_list_col.map_or(3, |c| c + 3);
             let expanded_prefix = expand_leading_ws(prefix);
             let fence: String = std::iter::repeat_n(fence_char, fence_len).collect();
             out.push(format!("{expanded_prefix}{fence}text"));
             i += 1;
             let mut closed = false;
             while i < lines.len() {
+                // CommonMark §4.5 + §5.2: a non-blank line indented less than the enclosing list
+                // item terminates both the list item and the fenced code block inside it.
+                if let Some(lc) = enclosing_list_col
+                    && !lines[i].is_empty()
+                    && leading_columns(&lines[i]).1 < lc
+                {
+                    out.push(format!("{expanded_prefix}{fence}"));
+                    closed = true;
+                    break;
+                }
                 if is_closing_fence(&lines[i], fence_char, fence_len, close_max_indent) {
                     out.push(format!("{expanded_prefix}{fence}"));
                     i += 1;
@@ -541,7 +577,21 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
 
         if in_paragraph
             && !pending_paragraph.is_empty()
-            && is_setext_heading_underline(line, max_fence_indent)
+            && col >= current_list_col.unwrap_or(0)
+            && is_setext_heading_underline(line, current_list_col.map_or(3, |c| c + 3))
+        {
+            flush_paragraph(&mut pending_paragraph, &mut out, target);
+            in_paragraph = false;
+            for frame in &mut list_stack {
+                frame.has_content = true;
+            }
+            out.extend(escape_paragraph_lines(std::slice::from_ref(line), target));
+            i += 1;
+            continue;
+        }
+
+        if is_atx_heading_or_thematic_break(line, effective_max_indent)
+            || is_html_block_opener(line, effective_max_indent)
         {
             flush_paragraph(&mut pending_paragraph, &mut out, target);
             in_paragraph = false;
@@ -559,24 +609,7 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
             continue;
         }
 
-        if is_atx_heading_or_thematic_break(line, max_fence_indent) {
-            flush_paragraph(&mut pending_paragraph, &mut out, target);
-            in_paragraph = false;
-            while list_stack
-                .last()
-                .is_some_and(|frame| col < frame.content_col)
-            {
-                list_stack.pop();
-            }
-            for frame in &mut list_stack {
-                frame.has_content = true;
-            }
-            out.extend(escape_paragraph_lines(std::slice::from_ref(line), target));
-            i += 1;
-            continue;
-        }
-
-        if let Some(chain) = parse_chained_list_markers(line, max_fence_indent, in_paragraph) {
+        if let Some(chain) = parse_chained_list_markers(line, effective_max_indent, in_paragraph) {
             let was_in_paragraph = in_paragraph;
             flush_paragraph(&mut pending_paragraph, &mut out, target);
             while list_stack
@@ -588,9 +621,17 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
             for frame in &mut list_stack {
                 frame.has_content = true;
             }
-            let push_chain = |stack: &mut Vec<ListFrame>, innermost_has_content: bool| {
-                for (idx, &content_col) in chain.content_cols.iter().enumerate() {
-                    let has_content = innermost_has_content || idx + 1 < chain.content_cols.len();
+            let push_chain = |stack: &mut Vec<ListFrame>,
+                              innermost_has_content: bool,
+                              innermost_override: Option<usize>| {
+                let last_idx = chain.content_cols.len() - 1;
+                for (idx, &raw_content_col) in chain.content_cols.iter().enumerate() {
+                    let content_col = if idx == last_idx {
+                        innermost_override.unwrap_or(raw_content_col)
+                    } else {
+                        raw_content_col
+                    };
+                    let has_content = innermost_has_content || idx < last_idx;
                     if let Some(last) = stack.last_mut()
                         && last.content_col == content_col
                     {
@@ -609,7 +650,7 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
                 .expect("chained list markers are non-empty");
             match chain.body {
                 ListChainBody::Empty => {
-                    push_chain(&mut list_stack, false);
+                    push_chain(&mut list_stack, false, None);
                     in_paragraph = false;
                     out.push(line.clone());
                     i += 1;
@@ -619,7 +660,7 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
                     marker_prefix,
                     first_code,
                 } => {
-                    push_chain(&mut list_stack, true);
+                    push_chain(&mut list_stack, true, None);
                     in_paragraph = false;
                     // Separate from a preceding paragraph so a bare `-` marker prefix cannot
                     // underline the paragraph as a CommonMark §4.3 Setext heading.
@@ -666,22 +707,29 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
                 }
                 ListChainBody::FirstLineFence {
                     marker_prefix,
+                    emitted_content_col,
                     fence_char,
                     fence_len,
                 } => {
-                    push_chain(&mut list_stack, true);
+                    push_chain(&mut list_stack, true, Some(emitted_content_col));
                     in_paragraph = false;
                     if was_in_paragraph && !out.last().is_some_and(String::is_empty) {
                         out.push(String::new());
                     }
                     out.push(marker_prefix);
-                    let indent_prefix = " ".repeat(final_content_col);
+                    let indent_prefix = " ".repeat(emitted_content_col);
                     let fence: String = std::iter::repeat_n(fence_char, fence_len).collect();
                     let close_max_indent = final_content_col + 3;
                     out.push(format!("{indent_prefix}{fence}text"));
                     i += 1;
                     let mut closed = false;
                     while i < lines.len() {
+                        if !lines[i].is_empty() && leading_columns(&lines[i]).1 < final_content_col
+                        {
+                            out.push(format!("{indent_prefix}{fence}"));
+                            closed = true;
+                            break;
+                        }
                         if is_closing_fence(&lines[i], fence_char, fence_len, close_max_indent) {
                             out.push(format!("{indent_prefix}{fence}"));
                             i += 1;
@@ -698,23 +746,25 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
                 }
                 ListChainBody::FirstLineBlockquote {
                     marker_prefix,
+                    emitted_content_col,
                     quote_line,
+                    quote_start_col,
                 } => {
-                    push_chain(&mut list_stack, true);
+                    push_chain(&mut list_stack, true, Some(emitted_content_col));
                     in_paragraph = false;
                     if was_in_paragraph && !out.last().is_some_and(String::is_empty) {
                         out.push(String::new());
                     }
                     out.push(marker_prefix);
-                    let indent_prefix = " ".repeat(final_content_col);
-                    let mut inner = vec![strip_blockquote(&quote_line)];
+                    let indent_prefix = " ".repeat(emitted_content_col);
+                    let mut inner = vec![strip_blockquote_from(&quote_line, quote_start_col)];
                     i += 1;
                     while i < lines.len() {
                         let (_, next_col) = leading_columns(&lines[i]);
                         if next_col >= final_content_col {
                             let stripped = strip_columns(&lines[i], final_content_col);
-                            if is_blockquote(&stripped) {
-                                inner.push(strip_blockquote(&stripped));
+                            if is_blockquote_at(&stripped, 3) {
+                                inner.push(strip_blockquote_from(&stripped, final_content_col));
                                 i += 1;
                                 continue;
                             }
@@ -731,14 +781,14 @@ fn sanitize_markdown_lines(lines: &[String], target: Target) -> Vec<String> {
                     continue;
                 }
                 ListChainBody::NonParagraphLeaf => {
-                    push_chain(&mut list_stack, true);
+                    push_chain(&mut list_stack, true, None);
                     in_paragraph = false;
                     out.extend(escape_paragraph_lines(std::slice::from_ref(line), target));
                     i += 1;
                     continue;
                 }
                 ListChainBody::Paragraph => {
-                    push_chain(&mut list_stack, true);
+                    push_chain(&mut list_stack, true, None);
                     in_paragraph = true;
                     pending_paragraph.push(line.clone());
                     i += 1;
@@ -878,21 +928,137 @@ fn max_backtick_run(lines: &[String]) -> usize {
     max_run
 }
 
-fn is_blockquote(line: &str) -> bool {
+fn is_blockquote_at(line: &str, max_indent: usize) -> bool {
     let (byte_off, col) = leading_columns(line);
-    col <= 3 && line[byte_off..].starts_with('>')
+    col <= max_indent && line[byte_off..].starts_with('>')
 }
 
-fn strip_blockquote(line: &str) -> String {
-    let (byte_off, _) = leading_columns(line);
+fn strip_blockquote_from(line: &str, start_col: usize) -> String {
+    let (byte_off, col) = leading_columns_from(line, start_col);
     let after = &line[byte_off + 1..];
     if let Some(rest) = after.strip_prefix(' ') {
         rest.to_string()
     } else if let Some(rest) = after.strip_prefix('\t') {
-        format!("   {rest}")
+        // CommonMark §5.1: a tab after `>` advances to the next 4-column tab stop; the optional
+        // single space after `>` consumes 1 of those columns.
+        let tab_width = 4 - ((col + 1) % 4);
+        let remaining_spaces = tab_width - 1;
+        format!("{}{rest}", " ".repeat(remaining_spaces))
     } else {
         after.to_string()
     }
+}
+
+const HTML_TYPE6_TAGS: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
+];
+
+fn is_html_block_opener(line: &str, max_indent: usize) -> bool {
+    let (byte_off, col) = leading_columns(line);
+    if col > max_indent {
+        return false;
+    }
+    let rest = &line[byte_off..];
+    let Some(after_lt) = rest.strip_prefix('<') else {
+        return false;
+    };
+    // CommonMark §4.6 Types 2, 3, 4, 5:
+    if after_lt.starts_with("!--")
+        || after_lt.starts_with('?')
+        || after_lt.starts_with("![CDATA[")
+        || (after_lt.starts_with('!')
+            && after_lt
+                .as_bytes()
+                .get(1)
+                .is_some_and(u8::is_ascii_alphabetic))
+    {
+        return true;
+    }
+    // CommonMark §4.6 Types 1 & 6:
+    let (is_closing, tag_start) = match after_lt.strip_prefix('/') {
+        Some(s) => (true, s),
+        None => (false, after_lt),
+    };
+    let name_len = tag_start
+        .bytes()
+        .take_while(u8::is_ascii_alphanumeric)
+        .count();
+    if name_len == 0 {
+        return false;
+    }
+    let tag_lower = tag_start[..name_len].to_ascii_lowercase();
+    let after_name = &tag_start[name_len..];
+    if !is_closing
+        && matches!(tag_lower.as_str(), "pre" | "script" | "style" | "textarea")
+        && (after_name.is_empty() || after_name.starts_with([' ', '\t', '>']))
+    {
+        return true;
+    }
+    HTML_TYPE6_TAGS.binary_search(&tag_lower.as_str()).is_ok()
+        && (after_name.is_empty()
+            || after_name.starts_with([' ', '\t', '>'])
+            || after_name.starts_with("/>"))
 }
 
 fn is_setext_heading_underline(line: &str, max_indent: usize) -> bool {
@@ -943,6 +1109,7 @@ fn is_atx_heading_or_thematic_break(line: &str, max_indent: usize) -> bool {
 
 struct OneListMarker {
     content_col: usize,
+    marker_end_col: usize,
     marker_end_byte: usize,
     ws_width: usize,
     body_start_byte: usize,
@@ -1006,6 +1173,7 @@ fn parse_one_list_marker(
         }
         return Some(OneListMarker {
             content_col: marker_end_col + 1,
+            marker_end_col,
             marker_end_byte,
             ws_width: 0,
             body_start_byte: slice.len(),
@@ -1023,6 +1191,7 @@ fn parse_one_list_marker(
         }
         return Some(OneListMarker {
             content_col: marker_end_col + 1,
+            marker_end_col,
             marker_end_byte,
             ws_width: 0,
             body_start_byte: slice.len(),
@@ -1037,6 +1206,7 @@ fn parse_one_list_marker(
     };
     Some(OneListMarker {
         content_col,
+        marker_end_col,
         marker_end_byte,
         ws_width,
         body_start_byte,
@@ -1052,12 +1222,15 @@ enum ListChainBody {
     },
     FirstLineFence {
         marker_prefix: String,
+        emitted_content_col: usize,
         fence_char: char,
         fence_len: usize,
     },
     FirstLineBlockquote {
         marker_prefix: String,
+        emitted_content_col: usize,
         quote_line: String,
+        quote_start_col: usize,
     },
     NonParagraphLeaf,
     Paragraph,
@@ -1094,6 +1267,7 @@ fn parse_chained_list_markers(
     let first = parse_one_list_marker(line, 0, max_marker_indent, in_paragraph)?;
     let mut content_cols = vec![first.content_col];
     let mut abs_marker_end = first.marker_end_byte;
+    let mut cur_marker_end_col = first.marker_end_col;
     let mut abs_body_start = first.body_start_byte;
     let mut cur_ws_width = first.ws_width;
     let mut cur_empty = first.empty_body;
@@ -1110,6 +1284,7 @@ fn parse_chained_list_markers(
             break;
         };
         abs_marker_end = abs_body_start + next.marker_end_byte;
+        cur_marker_end_col = next.marker_end_col;
         abs_body_start += next.body_start_byte;
         cur_ws_width = next.ws_width;
         cur_empty = next.empty_body;
@@ -1135,26 +1310,30 @@ fn parse_chained_list_markers(
             },
         });
     }
+    let emitted_content_col = cur_marker_end_col + 1;
     if let Some((_, fence_char, fence_len)) = detect_fence(tail, 3) {
         return Some(ListMarkerChain {
             content_cols,
             body: ListChainBody::FirstLineFence {
                 marker_prefix,
+                emitted_content_col,
                 fence_char,
                 fence_len,
             },
         });
     }
-    if is_blockquote(tail) {
+    if is_blockquote_at(tail, 3) {
         return Some(ListMarkerChain {
             content_cols,
             body: ListChainBody::FirstLineBlockquote {
                 marker_prefix,
+                emitted_content_col,
                 quote_line: tail.to_string(),
+                quote_start_col: cur_content_col,
             },
         });
     }
-    if is_atx_heading_or_thematic_break(tail, 3) {
+    if is_atx_heading_or_thematic_break(tail, 3) || is_html_block_opener(tail, 3) {
         return Some(ListMarkerChain {
             content_cols,
             body: ListChainBody::NonParagraphLeaf,
@@ -1531,10 +1710,11 @@ fn is_external_link_dest(dest: &str) -> bool {
         {
             return false;
         }
-        (
-            url,
-            dest[split..].trim_matches(|ch: char| ch.is_ascii_whitespace()),
-        )
+        let rest = dest[split..].trim_matches(|ch: char| ch.is_ascii_whitespace());
+        if rest.is_empty() && url.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1 {
+            return false;
+        }
+        (url, rest)
     };
     if !rest.is_empty() && !is_valid_link_title(rest) {
         return false;

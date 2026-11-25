@@ -33,12 +33,14 @@ fi
 cd "${ROOT}"
 if [[ -z "${BASE}" ]]; then
     head="$(git rev-parse HEAD)"
+    merged_tags="$(git tag --list 'v*' --sort=-v:refname --merged HEAD)"
     while IFS= read -r tag; do
         [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
-        [[ "$(git rev-parse --verify "${tag}^{commit}")" != "${head}" ]] || continue
+        tag_commit="$(git rev-parse --verify "${tag}^{commit}")"
+        [[ "${tag_commit}" != "${head}" ]] || continue
         BASE="${tag}"
         break
-    done <<<"$(git tag --list 'v*' --sort=-v:refname --merged HEAD)"
+    done <<<"${merged_tags}"
     if [[ -z "${BASE}" ]]; then
         echo "no published release tag in HEAD's history; fetch the tags (git fetch --tags) or name BASE" >&2
         exit 1

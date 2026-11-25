@@ -2944,3 +2944,272 @@ fn sixth_wave_audit_commonmark_doctests_and_rustfmt_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn seventh_wave_audit_docs_commonmark_and_rustfmt_regressions() {
+    use std::process::Command;
+    use witforge::emit::{glue, rust};
+    use witforge::workflow::{self, Baseline, VersionOptions};
+
+    let lock_first = |dir: &Path| {
+        let locked =
+            workflow::lock(&VersionOptions::new(dir.to_path_buf()).with_baseline(Baseline::First))
+                .unwrap();
+        fs::write(&locked.lockfile, locked.rendered.unwrap()).unwrap();
+    };
+
+    let base = std::env::temp_dir().join(format!("witforge-w10-128-emit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+
+    // 1. `docs.rs`: all seven seventh-wave CommonMark defects (D1-D7) must pass REAL
+    //    `cargo doc -D warnings` AND `cargo test --doc` with zero doctest escapes and without
+    //    corrupting `>\t foo` prose.
+    let doc_root = base.join("doc-wit");
+    let doc_v01 = doc_root.join("v0.1");
+    fs::create_dir_all(&doc_v01).unwrap();
+    fs::write(
+        doc_v01.join("contract.wit"),
+        "package ex:docs7@0.1.0;\n\
+         interface api {\n\
+             /// -  ```rust\n\
+             ///    let ok = 1;\n\
+             ///    ```\n\
+             ///       compile_error!(\"D1a first-line fence ws_width=2 list_stack desync\");\n\
+             record repro-d1-to-d7 {\n\
+                 /// -  > quote\n\
+                 ///       compile_error!(\"D1b first-line blockquote ws_width=2 list_stack desync\");\n\
+                 d1b: u32,\n\
+                 /// - item\n\
+                 ///   ```rust\n\
+                 ///   let ok = 1;\n\
+                 /// ```\n\
+                 /// compile_error!(\"D2a fence breakout reopening fence at col 0\");\n\
+                 d2a: u32,\n\
+                 /// -  ```rust\n\
+                 ///    let ok = 1;\n\
+                 ///  ```\n\
+                 /// compile_error!(\"D2b first-line fence breakout at col 1\");\n\
+                 d2b: u32,\n\
+                 /// 10. item\n\
+                 ///\n\
+                 ///     > `x\n\
+                 ///     >\n\
+                 ///     >     compile_error!(\"D3 blockquote inside content_col>=4 list\");\n\
+                 ///     > `\n\
+                 d3: u32,\n\
+                 /// 1000. item\n\
+                 ///     ```rust\n\
+                 ///\n\
+                 ///     compile_error!(\"D4a unpopped list_stack fence escape\");\n\
+                 d4a: u32,\n\
+                 /// 1000. item\n\
+                 ///     - > hello\n\
+                 d4b: u32,\n\
+                 /// `a\n\
+                 /// <!-- -->\n\
+                 ///     compile_error!(\"D5 html block interrupting backtick span\");\n\
+                 /// `\n\
+                 d5: u32,\n\
+                 /// Trailing escaped space in link: [link](https://example.com/foo\\ )\n\
+                 d6: u32,\n\
+                 /// >\t foo prose after blockquote tab\n\
+                 d7: u32,\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_first(&doc_v01);
+
+    let doc_plan = rust::plan(&doc_root).unwrap();
+    let doc_rust = doc_plan.files().get("v0_1.rs").unwrap();
+    assert!(
+        doc_rust.contains("\\[link\\](<https://example.com/foo\\> )"),
+        "odd trailing backslash before space in link dest must escape label:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("/// >    foo prose after blockquote tab"),
+        "D7: `>\\t foo` must stay prose (3 spaces after `> `, i.e. `/// >    foo`), not a code block:\n{doc_rust}"
+    );
+    assert!(
+        doc_rust.contains("/// 1000. item\n        ///     - \\> hello"),
+        "D4b: `1000. item\\n    - > hello` must stay a lazy paragraph continuation (no bogus split):\n{doc_rust}"
+    );
+
+    let doc_crate = base.join("doc-crate");
+    fs::create_dir_all(doc_crate.join("src")).unwrap();
+    fs::write(
+        doc_crate.join("Cargo.toml"),
+        "[package]\nname = \"wf-w10-128-docs\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        doc_crate.join("src/lib.rs"),
+        format!("#![deny(missing_docs)]\n//! Doc crate.\n{doc_rust}"),
+    )
+    .unwrap();
+    let doc_target = base.join("doc-target");
+    let rustdoc = Command::new(env!("CARGO"))
+        .args(["doc", "--offline", "--no-deps", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("RUSTDOCFLAGS", "-D warnings")
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        rustdoc.status.success(),
+        "cargo doc -D warnings failed:\n{}\n{}",
+        String::from_utf8_lossy(&rustdoc.stdout),
+        String::from_utf8_lossy(&rustdoc.stderr)
+    );
+    let doctest = Command::new(env!("CARGO"))
+        .args(["test", "--offline", "--doc", "--manifest-path"])
+        .arg(doc_crate.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &doc_target)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .unwrap();
+    assert!(
+        doctest.status.success(),
+        "cargo test --doc failed (doctest escaped!):\n{}\n{}",
+        String::from_utf8_lossy(&doctest.stdout),
+        String::from_utf8_lossy(&doctest.stderr)
+    );
+
+    // 2. `glue.rs` & `convert.rs` Edition 2021 & 2024 `rustfmt --check` edge cases (F1-F4):
+    //    - F1: 5-deep `option<...>` in a record (`arm_body_indent = 72`, `72 + 28 == 100`)
+    //    - F2: `option<option<u8>>` with hoisted `GlueError::InvalidState { message }` at
+    //          `body_indent = 28` (`return ::core::result::Result::Err(GlueError::InvalidState { message });` len == 100)
+    //    - F3: long-named `variant` and `enum` (`convert.rs` `UnknownCase` & `glue.rs`
+    //          `UnknownCase`/`UnknownEnumValue` with exact-100 & >100 string fields)
+    //    - F4: deeply nested named option wrapper (`target::from_proto`) and 5-deep payload-less
+    //          `result<...<_, u8>...>` in 2-version `convert.rs` (`Ok(())`/`Err(())`)
+    let fmt_root = base.join("fmt-wit");
+    let fmt_v01 = fmt_root.join("v0.1");
+    let fmt_v02 = fmt_root.join("v0.2");
+    fs::create_dir_all(&fmt_v01).unwrap();
+    fs::create_dir_all(&fmt_v02).unwrap();
+
+    let iface = "api-long-interface-name-thirty"; // 30 chars
+    let var69 = "variant-name-reaching-sixty-nine-chars"; // 30 + 1 + 38 = 69
+    let enm69 = "enum-name-reaching-sixty-nine-chars-ok"; // 30 + 1 + 38 = 69
+    let enm66 = "enum-name-reaching-sixty-six-chars1"; // 30 + 1 + 35 = 66
+    let var36 = "var36"; // 30 + 1 + 5 = 36
+    let rec_long = "record-with-long-name-twenty-five"; // 33 chars
+    let f2_field = "list-opt2-exact-len-22"; // 30 + 1 + 6 + 1 + 22 = 60 -> v.len() = 62 (in 59..=64 at body_indent=28)
+    assert_eq!(format!("{iface}/{var69}").len(), 69);
+    assert_eq!(format!("{iface}/{enm69}").len(), 69);
+    assert_eq!(format!("{iface}/{enm66}").len(), 66);
+    assert_eq!(format!("{iface}/{var36}").len(), 36);
+    assert_eq!(format!("{iface}/rec-f2.{f2_field}").len(), 60);
+
+    let make_wit = |ver: &str, include_dropped: bool| {
+        let extra_var_case = if include_dropped {
+            "                 dropped-case-removed-in-v02,\n"
+        } else {
+            ""
+        };
+        let extra_enum_case = if include_dropped {
+            "                 dropped-enum-removed-in-v02,\n"
+        } else {
+            ""
+        };
+        format!(
+            "package ex:fmt7@{ver};\n\
+             interface {iface} {{\n\
+                 record inner {{ x: u32 }}\n\
+                 type maybe-inner = option<inner>;\n\
+                 record rec-f2 {{\n\
+                     {f2_field}: list<list<list<option<u8>>>>,\n\
+                 }}\n\
+                 variant {var69} {{\n\
+                     keep,\n\
+             {extra_var_case}\
+                 }}\n\
+                 variant {var36} {{\n\
+                     keep,\n\
+                 }}\n\
+                 enum {enm69} {{\n\
+                     keep,\n\
+             {extra_enum_case}\
+                 }}\n\
+                 enum {enm66} {{\n\
+                     keep,\n\
+             {extra_enum_case}\
+                 }}\n\
+                 record {rec_long} {{\n\
+                     opt2-hoist-invalid-state-msg: option<option<u8>>,\n\
+                     opt5-f1: list<list<option<option<option<option<option<u8>>>>>>>,\n\
+                     opt6-named: list<option<option<option<option<option<inner>>>>>>,\n\
+                     opt5-named-alias: list<option<option<option<option<maybe-inner>>>>>,\n\
+                     res5-unit-ok: option<result<result<result<result<result<result<result<_, inner>, inner>, inner>, inner>, inner>, inner>, inner>>,\n\
+                     res5-unit-err: option<result<result<result<result<result<result<result<inner>, inner>, inner>, inner>, inner>, inner>, inner>>,\n\
+                 }}\n\
+             }}\n"
+        )
+    };
+
+    fs::write(fmt_v01.join("contract.wit"), make_wit("0.1.0", true)).unwrap();
+    lock_first(&fmt_v01);
+    fs::write(fmt_v02.join("contract.wit"), make_wit("0.2.0", false)).unwrap();
+    fs::copy(fmt_v01.join("wire.lock"), fmt_v02.join("wire.lock")).unwrap();
+    let l2 = workflow::lock(
+        &VersionOptions::new(fmt_v02.clone())
+            .with_baseline(Baseline::Against(fmt_v01.join("wire.lock"))),
+    )
+    .unwrap();
+    fs::write(&l2.lockfile, l2.rendered.unwrap()).unwrap();
+
+    let fmt_rust = rust::plan(&fmt_root).unwrap();
+    let fmt_glue = glue::plan(&fmt_root, "crate::plain", "crate::proto").unwrap();
+    let convert_src = fmt_rust.files().get("convert.rs").unwrap();
+    let glue_src = fmt_glue.files().get("v0.rs").unwrap();
+    assert!(
+        glue_src.contains("GlueError::InvalidState {\n") && glue_src.contains("message,\n"),
+        "F2: exact-100 `return Err(GlueError::InvalidState {{ message }});` must wrap multi-line:\n{glue_src}"
+    );
+    assert!(
+        convert_src.contains("let path =")
+            && convert_src.contains("::core::result::Result::Ok(\n")
+            && convert_src.contains("::core::result::Result::Err(\n"),
+        "F3/F4: convert.rs must exercise hoisted UnknownCase and wrapped payload-less Ok(())/Err(()):\n{convert_src}"
+    );
+    assert!(
+        glue_src.contains("let enumeration =")
+            && glue_src.contains("::core::option::Option::Some(\n")
+            && glue_src.contains("target::from_proto(\n"),
+        "F1/F3/F4: glue/v0.rs must exercise hoisted UnknownEnumValue and wrapped Option::Some / target::from_proto:\n{glue_src}"
+    );
+    let check_dir = base.join("rustfmt-check");
+    for (prefix, files) in [("rust", fmt_rust.files()), ("glue", fmt_glue.files())] {
+        let sub_dir = check_dir.join(prefix);
+        fs::create_dir_all(&sub_dir).unwrap();
+        for (name, content) in files {
+            let file_path = sub_dir.join(name);
+            if let Some(parent) = file_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&file_path, content).unwrap();
+        }
+        for name in files.keys() {
+            let file_path = sub_dir.join(name);
+            for edition in ["2021", "2024"] {
+                let out = Command::new("rustfmt")
+                    .args(["--edition", edition, "--check"])
+                    .arg(&file_path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "rustfmt --edition {edition} --check failed for {prefix}/{name}:\n{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

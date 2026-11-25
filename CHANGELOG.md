@@ -8,6 +8,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **Seventh-wave audit hardening (`W10-128`):** Closed seven remaining CommonMark doctest and
+  escaping defects in `docs.rs` (`FirstLineFence`/`FirstLineBlockquote` `list_stack` sync for
+  `ws_width` 2..=4, list-nested fence container breakout on `col < lc`, `content_col >= 4`
+  blockquotes inside lists, `effective_max_indent` and container-aware Setext underlines while
+  `in_paragraph`, CommonMark §4.6 Types 1–6 HTML block openers breaking multi-line backtick spans,
+  odd trailing `\` rejection in `is_external_link_dest`, and exact 4-column tab-stop math in
+  `strip_blockquote_from`); fixed remaining Edition 2021 vs 2024 `rustfmt` divergences in
+  `rustfmt.rs`, `glue.rs`, and `convert.rs` (`fmt_single_arg_call_tail` `<= 100` boundary,
+  exact-100 `return Err(GlueError::InvalidState { message });` wrapping, hoisted long string fields
+  in `UnknownCase`/`UnknownEnumValue`, and deep-nesting wraps on `target::from_proto`,
+  `emit_module_call`/`emit_direct_module_tail`, and payload-less `Result::Ok(())`/`Err(())`);
+  refused non-regular `--released` paths (such as non-root directories and FIFOs) with `WF9004`
+  (`GUARD_REFUSED`) in `inspect_manifest_path`; hardened `ci/check-public-api-policy.sh` for
+  shallow `0.8.0+` clones (`git fetch --unshallow --tags`), fixed `SC2312` masked-return warnings
+  across `ci/*.sh`, fixed a `SIGPIPE` + `pipefail` flake in `ci/test-release-asset.sh`, and
+  aligned `WF1014` in `docs/guide/diagnostics.md` with `@deprecated` + `@unstable` support.
 - **Sixth-wave audit hardening (`W10-127`):** Closed six remaining CommonMark doctest escapes in
   `docs.rs` (bare/empty list markers, empty list items followed by blank lines, chained same-line
   nested list markers and first-line fenced code/blockquotes, non-`1` ordered list markers

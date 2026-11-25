@@ -8,8 +8,8 @@
 # published release, and on the commit that prepares VERSION no `vVERSION` tag or asset exists
 # yet. Until VERSION is published, `.github/workflows/ci.yml` may therefore name VERSION or the
 # release before it (the next dated heading in ROOT/CHANGELOG.md), and must name one release
-# throughout. VERSION counts as published once ROOT's repository has a `vVERSION` tag on a
-# commit other than HEAD; from then on the workflow must name VERSION, which is the release
+# throughout. VERSION counts as published once ROOT's repository has a `vVERSION` tag on an
+# earlier ancestor of HEAD; from then on the workflow must name VERSION, which is the release
 # checklist's step after publishing. A tag at HEAD is the release being made. A checkout without
 # its tags cannot tell, and accepts the previous release.
 #

@@ -1026,36 +1026,29 @@ fn record_body(
                 missing.name,
             ),
             Direction::Reverse => {
-                let path_lit = format!("{:?}", format!("{type_path}.{}", missing.name));
-                let field_indent = indent + 4;
-                let hoist_path = field_indent + "path: ".len() + path_lit.len()
-                    >= rustfmt::MAX_WIDTH
-                    && field_indent + 4 + path_lit.len() <= rustfmt::MAX_WIDTH;
-                let path_val = if hoist_path {
-                    "path".to_string()
-                } else {
-                    path_lit.clone()
-                };
+                let raw_fields = [
+                    ("from".to_string(), format!("{:?}", from_ver.to_string())),
+                    ("to".to_string(), format!("{:?}", to_ver.to_string())),
+                    (
+                        "path".to_string(),
+                        format!("{:?}", format!("{type_path}.{}", missing.name)),
+                    ),
+                ];
+                let (hoist_stmts, err_fields) =
+                    rustfmt::hoist_long_string_fields(indent, indent + 4, &raw_fields);
                 let err = rustfmt::fmt_struct_lit(
                     indent,
                     &format!("{ERROR}::MissingMember"),
-                    &[
-                        ("from".to_string(), format!("{:?}", from_ver.to_string())),
-                        ("to".to_string(), format!("{:?}", to_ver.to_string())),
-                        ("path".to_string(), path_val),
-                    ],
+                    &err_fields,
                     indent + "::core::result::Result::Err(".len(),
                     1,
                 );
-                if hoist_path {
-                    let let_path = rustfmt::fmt_let_stmt(indent, "path", &path_lit);
-                    return Ok(format!(
-                        "{prefix}let _ = value;\n{let_path}\n{prefix}::core::result::Result::Err({err})\n"
-                    ));
+                let mut out = format!("{prefix}let _ = value;\n");
+                for stmt in hoist_stmts {
+                    writeln!(out, "{stmt}")?;
                 }
-                return Ok(format!(
-                    "{prefix}let _ = value;\n{prefix}::core::result::Result::Err({err})\n"
-                ));
+                writeln!(out, "{prefix}::core::result::Result::Err({err})")?;
+                return Ok(out);
             }
         }
     }
@@ -1206,22 +1199,25 @@ fn variant_body(
         };
         let arm = match (target_case, &source_case.payload) {
             (None, _) => {
+                let raw_fields = [
+                    ("from".to_string(), format!("{:?}", from_ver.to_string())),
+                    ("to".to_string(), format!("{:?}", to_ver.to_string())),
+                    ("path".to_string(), format!("{type_path:?}")),
+                    ("case".to_string(), format!("{:?}", source_case.name)),
+                ];
+                let (hoist_stmts, err_fields) =
+                    rustfmt::hoist_long_string_fields(body_indent, body_indent + 4, &raw_fields);
                 let err = rustfmt::fmt_struct_lit(
                     body_indent,
                     &format!("{ERROR}::UnknownCase"),
-                    &[
-                        ("from".to_string(), format!("{:?}", from_ver.to_string())),
-                        ("to".to_string(), format!("{:?}", to_ver.to_string())),
-                        ("path".to_string(), format!("{type_path:?}")),
-                        ("case".to_string(), format!("{:?}", source_case.name)),
-                    ],
+                    &err_fields,
                     body_indent + "::core::result::Result::Err(".len(),
                     1,
                 );
                 rustfmt::fmt_match_arm(
                     arm_indent,
                     &pat,
-                    &[],
+                    &hoist_stmts,
                     &format!("::core::result::Result::Err({err})"),
                 )
             }
@@ -1327,22 +1323,25 @@ fn enum_body(
                 &format!("{target_path}::{target_case_name}"),
             )
         } else {
+            let raw_fields = [
+                ("from".to_string(), format!("{:?}", from_ver.to_string())),
+                ("to".to_string(), format!("{:?}", to_ver.to_string())),
+                ("path".to_string(), format!("{type_path:?}")),
+                ("case".to_string(), format!("{:?}", source_case.name)),
+            ];
+            let (hoist_stmts, err_fields) =
+                rustfmt::hoist_long_string_fields(body_indent, body_indent + 4, &raw_fields);
             let err = rustfmt::fmt_struct_lit(
                 body_indent,
                 &format!("{ERROR}::UnknownCase"),
-                &[
-                    ("from".to_string(), format!("{:?}", from_ver.to_string())),
-                    ("to".to_string(), format!("{:?}", to_ver.to_string())),
-                    ("path".to_string(), format!("{type_path:?}")),
-                    ("case".to_string(), format!("{:?}", source_case.name)),
-                ],
+                &err_fields,
                 body_indent + "::core::result::Result::Err(".len(),
                 1,
             );
             rustfmt::fmt_match_arm(
                 arm_indent,
                 &pat,
-                &[],
+                &hoist_stmts,
                 &format!("::core::result::Result::Err({err})"),
             )
         };
@@ -1965,12 +1964,13 @@ fn emit_result_value(
             &tail,
         )
     } else {
-        rustfmt::fmt_match_arm(
-            arm_indent,
-            "::core::result::Result::Ok(_)",
-            &[],
-            "::core::result::Result::Ok(())",
-        )
+        let tail = rustfmt::fmt_single_arg_call_tail(
+            body_indent,
+            "::core::result::Result::Ok",
+            "()",
+            false,
+        );
+        rustfmt::fmt_match_arm(arm_indent, "::core::result::Result::Ok(_)", &[], &tail)
     };
 
     let err_arm = if let (Some(sa), Some(sb)) = (&source_result.err, &target_result.err) {
@@ -2011,12 +2011,13 @@ fn emit_result_value(
             &tail,
         )
     } else {
-        rustfmt::fmt_match_arm(
-            arm_indent,
-            "::core::result::Result::Err(_)",
-            &[],
-            "::core::result::Result::Err(())",
-        )
+        let tail = rustfmt::fmt_single_arg_call_tail(
+            body_indent,
+            "::core::result::Result::Err",
+            "()",
+            false,
+        );
+        rustfmt::fmt_match_arm(arm_indent, "::core::result::Result::Err(_)", &[], &tail)
     };
 
     let mut scrutinee = expression.to_string();

@@ -1473,3 +1473,39 @@ fn sixth_wave_audit_root_path_manifest_guard_regression() {
         "root path manifest must report WF9004, got {diag:?}"
     );
 }
+
+#[test]
+fn seventh_wave_audit_manifest_dir_guard_regression() {
+    use witforge::diagnostic::codes;
+
+    let base = std::env::temp_dir().join(format!("witforge-w10-128-dir-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let wit_root = base.join("wit");
+    let manifest_dir = base.join("released-dir");
+    fs::create_dir_all(&wit_root).unwrap();
+    fs::create_dir_all(&manifest_dir).unwrap();
+
+    // Non-root directory passed as released manifest must be refused with WF9004 (GUARD_REFUSED)
+    // rather than failing with EISDIR (WF9002).
+    for (label, err) in [
+        (
+            "ReleasedManifest::load(dir)",
+            witforge::ReleasedManifest::load(&manifest_dir).unwrap_err(),
+        ),
+        (
+            "load_root_released_manifest(Some(dir))",
+            witforge::load_root_released_manifest(&wit_root, Some(&manifest_dir)).unwrap_err(),
+        ),
+    ] {
+        let diag = witforge::error_diagnostics(&err)
+            .and_then(|ds| ds.first())
+            .unwrap_or_else(|| panic!("{label}: expected structured diagnostic, got {err:#}"));
+        assert_eq!(
+            diag.code,
+            codes::GUARD_REFUSED,
+            "{label}: non-regular manifest path must report WF9004, got {diag:?}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

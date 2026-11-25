@@ -2182,24 +2182,8 @@ fn push_let_else_err(
     } else {
         body_indent + 4
     };
-    let mut else_prefix_stmts: Vec<String> = Vec::new();
-    let mut hoisted_fields: Vec<(String, String)> = Vec::with_capacity(err_fields.len());
-    for (k, v) in err_fields {
-        if !v.contains('\n')
-            && v.starts_with('"')
-            && k != v
-            && field_indent + k.len() + 2 + v.len() >= rustfmt::MAX_WIDTH
-            && field_indent + 4 + v.len() <= rustfmt::MAX_WIDTH
-            && !err_fields
-                .iter()
-                .any(|(ok, ov)| ok != k && ov.contains(k.as_str()))
-        {
-            else_prefix_stmts.push(rustfmt::fmt_let_stmt(body_indent, k, v));
-            hoisted_fields.push((k.clone(), k.clone()));
-        } else {
-            hoisted_fields.push((k.clone(), v.clone()));
-        }
-    }
+    let (else_prefix_stmts, hoisted_fields) =
+        rustfmt::hoist_long_string_fields(body_indent, field_indent, err_fields);
     let return_stmt = if wrap_err {
         let arg_indent = body_indent + 4;
         let arg_prefix = " ".repeat(arg_indent);
@@ -2207,12 +2191,15 @@ fn push_let_else_err(
             rustfmt::fmt_struct_lit(arg_indent, err_path, &hoisted_fields, arg_indent, 1);
         format!("{body_prefix}{err_prefix}\n{arg_prefix}{err_expr},\n{body_prefix});")
     } else {
+        // Reserve 3 trailing columns (`);` plus rustfmt's 1-column fn-call argument margin so
+        // exact-width-100 `return Err(GlueError::InvalidState { message });` wraps identically in
+        // Editions 2021 and 2024).
         let err_expr = rustfmt::fmt_struct_lit(
             body_indent,
             err_path,
             &hoisted_fields,
             body_indent + err_prefix.len(),
-            2,
+            3,
         );
         format!("{body_prefix}{err_prefix}{err_expr});")
     };
@@ -2275,18 +2262,6 @@ fn fmt_wrapper_lit(inner_indent: usize, inner_var: &str) -> String {
     format!("Wrapper {{\n{field_line}\n{inner_pad}}}")
 }
 
-fn fmt_single_arg_call_tail(indent: usize, callee: &str, arg: &str) -> String {
-    if indent + callee.len() + 2 + arg.len() > rustfmt::MAX_WIDTH
-        && indent + callee.len() < rustfmt::MAX_WIDTH
-    {
-        let pad = " ".repeat(indent);
-        let arg_pad = " ".repeat(indent + 4);
-        format!("{callee}(\n{arg_pad}{arg},\n{pad})")
-    } else {
-        format!("{callee}({arg})")
-    }
-}
-
 fn hoist_if_long(
     stmts: &mut Vec<String>,
     indent: usize,
@@ -2347,8 +2322,14 @@ fn emit_module_call(
     } else {
         let arg_var = temps.fresh();
         let let_arg = rustfmt::fmt_let_stmt(indent + 4, &arg_var, arg);
+        let tail = rustfmt::fmt_single_arg_call_tail(
+            indent + 4,
+            &format!("target::{func}"),
+            &arg_var,
+            try_op,
+        );
         stmts.push(format!(
-            "{pad}let {tmp} = {{\n{inner}use {module} as target;\n{let_arg}\n{inner}target::{func}({arg_var}){q}\n{pad}}};"
+            "{pad}let {tmp} = {{\n{inner}use {module} as target;\n{let_arg}\n{inner}{tail}\n{pad}}};"
         ));
     }
     tmp
@@ -2375,7 +2356,13 @@ fn emit_direct_module_tail(
             writeln!(out, "{inner}{call}")?;
         } else {
             writeln!(out, "{}", rustfmt::fmt_let_stmt(inner_indent, "v0", arg))?;
-            writeln!(out, "{inner}target::{func}(v0)")?;
+            let tail = rustfmt::fmt_single_arg_call_tail(
+                inner_indent,
+                &format!("target::{func}"),
+                "v0",
+                false,
+            );
+            writeln!(out, "{inner}{tail}")?;
         }
         writeln!(out, "{pad}}}")?;
     }
@@ -2722,12 +2709,16 @@ impl Emitter<'_> {
         if cases.is_empty() {
             writeln!(out, "{body_pad}let _ = value;")?;
             let err_prefix = "::core::result::Result::Err(";
+            let raw_fields = [("message".to_string(), format!("\"{identity}\""))];
+            let (hoist_stmts, err_fields) =
+                rustfmt::hoist_long_string_fields(body_indent, body_indent + 4, &raw_fields);
+            push_stmts(out, &hoist_stmts)?;
             let err_lit = rustfmt::fmt_struct_lit(
                 body_indent,
                 "GlueError::UnknownCase",
-                &[("message".to_string(), format!("\"{identity}\""))],
+                &err_fields,
                 body_indent + err_prefix.len(),
-                1,
+                2,
             );
             writeln!(out, "{body_pad}{err_prefix}{err_lit})")?;
         } else {
@@ -2876,18 +2867,21 @@ impl Emitter<'_> {
             )?;
         }
         let err_let_prefix = "let err = ";
+        let raw_fields = [
+            ("enumeration".to_string(), format!("\"{identity}\"")),
+            ("value".to_string(), "value".to_string()),
+        ];
+        let (mut err_stmts, err_fields) =
+            rustfmt::hoist_long_string_fields(arm_body_indent, arm_body_indent + 4, &raw_fields);
         let err_lit = rustfmt::fmt_struct_lit(
             arm_body_indent,
             "GlueError::UnknownEnumValue",
-            &[
-                ("enumeration".to_string(), format!("\"{identity}\"")),
-                ("value".to_string(), "value".to_string()),
-            ],
+            &err_fields,
             arm_body_indent + err_let_prefix.len(),
             1,
         );
         let arm_body_pad = " ".repeat(arm_body_indent);
-        let err_stmts = vec![format!("{arm_body_pad}{err_let_prefix}{err_lit};")];
+        err_stmts.push(format!("{arm_body_pad}{err_let_prefix}{err_lit};"));
         writeln!(
             out,
             "{}",
@@ -5042,8 +5036,12 @@ impl Emitter<'_> {
             &[],
             "::core::option::Option::None",
         );
-        let some_tail =
-            fmt_single_arg_call_tail(arm_body_indent, "::core::option::Option::Some", &decoded);
+        let some_tail = rustfmt::fmt_single_arg_call_tail(
+            arm_body_indent,
+            "::core::option::Option::Some",
+            &decoded,
+            false,
+        );
         let some_arm = rustfmt::fmt_match_arm(
             arm_indent,
             &format!("Case::Some({sub_var})"),
@@ -5112,7 +5110,12 @@ impl Emitter<'_> {
                         &arg_var,
                         &wrapped_arg,
                     ));
-                    format!("target::from_proto({arg_var})?")
+                    rustfmt::fmt_single_arg_call_tail(
+                        arm_body_indent,
+                        "target::from_proto",
+                        &arg_var,
+                        true,
+                    )
                 };
                 (stmts_in_arm, tail)
             };
@@ -5330,12 +5333,12 @@ impl Emitter<'_> {
                 );
                 let pat = format!("Case::{variant}(v)");
                 let callee = format!("::core::result::Result::{side}");
-                let tail = fmt_single_arg_call_tail(arm_body_indent, &callee, &val);
+                let tail = rustfmt::fmt_single_arg_call_tail(arm_body_indent, &callee, &val, false);
                 arms.push(rustfmt::fmt_match_arm(arm_indent, &pat, &arm_stmts, &tail));
             } else {
                 let pat = format!("Case::{variant}(_)");
                 let callee = format!("::core::result::Result::{side}");
-                let tail = fmt_single_arg_call_tail(arm_body_indent, &callee, "()");
+                let tail = rustfmt::fmt_single_arg_call_tail(arm_body_indent, &callee, "()", false);
                 arms.push(rustfmt::fmt_match_arm(arm_indent, &pat, &[], &tail));
             }
         }

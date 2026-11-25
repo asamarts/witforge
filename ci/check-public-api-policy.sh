@@ -19,6 +19,7 @@ if [[ -n "${head}" && -n "${tag_commit}" && "${head}" != "${tag_commit}" ]] \
     # pointing at HEAD itself), so additive items from 0.8.0+ are automatically protected once
     # tagged rather than only freezing v0.7.0.
     baseline_tag="${TAG}"
+    merged_tags="$(git -C "${ROOT}" tag --merged "${head}" --list 'v*' --sort=-v:refname)"
     while IFS= read -r candidate; do
         [[ "${candidate}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
         cand_commit="$(git -C "${ROOT}" rev-parse --verify --quiet "refs/tags/${candidate}^{commit}" || true)"
@@ -28,7 +29,7 @@ if [[ -n "${head}" && -n "${tag_commit}" && "${head}" != "${tag_commit}" ]] \
             baseline_tag="${candidate}"
             break
         fi
-    done <<<"$(git -C "${ROOT}" tag --merged "${head}" --list 'v*' --sort=-v:refname)"
+    done <<<"${merged_tags}"
     tagged="${SCRATCH}/tagged.txt"
     git -C "${ROOT}" show \
         "${baseline_tag}:docs/design/public-api-inventory.txt" >"${tagged}"
@@ -43,7 +44,7 @@ if [[ -n "${head}" && -n "${tag_commit}" && "${head}" != "${tag_commit}" ]] \
     exit 0
 fi
 
-if [[ -z "${tag_commit}" && -f "${ROOT}/Cargo.toml" ]]; then
+if [[ -f "${ROOT}/Cargo.toml" ]]; then
     workspace_version="$(awk '
         /^\[workspace\.package\]$/ { section = 1; next }
         /^\[/ { section = 0 }
@@ -58,7 +59,11 @@ if [[ -z "${tag_commit}" && -f "${ROOT}/Cargo.toml" ]]; then
     if [[ -n "${workspace_version}" \
         && "${workspace_version}" != "0.6.0" \
         && "${workspace_version}" != "0.7.0" ]]; then
-        echo "missing release tag ${TAG} in ${ROOT} (workspace version is ${workspace_version}); run \`git fetch --tags\` so public API compatibility can compare against the tagged baseline" >&2
+        if [[ -z "${tag_commit}" ]]; then
+            echo "missing release tag ${TAG} in ${ROOT} (workspace version is ${workspace_version}); run \`git fetch --tags\` so public API compatibility can compare against the tagged baseline" >&2
+        else
+            echo "release tag ${TAG} is not an ancestor of HEAD in ${ROOT} (workspace version is ${workspace_version}); run \`git fetch --unshallow --tags\` so public API compatibility can compare against the tagged baseline" >&2
+        fi
         exit 1
     fi
 fi

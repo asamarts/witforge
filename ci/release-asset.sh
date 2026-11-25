@@ -55,7 +55,8 @@ tar -czf "$archive" -C "$staging" "$(basename "$binary")" LICENSE-APACHE LICENSE
 
 digest=$(sha256 "$archive")
 printf '%s  %s\n' "$digest" "$name" >"${archive}.sha256"
-if [ "$(sha256 "$archive")" != "$digest" ]; then
+check_digest=$(sha256 "$archive")
+if [ "$check_digest" != "$digest" ]; then
   echo "checksum self-check failed for $archive" >&2
   exit 1
 fi

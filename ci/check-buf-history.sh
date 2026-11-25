@@ -46,6 +46,7 @@ fi
 head="$(git rev-parse HEAD)"
 releases=()
 skipped=()
+all_tags="$(git tag --list 'v*' --sort=v:refname)"
 while IFS= read -r tag; do
     [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
     commit="$(git rev-parse --verify "${tag}^{commit}")"
@@ -62,7 +63,7 @@ while IFS= read -r tag; do
         continue
     fi
     releases+=("${tag}")
-done <<<"$(git tag --list 'v*' --sort=v:refname)"
+done <<<"${all_tags}"
 if [[ ${#releases[@]} -eq 0 ]]; then
     echo "no published release tag found; the checkout needs its tags (git fetch --tags)" >&2
     exit 1

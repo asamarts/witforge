@@ -278,6 +278,55 @@ pub(crate) fn fmt_struct_lit(
     out
 }
 
+/// Hoist string-literal struct fields whose `key: "..."` line would overflow `MAX_WIDTH` while
+/// wrapping `key:\n    "..."` would fit (`<= MAX_WIDTH`)—the exact band where Edition 2021 and
+/// Edition 2024 `rustfmt` diverge—into `let <key> = "...";` bindings using field-init shorthand.
+pub(crate) fn hoist_long_string_fields(
+    stmt_indent: usize,
+    field_indent: usize,
+    fields: &[(String, String)],
+) -> (Vec<String>, Vec<(String, String)>) {
+    let mut prefix_stmts = Vec::new();
+    let mut hoisted = Vec::with_capacity(fields.len());
+    for (k, v) in fields {
+        if !v.contains('\n')
+            && v.starts_with('"')
+            && k != v
+            && field_indent + k.len() + 2 + v.len() >= MAX_WIDTH
+            && field_indent + 4 + v.len() <= MAX_WIDTH
+            && !fields
+                .iter()
+                .any(|(ok, ov)| ok != k && ov.contains(k.as_str()))
+        {
+            prefix_stmts.push(fmt_let_stmt(stmt_indent, k, v));
+            hoisted.push((k.clone(), k.clone()));
+        } else {
+            hoisted.push((k.clone(), v.clone()));
+        }
+    }
+    (prefix_stmts, hoisted)
+}
+
+/// Format a single-argument tail call `callee(arg)[?]` matching `rustfmt` (Editions 2021 and 2024)
+/// at deep indentation levels.
+pub(crate) fn fmt_single_arg_call_tail(
+    indent: usize,
+    callee: &str,
+    arg: &str,
+    try_op: bool,
+) -> String {
+    let q = if try_op { "?" } else { "" };
+    if indent + callee.len() + 2 + arg.len() + q.len() > MAX_WIDTH
+        && indent + callee.len() <= MAX_WIDTH
+    {
+        let pad = " ".repeat(indent);
+        let arg_pad = " ".repeat(indent + 4);
+        format!("{callee}(\n{arg_pad}{arg},\n{pad}){q}")
+    } else {
+        format!("{callee}({arg}){q}")
+    }
+}
+
 /// Wrap a single-dot argument expression (`&value.<field>` or `value.<field>`) on its own line
 /// inside a multi-line call or tuple when `rustfmt` would break at `.`.
 fn fmt_multiline_arg(inner_indent: usize, arg: &str) -> String {

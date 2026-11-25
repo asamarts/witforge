@@ -2351,6 +2351,16 @@ fn inspect_manifest_path(path: &Path) -> Result<Option<fs::Metadata>> {
                     Some(path.display().to_string()),
                 ));
             }
+            if !meta.file_type().is_file() {
+                return Err(operational_error(
+                    diagnostic::codes::GUARD_REFUSED,
+                    format!(
+                        "released manifest `{}` is not a regular file",
+                        path.display()
+                    ),
+                    Some(path.display().to_string()),
+                ));
+            }
             Ok(Some(meta))
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
