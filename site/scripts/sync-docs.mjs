@@ -20,9 +20,7 @@ const DEFAULT_DOCS_ROOT = resolve(DEFAULT_SITE_ROOT, '..', 'docs');
 const EDIT_DOCS_BASE = 'https://github.com/asamarts/witforge/edit/main/docs';
 
 const EXCLUDED_TOP_LEVEL = new Set([
-  '_config.yml',
   'aplan-pilot.md',
-  'assets',
   'design',
   'SUMMARY.md',
 ]);

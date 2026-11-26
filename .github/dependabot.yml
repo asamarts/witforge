@@ -52,5 +52,8 @@ updates:
       # docs.yml runs Node 24 LTS; keep @types/node aligned with Node 24 until the runner upgrades.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # @astrojs/check requires peer typescript@"^5.0.0 || ^6.0.0"; hold TypeScript 7 until Astro supports it.
+      - dependency-name: "typescript"
+        versions: [">= 7.0.0"]
     commit-message:
       prefix: deps

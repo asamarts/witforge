@@ -428,13 +428,27 @@ const boundaries = [
     gap: 4px;
   }
 
+  @media (max-width: 599px), (min-width: 980px) and (max-width: 1239px) {
+    .install-tabs[role='tablist'] {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
   .install-tabs [role='tab'] {
-    padding: 6px 9px;
+    padding: 6px 8px;
     font-size: 0.78rem;
     white-space: nowrap;
   }
 
-  .install-tabs :global([role='tab']:hover) {
+  @media (max-width: 359px) {
+    .install-tabs [role='tab'] {
+      padding: 6px 4px;
+      font-size: 0.72rem;
+    }
+  }
+
+  .install-tabs [role='tab']:not([aria-selected='true']):hover {
     background: var(--bg);
   }
 

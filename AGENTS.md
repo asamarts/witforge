@@ -1,4 +1,4 @@
-# AGENTS.md — witforge
+# AGENTS.md: witforge
 
 witforge is a WIT-first contract compiler. The hand-written WIT package is the
 source of truth for a contract; witforge checks it, locks its wire numbers, and
@@ -21,7 +21,9 @@ JSON Schema, and protobuf glue.
   `--git-base <REV>`), release-freeze enforcement, structured diagnostics
   (`--format human|json|sarif`), `witforge.toml` projects (including
   `[project.<name>.policy]`), the optional `witforge-build` helper crate, static
-  `musl` Linux release archives, and the GitHub Action.
+  `musl` Linux release archives, the GitHub Action, and the Astro + Starlight
+  documentation and promotional site under `site/` (deployed via
+  `.github/workflows/docs.yml`).
 - The commands are `witforge check`, `lock`, `rust`, `proto`, `schema`, `glue`,
   `doc`, `generate`, `init`, `new-version`, `deps sync`, `release`, `retire`,
   `diff`, `inspect`, `freeze`, `completions`, and `explain`.
@@ -102,6 +104,7 @@ TMPDIR="$HOME/.tmp" cargo test -p witforge-build --all-features --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps
 TMPDIR="$HOME/.tmp" cargo +1.88 test --workspace --locked   # MSRV
 TMPDIR="$HOME/.tmp" cargo +1.88 test -p witforge-build --all-features --locked
+TMPDIR="$HOME/.tmp" npm --prefix site run verify            # site tests, check, build, links
 ```
 
 - The tests create their scratch directories under `std::env::temp_dir()`, which
@@ -117,6 +120,13 @@ TMPDIR="$HOME/.tmp" cargo +1.88 test -p witforge-build --all-features --locked
 ## Documentation and contracts
 
 - Design decisions live in `docs/design/overview.md` and the linked specs.
+- User-facing guides live under `docs/` and are indexed by `docs/SUMMARY.md`;
+  `site/scripts/sync-docs.mjs` syncs them into Starlight and generates
+  `llms.txt` / `llms-full.txt`. Legacy `.html` and `/guide/` compatibility
+  redirects are declared in `site/scripts/redirects.json`.
+- Published `docs/` guides, `README.md`, and `site/` pages must contain natural
+  human prose with zero em dashes (checked by `site/scripts/check-links.mjs` and
+  `crates/witforge-cli/tests/docs.rs`).
 - Generated output must be deterministic, LF-only, and checked with `--check`.
 - A contract change is a new version directory, not an in-place edit to a
   released one. See `docs/design/lockfile.md` and `docs/design/overview.md`.
