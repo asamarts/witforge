@@ -36,13 +36,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: site/package-lock.json
       - name: Install site dependencies
-        run: npm --prefix site ci
+        run: npm --prefix site ci --ignore-scripts
       - name: Run site script unit tests
         run: npm --prefix site run test:scripts
       - name: Type-check Astro site
@@ -52,19 +52,18 @@ jobs:
       - name: Verify links, anchors, redirects, SVGs, prose, and examples
         run: npm --prefix site run check:links
       - name: Upload GitHub Pages artifact
-        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/dist
 
   deploy:
     name: Deploy to GitHub Pages
-    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
       pages: write
       id-token: write
     environment:

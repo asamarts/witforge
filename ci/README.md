@@ -168,9 +168,13 @@ The Action's own temporary directory is inside the disposable GitHub runner, not
 - **Rulesets.** `main` cannot be deleted or force-pushed, and a pull request into it needs
   `ci ok`. Release tags (`v*.*.*`) cannot be moved or deleted. Repository admins can bypass
   both, so a broken check never blocks a fix, but pull requests are the normal path.
-- **Dependabot** (`.github/dependabot.yml`) opens one grouped pull request per week for cargo,
-  one for `/fuzz` cargo, one for `/site` npm dependencies, and one for GitHub Actions; CI
-  (including the MSRV job and `docs.yml`) decides whether it can merge. Dependabot alerts are on.
+- **Dependabot** (`.github/dependabot.yml`) opens one weekly grouped pull request for patch and
+  minor updates in each of cargo, `/fuzz` cargo, and `/site` npm (with breaking major bumps in
+  separate pull requests; `@types/node` major bumps are ignored while `docs.yml` runs Node 24 LTS)
+  plus one grouped pull request for GitHub Actions. `ci ok` (including the MSRV job) is the
+  required ruleset merge gate, and `docs.yml` runs path-filtered PR verification on site/docs
+  changes so reviewers confirm `Build and verify site` passes before merging. Dependabot alerts
+  are on.
 - **Secret scanning** and push protection are on.
 
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
@@ -185,17 +189,21 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
 
 - **triggers**: runs on `push` to `main` and `pull_request` when `site/**`, `docs/**`,
   `examples/**`, `Cargo.toml`, or `.github/workflows/docs.yml` change, plus `workflow_dispatch`.
+- **concurrency**: grouped by `docs-${{ github.ref }}` with
+  `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`, so superseded PR builds cancel
+  without blocking `main`, and in-flight `main` deploys are never cancelled.
 - **build** (`contents: read`): installs Node 24 with npm lockfile caching (`site/package-lock.json`),
-  runs `npm --prefix site ci`, `test:scripts`, `check` (`astro check` with `@ts-check`), `build`
+  runs `npm --prefix site ci --ignore-scripts`, `test:scripts`, `check` (`sync-docs.mjs` +
+  `astro check`, including `@ts-check` on `astro.config.mjs` and `check-links.mjs`), `build`
   (`sync-docs.mjs`, `astro build`, and `emit-redirects.mjs` for all 16 legacy `.html` / `/guide/`
   compatibility stubs), and `check:links` (`site/scripts/check-links.mjs` verifying internal links,
   trailing slashes, fragments, all `WFxxxx` diagnostic anchors, redirects, GitHub repo links,
   required artifacts and Pagefind index, SVG diagram accessibility/bounds, zero em/en dashes and
   banned clichés, workspace version sync, and verbatim Output Tour example excerpts).
-- **deploy** (`contents: read`, `pages: write`, `id-token: write`, environment `github-pages`):
-  artifact upload and deployment are gated on
-  `github.event_name != 'pull_request' && github.ref == 'refs/heads/main'`, so fork PRs and
-  feature-branch manual dispatches only execute read-only verification.
+- **deploy** (`pages: write`, `id-token: write`, environment `github-pages`):
+  artifact upload and deployment are gated on the explicit allowlist
+  `(github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'`,
+  so fork PRs and feature-branch manual dispatches only execute read-only verification.
 
 ## Releases
 

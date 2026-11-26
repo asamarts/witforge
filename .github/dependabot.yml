@@ -1,7 +1,7 @@
 version: 2
 
-# Weekly version updates, grouped so a week's bumps arrive as at most one pull request per
-# ecosystem. CI (including the MSRV job) decides whether a bump can land.
+# Weekly version updates, grouping patch and minor bumps into at most one pull request per
+# ecosystem while isolating breaking major updates. CI (`ci.yml` + `docs.yml`) verifies each PR.
 updates:
   - package-ecosystem: cargo
     directory: /
@@ -46,7 +46,11 @@ updates:
       day: monday
     open-pull-requests-limit: 5
     groups:
-      site-npm:
-        patterns: ["*"]
+      site-npm-patch-and-minor:
+        update-types: [patch, minor]
+    ignore:
+      # docs.yml runs Node 24 LTS; keep @types/node aligned with Node 24 until the runner upgrades.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: deps
