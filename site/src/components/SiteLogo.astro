@@ -1,0 +1,106 @@
+---
+interface Props {
+  size?: number;
+  showWordmark?: boolean;
+  class?: string;
+  id?: string;
+}
+
+const { size = 28, showWordmark = true, class: className = '', id = 'brand' } = Astro.props;
+const gradId = `wf-logo-hex-${id}`;
+---
+
+<span class:list={['wf-logo', className]}>
+  <svg
+    class="wf-logo-mark"
+    width={size}
+    height={size}
+    viewBox="0 0 32 32"
+    fill="none"
+    aria-hidden="true"
+  >
+    <defs>
+      <linearGradient id={gradId} x1="4" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="var(--wf-logo-start, #2563eb)" />
+        <stop offset="55%" stop-color="var(--wf-logo-mid, #1d4ed8)" />
+        <stop offset="100%" stop-color="var(--wf-logo-end, #1e3a8a)" />
+      </linearGradient>
+    </defs>
+    <path
+      class="wf-logo-shell"
+      d="M16 1.8L28.3 8.9V23.1L16 30.2L3.7 23.1V8.9L16 1.8Z"
+      fill={`url(#${gradId})`}
+      stroke-linejoin="round"
+    />
+    <path
+      class="wf-logo-rim"
+      d="M16 3.4L26.9 9.7V22.3L16 28.6L5.1 22.3V9.7L16 3.4Z"
+      stroke-width="0.75"
+      stroke-linejoin="round"
+    />
+    <path d="M16 6.6L18.8 9.4L16 12.2L13.2 9.4L16 6.6Z" fill="#7dd3fc" />
+    <path
+      d="M8.1 11.2H10.8L12.7 18.2L16 13.4L19.3 18.2L21.2 11.2H23.9L20.7 22.2H18.2L16 18.5L13.8 22.2H11.3L8.1 11.2Z"
+      fill="#ffffff"
+    />
+    <path d="M12.2 24.1H19.8L18.6 26.1H13.4L12.2 24.1Z" fill="#93c5fd" />
+  </svg>
+  {showWordmark && <span class="wf-logo-text">witforge</span>}
+</span>
+
+<style>
+  .wf-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--ink);
+    line-height: 1;
+  }
+
+  .wf-logo-mark {
+    display: block;
+    flex-shrink: 0;
+  }
+
+  .wf-logo-shell {
+    stroke: #1e40af;
+    stroke-width: 1;
+  }
+
+  .wf-logo-rim {
+    stroke: #93c5fd;
+    stroke-opacity: 0.42;
+  }
+
+  .wf-logo-text {
+    font-family: var(--font-display);
+    font-size: 1.08rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    color: var(--ink);
+  }
+
+  @media screen and (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme='light'])) .wf-logo {
+      --wf-logo-start: #3b82f6;
+      --wf-logo-mid: #1d4ed8;
+      --wf-logo-end: #172554;
+    }
+
+    :global(:root:not([data-theme='light'])) .wf-logo-shell {
+      stroke: #60a5fa;
+      stroke-width: 1.1;
+    }
+  }
+
+  :global(:root[data-theme='dark']) .wf-logo {
+    --wf-logo-start: #3b82f6;
+    --wf-logo-mid: #1d4ed8;
+    --wf-logo-end: #172554;
+  }
+
+  :global(:root[data-theme='dark']) .wf-logo-shell {
+    stroke: #60a5fa;
+    stroke-width: 1.1;
+  }
+</style>

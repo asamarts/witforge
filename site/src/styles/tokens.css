@@ -1,0 +1,179 @@
+/*
+ * Shared design tokens for witforge marketing pages and Starlight documentation.
+ * Cobalt and sapphire blue on cool steel slate surfaces with verified WCAG 2.1 AA+
+ * contrast across both light and dark themes.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #ffffff;
+  --surface: #f6f8fc;
+  --surface-2: #eef2f8;
+  --well: #e6ecf5;
+
+  /* Typography */
+  --ink: #0f172a;
+  --text: #263244;
+  --muted: #4e5d73;
+
+  /* Borders and interactive control boundaries */
+  --rule: #d8e1ee;
+  --border-strong: #6c7c94;
+
+  /* Primary cobalt/sapphire accent */
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
+  --accent-strong: #1e3a8a;
+  --accent-wash: #eff6ff;
+  --accent-border: #bfdbfe;
+  --accent-fill: #1d4ed8;
+  --accent-fill-hover: #1e40af;
+  --on-accent: #ffffff;
+
+  /* Secondary wire/protocol accent */
+  --wire: #0369a1;
+  --wire-wash: #f0f9ff;
+  --wire-border: #bae6fd;
+
+  /* Semantic status palette (all >= 5.5:1 on surface-2) */
+  --ok: #166534;
+  --ok-wash: #ecfdf5;
+  --ok-border: #bbf7d0;
+  --warn: #92400e;
+  --warn-wash: #fffbeb;
+  --warn-border: #fde68a;
+  --err: #be123c;
+  --err-wash: #fff1f2;
+  --err-border: #fecdd3;
+
+  /* Focus and elevation */
+  --focus: #1d4ed8;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.05), 0 10px 26px -12px rgb(15 23 42 / 0.1);
+  --shadow-glow: 0 0 0 1px rgb(29 78 216 / 0.12), 0 12px 32px -12px rgb(29 78 216 / 0.18);
+
+  /* Font families (self-hosted via Fontsource) */
+  --font-display: 'Plus Jakarta Sans Variable', 'Inter Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-body: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-code: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Type scale */
+  --t-hero: clamp(2.4rem, 1.55rem + 2.8vw, 3.85rem);
+  --t-h1: clamp(2.05rem, 1.6rem + 1.8vw, 3.05rem);
+  --t-h2: clamp(1.48rem, 1.28rem + 0.75vw, 1.98rem);
+  --t-h3: 1.18rem;
+  --t-lede: clamp(1.06rem, 1rem + 0.28vw, 1.22rem);
+  --t-body: 1.02rem;
+  --t-small: 0.91rem;
+  --t-note: 0.84rem;
+  --t-code: 0.86rem;
+
+  /* Spacing and layout geometry */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+  --s9: 88px;
+  --gutter: clamp(16px, 4vw, 44px);
+  --page: 1200px;
+  --nav-h: 60px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-pill: 999px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media screen and (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --bg: #0a0f1a;
+    --surface: #111827;
+    --surface-2: #1a2438;
+    --well: #151f31;
+
+    --ink: #f1f5f9;
+    --text: #cbd5e1;
+    --muted: #94a3b8;
+
+    --rule: #243248;
+    --border-strong: #7889a2;
+
+    --accent: #60a5fa;
+    --accent-hover: #93c5fd;
+    --accent-strong: #93c5fd;
+    --accent-wash: #172554;
+    --accent-border: #1e3a8a;
+    --accent-fill: #60a5fa;
+    --accent-fill-hover: #93c5fd;
+    --on-accent: #0a0f1a;
+
+    --wire: #38bdf8;
+    --wire-wash: #0c2942;
+    --wire-border: #075985;
+
+    --ok: #4ade80;
+    --ok-wash: #0f291e;
+    --ok-border: #166534;
+    --warn: #fbbf24;
+    --warn-wash: #2b1f0d;
+    --warn-border: #854d0e;
+    --err: #fb7185;
+    --err-wash: #2f141e;
+    --err-border: #9f1239;
+
+    --focus: #93c5fd;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 30px -10px rgb(0 0 0 / 0.5);
+    --shadow-glow: 0 0 0 1px rgb(96 165 250 / 0.2), 0 14px 36px -12px rgb(37 99 235 / 0.35);
+  }
+}
+
+@media screen {
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+
+    --bg: #0a0f1a;
+    --surface: #111827;
+    --surface-2: #1a2438;
+    --well: #151f31;
+
+    --ink: #f1f5f9;
+    --text: #cbd5e1;
+    --muted: #94a3b8;
+
+    --rule: #243248;
+    --border-strong: #7889a2;
+
+    --accent: #60a5fa;
+    --accent-hover: #93c5fd;
+    --accent-strong: #93c5fd;
+    --accent-wash: #172554;
+    --accent-border: #1e3a8a;
+    --accent-fill: #60a5fa;
+    --accent-fill-hover: #93c5fd;
+    --on-accent: #0a0f1a;
+
+    --wire: #38bdf8;
+    --wire-wash: #0c2942;
+    --wire-border: #075985;
+
+    --ok: #4ade80;
+    --ok-wash: #0f291e;
+    --ok-border: #166534;
+    --warn: #fbbf24;
+    --warn-wash: #2b1f0d;
+    --warn-border: #854d0e;
+    --err: #fb7185;
+    --err-wash: #2f141e;
+    --err-border: #9f1239;
+
+    --focus: #93c5fd;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 30px -10px rgb(0 0 0 / 0.5);
+    --shadow-glow: 0 0 0 1px rgb(96 165 250 / 0.2), 0 14px 36px -12px rgb(37 99 235 / 0.35);
+  }
+}

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://asamarts.github.io/witforge/sitemap-index.xml

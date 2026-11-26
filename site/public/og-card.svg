@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <defs>
+    <linearGradient id="og-bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0a0f1a"/>
+      <stop offset="60%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#13203b"/>
+    </linearGradient>
+    <radialGradient id="og-glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(950 280) rotate(130) scale(450 380)">
+      <stop offset="0%" stop-color="#2563eb" stop-opacity="0.34"/>
+      <stop offset="60%" stop-color="#1d4ed8" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#0a0f1a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="og-hex" x1="4" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="55%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="og-rail" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="50%" stop-color="#60a5fa"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <pattern id="og-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="1" stroke-opacity="0.55"/>
+    </pattern>
+  </defs>
+
+  <!-- Canvas and subtle blueprint grid -->
+  <rect width="1200" height="630" fill="url(#og-bg)"/>
+  <rect width="1200" height="630" fill="url(#og-grid)"/>
+  <rect width="1200" height="630" fill="url(#og-glow)"/>
+
+  <!-- Top accent stripe -->
+  <rect x="0" y="0" width="1200" height="5" fill="url(#og-rail)"/>
+
+  <!-- Right-side compiler projection schematic -->
+  <g opacity="0.98">
+    <!-- Source node -->
+    <rect x="760" y="254" width="146" height="88" rx="12" fill="#111827" stroke="#60a5fa" stroke-width="2"/>
+    <text x="833" y="290" text-anchor="middle" fill="#7dd3fc" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="14" font-weight="600">contract.wit</text>
+    <text x="833" y="317" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="13">+ wire.lock</text>
+
+    <!-- Connector curves -->
+    <path d="M906 298 C944 298 942 140 980 140" stroke="#60a5fa" stroke-width="2" stroke-opacity="0.88"/>
+    <path d="M906 298 C944 298 942 219 980 219" stroke="#60a5fa" stroke-width="2" stroke-opacity="0.88"/>
+    <path d="M906 298 L980 298" stroke="#38bdf8" stroke-width="2.2"/>
+    <path d="M906 298 C944 298 942 377 980 377" stroke="#60a5fa" stroke-width="2" stroke-opacity="0.88"/>
+    <path d="M906 298 C944 298 942 456 980 456" stroke="#60a5fa" stroke-width="2" stroke-opacity="0.88"/>
+
+    <!-- Output rail pills (uniform cobalt hierarchy) -->
+    <rect x="980" y="114" width="156" height="52" rx="10" fill="#111827" stroke="#2c3f60" stroke-width="1.5"/>
+    <rect x="980" y="114" width="5" height="52" rx="2.5" fill="#60a5fa"/>
+    <text x="1002" y="145" fill="#f1f5f9" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="15" font-weight="600">Plain Rust</text>
+
+    <rect x="980" y="193" width="156" height="52" rx="10" fill="#111827" stroke="#2c3f60" stroke-width="1.5"/>
+    <rect x="980" y="193" width="5" height="52" rx="2.5" fill="#38bdf8"/>
+    <text x="1002" y="224" fill="#f1f5f9" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="15" font-weight="600">Protobuf</text>
+
+    <rect x="980" y="272" width="156" height="52" rx="10" fill="#111827" stroke="#2c3f60" stroke-width="1.5"/>
+    <rect x="980" y="272" width="5" height="52" rx="2.5" fill="#7dd3fc"/>
+    <text x="1002" y="303" fill="#f1f5f9" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="15" font-weight="600">JSON Schema</text>
+
+    <rect x="980" y="351" width="156" height="52" rx="10" fill="#111827" stroke="#2c3f60" stroke-width="1.5"/>
+    <rect x="980" y="351" width="5" height="52" rx="2.5" fill="#60a5fa"/>
+    <text x="1002" y="382" fill="#f1f5f9" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="15" font-weight="600">Rust Glue</text>
+
+    <rect x="980" y="430" width="156" height="52" rx="10" fill="#111827" stroke="#2c3f60" stroke-width="1.5"/>
+    <rect x="980" y="430" width="5" height="52" rx="2.5" fill="#38bdf8"/>
+    <text x="1002" y="461" fill="#f1f5f9" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="15" font-weight="600">Docs &amp; Diff</text>
+  </g>
+
+  <!-- Brand header lockup -->
+  <g transform="translate(72 78)">
+    <g transform="scale(2)">
+      <path d="M16 1.8L28.3 8.9V23.1L16 30.2L3.7 23.1V8.9L16 1.8Z" fill="url(#og-hex)" stroke="#60a5fa" stroke-width="1.1" stroke-linejoin="round"/>
+      <path d="M16 3.4L26.9 9.7V22.3L16 28.6L5.1 22.3V9.7L16 3.4Z" stroke="#bfdbfe" stroke-opacity="0.48" stroke-width="0.75" stroke-linejoin="round"/>
+      <path d="M16 6.6L18.8 9.4L16 12.2L13.2 9.4L16 6.6Z" fill="#7dd3fc"/>
+      <path d="M8.1 11.2H10.8L12.7 18.2L16 13.4L19.3 18.2L21.2 11.2H23.9L20.7 22.2H18.2L16 18.5L13.8 22.2H11.3L8.1 11.2Z" fill="#ffffff"/>
+      <path d="M12.2 24.1H19.8L18.6 26.1H13.4L12.2 24.1Z" fill="#93c5fd"/>
+    </g>
+    <text x="84" y="44" fill="#f1f5f9" font-family="Plus Jakarta Sans, Inter, Adwaita Sans, DejaVu Sans, sans-serif" font-size="36" font-weight="700" letter-spacing="-0.8">witforge</text>
+    <rect x="242" y="16" width="248" height="32" rx="16" fill="#172554" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="366" y="37" text-anchor="middle" fill="#93c5fd" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="13" font-weight="600">WIT-FIRST CONTRACT COMPILER</text>
+  </g>
+
+  <!-- Main headline -->
+  <text x="72" y="246" fill="#f1f5f9" font-family="Plus Jakarta Sans, Inter, Adwaita Sans, DejaVu Sans, sans-serif" font-size="56" font-weight="700" letter-spacing="-1.2">One WIT contract.</text>
+  <text x="72" y="314" fill="#60a5fa" font-family="Plus Jakarta Sans, Inter, Adwaita Sans, DejaVu Sans, sans-serif" font-size="56" font-weight="700" letter-spacing="-1.2">Every stable projection.</text>
+
+  <!-- Description -->
+  <text x="72" y="376" fill="#cbd5e1" font-family="Inter, Adwaita Sans, DejaVu Sans, sans-serif" font-size="22">Checked portable WIT subset, append-only wire lockfiles,</text>
+  <text x="72" y="408" fill="#cbd5e1" font-family="Inter, Adwaita Sans, DejaVu Sans, sans-serif" font-size="22">deterministic codegen, version adapters, and 4-view diffs.</text>
+
+  <!-- Bottom footer divider and badges -->
+  <line x1="72" y1="518" x2="1128" y2="518" stroke="#243248" stroke-width="1.5"/>
+  <text x="72" y="566" fill="#94a3b8" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="18">asamarts.github.io/witforge</text>
+  <text x="1128" y="566" text-anchor="end" fill="#7dd3fc" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="16">Apache-2.0 / MIT  |  Zero-dep Rust  |  SLSA</text>
+</svg>

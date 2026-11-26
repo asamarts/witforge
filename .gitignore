@@ -1,3 +1,8 @@
 /target
 /.private/
 /.github-account
+/site/node_modules/
+/site/dist/
+/site/.astro/
+/site/src/content/docs/
+/site/src/data/sidebar.json

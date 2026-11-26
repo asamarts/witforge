@@ -2,3 +2,6 @@
 
 # Binary fuzz seed inputs
 fuzz/seeds/structured-contract/*.bin binary
+
+# Binary social preview assets
+site/public/*.png binary
