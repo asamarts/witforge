@@ -675,14 +675,35 @@ export function findEmDashesInText(text) {
   return findings;
 }
 
+const TAG_ATTRS_PATTERN = '(?:[^>"\']|"[^"]*"|\'[^\']*\')*';
+const RAW_HTML_SKIP_RE = new RegExp(
+  `<!--(?:(?!-->)[\\s\\S])*?-->|<script\\b${TAG_ATTRS_PATTERN}>[\\s\\S]*?<\\/script\\s*>|<style\\b${TAG_ATTRS_PATTERN}>[\\s\\S]*?<\\/style\\s*>`,
+  'gi',
+);
+const ANY_HTML_TAG_RE = new RegExp(`<\\/?[a-z][a-z0-9-]*\\b${TAG_ATTRS_PATTERN}>|<![^>]*>`, 'gi');
+
 function stripPairedTagBlocks(src, tagName) {
-  const re = new RegExp(`<${tagName}\\b[^>]*>(?:(?!<${tagName}\\b)[\\s\\S])*?<\\/${tagName}\\s*>`, 'gi');
+  const re = new RegExp(
+    `<${tagName}\\b${TAG_ATTRS_PATTERN}>(?:(?!<${tagName}\\b)[\\s\\S])*?<\\/${tagName}\\s*>`,
+    'gi',
+  );
   let prev = src;
   while (true) {
     const next = prev.replace(re, (block) => block.replace(/[^\n]/g, ' '));
     if (next === prev) return next;
     prev = next;
   }
+}
+
+/**
+ * Strip HTML comments, `<script>...</script>`, and `<style>...</style>` in a single
+ * left-to-right pass (preserving line numbers) without tripping on `"<script>"` strings
+ * or `>` inside quoted attribute values.
+ */
+export function stripHtmlNoise(html) {
+  return String(html)
+    .replace(/\r\n/g, '\n')
+    .replace(RAW_HTML_SKIP_RE, (block) => block.replace(/[^\n]/g, ' '));
 }
 
 /**
@@ -693,17 +714,28 @@ function stripPairedTagBlocks(src, tagName) {
  */
 export function findEmDashesInHtml(html) {
   const findings = [];
-  const src = String(html).replace(/\r\n/g, '\n');
+  const src = stripHtmlNoise(html);
 
-  // Inspect meta description and title tags (`name="..."` and OpenGraph `property="..."`).
-  const metaRe =
-    /<meta\b[^>]*\b(?:name|property)=["'](?:description|og:description|og:title|twitter:description|twitter:title)["'][^>]*>/gi;
+  // Inspect meta description and title tags (`name="..."` and OpenGraph `property="..."`) on comment-free HTML.
+  const metaRe = new RegExp(`<meta\\b(${TAG_ATTRS_PATTERN})>`, 'gi');
   let metaMatch;
   while ((metaMatch = metaRe.exec(src)) !== null) {
-    const contentMatch = /\bcontent=(["'])([\s\S]*?)\1/i.exec(metaMatch[0]);
+    const attrs = metaMatch[1];
+    const keyMatch = /(?:^|[\s/])(?:name|property)\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attrs);
+    const key = (keyMatch?.[1] ?? keyMatch?.[2] ?? '').toLowerCase();
+    if (
+      key !== 'description' &&
+      key !== 'og:description' &&
+      key !== 'og:title' &&
+      key !== 'twitter:description' &&
+      key !== 'twitter:title'
+    ) {
+      continue;
+    }
+    const contentMatch = /(?:^|[\s/])content\s*=\s*(?:"([\s\S]*?)"|'([\s\S]*?)')/i.exec(attrs);
     if (contentMatch) {
       const metaLine = src.slice(0, metaMatch.index).split('\n').length;
-      for (const hit of findEmDashesInText(contentMatch[2])) {
+      for (const hit of findEmDashesInText(contentMatch[1] ?? contentMatch[2] ?? '')) {
         findings.push({
           line: metaLine,
           match: hit.match,
@@ -713,15 +745,11 @@ export function findEmDashesInHtml(html) {
     }
   }
 
-  // Strip script, style, code (innermost first for nested code), pre, comments, and tags.
+  // Strip code (innermost first for nested code), pre, and quote-aware HTML tags.
   let stripped = src;
-  stripped = stripPairedTagBlocks(stripped, 'script');
-  stripped = stripPairedTagBlocks(stripped, 'style');
   stripped = stripPairedTagBlocks(stripped, 'code');
   stripped = stripPairedTagBlocks(stripped, 'pre');
-  stripped = stripped
-    .replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\n]/g, ' '))
-    .replace(/<[^>]+>/g, ' ');
+  stripped = stripped.replace(ANY_HTML_TAG_RE, ' ');
 
   findings.push(...findEmDashesInText(stripped));
   return findings;
