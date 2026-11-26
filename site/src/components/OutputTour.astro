@@ -1,0 +1,151 @@
+---
+import { Code } from 'astro:components';
+import { OUTPUT_TOUR_TABS } from '../lib/examples';
+---
+
+<div class="tour-shell" data-tabs>
+  <div class="tour-bar">
+    <div class="tour-tabs" role="tablist" aria-label="Verified contract and generated outputs">
+      {
+        OUTPUT_TOUR_TABS.map((tab, index) => (
+          <button
+            type="button"
+            role="tab"
+            id={`tour-tab-${tab.id}`}
+            aria-controls={`tour-panel-${tab.id}`}
+            aria-selected={index === 0 ? 'true' : 'false'}
+            tabindex={index === 0 ? 0 : -1}
+            class="tour-tab"
+          >
+            <span>{tab.label}</span>
+            {tab.exampleGroup === 'evolved' && <span class="tab-pill">v0.1 &rarr; v0.2</span>}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  {
+    OUTPUT_TOUR_TABS.map((tab, index) => (
+      <div
+        role="tabpanel"
+        id={`tour-panel-${tab.id}`}
+        aria-labelledby={`tour-tab-${tab.id}`}
+        hidden={index !== 0}
+        class="tour-panel"
+      >
+        <div class="tour-meta">
+          <div class="tour-meta-text">
+            <a
+              class="tour-source"
+              href={tab.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {tab.sourcePath}
+            </a>
+            <p class="tour-caption">{tab.caption}</p>
+          </div>
+          <button type="button" class="tour-copy" data-copy={tab.code}>
+            <span data-copy-label>Copy</span>
+          </button>
+        </div>
+        <div class="tour-code">
+          <Code
+            code={tab.code}
+            lang={tab.lang}
+            themes={{ light: 'github-light', dark: 'github-dark' }}
+          />
+        </div>
+      </div>
+    ))
+  }
+</div>
+
+<style>
+  .tour-shell {
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--bg);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+
+  .tour-bar {
+    padding: var(--s3) var(--s4);
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface);
+  }
+
+  .tour-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .tour-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tab-pill {
+    padding: 1px 6px;
+    border-radius: var(--radius-pill);
+    background: var(--wire-wash);
+    border: 1px solid var(--wire-border);
+    color: var(--wire);
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+
+  .tour-meta {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--s4);
+    padding: var(--s3) var(--s4);
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-2);
+  }
+
+  .tour-meta-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .tour-source {
+    font-family: var(--font-code);
+    font-size: 0.8rem;
+    font-weight: 600;
+    word-break: break-all;
+  }
+
+  .tour-caption {
+    color: var(--muted);
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+
+  .tour-copy {
+    flex-shrink: 0;
+  }
+
+  .tour-code {
+    max-height: 440px;
+    overflow: auto;
+  }
+
+  @media (max-width: 640px) {
+    .tour-meta {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .tour-copy {
+      align-self: flex-start;
+    }
+  }
+</style>

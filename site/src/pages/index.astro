@@ -1,0 +1,600 @@
+---
+import { Code } from 'astro:components';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import OutputTour from '../components/OutputTour.astro';
+import PipelineDiagram from '../components/PipelineDiagram.astro';
+import {
+  CRATES_CLI_URL,
+  DOCS_RS_BUILD_URL,
+  DOCS_RS_URL,
+  REPO_URL,
+  SITE_DESCRIPTION,
+  SITE_TAGLINE,
+  SITE_TITLE,
+  WORKSPACE_MSRV,
+  WORKSPACE_VERSION,
+  canonicalUrl,
+  withBase,
+} from '../lib/site';
+
+const pageTitle = `${SITE_TITLE} | ${SITE_TAGLINE}`;
+
+const installTabs = [
+  {
+    id: 'cargo',
+    label: 'cargo install',
+    lang: 'sh' as const,
+    note: `Requires Rust ${WORKSPACE_MSRV} or newer.`,
+    code: `cargo install witforge-cli --version ${WORKSPACE_VERSION} --locked\nwitforge --version`,
+  },
+  {
+    id: 'binstall',
+    label: 'cargo binstall',
+    lang: 'sh' as const,
+    note: 'Downloads the checksum-verified prebuilt archive for your platform.',
+    code: `cargo binstall witforge-cli@${WORKSPACE_VERSION}\nwitforge --version`,
+  },
+  {
+    id: 'action',
+    label: 'GitHub Action',
+    lang: 'yaml' as const,
+    note: 'Checks contracts, verifies generated drift, and gates diffs in CI.',
+    code: `- uses: asamarts/witforge@v${WORKSPACE_VERSION}\n  with:\n    check: "true"\n    config: witforge.toml\n    generators: all\n    freeze: "true"`,
+  },
+  {
+    id: 'build-rs',
+    label: 'witforge-build',
+    lang: 'toml' as const,
+    note: 'Optional build.rs helper for compiling emitted .proto trees with prost.',
+    code: `[build-dependencies]\nwitforge-build = "${WORKSPACE_VERSION}"`,
+  },
+];
+
+const proofMetrics = [
+  {
+    value: '5',
+    label: 'Deterministic emitters',
+    detail: 'Plain Rust, Protobuf, JSON Schema, Rust glue, and Markdown docs',
+  },
+  {
+    value: '4',
+    label: 'Compatibility diff views',
+    detail: 'wire, source, generated API, and protobuf binary decode',
+  },
+  {
+    value: '0',
+    label: 'Runtime deps in plain Rust',
+    detail: 'Default plain Rust output needs no witforge runtime crate',
+  },
+  {
+    value: '7',
+    label: 'SLSA-attested targets',
+    detail: 'Linux gnu and static musl, macOS Intel and arm64, Windows x64',
+  },
+];
+
+const guarantees = [
+  {
+    tag: 'LOCKFILE',
+    title: 'Append-only wire numbers',
+    body: 'wire.lock v2 locks every field, enum case, variant case, flag, parameter, and method number alongside declaration-order fingerprints. Numbers never silently shift across minor versions.',
+    href: withBase('/docs/contract-authoring/'),
+    linkLabel: 'Contract authoring',
+  },
+  {
+    tag: 'FREEZE',
+    title: 'Immutable released versions',
+    body: 'Each contract version lives in its own directory (v0.1, v0.2). witforge freeze inspects Git history so a released version or lockfile can never be modified or un-released.',
+    href: withBase('/docs/ci/'),
+    linkLabel: 'CI and release freeze',
+  },
+  {
+    tag: 'DIFF & POLICY',
+    title: 'Four-view compatibility diff',
+    body: 'Compare version directories or run witforge diff --git-base <rev> against Git history. Gate wire, source, API, or decode rules through CLI flags or [project.<name>.policy].',
+    href: withBase('/docs/evolution/'),
+    linkLabel: 'Evolving contracts',
+  },
+  {
+    tag: 'WIT SUBSET',
+    title: 'Portable value-oriented WIT',
+    body: 'Supports records, variants, enums, flags, aliases, char, lists, fixed-length list<T, N>, primitive-keyed map<K, V>, options, results, worlds, and standard deps/ packages with deps sync.',
+    href: withBase('/outputs/'),
+    linkLabel: 'Type mapping matrix',
+  },
+  {
+    tag: 'RUST OUTPUT',
+    title: 'Idiomatic, zero-dep default Rust',
+    body: 'Emits rustfmt, Clippy, and missing_docs-clean structs, enums, traits, worlds.rs, and convert.rs version adapters, with opt-in --serde, --no-std, --eq-hash, and --try-from.',
+    href: withBase('/docs/generated-output/'),
+    linkLabel: 'Inspect real output',
+  },
+  {
+    tag: 'TOOLCHAIN',
+    title: 'Machine-readable CI and IR',
+    body: 'Emit JSON or SARIF diagnostics linked to stable WFxxxx help anchors, export versioned JSON contract IR via witforge inspect, and generate Markdown contract docs via witforge doc.',
+    href: withBase('/docs/diagnostics/'),
+    linkLabel: 'Diagnostic catalog',
+  },
+];
+
+const boundaries = [
+  {
+    title: 'Native Rust and out-of-process plugins',
+    body: 'Use witforge when hand-written WIT is the contract source of truth, calls are synchronous and value-oriented, and both in-process Rust and out-of-process implementations share one contract.',
+    href: withBase('/docs/choosing-witforge/'),
+    linkLabel: 'Choosing witforge',
+  },
+  {
+    title: 'Cross-language protobuf consumers',
+    body: 'Non-Rust teams compile the emitted .proto files with their standard protobuf toolchain and follow the documented WIT decode profile. JSON boundaries stay explicit across Serde, JSON Schema, and Proto3-JSON.',
+    href: withBase('/docs/non-rust/'),
+    linkLabel: 'Non-Rust & JSON guides',
+  },
+  {
+    title: 'Built alongside wit-bindgen and Wasmtime',
+    body: 'witforge is a contract compiler, not a WebAssembly runtime, RPC framework, or replacement for wit-bindgen. Keep using wit-bindgen and Wasmtime for guest/host Component Model execution.',
+    href: withBase('/docs/component-model/'),
+    linkLabel: 'Component Model boundary',
+  },
+];
+---
+
+<BaseLayout title={pageTitle} description={SITE_DESCRIPTION} canonical={canonicalUrl('/')}>
+  <!-- Band 1: Hero + Quick Install -->
+  <section class="hero-band">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <span class="sec-kicker">
+          WIT-first contract compiler &middot; v{WORKSPACE_VERSION} &middot; MSRV {WORKSPACE_MSRV}
+        </span>
+        <h1 class="hero-title">
+          One WIT contract.<br />
+          <span class="hero-accent">Every stable projection.</span>
+        </h1>
+        <p class="sec-lede hero-lede">
+          witforge checks a portable WIT subset, locks protobuf field and method numbers in an
+          append-only lockfile, and emits plain Rust, Protobuf, JSON Schema, checked glue, Markdown
+          docs, and version adapters. Commit the output, check drift in CI, and evolve versions
+          without breaking wire identity.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href={withBase('/docs/quickstart/')}>Start in 5 minutes</a>
+          <a class="btn btn-ghost" href={withBase('/outputs/')}>Explore outputs matrix</a>
+          <a class="btn btn-ghost" href={withBase('/docs/')}>Read the docs</a>
+        </div>
+      </div>
+
+      <div class="install-card" data-tabs>
+        <div class="install-head">
+          <span class="install-label">Quick install</span>
+          <div class="install-tabs" role="tablist" aria-label="Install methods">
+            {
+              installTabs.map((tab, index) => (
+                <button
+                  type="button"
+                  role="tab"
+                  id={`install-tab-${tab.id}`}
+                  aria-controls={`install-panel-${tab.id}`}
+                  aria-selected={index === 0 ? 'true' : 'false'}
+                  tabindex={index === 0 ? 0 : -1}
+                >
+                  {tab.label}
+                </button>
+              ))
+            }
+          </div>
+        </div>
+        {
+          installTabs.map((tab, index) => (
+            <div
+              role="tabpanel"
+              id={`install-panel-${tab.id}`}
+              aria-labelledby={`install-tab-${tab.id}`}
+              hidden={index !== 0}
+              class="install-panel"
+            >
+              <div class="install-code">
+                <Code
+                  code={tab.code}
+                  lang={tab.lang}
+                  themes={{ light: 'github-light', dark: 'github-dark' }}
+                />
+              </div>
+              <div class="install-foot">
+                <span class="install-note">{tab.note}</span>
+                <button type="button" data-copy={tab.code}>
+                  <span data-copy-label>Copy</span>
+                </button>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- Band 2: Proof Strip -->
+  <section class="proof-band" aria-label="Key capabilities">
+    <div class="wrap proof-grid">
+      {
+        proofMetrics.map((metric) => (
+          <div class="proof-item">
+            <span class="proof-value">{metric.value}</span>
+            <span class="proof-label">{metric.label}</span>
+            <p class="proof-detail">{metric.detail}</p>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <!-- Band 3: Architecture Pipeline Visual -->
+  <section class="section wrap">
+    <div class="section-head">
+      <div>
+        <span class="sec-kicker">Architecture</span>
+        <h2>One validated model, six deterministic outputs</h2>
+      </div>
+      <p class="sec-lede">
+        Every command reads the same owned internal model and lockfile. If <code>witforge check</code>
+        passes, every generator writes deterministic, LF-only files tagged with explicit ownership
+        headers.
+      </p>
+    </div>
+    <PipelineDiagram />
+  </section>
+
+  <!-- Band 4: Real Verified Output Tour -->
+  <section class="section wrap">
+    <div class="section-head">
+      <div>
+        <span class="sec-kicker">Real output tour</span>
+        <h2>From contract.wit to committed code</h2>
+      </div>
+      <p class="sec-lede">
+        Every snippet below is loaded directly from the committed
+        <a href={withBase('/docs/examples/')}>repository examples</a> tested in CI. For full WIT
+        type mappings and 4-view diff rules, see the
+        <a href={withBase('/outputs/')}>outputs and evolution matrix</a>.
+      </p>
+    </div>
+    <OutputTour />
+  </section>
+
+  <!-- Band 5: Core Guarantees Grid -->
+  <section class="section section-tinted">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="sec-kicker">Core guarantees</span>
+          <h2>Built for long-lived contracts</h2>
+        </div>
+        <p class="sec-lede">
+          witforge focuses on the parts of contract evolution that fail silently in ad-hoc codegen
+          pipelines: wire stability, version immutability, compatibility review, and deterministic
+          builds.
+        </p>
+      </div>
+
+      <div class="card-grid">
+        {
+          guarantees.map((item) => (
+            <article class="feature-card">
+              <span class="card-tag">{item.tag}</span>
+              <h3>{item.title}</h3>
+              <p>{item.body}</p>
+              <a class="card-link" href={item.href}>
+                {item.linkLabel} &rarr;
+              </a>
+            </article>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- Band 6: Scope & Boundaries + Reference Strip -->
+  <section class="section wrap">
+    <div class="section-head">
+      <div>
+        <span class="sec-kicker">Scope and boundaries</span>
+        <h2>Clear responsibilities, zero runtime lock-in</h2>
+      </div>
+      <p class="sec-lede">
+        witforge does not load WebAssembly components, generate protobuf services, own transport
+        framing, or impose a runtime dependency on generated Rust types.
+      </p>
+    </div>
+
+    <div class="boundary-grid">
+      {
+        boundaries.map((card) => (
+          <article class="boundary-card">
+            <h3>{card.title}</h3>
+            <p>{card.body}</p>
+            <a class="card-link" href={card.href}>
+              {card.linkLabel} &rarr;
+            </a>
+          </article>
+        ))
+      }
+    </div>
+
+    <div class="ref-strip" aria-label="Reference links">
+      <div class="ref-copy">
+        <h3>Reference and machine-readable specs</h3>
+        <p>Jump straight into the CLI flags, crate API docs, migration notes, or LLM corpus.</p>
+      </div>
+      <div class="ref-links">
+        <a class="btn btn-ghost" href={withBase('/docs/reference/')}>CLI reference</a>
+        <a class="btn btn-ghost" href={withBase('/docs/diagnostics/')}>Diagnostic codes</a>
+        <a class="btn btn-ghost" href={withBase('/docs/migration/')}>Migration guide</a>
+        <a class="btn btn-ghost" href={withBase('/llms.txt')}>llms.txt</a>
+        <a class="btn btn-ghost" href={DOCS_RS_URL} target="_blank" rel="noopener noreferrer">
+          docs.rs/witforge
+        </a>
+        <a class="btn btn-ghost" href={DOCS_RS_BUILD_URL} target="_blank" rel="noopener noreferrer">
+          witforge-build
+        </a>
+        <a class="btn btn-ghost" href={CRATES_CLI_URL} target="_blank" rel="noopener noreferrer">
+          crates.io
+        </a>
+        <a class="btn btn-ghost" href={REPO_URL} target="_blank" rel="noopener noreferrer">
+          GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .hero-band {
+    padding-block: clamp(44px, 7vw, 84px) clamp(36px, 5vw, 64px);
+    background:
+      radial-gradient(640px 320px at 82% 8%, color-mix(in oklab, var(--accent) 12%, transparent), transparent 72%),
+      var(--bg);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .hero-grid {
+    display: grid;
+    gap: var(--s6);
+    align-items: center;
+  }
+
+  @media (min-width: 980px) {
+    .hero-grid {
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.92fr);
+      gap: var(--s7);
+    }
+  }
+
+  .hero-title {
+    margin-top: var(--s4);
+    font-size: var(--t-hero);
+    line-height: 1.04;
+    letter-spacing: -0.032em;
+  }
+
+  .hero-accent {
+    color: var(--accent);
+  }
+
+  .hero-lede {
+    margin-top: var(--s4);
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: var(--s5);
+  }
+
+  /* Quick-install card */
+  .install-card {
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-glow);
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .install-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
+    padding: var(--s3) var(--s4);
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-2);
+  }
+
+  .install-label {
+    color: var(--muted);
+    font-family: var(--font-code);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .install-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .install-code {
+    overflow-x: auto;
+  }
+
+  .install-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s3);
+    padding: var(--s3) var(--s4);
+    border-top: 1px solid var(--rule);
+    background: var(--bg);
+  }
+
+  .install-note {
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+
+  /* Proof metrics strip */
+  .proof-band {
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface);
+    padding-block: var(--s5);
+  }
+
+  .proof-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: var(--s5);
+  }
+
+  .proof-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .proof-value {
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: 2rem;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.03em;
+  }
+
+  .proof-label {
+    color: var(--ink);
+    font-family: var(--font-display);
+    font-size: 0.96rem;
+    font-weight: 700;
+  }
+
+  .proof-detail {
+    color: var(--muted);
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+
+  /* Main sections */
+  .section {
+    padding-block: clamp(48px, 6vw, 80px);
+  }
+
+  .section-tinted {
+    background: var(--surface);
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .section-head {
+    display: grid;
+    gap: var(--s4);
+    margin-bottom: var(--s6);
+  }
+
+  .section-head h2 {
+    margin-top: var(--s3);
+  }
+
+  @media (min-width: 900px) {
+    .section-head {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+      align-items: end;
+      gap: var(--s6);
+    }
+  }
+
+  /* Feature guarantees grid */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--s5);
+  }
+
+  .feature-card,
+  .boundary-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s3);
+    padding: var(--s5);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--bg);
+    box-shadow: var(--shadow-card);
+  }
+
+  .card-tag {
+    align-self: flex-start;
+    padding: 3px 9px;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-pill);
+    background: var(--accent-wash);
+    color: var(--accent-strong);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+
+  .feature-card p,
+  .boundary-card p {
+    color: var(--muted);
+    font-size: 0.93rem;
+    line-height: 1.58;
+  }
+
+  .card-link {
+    margin-top: auto;
+    padding-top: var(--s2);
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .card-link:hover {
+    text-decoration: underline;
+  }
+
+  /* Boundaries grid */
+  .boundary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+    gap: var(--s5);
+  }
+
+  /* Reference links strip */
+  .ref-strip {
+    margin-top: var(--s7);
+    padding: var(--s5);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius);
+    background: var(--accent-wash);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s4);
+  }
+
+  .ref-copy p {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 0.94rem;
+  }
+
+  .ref-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+</style>

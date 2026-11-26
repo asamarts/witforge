@@ -1,0 +1,225 @@
+---
+// Zero-JS accessible inline SVG illustrating witforge's compilation and governance pipeline.
+// All fills and strokes inherit CSS custom properties from tokens.css for light and dark parity.
+---
+
+<figure class="pipeline-figure">
+  <svg
+    class="pipeline-svg"
+    viewBox="0 0 960 364"
+    fill="none"
+    role="img"
+    aria-labelledby="wf-pipeline-title wf-pipeline-desc"
+  >
+    <title id="wf-pipeline-title">witforge compilation and contract governance pipeline</title>
+    <desc id="wf-pipeline-desc">
+      Hand-written contract.wit with optional deps packages, append-only wire.lock, and wit/released
+      feed into the witforge subset, lockfile, and policy gate, which emits Plain Rust with version
+      adapters and worlds metadata, Protobuf schemas, JSON Schema, checked Rust glue, Markdown
+      contract docs, and 4-view compatibility diffs plus JSON contract IR.
+    </desc>
+
+    <defs>
+      <marker
+        id="wf-arrow"
+        viewBox="0 0 10 10"
+        refX="8.5"
+        refY="5"
+        markerWidth="6.5"
+        markerHeight="6.5"
+        orient="auto-start-reverse"
+      >
+        <path d="M1 1.5L8.5 5L1 8.5Z" fill="var(--accent)" />
+      </marker>
+      <marker
+        id="wf-arrow-wire"
+        viewBox="0 0 10 10"
+        refX="8.5"
+        refY="5"
+        markerWidth="6.5"
+        markerHeight="6.5"
+        orient="auto-start-reverse"
+      >
+        <path d="M1 1.5L8.5 5L1 8.5Z" fill="var(--wire)" />
+      </marker>
+    </defs>
+
+    <!-- Subtle stage column labels -->
+    <text x="20" y="24" class="stage-label">1. SOURCE OF TRUTH</text>
+    <text x="330" y="24" class="stage-label">2. CHECK AND LOCK GATE</text>
+    <text x="646" y="24" class="stage-label">3. DETERMINISTIC OUTPUTS</text>
+
+    <!-- Column 1: Source inputs -->
+    <g>
+      <rect x="20" y="42" width="236" height="82" rx="10" class="box-source" />
+      <rect x="20" y="42" width="5" height="82" rx="2.5" fill="var(--accent)" />
+      <text x="40" y="72" class="node-title">contract.wit + deps/</text>
+      <text x="40" y="94" class="node-sub">Versioned WIT packages</text>
+      <text x="40" y="111" class="node-sub">v0.1/, v0.2/, v1.0/</text>
+
+      <rect x="20" y="142" width="236" height="82" rx="10" class="box-source" />
+      <rect x="20" y="142" width="5" height="82" rx="2.5" fill="var(--wire)" />
+      <text x="40" y="172" class="node-title">wire.lock (v2)</text>
+      <text x="40" y="194" class="node-sub">Append-only wire numbers</text>
+      <text x="40" y="211" class="node-sub">+ order fingerprints</text>
+
+      <rect x="20" y="242" width="236" height="82" rx="10" class="box-source" />
+      <rect x="20" y="242" width="5" height="82" rx="2.5" fill="var(--ok)" />
+      <text x="40" y="272" class="node-title">wit/released + toml</text>
+      <text x="40" y="294" class="node-sub">Frozen release ledger</text>
+      <text x="40" y="311" class="node-sub">+ project policy config</text>
+    </g>
+
+    <!-- Connectors: Column 1 -> Column 2 -->
+    <path d="M256 83 C292 83 292 146 326 146" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M256 183 L326 183" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
+    <path d="M256 283 C292 283 292 220 326 220" class="edge-accent" marker-end="url(#wf-arrow)" />
+
+    <!-- Column 2: Compiler Gate -->
+    <g>
+      <rect x="330" y="64" width="244" height="238" rx="12" class="box-core" />
+      <rect x="348" y="82" width="208" height="28" rx="14" class="core-pill" />
+      <text x="452" y="100" text-anchor="middle" class="core-pill-text">WITFORGE COMPILER</text>
+
+      <rect x="348" y="124" width="208" height="44" rx="8" class="core-step" />
+      <text x="452" y="143" text-anchor="middle" class="step-title">Portable WIT subset</text>
+      <text x="452" y="159" text-anchor="middle" class="step-sub">char, list&lt;T, N&gt;, map&lt;K, V&gt;</text>
+
+      <rect x="348" y="180" width="208" height="44" rx="8" class="core-step" />
+      <text x="452" y="199" text-anchor="middle" class="step-title">Lock &amp; collision gate</text>
+      <text x="452" y="215" text-anchor="middle" class="step-sub">continuity, reserved tags, freeze</text>
+
+      <rect x="348" y="236" width="208" height="48" rx="8" class="core-step" />
+      <text x="452" y="256" text-anchor="middle" class="step-title">Diagnostics &amp; policy</text>
+      <text x="452" y="273" text-anchor="middle" class="step-sub">WF1001-WF9004 (JSON / SARIF)</text>
+    </g>
+
+    <!-- Connectors: Column 2 -> Column 3 -->
+    <path d="M574 183 C608 183 608 62 642 62" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M574 183 C608 183 608 115 642 115" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M574 183 C608 183 608 168 642 168" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
+    <path d="M574 183 C608 183 608 221 642 221" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M574 183 C608 183 608 274 642 274" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M574 183 C608 183 608 327 642 327" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
+
+    <!-- Column 3: Deterministic Outputs -->
+    <g>
+      <rect x="646" y="40" width="294" height="44" rx="8" class="box-out" />
+      <text x="662" y="59" class="out-title">Plain Rust</text>
+      <text x="662" y="75" class="out-sub">v0_1.rs, convert.rs, worlds.rs, no_std</text>
+
+      <rect x="646" y="93" width="294" height="44" rx="8" class="box-out" />
+      <text x="662" y="112" class="out-title">Protobuf (.proto)</text>
+      <text x="662" y="128" class="out-sub">v0.proto with locked tags &amp; method IDs</text>
+
+      <rect x="646" y="146" width="294" height="44" rx="8" class="box-out" />
+      <text x="662" y="165" class="out-title">JSON Schema</text>
+      <text x="662" y="181" class="out-sub">Draft 7 (default) &amp; Draft 2020-12</text>
+
+      <rect x="646" y="199" width="294" height="44" rx="8" class="box-out" />
+      <text x="662" y="218" class="out-title">Checked Rust Glue</text>
+      <text x="662" y="234" class="out-sub">Plain Rust &lt;-&gt; prost with GlueError</text>
+
+      <rect x="646" y="252" width="294" height="44" rx="8" class="box-out" />
+      <text x="662" y="271" class="out-title">Markdown Contract Docs</text>
+      <text x="662" y="287" class="out-sub">witforge doc reference &amp; changelogs</text>
+
+      <rect x="646" y="305" width="294" height="44" rx="8" class="box-out-alt" />
+      <text x="662" y="324" class="out-title">Diff, Freeze &amp; JSON IR</text>
+      <text x="662" y="340" class="out-sub">4-view diff, --git-base, witforge inspect</text>
+    </g>
+  </svg>
+</figure>
+
+<style>
+  .pipeline-figure {
+    margin: 0;
+    padding: var(--s5);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+    overflow-x: auto;
+  }
+
+  .pipeline-svg {
+    display: block;
+    width: 100%;
+    min-width: 680px;
+    height: auto;
+  }
+
+  .stage-label {
+    fill: var(--muted);
+    font-family: var(--font-code);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+  }
+
+  .box-source,
+  .box-out {
+    fill: var(--bg);
+    stroke: var(--rule);
+    stroke-width: 1.4;
+  }
+
+  .box-out-alt {
+    fill: var(--wire-wash);
+    stroke: var(--wire-border);
+    stroke-width: 1.4;
+  }
+
+  .box-core {
+    fill: var(--accent-wash);
+    stroke: var(--accent-border);
+    stroke-width: 1.8;
+  }
+
+  .core-pill {
+    fill: var(--accent-fill);
+  }
+
+  .core-pill-text {
+    fill: var(--on-accent);
+    font-family: var(--font-code);
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
+  .core-step {
+    fill: var(--bg);
+    stroke: var(--accent-border);
+    stroke-width: 1.2;
+  }
+
+  .node-title,
+  .out-title,
+  .step-title {
+    fill: var(--ink);
+    font-family: var(--font-display);
+    font-size: 13.5px;
+    font-weight: 700;
+  }
+
+  .node-sub,
+  .out-sub,
+  .step-sub {
+    fill: var(--muted);
+    font-family: var(--font-code);
+    font-size: 11.2px;
+  }
+
+  .edge-accent {
+    stroke: var(--accent);
+    stroke-width: 1.8;
+    fill: none;
+  }
+
+  .edge-wire {
+    stroke: var(--wire);
+    stroke-width: 1.8;
+    fill: none;
+  }
+</style>
