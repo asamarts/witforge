@@ -27,6 +27,26 @@ consume it. Paths are relative to `crates/witforge/tests/`.
   `glue` round-trips and error variants (`InvalidChar`, `InvalidLength`, `IntegerOutOfRange`,
   `MissingField`) in Editions 2021 and 2024, and `#![no_std]` + `alloc` (`prost.btree_map`)
   compilation.
+- **Markdown reference emitter (`witforge doc` / `emit::doc`, `0.9.0`):** `tests/emit_doc.rs` and
+  `crates/witforge-cli/tests/config.rs` verify deterministic `index.md` + per-version Markdown pages,
+  changelog tables, wire numbers, stability/deprecation badges, `deps/` sections, Markdown/HTML
+  sanitization, ownership headers, and `--check`/`--diff` parity.
+- **Opt-in `--eq-hash` and `--try-from` (`0.9.0`):** `tests/eq_hash_try_from.rs` verifies
+  transitive float-free `Eq`/`Hash` derives (including per-major scoped `deps/` and `--serde`),
+  `TryFrom<&From>`/`TryFrom<From>` impls in `convert.rs` (including nominal types named `value`
+  and `#![no_std]` + `alloc`), and Edition 2021/2024 `rustfmt`/Clippy/`missing_docs` parity.
+- **Git-ref diff (`witforge diff --git-base`, `0.9.0`):** `crates/witforge-cli/tests/diff.rs`
+  verifies safe Git object materialization, sibling `released` validation, symlink/submodule and
+  shallow-clone guards (`WF9004`), deterministic `<rev>:<path>` redaction, and `witforge.toml`
+  root/policy integration.
+- **Project policy gates (`[project.<name>.policy]`, `0.9.0`):**
+  `crates/witforge-cli/tests/config.rs` verifies `policy.diff-check` and
+  `policy.forbid-unstable-in-release` (including CLI overrides, upward discovery across relative
+  roots/symlinks, and fail-closed validation).
+- **Unreleased dependency sync (`witforge deps sync`, `0.9.0`):**
+  `crates/witforge-cli/tests/deps.rs` verifies major-scoped synchronization across unreleased
+  directories, `--from`, `--check`, released-directory immutability, symlink/special-file refusal,
+  and collision-safe atomic replacement.
 - **Opt-in `no_std` + `alloc` (`0.8.0`):** `tests/emit_rust.rs` and `tests/emit_glue.rs` verify
   `RustOptions::new().with_no_std(true)` and `GlueOptions::new().with_no_std(true)` emit zero
   `::std::` references across plain modules, `convert.rs`, `worlds.rs`, `witforge_deps.rs`, and

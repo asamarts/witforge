@@ -4630,6 +4630,7 @@ impl Emitter<'_> {
         let mut src = list_expr.to_string();
         if src.contains('\n')
             || indent + format!("let {len_var} = {src}.len();").len() > rustfmt::MAX_WIDTH
+            || (src.contains('.') && src.len() + ".len()".len() > 60)
         {
             let tmp = temps.fresh();
             stmts.push(rustfmt::fmt_let_stmt(indent, &tmp, &src));
@@ -4736,7 +4737,14 @@ impl Emitter<'_> {
         for stmt in loop_stmts {
             let _ = writeln!(block, "{stmt}");
         }
-        let _ = writeln!(block, "{inner_pad}{out_var}.push(({enc_key}, {enc_val}));");
+        let push_call = rustfmt::fmt_call(
+            inner_indent,
+            &format!("{out_var}.push"),
+            &[format!("({enc_key}, {enc_val})")],
+            inner_indent,
+            1,
+        );
+        let _ = writeln!(block, "{inner_pad}{push_call};");
         let _ = write!(block, "{pad}}}");
         stmts.push(block);
         Ok(format!("{out_var}.into_iter().collect()"))
@@ -4810,7 +4818,14 @@ impl Emitter<'_> {
         for stmt in loop_stmts {
             let _ = writeln!(block, "{stmt}");
         }
-        let _ = writeln!(block, "{inner_pad}{out_var}.insert({dec_key}, {dec_val});");
+        let insert_call = rustfmt::fmt_call(
+            inner_indent,
+            &format!("{out_var}.insert"),
+            &[dec_key, dec_val],
+            inner_indent,
+            1,
+        );
+        let _ = writeln!(block, "{inner_pad}{insert_call};");
         let _ = write!(block, "{pad}}}");
         stmts.push(block);
         Ok(out_var)

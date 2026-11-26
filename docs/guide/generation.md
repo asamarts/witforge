@@ -14,6 +14,7 @@ witforge schema wit --out generated/schema
 witforge glue wit --out generated/glue \
   --plain-root crate::plain \
   --proto-root crate::proto
+witforge doc wit --out generated/doc
 ```
 
 `--plain-root` and `--proto-root` are absolute Rust module paths used by generated glue (not filesystem paths). Accepted forms are `crate`, `crate::...`, `::crate_name::...`, or an external crate name (`other::...`). Relative paths starting with `self` or `super` are refused because glue references the roots from nested modules at multiple depths; write `crate::...` for modules inside your own crate, and prefix an external crate with `::` if its name matches a generated module. The same rules apply to `plain-root` and `proto-root` in `witforge.toml`.
@@ -29,7 +30,9 @@ root = "wit"
 [project.example.rust]
 out = "generated/rust"
 serde = true
-# no-std = true  # opt-in `#![no_std]` + `alloc` paths (CLI: `--no-std` / `--std`)
+# no-std = true    # opt-in `#![no_std]` + `alloc` paths (CLI: `--no-std` / `--std`)
+# eq-hash = true   # opt-in `Eq, Hash` on float-free types (CLI: `--eq-hash` / `--no-eq-hash`)
+# try-from = true  # opt-in `TryFrom` impls in `convert.rs` (CLI: `--try-from` / `--no-try-from`)
 
 [project.example.proto]
 out = "generated/proto"
@@ -43,6 +46,13 @@ out = "generated/glue"
 plain-root = "crate::plain"
 proto-root = "crate::proto"
 # no-std = true  # opt-in `#![no_std]` + `alloc` paths (CLI: `--no-std` / `--std`)
+
+# [project.example.doc]
+# out = "generated/doc"
+
+# [project.example.policy]
+# diff-check = ["wire", "decode"]
+# forbid-unstable-in-release = true
 ```
 
 Then run every configured emitter at once (or run individual emitters):
@@ -55,7 +65,7 @@ witforge generate --config witforge.toml --check
 Inside a project directory or any subdirectory below it within the Git repository, `witforge.toml`
 is discovered upwards automatically (`witforge generate`, `witforge rust`, etc.); pass
 `--no-config` to disable discovery. Individual commands (`witforge rust`, `proto`, `schema`,
-`glue`) also continue to accept `--config witforge.toml` or explicit CLI flags.
+`glue`, `doc`) also continue to accept `--config witforge.toml` or explicit CLI flags.
 
 Paths inside `witforge.toml` (`root`, `released`, and every `out`) are resolved relative to the
 configuration file (or used as given when absolute, including `..` components) and are never

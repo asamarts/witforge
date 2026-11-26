@@ -11,7 +11,7 @@ dependency-alias endpoints 2026-11-20 (`W10-056`); Git-ref base comparison (`--g
 reserved numbers, alias spellings, released-manifest checks, and dependency-alias endpoints)
 shipped in 0.6.0.
 
-`witforge diff <old> <new>` (or `witforge diff --git-base <rev> <path>`) compares two contract
+`witforge diff <old> <new>` (or `witforge diff --git-base <rev> [<path>]`) compares two contract
 versions and reports what changed in four independent compatibility views:
 
 - **wire identity** — the append-only lockfile's numbers, kinds, and canonical member types;
@@ -75,16 +75,20 @@ each endpoint uses its own root's manifest, so two checkouts can be compared ind
 
 ### Comparing against a Git revision (`--git-base`)
 
-`witforge diff --git-base <rev> <path>` (and the library entry point
+`witforge diff --git-base <rev> [<path>]` (and the library entry point
 `witforge::diff::compare_git_base`) compares a version directory or WIT root in the current working
-tree against its committed tree at `<rev>` (for example `origin/main` or `HEAD~1`):
+tree against its committed tree at `<rev>` (for example `origin/main` or `HEAD~1`; when `<path>`
+is omitted on the CLI, the configured project `root` from `witforge.toml` is used):
 
 - **Safe temporary materialization:** witforge reads regular file blobs directly from Git's object
   database (`git ls-tree -r -z` + `git cat-file --batch`) into a private temporary directory under
   `std::env::temp_dir()` (respecting `TMPDIR`) and deletes that directory before returning, on both
   success and error paths. No `git archive`, `tar`, or working-tree checkout is performed. When
   `<path>` is a single version directory (`wit/v0.2`), its basename is preserved and any sibling
-  `<parent>/released` file at `<rev>` is materialized beside it.
+  `<parent>/released` manifest at `<rev>` is validated directly from Git (refusing symlinks,
+  submodules, and non-regular-file entries with `WF9004`, and checking manifest syntax and listed
+  released directories in the Git tree at `<rev>`) without materializing sibling directories into
+  the temporary tree.
 - **Symlink and submodule guards (`WF9004`, exit `2`):** symlinks or submodules anywhere in the
   Git tree at `<rev>` (including the target path itself or a sibling `released` manifest) or in the
   working-tree `<path>` are refused before comparison.

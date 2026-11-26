@@ -909,8 +909,8 @@ fn emit_try_from_impl(
         " {",
     );
     writeln!(out, "{fn_sig}")?;
-    let call_single = format!("                {function}({arg_expr})");
-    let call_head = format!("                {function}(");
+    let call_single = format!("                self::{function}({arg_expr})");
+    let call_head = format!("                self::{function}(");
     if call_single.len() <= rustfmt::MAX_WIDTH || call_head.len() > rustfmt::MAX_WIDTH {
         writeln!(out, "{call_single}")?;
     } else {
@@ -2061,19 +2061,33 @@ fn emit_convert_value(
             let _ = write!(loop_code, "{prefix}}}");
             stmts.push(loop_code);
             let arr_var = fresh(next_id);
-            let try_expr = format!("<[_; {source_len}]>::try_from({out_var})");
+            let try_callee = format!("<[_; {source_len}]>::try_from");
+            let try_expr = format!("{try_callee}({out_var})");
             let ok_pat = format!("::core::result::Result::Ok({arr_var})");
             let single_head = format!("{prefix}let {ok_pat} = {try_expr} else {{");
             let let_else_head = if single_head.len() <= rustfmt::MAX_WIDTH {
                 single_head
             } else {
                 let res_var = fresh(next_id);
-                stmts.push(rustfmt::fmt_let_stmt(indent, &res_var, &try_expr));
+                let let_prefix_len = indent + "let ".len() + res_var.len() + " = ".len();
+                let try_stmt = if let_prefix_len + try_expr.len() < rustfmt::MAX_WIDTH
+                    || indent + 4 + try_expr.len() < rustfmt::MAX_WIDTH
+                {
+                    rustfmt::fmt_let_stmt(indent, &res_var, &try_expr)
+                } else {
+                    let wrapped =
+                        rustfmt::fmt_call(indent, &try_callee, &[out_var], let_prefix_len, 1);
+                    format!("{prefix}let {res_var} = {wrapped};")
+                };
+                stmts.push(try_stmt);
                 let short_head = format!("{prefix}let {ok_pat} = {res_var} else {{");
-                if short_head.len() <= rustfmt::MAX_WIDTH {
+                let let_eq_res = format!("{prefix}let {ok_pat} = {res_var}");
+                if short_head.len() < rustfmt::MAX_WIDTH {
                     short_head
-                } else if indent + 4 + ok_pat.len() + 3 + res_var.len() <= rustfmt::MAX_WIDTH {
-                    format!("{prefix}let {ok_pat} = {res_var}\n{prefix}else {{")
+                } else if let_eq_res.len() < rustfmt::MAX_WIDTH {
+                    format!("{let_eq_res}\n{prefix}else {{")
+                } else if indent + 4 + ok_pat.len() < rustfmt::MAX_WIDTH {
+                    format!("{prefix}let {ok_pat} =\n{inner_prefix}{res_var}\n{prefix}else {{")
                 } else {
                     format!(
                         "{prefix}let ::core::result::Result::Ok(\n{inner_prefix}{arr_var},\n{prefix}) = {res_var}\n{prefix}else {{"

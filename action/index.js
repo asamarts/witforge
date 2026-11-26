@@ -11,7 +11,7 @@ const REPOSITORY = 'asamarts/witforge';
 const RELEASE_SIGNER_WORKFLOW = `${REPOSITORY}/.github/workflows/release.yml`;
 const FIRST_ATTESTED_VERSION = [0, 7, 0];
 const FIRST_MUSL_VERSION = [0, 8, 0];
-const GENERATORS = new Set(['rust', 'proto', 'schema', 'glue']);
+const GENERATORS = new Set(['rust', 'proto', 'schema', 'glue', 'doc']);
 const FORMATS = new Set(['human', 'json', 'sarif']);
 const REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -355,7 +355,7 @@ function buildCommands(binary, options) {
     for (const generator of generators) {
       if (!GENERATORS.has(generator)) {
         throw new Error(
-          `unknown generator \`${generator}\`; expected rust, proto, schema, glue, or all`,
+          `unknown generator \`${generator}\`; expected rust, proto, schema, glue, doc, or all`,
         );
       }
     }

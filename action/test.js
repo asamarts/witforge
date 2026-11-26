@@ -444,6 +444,23 @@ test('check: true and generators: all align with witforge.toml multi-project com
     }),
     [['witforge', 'generate', '--config', 'witforge.toml', '--check']],
   );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      config: 'witforge.toml',
+      generators: 'doc',
+    }),
+    [['witforge', 'doc', '--config', 'witforge.toml', '--check']],
+  );
+  assert.deepEqual(
+    buildCommands('witforge', {
+      config: 'witforge.toml',
+      generators: 'rust,doc',
+    }),
+    [
+      ['witforge', 'rust', '--config', 'witforge.toml', '--check'],
+      ['witforge', 'doc', '--config', 'witforge.toml', '--check'],
+    ],
+  );
 });
 
 test('requests retry transient 5xx and network errors but never retry 4xx', async () => {

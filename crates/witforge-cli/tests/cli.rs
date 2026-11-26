@@ -5879,3 +5879,96 @@ fn fifth_wave_audit_multi_project_released_and_dangling_lock_cli_regressions() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn ninth_wave_audit_shell_completions_bash_zsh_fish_and_draft_values() {
+    let bash_out = witforge().args(["completions", "bash"]).output().unwrap();
+    assert!(bash_out.status.success(), "{bash_out:?}");
+    let bash = String::from_utf8(bash_out.stdout).unwrap();
+    assert!(
+        bash.contains("7 2020-12"),
+        "bash completion must include --draft values:\n{bash}"
+    );
+
+    // Live bash execution verifying `--format=j`, `--format = j`, and `--format = json rust --`!
+    #[cfg(unix)]
+    if let Ok(status) = Command::new("bash").arg("-c").arg("true").status()
+        && status.success()
+    {
+        let script = format!(
+            "{bash}\n\
+             COMP_WORDS=(witforge --format = j); COMP_CWORD=3; _witforge; echo \"A:${{COMPREPLY[*]}}\"\n\
+             COMP_WORDS=(witforge --format=j); COMP_CWORD=1; _witforge; echo \"B:${{COMPREPLY[*]}}\"\n\
+             COMP_WORDS=(witforge --format = json rust --eq); COMP_CWORD=5; _witforge; echo \"C:${{COMPREPLY[*]}}\"\n\
+             COMP_WORDS=(witforge schema --draft = 2020); COMP_CWORD=4; _witforge; echo \"D:${{COMPREPLY[*]}}\"\n"
+        );
+        let run = Command::new("bash").args(["-c", &script]).output().unwrap();
+        assert!(run.status.success(), "{run:?}");
+        let stdout = String::from_utf8(run.stdout).unwrap();
+        assert!(
+            stdout.contains("A:json\n"),
+            "split --format=j failed:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("B:--format=json\n"),
+            "unsplit --format=j failed:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("C:--eq-hash\n"),
+            "subcmd after --format = json failed:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("D:2020-12\n"),
+            "split --draft=2020 failed:\n{stdout}"
+        );
+    }
+
+    let zsh_out = witforge().args(["completions", "zsh"]).output().unwrap();
+    assert!(zsh_out.status.success(), "{zsh_out:?}");
+    let zsh = String::from_utf8(zsh_out.stdout).unwrap();
+    assert!(
+        zsh.contains(":NS\\:NAME: "),
+        "zsh completion must escape colon in NS:NAME:\n{zsh}"
+    );
+    assert!(
+        zsh.contains("--check=-[") && zsh.contains("]::VIEWS: "),
+        "zsh completion must use `::VIEWS:` for optional --check value:\n{zsh}"
+    );
+    assert!(
+        zsh.contains("'1:DIR:_files -/'"),
+        "zsh init positional DIR must complete directories:\n{zsh}"
+    );
+    assert!(
+        zsh.contains(":DRAFT:(7 2020-12)"),
+        "zsh completion must include --draft values:\n{zsh}"
+    );
+
+    let fish_out = witforge().args(["completions", "fish"]).output().unwrap();
+    assert!(fish_out.status.success(), "{fish_out:?}");
+    let fish = String::from_utf8(fish_out.stdout).unwrap();
+    for line in fish.lines() {
+        if line.contains("__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from ") {
+            let after = line
+                .split("and not __fish_seen_subcommand_from ")
+                .nth(1)
+                .unwrap()
+                .split('\'')
+                .next()
+                .unwrap();
+            assert!(
+                !after.split_whitespace().any(|tok| tok == "help"),
+                "fish help parent condition must not negate `help` itself:\n{line}"
+            );
+        }
+        if line.contains("__fish_seen_subcommand_from diff'") && line.contains("-l check ") {
+            assert!(
+                !line.contains(" -r "),
+                "fish `diff --check` must not pass `-r` (value is optional):\n{line}"
+            );
+        }
+    }
+    assert!(
+        fish.contains("-l draft -x -a '7 2020-12'"),
+        "fish completion must include --draft values:\n{fish}"
+    );
+}

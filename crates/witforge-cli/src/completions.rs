@@ -133,7 +133,7 @@ fn generate_bash(cmd: &Command) -> String {
     let _ = writeln!(out, "_{bin}() {{");
     let _ = writeln!(
         out,
-        "    local cur prev subcmd subcmd_idx subcmd2 i j word skip_next"
+        "    local cur prev prev_flag cur_flag cur_val subcmd subcmd_idx subcmd2 i j word skip_next"
     );
     let _ = writeln!(out, "    COMPREPLY=()");
     let _ = writeln!(out, "    cur=\"${{COMP_WORDS[COMP_CWORD]}}\"");
@@ -147,7 +147,9 @@ fn generate_bash(cmd: &Command) -> String {
     let _ = writeln!(out, "    for (( i=1; i<COMP_CWORD; i++ )); do");
     let _ = writeln!(out, "        word=\"${{COMP_WORDS[i]}}\"");
     let _ = writeln!(out, "        if (( skip_next )); then");
-    let _ = writeln!(out, "            skip_next=0");
+    let _ = writeln!(out, "            if [[ \"$word\" != \"=\" ]]; then");
+    let _ = writeln!(out, "                skip_next=0");
+    let _ = writeln!(out, "            fi");
     let _ = writeln!(out, "            continue");
     let _ = writeln!(out, "        fi");
     let _ = writeln!(out, "        case \"$word\" in");
@@ -172,7 +174,29 @@ fn generate_bash(cmd: &Command) -> String {
     let _ = writeln!(out, "    done");
 
     if !flag_value_cases.is_empty() {
-        let _ = writeln!(out, "    case \"$prev\" in");
+        let _ = writeln!(out, "    if [[ \"$cur\" == --*=* ]]; then");
+        let _ = writeln!(out, "        cur_flag=\"${{cur%%=*}}\"");
+        let _ = writeln!(out, "        cur_val=\"${{cur#*=}}\"");
+        let _ = writeln!(out, "        case \"$cur_flag\" in");
+        for (flag, vals) in &flag_value_cases {
+            let _ = writeln!(out, "            {flag})");
+            let _ = writeln!(
+                out,
+                "                COMPREPLY=( $(compgen -P \"${{cur_flag}}=\" -W \"{vals}\" -- \"$cur_val\") )"
+            );
+            let _ = writeln!(out, "                return 0");
+            let _ = writeln!(out, "                ;;");
+        }
+        let _ = writeln!(out, "        esac");
+        let _ = writeln!(out, "    fi");
+        let _ = writeln!(out, "    prev_flag=\"$prev\"");
+        let _ = writeln!(
+            out,
+            "    if [[ \"$prev\" == \"=\" && COMP_CWORD -gt 1 ]]; then"
+        );
+        let _ = writeln!(out, "        prev_flag=\"${{COMP_WORDS[COMP_CWORD-2]}}\"");
+        let _ = writeln!(out, "    fi");
+        let _ = writeln!(out, "    case \"$prev_flag\" in");
         for (flag, vals) in &flag_value_cases {
             let _ = writeln!(out, "        {flag})");
             let _ = writeln!(
@@ -247,7 +271,9 @@ fn generate_bash(cmd: &Command) -> String {
             );
             let _ = writeln!(out, "                word=\"${{COMP_WORDS[j]}}\"");
             let _ = writeln!(out, "                if (( skip_next )); then");
-            let _ = writeln!(out, "                    skip_next=0");
+            let _ = writeln!(out, "                    if [[ \"$word\" != \"=\" ]]; then");
+            let _ = writeln!(out, "                        skip_next=0");
+            let _ = writeln!(out, "                    fi");
             let _ = writeln!(out, "                    continue");
             let _ = writeln!(out, "                fi");
             let _ = writeln!(out, "                case \"$word\" in");
@@ -334,31 +360,32 @@ fn zsh_escape(text: &str) -> String {
 fn zsh_arg_spec(arg: &Arg) -> Vec<String> {
     let help = zsh_escape(&first_line_help(arg.get_help()));
     let takes_val = arg.get_action().takes_values();
+    let optional_val = takes_val
+        && arg
+            .get_num_args()
+            .is_some_and(|range| range.min_values() == 0);
     let vals = possible_values(arg);
     let value_suffix = if takes_val {
         let value_name = arg
             .get_value_names()
             .and_then(|names| names.first())
             .map_or("VALUE", clap::builder::Str::as_str);
+        let escaped_name = zsh_escape(value_name);
+        let sep = if optional_val { "::" } else { ":" };
         if !vals.is_empty() {
-            format!(":{value_name}:({})", vals.join(" "))
+            format!("{sep}{escaped_name}:({})", vals.join(" "))
         } else if matches!(value_name, "DIR" | "WIT_DIR" | "WIT_ROOT" | "OLD" | "NEW") {
-            format!(":{value_name}:_files -/")
+            format!("{sep}{escaped_name}:_files -/")
         } else if matches!(value_name, "PATH") {
-            format!(":{value_name}:_files")
+            format!("{sep}{escaped_name}:_files")
         } else {
-            format!(":{value_name}: ")
+            format!("{sep}{escaped_name}: ")
         }
     } else {
         String::new()
     };
 
-    let eq = if takes_val
-        && arg.is_require_equals_set()
-        && arg
-            .get_num_args()
-            .is_some_and(|range| range.min_values() == 0)
-    {
+    let eq = if optional_val && arg.is_require_equals_set() {
         "=-"
     } else if takes_val {
         "="
@@ -497,13 +524,16 @@ fn write_zsh_leaf_fn(out: &mut String, fn_name: &str, cmd: &Command) {
             .get_value_names()
             .and_then(|names| names.first())
             .map_or("ARG", clap::builder::Str::as_str);
+        let escaped_name = zsh_escape(name);
         let vals = possible_values(pos);
         if !vals.is_empty() {
-            specs.push(format!("'{ordinal}:{name}:({})'", vals.join(" ")));
+            specs.push(format!("'{ordinal}:{escaped_name}:({})'", vals.join(" ")));
+        } else if name == "DIR" {
+            specs.push(format!("'{ordinal}:{escaped_name}:_files -/'"));
         } else if matches!(name, "PATH" | "WIT_DIR" | "WIT_ROOT" | "OLD" | "NEW") {
-            specs.push(format!("'{ordinal}:{name}:_files'"));
+            specs.push(format!("'{ordinal}:{escaped_name}:_files'"));
         } else {
-            specs.push(format!("'{ordinal}:{name}: '"));
+            specs.push(format!("'{ordinal}:{escaped_name}: '"));
         }
     }
     if specs.is_empty() {
@@ -545,15 +575,20 @@ fn generate_fish(cmd: &Command) -> String {
         let name = sub.get_name();
         let nested_subs = visible_subcommands(sub);
         if !nested_subs.is_empty() {
-            let nested_names = nested_subs
+            let other_nested_names = nested_subs
                 .iter()
                 .map(|nested| nested.get_name())
+                .filter(|nested_name| *nested_name != name)
                 .collect::<Vec<_>>()
                 .join(" ");
-            let parent_cond = format!(
-                "__fish_seen_subcommand_from {name}; and not __fish_seen_subcommand_from \
-                 {nested_names}"
-            );
+            let parent_cond = if other_nested_names.is_empty() {
+                format!("__fish_seen_subcommand_from {name}")
+            } else {
+                format!(
+                    "__fish_seen_subcommand_from {name}; and not __fish_seen_subcommand_from \
+                     {other_nested_names}"
+                )
+            };
             for arg in visible_opts(sub) {
                 write_fish_opt(&mut out, bin, &parent_cond, arg);
             }
@@ -617,9 +652,13 @@ fn write_fish_opt(out: &mut String, bin: &str, cond: &str, arg: &Arg) {
     if let Some(long) = arg.get_long() {
         let _ = write!(line, " -l {long}");
     }
+    let optional_val = arg.is_require_equals_set()
+        || arg
+            .get_num_args()
+            .is_some_and(|range| range.min_values() == 0);
     if !vals.is_empty() {
         let _ = write!(line, " -x -a '{}'", vals.join(" "));
-    } else if takes_val {
+    } else if takes_val && !optional_val {
         line.push_str(" -r");
     }
     if !desc.is_empty() {

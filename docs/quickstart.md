@@ -8,10 +8,11 @@ title: Quickstart
 witforge turns one hand-written [WIT](https://component-model.bytecodealliance.org/design/wit.html)
 package into the artifacts the two sides of a contract need:
 
-- plain Rust types and interface traits;
+- plain Rust types and interface traits (with opt-in Serde, `no_std`, `Eq`/`Hash`, and `TryFrom`);
 - a protobuf schema with append-only field numbers;
 - JSON Schema definitions (Draft 7 default, opt-in Draft 2020-12);
 - glue between the plain Rust and protobuf types;
+- deterministic Markdown contract reference documentation (`witforge doc`);
 - old-to-new and new-to-old Rust adapters for adjacent contract versions.
 
 It is not a runtime, transport, or WASM guest-binding generator. Non-Rust consumers use the
@@ -221,7 +222,8 @@ witforge generate --config my-contract/witforge.toml --check
 ```
 
 `convert.rs` holds old-to-new and new-to-old adapters. Old-to-new conversion fills an added
-`option` with `None` and an added `list` with an empty list. New-to-old conversion drops members
+`option` with `None`, an added `list` with an empty list, and an added `map` with an empty
+`BTreeMap`. New-to-old conversion drops members
 the older version does not have. Missing required older members are reported as
 `ConversionError::MissingMember`; added or removed cases are reported as
 `ConversionError::UnknownCase`. A required, non-defaultable addition is refused by conversion
@@ -280,10 +282,11 @@ The current subset is deliberately pure and synchronous:
 
 - package versions are `<major>.<minor>.0`;
 - types and functions live in named interfaces;
-- records, variants, enums, flags, aliases, `use` aliases, lists, options, and results are
-  supported;
-- resources, maps, async, futures, streams, tuples, chars, fixed-length lists, multi-package
-  workspaces, and world-defined types are currently refused.
+- records, variants, enums, flags, aliases, `use` aliases, `char`, lists, fixed-length lists
+  (`list<T, N>`, `1 <= N <= 65536`), maps (`map<K, V>` with `bool`, integer, `char`, or `string`
+  keys), options, and results are supported;
+- resources, async, futures, streams, tuples, unsupported map key types, out-of-range fixed-length
+  lists, multi-package workspaces, and world-defined types are currently refused.
 - named types and interfaces from packages under a version directory's standard `deps/` layout
   are supported as package-qualified references; worlds may import and export dependency
   interfaces, and glue covers dependency types and functions. See the

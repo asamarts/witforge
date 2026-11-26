@@ -22,7 +22,7 @@
 //! changes; dependency docs and stability remain part of the exact pinned graph and are refused
 //! before local declarations are compared.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -570,7 +570,26 @@ pub fn compare_git_base(git_base: &str, target: &Path) -> Result<FullDiff> {
         )
     })?;
     let rel_git = to_git_path(rel_target);
+    if rel_git.is_empty() {
+        let super_out = run_git_diff(
+            &abs_target,
+            &["rev-parse", "--show-superproject-working-tree"],
+        )?;
+        if super_out.status.success()
+            && !String::from_utf8_lossy(&super_out.stdout).trim().is_empty()
+        {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: target `{}` is a git submodule; expected a regular directory",
+                    target.display()
+                ),
+                Some(target.display().to_string()),
+            ));
+        }
+    }
     ensure_no_symlinks_in_target_dir(&norm_target, rel_git.is_empty())?;
+    ensure_no_submodules_in_index(&repo, &rel_git, target)?;
 
     let commit_spec = format!("{git_base}^{{commit}}");
     let rev_out = run_git_diff(&repo, &["rev-parse", "--verify", "--quiet", &commit_spec])?;
@@ -839,60 +858,39 @@ fn summarize_decode(verdicts: &[DecodeVerdict]) -> DecodeSummary {
 /// accept absence on the wire. Required `list<u8>` (including alias chains resolving to `u8`) is
 /// emitted as proto3 `optional bytes`, whose absence is rejected with `MissingField`.
 fn is_absent_ok_on_wire(model: &Model, ty: &TypeExpr) -> bool {
-    is_absent_ok_in(model, None, ty, 0)
+    is_absent_ok_in(model, None, ty, &mut HashSet::new())
 }
 
 fn is_absent_ok_in(
     model: &Model,
     context: Option<&Dependency>,
     ty: &TypeExpr,
-    depth: usize,
+    visiting: &mut HashSet<*const TypeDef>,
 ) -> bool {
-    if depth > crate::model::MAX_ALIAS_CHAIN {
-        return false;
-    }
     match ty {
         TypeExpr::Option(_) | TypeExpr::Map(..) => true,
-        TypeExpr::List(elem) => !resolves_to_u8_in(model, context, elem, 0),
+        TypeExpr::List(elem) => !model.resolves_to_u8_in(context, elem),
         TypeExpr::Named(name) => {
             let Some((resolved, def)) = model.type_def_in(context, name) else {
                 return false;
             };
-            match &def.kind {
+            let key = std::ptr::from_ref(def);
+            if !visiting.insert(key) {
+                return false;
+            }
+            let result = match &def.kind {
                 TypeDefKind::Option(_) | TypeDefKind::Map(..) => true,
-                TypeDefKind::List(elem) => !resolves_to_u8_in(model, resolved, elem, 0),
-                TypeDefKind::Alias(target) => is_absent_ok_in(model, resolved, target, depth + 1),
+                TypeDefKind::List(elem) => !model.resolves_to_u8_in(resolved, elem),
+                TypeDefKind::Alias(target) => is_absent_ok_in(model, resolved, target, visiting),
                 TypeDefKind::Record(_)
                 | TypeDefKind::Variant(_)
                 | TypeDefKind::Enum(_)
                 | TypeDefKind::Flags(_)
                 | TypeDefKind::FixedLengthList(..)
                 | TypeDefKind::Result(_) => false,
-            }
-        }
-        _ => false,
-    }
-}
-
-fn resolves_to_u8_in(
-    model: &Model,
-    context: Option<&Dependency>,
-    ty: &TypeExpr,
-    depth: usize,
-) -> bool {
-    if depth > crate::model::MAX_ALIAS_CHAIN {
-        return false;
-    }
-    match ty {
-        TypeExpr::U8 => true,
-        TypeExpr::Named(name) => {
-            let Some((resolved, def)) = model.type_def_in(context, name) else {
-                return false;
             };
-            match &def.kind {
-                TypeDefKind::Alias(target) => resolves_to_u8_in(model, resolved, target, depth + 1),
-                _ => false,
-            }
+            visiting.remove(&key);
+            result
         }
         _ => false,
     }
@@ -2513,8 +2511,20 @@ fn ensure_no_symlinks_in_target_dir(dir: &Path, skip_dot_git: bool) -> Result<()
             .cmp(right.file_name().as_encoded_bytes())
     });
     for entry in entries {
-        if skip_dot_git && entry.file_name() == ".git" {
-            continue;
+        if entry.file_name() == ".git" {
+            if skip_dot_git {
+                continue;
+            }
+            let path = entry.path();
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: target directory contains git submodule or nested \
+                     repository `{}`",
+                    path.display()
+                ),
+                Some(path.display().to_string()),
+            ));
         }
         let path = entry.path();
         let meta = fs::symlink_metadata(&path)
@@ -2532,6 +2542,39 @@ fn ensure_no_symlinks_in_target_dir(dir: &Path, skip_dot_git: bool) -> Result<()
         }
         if meta.is_dir() {
             ensure_no_symlinks_in_target_dir(&path, false)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_no_submodules_in_index(repo: &Path, rel_git: &str, target: &Path) -> Result<()> {
+    let args: Vec<&str> = if rel_git.is_empty() {
+        vec!["ls-files", "--stage", "-z"]
+    } else {
+        vec!["ls-files", "--stage", "-z", "--", rel_git]
+    };
+    let output = run_git_diff(repo, &args)?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    for raw in output.stdout.split(|&byte| byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(raw) else {
+            continue;
+        };
+        if let Some((meta, path)) = text.split_once('\t')
+            && meta.starts_with("160000 ")
+        {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: target `{}` contains git submodule `{path}`",
+                    target.display()
+                ),
+                Some(path.to_string()),
+            ));
         }
     }
     Ok(())
@@ -2850,6 +2893,16 @@ fn validate_git_released_directory(
                 Some(entry_label.to_string()),
             ));
         }
+        if mode == "160000" {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "line {line_no}: released directory `{entry_name}` is a git submodule; \
+                     expected a directory"
+                ),
+                Some(entry_label.to_string()),
+            ));
+        }
         if kind == "tree" {
             found_tree = true;
         }
@@ -2880,9 +2933,18 @@ fn inspect_git_sibling_released(
     git_base: &str,
     released_rel: &str,
 ) -> Result<Option<String>> {
+    let manifest_label = format!("{git_base}:{released_rel}");
     let output = run_git_diff(repo, &["ls-tree", "-z", commit, "--", released_rel])?;
     if !output.status.success() {
-        return Ok(None);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(operational_error(
+            codes::IO_ERROR,
+            format!(
+                "diff --git-base: `git ls-tree` failed for `{manifest_label}`: {}",
+                stderr.trim()
+            ),
+            Some(manifest_label),
+        ));
     }
     for raw in output.stdout.split(|&byte| byte == 0) {
         if raw.is_empty() {
@@ -2905,15 +2967,33 @@ fn inspect_git_sibling_released(
             return Err(operational_error(
                 codes::GUARD_REFUSED,
                 format!(
-                    "diff --git-base: released manifest `{git_base}:{released_rel}` is a symlink; \
+                    "diff --git-base: released manifest `{manifest_label}` is a symlink; \
                      witforge refuses symlinks"
                 ),
-                None,
+                Some(manifest_label),
+            ));
+        }
+        if mode == "160000" {
+            return Err(operational_error(
+                codes::GUARD_REFUSED,
+                format!(
+                    "diff --git-base: released manifest `{manifest_label}` is a git submodule; \
+                     expected a regular file"
+                ),
+                Some(manifest_label),
             ));
         }
         if kind == "blob" && (mode == "100644" || mode == "100755") && !oid.is_empty() {
             return Ok(Some(oid.to_string()));
         }
+        return Err(operational_error(
+            codes::GUARD_REFUSED,
+            format!(
+                "diff --git-base: released manifest `{manifest_label}` is not a regular file \
+                 (mode `{mode}`, type `{kind}`)"
+            ),
+            Some(manifest_label),
+        ));
     }
     Ok(None)
 }
@@ -3076,28 +3156,30 @@ fn redact_git_base_string(
     } else {
         format!("{git_base}:{rel_git}")
     };
-    let mat_str = materialized_dir.display().to_string();
-    let mat_slash = format!("{mat_str}/");
-    let mat_back = format!("{mat_str}\\");
     let prefix_with_sep = if rel_git.is_empty() {
         format!("{git_base}:")
     } else {
         format!("{git_base}:{rel_git}/")
     };
-    let mut out = text
-        .replace(&mat_slash, &prefix_with_sep)
-        .replace(&mat_back, &prefix_with_sep)
-        .replace(&mat_str, &display_base);
+    let replace_variants = |input: String, needle: &str, with_sep: &str, bare: &str| -> String {
+        let mut s = input
+            .replace(&format!("{needle}/"), with_sep)
+            .replace(&format!("{needle}\\"), with_sep)
+            .replace(needle, bare);
+        if needle.contains('\'') {
+            let escaped = needle.replace('\'', "'\\''");
+            s = s
+                .replace(&format!("{escaped}/"), with_sep)
+                .replace(&format!("{escaped}\\"), with_sep)
+                .replace(&escaped, bare);
+        }
+        s
+    };
+
+    let mat_str = materialized_dir.display().to_string();
+    let out = replace_variants(text.to_string(), &mat_str, &prefix_with_sep, &display_base);
     let temp_str = temp_root.display().to_string();
-    if out.contains(&temp_str) {
-        let temp_slash = format!("{temp_str}/");
-        let temp_back = format!("{temp_str}\\");
-        out = out
-            .replace(&temp_slash, &format!("{git_base}:"))
-            .replace(&temp_back, &format!("{git_base}:"))
-            .replace(&temp_str, git_base);
-    }
-    out
+    replace_variants(out, &temp_str, &format!("{git_base}:"), git_base)
 }
 
 fn redact_git_base_error(

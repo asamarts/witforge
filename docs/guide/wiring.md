@@ -256,10 +256,13 @@ cargo run --manifest-path my-contract-crate/Cargo.toml
 - **`#![no_std]` + `alloc` crates:** Set `no-std = true` under `[project.<name>.rust]` and
   `[project.<name>.glue]` (or pass `--no-std` on `rust`, `glue`, or `generate`). Generated Rust,
   `convert.rs`, and glue emit `::alloc::string::String`, `::alloc::vec::Vec`,
-  `::core::option::Option`, `::core::result::Result`, and `::core::error::Error` with no `::std::`
-  references. In your crate, declare `#![no_std]` and `extern crate alloc;`, and depend on `prost`
-  with `default-features = false, features = ["derive"]` (and `serde` with `default-features =
-  false, features = ["alloc", "derive"]` if `serde = true`).
+  `::alloc::collections::BTreeMap`, `::core::option::Option`, `::core::result::Result`, and
+  `::core::error::Error` with no `::std::` references. In your crate, declare `#![no_std]` and
+  `extern crate alloc;`, and depend on `prost` with `default-features = false, features = ["derive"]`
+  (and `serde` with `default-features = false, features = ["alloc", "derive"]` if `serde = true`).
+  When a `#![no_std]` contract uses `map<K, V>`, configure `prost_build::Config::btree_map(["."])`
+  in `build.rs` (or via `witforge_build::Config::with_prost_config`) so prost emits `BTreeMap`
+  instead of `std::collections::HashMap`.
 
 ## Simplifying `build.rs` with `witforge-build`
 
@@ -302,13 +305,13 @@ and include proto3-JSON `serde` implementations via `pbjson-build`.
 - **`--lock <PATH>`** (on `check` and `lock` for a single version directory): overrides the
   lockfile path instead of the default `<WIT_DIR>/wire.lock`. `witforge lock` still refuses any
   `--lock` path located inside a released directory.
-- **`--released <PATH>`** (on `check`, `lock`, `rust`, `proto`, `schema`, `glue`, `generate`,
-  `new-version`, `release`, `retire`, `inspect`, and `freeze`): overrides the released-version manifest path. The
-  defaults are:
+- **`--released <PATH>`** (on `check`, `lock`, `rust`, `proto`, `schema`, `glue`, `doc`,
+  `generate`, `new-version`, `deps sync`, `release`, `retire`, `inspect`, and `freeze`): overrides
+  the released-version manifest path. The defaults are:
   - `<WIT_DIR>/../released` for single-version commands (`check <dir>`, `lock <dir>`,
     `release <dir>`, `retire <dir>`);
-  - `<WIT_ROOT>/released` for whole-root `check`, `new-version`, `inspect` (refused on single version directories),
-    generators, and `freeze`.
+  - `<WIT_ROOT>/released` for whole-root `check`, `new-version`, `deps sync`, `inspect` (refused on
+    single version directories), generators, and `freeze`.
   A missing default manifest means no versions are released; an explicitly passed missing manifest
   exits `2`. For `lock`, an explicit `--released` manifest is checked **in addition to** the
   default manifests (never instead of them), so an explicit manifest cannot unlock a released

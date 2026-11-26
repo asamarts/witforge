@@ -24,8 +24,9 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::proto` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_major` |
 | `emit::json_schema` | `HEADER`, `JsonSchemaDraft`, `SchemaOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `emit_version`, `emit_version_with_options` |
 | `emit::glue` | `HEADER`, `GlueOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_root_with_options`, `emit_version`, `emit_version_with_options` |
+| `emit::doc` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_version`, `emit_index` |
 | `emit::output` | `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
-| `diff` | `Endpoint`, `Change`, `ChangeElement`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `ConversionOmission`, `DecodeVerdict`, `DecodeSummary`, `DiffAnalysis`, `FullDiff`, `compare`, `compare_with_impacts`, `compare_omissions`, `compare_with_locations`, `compare_with_omissions`, `compare_full` |
+| `diff` | `Endpoint`, `Change`, `ChangeElement`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `ConversionOmission`, `DecodeVerdict`, `DecodeSummary`, `DiffAnalysis`, `FullDiff`, `compare`, `compare_with_impacts`, `compare_omissions`, `compare_with_locations`, `compare_with_omissions`, `compare_full`, `compare_git_base` |
 | `diagnostic` | `codes` and its constants, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity`, and their documented constructors and builders |
 | `freeze` | `FreezeOptions`, `FreezeReport`, `check_root`, `check_root_with_manifest` |
 | `inspect` | `IR_VERSION`, `emit_version_json`, `inspect_version_json`, `inspect_root_json`, `summarize_version`, `summarize_root` |
@@ -149,16 +150,18 @@ short Git commit and `-dirty` suffix on development builds):
 |---|---|---|
 | `witforge check [<PATH>]` | Validate one version directory or an entire WIT root (or configured projects) | `--lock`, `--first`, `--against`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge lock <WIT_DIR>` | Reconcile `wire.lock` for one version directory | `--lock`, `--first`, `--against`, `--released` |
-| `witforge rust [<WIT_ROOT>]` | Emit or check plain Rust types, traits, `convert.rs`, and `worlds.rs` | `--out`, `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge rust [<WIT_ROOT>]` | Emit or check plain Rust types, traits, `convert.rs`, and `worlds.rs` | `--out`, `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--eq-hash`, `--no-eq-hash`, `--try-from`, `--no-try-from`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge proto [<WIT_ROOT>]` | Emit or check protobuf schemas | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge schema [<WIT_ROOT>]` | Emit or check JSON Schema files (Draft 7 default, opt-in Draft 2020-12) | `--out`, `--check`, `--diff`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge glue [<WIT_ROOT>]` | Emit or check Rust/prost glue | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--no-std`, `--std`, `--released`, `--config`, `--no-config`, `--project` |
-| `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge doc [<WIT_ROOT>]` | Emit or check deterministic Markdown contract reference docs | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--eq-hash`, `--no-eq-hash`, `--try-from`, `--no-try-from`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge init [DIR]` | Scaffold a new contract workspace (`wit/v0.1/`, `wire.lock`, `witforge.toml`) | `--package`, `--serde` |
 | `witforge new-version [<WIT_ROOT>]` | Create the next minor (or `--major`) version directory from the latest or `--from` version | `--major`, `--from`, `--released`, `--config`, `--no-config`, `--project` |
-| `witforge release <WIT_DIR>` | Validate a version directory and append it to `released` | `--released`, `--config`, `--no-config`, `--project` |
+| `witforge deps sync [<WIT_ROOT>]` | Synchronize or check `deps/` across unreleased versions of each major | `--from`, `--check`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge release <WIT_DIR>` | Validate a version directory and append it to `released` | `--forbid-unstable`, `--allow-unstable`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge retire <WIT_DIR>` | Mark the oldest live released version `retired` in `released` | `--released`, `--config`, `--no-config`, `--project` |
-| `witforge diff <OLD> <NEW>` | Compare two version directories or WIT roots | `--json`, `--check[=VIEWS]` |
+| `witforge diff <OLD> <NEW>` / `witforge diff --git-base <REV> [<PATH>]` | Compare two version directories/roots or a working-tree target against a Git base revision | `--git-base`, `--json`, `--check[=VIEWS]`, `--config`, `--no-config`, `--project` |
 | `witforge inspect [<PATH>]` | Emit versioned JSON contract IR (`--json`) or a human contract summary | `--json`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge freeze [<WIT_ROOT>]` | Verify released directories have not changed in Git history | `--base`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge completions <SHELL>` | Print shell completions for `bash`, `zsh`, or `fish` | — |

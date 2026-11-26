@@ -1217,3 +1217,138 @@ fn eighth_wave_audit_serde_option_large_array_defaults_and_convert_map_hint() {
 
     stage.finish();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn ninth_wave_audit_array_rustfmt_deep_alias_chain_and_nested_glue_convert_fmt() {
+    use std::fmt::Write as _;
+
+    let stage = ScratchDir::new("ninth-wave-subset");
+    let wit_root = stage.path().join("wit");
+    let v01 = wit_root.join("v0.1");
+    let v02 = wit_root.join("v0.2");
+    fs::create_dir_all(&v01).unwrap();
+    fs::create_dir_all(&v02).unwrap();
+
+    // Cross-package 50-hop alias chain (25 in dep + 25 in root = 50 > old depth-32 cap) to
+    // `option<list<u8, 64>>`, PLUS long-named array fields/aliases/maps to exercise C5
+    // (`try_fmt_array_next_line`), C9 (`HashSet` visited cycle-safe alias resolution), and C10
+    // (long nested FixedLengthList / Map formatting in `convert.rs` and `glue.rs`).
+    let mut dep_aliases = String::from("  type dep-a0 = option<list<u8, 64>>;\n");
+    for i in 1..=25 {
+        let prev = i - 1;
+        let _ = writeln!(dep_aliases, "  type dep-a{i} = dep-a{prev};");
+    }
+    let dep_wit = format!("package ex:deepdep@0.1.0;\ninterface chain {{\n{dep_aliases}}}\n");
+    fs::create_dir_all(v01.join("deps/deepdep")).unwrap();
+    fs::create_dir_all(v02.join("deps/deepdep")).unwrap();
+    fs::write(v01.join("deps/deepdep/chain.wit"), &dep_wit).unwrap();
+    fs::write(v02.join("deps/deepdep/chain.wit"), &dep_wit).unwrap();
+
+    let mut aliases =
+        String::from("  use ex:deepdep/chain@0.1.0.{dep-a25};\n  type opt-a0 = dep-a25;\n");
+    for i in 1..=25 {
+        let prev = i - 1;
+        let _ = writeln!(aliases, "  type opt-a{i} = opt-a{prev};");
+    }
+
+    let make_wit = |ver: &str, extra_field: &str| {
+        format!(
+            "package ex:ninthsub@{ver};\n\
+             interface boundary-fmt {{\n\
+               record very-long-element-record-name-for-boundary-check {{\n\
+                 identifier-value: u64,\n\
+               }}\n\
+               type very-long-fixed-array-alias-name-hitting-col-limit = list<very-long-element-record-name-for-boundary-check, 64>;\n\
+               type very-long-nested-map-alias = map<string, list<very-long-element-record-name-for-boundary-check, 4>>;\n\
+               {aliases}\
+               record container {{\n\
+                 very-long-fixed-array-field-name-hitting-column-limit: list<very-long-element-record-name-for-boundary-check, 64>,\n\
+                 very-long-nested-fixed-list-of-lists: list<list<very-long-element-record-name-for-boundary-check, 4>, 4>,\n\
+                 very-long-nested-map-field-for-glue-and-convert: map<string, list<very-long-element-record-name-for-boundary-check, 4>>,\n\
+                 deep-opt-bytes: opt-a25,\n\
+                 {extra_field}\
+               }}\n\
+             }}\n"
+        )
+    };
+
+    fs::write(v01.join("contract.wit"), make_wit("0.1.0", "")).unwrap();
+    fs::write(
+        v02.join("contract.wit"),
+        make_wit("0.2.0", "added-deep-opt: opt-a25,\n"),
+    )
+    .unwrap();
+    ensure_lock(&v01);
+    let mut v02_lock =
+        WireLock::parse(&fs::read_to_string(v01.join("wire.lock")).unwrap()).unwrap();
+    let v02_model = model::build(&load(&v02).unwrap()).unwrap();
+    v02_lock.reconcile(&v02_model.members().unwrap()).unwrap();
+    v02_lock.write_atomic(&v02.join("wire.lock")).unwrap();
+
+    // C9: `diff` must classify `added-deep-opt` (40-hop alias to `option<list<u8, 64>>`) as
+    // `Added { defaulted: true }` and decode-compatible (`new_reads_old: true`)!
+    let full = diff::compare_full(&v01, &v02).unwrap();
+    let added_idx = full
+        .analysis
+        .report
+        .changes
+        .iter()
+        .position(|c| {
+            c.path.ends_with(".added-deep-opt")
+                && c.kind == diff::ChangeKind::Added { defaulted: true }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "40-hop option alias must be Added {{ defaulted: true }}: {:?}",
+                full.analysis.report.changes
+            )
+        });
+    assert!(
+        full.decode_verdicts[added_idx].new_reads_old,
+        "40-hop option alias addition must be new_reads_old compatible: {:?}",
+        full.decode_verdicts[added_idx]
+    );
+
+    // C5 + C9 + C10: emit Rust (`--serde`) + Proto + Glue and verify every generated `.rs` file
+    // matches `rustfmt --edition 2021 --check` and `rustfmt --edition 2024 --check`.
+    let rust_files =
+        rust::plan_with_options(&wit_root, None, &rust::RustOptions::new().with_serde(true))
+            .unwrap();
+    let v02_rs = rust_files.files().get("v0_2.rs").unwrap();
+    assert!(
+        v02_rs.contains("#[serde(default, with = ") && v02_rs.contains("pub added_deep_opt:"),
+        "40-hop option<list<u8, 64>> alias must emit #[serde(default, with = ...)]:\n{v02_rs}"
+    );
+    let glue_files = glue::plan(&wit_root, "crate::plain", "crate::proto").unwrap();
+
+    let rust_out = stage.path().join("rust");
+    let glue_out = stage.path().join("glue");
+    rust_files.write(&rust_out).unwrap();
+    glue_files.write(&glue_out).unwrap();
+
+    for (dir, files) in [
+        (&rust_out, rust_files.files()),
+        (&glue_out, glue_files.files()),
+    ] {
+        for rel in files.keys() {
+            let file_path = dir.join(rel);
+            for edition in ["2021", "2024"] {
+                let fmt = Command::new("rustfmt")
+                    .args(["--edition", edition, "--check"])
+                    .arg(&file_path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    fmt.status.success(),
+                    "rustfmt --edition {edition} failed on {}:\nstdout:\n{}\nstderr:\n{}",
+                    file_path.display(),
+                    String::from_utf8_lossy(&fmt.stdout),
+                    String::from_utf8_lossy(&fmt.stderr),
+                );
+            }
+        }
+    }
+
+    stage.finish();
+}

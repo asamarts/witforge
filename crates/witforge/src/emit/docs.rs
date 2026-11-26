@@ -101,6 +101,13 @@ pub(crate) fn sanitize_proto_lines(docs: &str) -> Vec<String> {
     sanitize_markdown_lines(&lines, Target::Proto)
 }
 
+/// Normalise and escape inline Markdown prose for a single-line table cell (escaping raw HTML
+/// tags/comments, unbalanced backticks, and non-external links while keeping valid inline code
+/// spans and external links intact).
+pub(crate) fn sanitize_markdown_inline(text: &str) -> String {
+    escape_inline(text, Target::Rust, true)
+}
+
 /// Normalise WIT documentation into plain LF-separated text for JSON Schema descriptions and the
 /// contract IR.
 ///

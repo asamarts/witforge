@@ -1911,7 +1911,8 @@ forbid-unstable-in-release = true
 ### 11.2 Precedence and selection
 
 - `--project <name>` selects a project. Single-target commands (`rust`, `proto`, `schema`, `glue`,
-  `new-version`, `release`, `retire`, `inspect` with no path) default to the sole project when the
+  `doc`, `new-version`, `deps sync`, `release`, `retire`, `inspect` with no path, and
+  `diff --git-base` with no path) default to the sole project when the
   file has one and require `--project` when it has several. Whole-repo commands (`generate`, `check`
   with no path, `freeze` with no path) run across every project when `--project` is omitted, or only
   the named project when `--project` is given.

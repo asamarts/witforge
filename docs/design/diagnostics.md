@@ -58,8 +58,8 @@ highlighted source snippet (naming file, line, and column) to stderr in human mo
 structured JSON/SARIF positions directly from `wit-parser` spans.
 
 A contract violation emits the same diagnostic code, path, and message whichever command reports it
-(`check`, `lock`, `diff`, `rust`, `proto`, `schema`, `glue`, `generate`, `release`, `retire`,
-`inspect`, or `freeze`). Multiple violations remain
+(`check`, `lock`, `diff`, `rust`, `proto`, `schema`, `glue`, `doc`, `generate`, `deps sync`,
+`release`, `retire`, `inspect`, or `freeze`). Multiple violations remain
 separate diagnostics in the `diagnostics` / SARIF `results` array and are never joined into one
 message.
 
@@ -181,8 +181,8 @@ between a live WIT member and `wire.lock`, the primary location is the WIT decla
 ## Scope and exit codes
 
 The global `--format` option is accepted by every command (`check`, `lock`, `diff`, `rust`,
-`proto`, `schema`, `glue`, `generate`, `init`, `new-version`, `release`, `retire`, `inspect`,
-`freeze`, `completions`, and `explain`). The default is
+`proto`, `schema`, `glue`, `doc`, `generate`, `init`, `new-version`, `deps sync`, `release`,
+`retire`, `inspect`, `freeze`, `completions`, and `explain`). The default is
 `human`, so existing human output is preserved byte-for-byte for the existing messages (with
 `wit-parser` syntax and resolution errors displaying their source snippets). Exit codes do not
 depend on the format: `0` success, `1` contract/lockfile/output or breaking-change failure, and

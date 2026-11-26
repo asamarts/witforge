@@ -871,24 +871,35 @@ fn resolves_to_option(
     model: &Model,
     context: Option<&crate::model::Dependency>,
     expr: &TypeExpr,
-    depth: usize,
 ) -> bool {
-    if depth > crate::model::MAX_ALIAS_CHAIN {
-        return false;
-    }
+    resolves_to_option_inner(model, context, expr, &mut HashSet::new())
+}
+
+fn resolves_to_option_inner(
+    model: &Model,
+    context: Option<&crate::model::Dependency>,
+    expr: &TypeExpr,
+    visiting: &mut HashSet<*const TypeDef>,
+) -> bool {
     match expr {
         TypeExpr::Option(_) => true,
         TypeExpr::Named(name) => {
             let Some((resolved_ctx, def)) = model.type_def_in(context, name) else {
                 return false;
             };
-            match &def.kind {
+            let key = std::ptr::from_ref(def);
+            if !visiting.insert(key) {
+                return false;
+            }
+            let result = match &def.kind {
                 TypeDefKind::Option(_) => true,
                 TypeDefKind::Alias(target) => {
-                    resolves_to_option(model, resolved_ctx, target, depth + 1)
+                    resolves_to_option_inner(model, resolved_ctx, target, visiting)
                 }
                 _ => false,
-            }
+            };
+            visiting.remove(&key);
+            result
         }
         _ => false,
     }
@@ -897,6 +908,15 @@ fn resolves_to_option(
 fn write_derives(out: &mut String, indent: usize, serde: bool, eq_hash: bool) -> Result<()> {
     let prefix = " ".repeat(indent);
     match (eq_hash, serde) {
+        (true, true) if indent >= 12 => {
+            writeln!(out, "{prefix}#[derive(")?;
+            writeln!(
+                out,
+                "{prefix}    Debug, Clone, PartialEq, Eq, Hash, ::serde::Serialize, \
+                 ::serde::Deserialize,"
+            )?;
+            writeln!(out, "{prefix})]")?;
+        }
         (true, true) => writeln!(
             out,
             "{prefix}#[derive(Debug, Clone, PartialEq, Eq, Hash, ::serde::Serialize, \
@@ -962,7 +982,7 @@ fn emit_record(
         } else {
             None
         };
-        let is_option = serde_with.is_some() && resolves_to_option(model, None, &field.ty, 0);
+        let is_option = serde_with.is_some() && resolves_to_option(model, None, &field.ty);
         rendered_fields.push((field, field_name, ty, serde_with, is_option));
     }
     if complex_type {

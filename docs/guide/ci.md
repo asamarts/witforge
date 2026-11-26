@@ -105,7 +105,7 @@ request diffs regardless of `format`.
 | `diff-check` | `true` | `true` (`--check`, gates on `wire,source,api`), `false` (report only), or comma-separated views from `wire`, `source`, `api`, `decode` (`--check=<views>`). |
 | `config` | empty | Path to `witforge.toml` for `check: true`, `freeze: true`, and configured generators. |
 | `project` | empty | Optional project name in `witforge.toml`. |
-| `generators` | `rust` | Comma- or whitespace-separated subset of `rust`, `proto`, `schema`, `glue` run with `--config` and `--check`, or `all` (from `v0.8.0`) to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
+| `generators` | `rust` | Comma- or whitespace-separated subset of `rust`, `proto`, `schema`, `glue`, `doc` (from `v0.9.0`) run with `--config` and `--check`, or `all` (from `v0.8.0`) to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
 | `freeze` | empty | WIT roots to verify with `witforge freeze` (one per line), or `true` to verify every project in `config`. Requires `fetch-depth: 0`. |
 | `format` | `human` | Output format: `human`, `json`, or `sarif`. Failing checks emit GitHub workflow annotations in all formats. |
 | `sarif-file` | empty | Output file path for the combined SARIF 2.1.0 report when `format: sarif` is set (defaults to `witforge.sarif`). |
@@ -142,7 +142,9 @@ witforge generate --config witforge.toml --check
 
 Run `witforge freeze` (with full Git history), `witforge check <wit-root>` (which checks every
 version directory, predecessor lockfile continuity, and the pinned dependency graph), `diff --check`
-(or `--check=wire` / `--check=wire,decode`), and `witforge generate --check` (keeping generated
+(or `witforge diff --git-base origin/main --check`, defaulting to `[project.<name>.policy].diff-check`
+when configured in `witforge.toml`), `witforge deps sync --check` (when vendored `deps/` are shared
+across unreleased minors), and `witforge generate --check` (keeping generated
 per-version modules frozen alongside the released WIT directories).
 
 ## Consumer tests

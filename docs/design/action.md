@@ -120,7 +120,7 @@ Every input and output is documented publicly on [`docs/guide/ci.md`](../guide/c
 | `diff-check` | `true` | `true` (`--check`), `false` (report only), or comma-separated views (`wire`, `source`, `api`, `decode`). |
 | `config` | empty | `witforge.toml` used for `check: true`, `freeze: true`, and configured generators. |
 | `project` | empty | Project name passed to `check: true`, `freeze: true`, and configured generators. |
-| `generators` | `rust` | Comma- or whitespace-separated `rust`, `proto`, `schema`, `glue` (each runs with `--config` and `--check`), or `all` (from `v0.8.0`) to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
+| `generators` | `rust` | Comma- or whitespace-separated `rust`, `proto`, `schema`, `glue`, `doc` (from `v0.9.0`; each runs with `--config` and `--check`), or `all` (from `v0.8.0`) to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |
 | `freeze` | empty | WIT roots to verify with `witforge freeze` (one per line), or `true` to verify every project in `config` (requires `fetch-depth: 0`). |
 | `format` | `human` | `human`, `json`, or `sarif`. Failing checks always emit workflow annotations (`::error file=...,line=...,col=...::...`). |
 | `sarif-file` | empty | Combined SARIF 2.1.0 output file path when `format: sarif` is set (default `witforge.sarif`). |

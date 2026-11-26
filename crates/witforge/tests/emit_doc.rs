@@ -316,3 +316,67 @@ fn eighth_wave_audit_doc_custom_released_decode_summary_and_escaped_pipe() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn ninth_wave_audit_doc_markdown_sanitization_and_retyped_html_escaping() {
+    let root = scratch_dir("ninth-wave-doc");
+    let wit = root.join("wit");
+    fs::create_dir_all(wit.join("v0.1")).unwrap();
+    fs::create_dir_all(wit.join("v1.0")).unwrap();
+
+    // Unclosed fenced code block, raw HTML/comment, angle-bracketed generics, unbalanced
+    // backtick, and a cross-major retype (`option<string>` -> `list<string>`).
+    fs::write(
+        wit.join("v0.1/contract.wit"),
+        "package example:docsan@0.1.0;\n\
+         /// Interface docs with <script>alert(1)</script> and <!-- hidden -->.\n\
+         /// ```\n\
+         /// unclosed fence line\n\
+         interface api {\n\
+           record item {\n\
+             /// Inline <T> and <!-- c --> and `unbalanced.\n\
+             payload: option<string>,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        wit.join("v1.0/contract.wit"),
+        "package example:docsan@1.0.0;\n\
+         interface api {\n\
+           record item {\n\
+             payload: list<string>,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_ver(&wit.join("v0.1"), None);
+    lock_ver(&wit.join("v1.0"), None);
+
+    let planned = doc::plan_with_released(&wit, None).unwrap();
+    let index = planned.files().get("index.md").unwrap();
+    assert!(
+        index.contains("| `option<string>` -> `list<string>` |"),
+        "Retyped types in index.md must be backticked so `<string>` is not raw HTML:\n{index}"
+    );
+
+    let v01 = planned.files().get("v0_1.md").unwrap();
+    assert!(
+        !v01.contains("<script>") && !v01.contains("<!-- hidden -->"),
+        "raw HTML/comments in block docs must be escaped:\n{v01}"
+    );
+    assert!(
+        v01.matches("```").count().is_multiple_of(2),
+        "unclosed code fence in WIT docs must be closed:\n{v01}"
+    );
+    assert!(
+        !v01.contains("Inline <T>") && !v01.contains("<!-- c -->"),
+        "raw HTML/comments in table cell docs must be escaped:\n{v01}"
+    );
+    assert!(
+        v01.contains("\\`unbalanced"),
+        "unbalanced backtick in table cell docs must be escaped:\n{v01}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

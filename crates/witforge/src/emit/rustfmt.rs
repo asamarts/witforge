@@ -135,6 +135,30 @@ pub(crate) fn fmt_type(
     ty.to_string()
 }
 
+/// Format a fixed-length array type `[Elem; N]` placed on the next line after `:` or `=` when
+/// `[Elem; N]` itself overflows `MAX_WIDTH` at `indent + 4` while `[Elem;` fits at `indent + 4`.
+fn try_fmt_array_next_line(
+    indent: usize,
+    head_trimmed: &str,
+    ty: &str,
+    suffix: &str,
+) -> Option<String> {
+    let inner = ty.strip_prefix('[')?.strip_suffix(']')?;
+    let semi = find_top_level_char(inner, ';')?;
+    let elem = inner[..semi].trim();
+    let len_str = inner[semi + 1..].trim();
+    let next_indent = indent + 4;
+    if next_indent + 1 + elem.len() < MAX_WIDTH
+        && next_indent + 4 + len_str.len() + 1 + suffix.len() <= MAX_WIDTH
+    {
+        let next_pad = " ".repeat(next_indent);
+        return Some(format!(
+            "{head_trimmed}\n{next_pad}[{elem};\n{next_pad}    {len_str}]{suffix}"
+        ));
+    }
+    None
+}
+
 /// Format a `pub type Name = Ty;` or `type Name = Ty;` declaration.
 pub(crate) fn fmt_type_alias(indent: usize, prefix_decl: &str, ty: &str) -> String {
     let spaces = " ".repeat(indent);
@@ -144,6 +168,11 @@ pub(crate) fn fmt_type_alias(indent: usize, prefix_decl: &str, ty: &str) -> Stri
     }
     if !ty.starts_with('(') && indent + 4 + ty.len() < MAX_WIDTH {
         return format!("{spaces}{prefix_decl} =\n{spaces}    {ty};");
+    }
+    if let Some(wrapped) =
+        try_fmt_array_next_line(indent, &format!("{spaces}{prefix_decl} ="), ty, ";")
+    {
+        return wrapped;
     }
     let formatted = fmt_type(ty, indent, head.len(), 1);
     format!("{head}{formatted};")
@@ -225,6 +254,11 @@ pub(crate) fn fmt_struct_field(indent: usize, field_name: &str, ty: &str) -> Str
     }
     if indent + 4 + ty.len() < MAX_WIDTH {
         return format!("{prefix}pub {field_name}:\n{prefix}    {ty},");
+    }
+    if let Some(wrapped) =
+        try_fmt_array_next_line(indent, &format!("{prefix}pub {field_name}:"), ty, ",")
+    {
+        return wrapped;
     }
     let formatted = fmt_type(ty, indent, head.len(), 1);
     format!("{head}{formatted},")

@@ -74,7 +74,9 @@ Duplicate dependency package identity under `deps/`, or a dependency declaring t
 Unsupported or invalid WIT stability annotation. Only `@since`, `@unstable`, and `@deprecated` are
 accepted, and `@deprecated` must accompany `@since` or `@unstable`. Annotation versions must use
 `<major>.<minor>.0`, cannot be later than the containing package version, cannot have `@deprecated`
-predate `@since`, and must keep `@since` aligned across multi-version contracts.
+predate `@since`, and must keep `@since` aligned across multi-version contracts. Also emitted when
+`witforge release --forbid-unstable` (or `[project.<name>.policy].forbid-unstable-in-release`)
+refuses a version containing `@unstable` items.
 
 ### WF1015
 
@@ -198,8 +200,9 @@ Versions in a WIT root or the two endpoints of `diff` declare different package 
 
 **Severity:** `error`
 
-Pinned dependency graphs differ across versions under a WIT root, across `diff` endpoints, or
-against a version-directory `--against` baseline.
+Pinned dependency graphs differ across versions under a WIT root, across `diff` endpoints,
+against a version-directory `--against` baseline, or between `deps/` trees checked by
+`witforge deps sync --check`.
 
 ## Lockfile codes (`WF1100`–`WF1205`)
 
@@ -386,5 +389,7 @@ malformed `released` manifest, or invalid `witforge.toml` / BOM). Exits `2`.
 **Severity:** `error`
 
 Safety guard or freeze-policy refusal (locking or writing into a released directory, symlinked
-version directory or symlink inside a released directory, overlapping or unowned output path,
-non-canonical `v...` directory name, or unexpanded shell path in `witforge.toml`). Exits `2`.
+version directory or symlink/submodule/special file inside a released directory, `deps/` tree, or
+`diff --git-base` target, shallow clone on `freeze` or `diff --git-base`, overlapping or unowned
+output path, non-canonical `v...` directory name, or unexpanded shell path in `witforge.toml`).
+Exits `2`.

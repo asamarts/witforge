@@ -1712,3 +1712,103 @@ fn eighth_wave_audit_malformed_enclosing_config_fails_closed_for_policy() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn ninth_wave_audit_discovered_policy_relative_root_and_dash_project_hint() {
+    let base = std::env::temp_dir().join(format!("witforge-policy-relroot-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let repo = base.join("repo");
+    let cfg_dir = repo.join("cfg");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::create_dir_all(&cfg_dir).unwrap();
+    copy_tree(&source_tree(), &repo.join("wit"));
+
+    // Add an unstable v0.3 so we can also verify `policy.forbid-unstable-in-release` under a
+    // relative `root = "../wit"`.
+    let nv = witforge()
+        .args(["new-version"])
+        .arg(repo.join("wit"))
+        .output()
+        .unwrap();
+    assert!(nv.status.success(), "{nv:?}");
+    let v03 = repo.join("wit/v0.3");
+    let v03_wit = fs::read_to_string(v03.join("contract.wit")).unwrap();
+    let v03_wit = v03_wit.replace(
+        "interface types {\n",
+        "interface types {\n    @unstable(feature = beta)\n    record draft { x: u32 }\n",
+    );
+    fs::write(v03.join("contract.wit"), v03_wit).unwrap();
+    let lock_v03 = witforge()
+        .args(["lock"])
+        .arg(&v03)
+        .args(["--against"])
+        .arg(repo.join("wit/v0.2/wire.lock"))
+        .output()
+        .unwrap();
+    assert!(lock_v03.status.success(), "{lock_v03:?}");
+
+    fs::write(
+        cfg_dir.join("witforge.toml"),
+        "version = 1\n\
+         \n\
+         [project.\"-core\"]\n\
+         root = \"../wit\"\n\
+         \n\
+         [project.\"-core\".rust]\n\
+         out = \"../gen/rust\"\n\
+         \n\
+         [project.\"-core\".policy]\n\
+         diff-check = [\"wire\"]\n\
+         forbid-unstable-in-release = true\n",
+    )
+    .unwrap();
+
+    // 1. Running from `repo/cfg/` with relative `../wit/v0.1 ../wit/v0.2`: `cfg/` does NOT enclose
+    // `repo/wit/`, yet the discovered `witforge.toml` matches `root = "../wit"` and applies
+    // `policy.diff-check = ["wire"]` (exit 0 on wire-compatible addition).
+    let diff_ok = witforge()
+        .current_dir(&cfg_dir)
+        .args(["diff", "../wit/v0.1", "../wit/v0.2", "--check"])
+        .output()
+        .unwrap();
+    assert!(
+        diff_ok.status.success(),
+        "discovered policy with relative root = \"../wit\" must apply: {diff_ok:?}"
+    );
+
+    // Release v0.2 first so v0.3's predecessor is released and only the policy gate fires.
+    let rel_v02 = witforge()
+        .current_dir(&cfg_dir)
+        .args(["release", "../wit/v0.2"])
+        .output()
+        .unwrap();
+    assert!(rel_v02.status.success(), "{rel_v02:?}");
+
+    // 2. `witforge release ../wit/v0.3` from `repo/cfg/` must enforce discovered
+    // `forbid-unstable-in-release = true` (exit 1, WF1014).
+    let rel_refused = witforge()
+        .current_dir(&cfg_dir)
+        .args(["release", "../wit/v0.3", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(rel_refused.status.code(), Some(1), "{rel_refused:?}");
+    let rel_json: serde_json::Value = serde_json::from_slice(&rel_refused.stdout).unwrap();
+    assert_eq!(rel_json["diagnostics"][0]["code"], "WF1014");
+
+    // 3. Project name starting with `-` (`-core`): `--check` fix-it hint must emit
+    // `--project=-core` (NOT `--project ./-core`).
+    fs::create_dir_all(repo.join("gen/rust")).unwrap();
+    let check_hint = witforge()
+        .current_dir(&cfg_dir)
+        .args(["rust", "--project=-core", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(check_hint.status.code(), Some(1), "{check_hint:?}");
+    let stderr = String::from_utf8_lossy(&check_hint.stderr);
+    assert!(
+        stderr.contains("--project=-core") && !stderr.contains("--project ./-core"),
+        "expected `--project=-core` in regenerate hint:\n{stderr}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

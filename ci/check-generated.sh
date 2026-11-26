@@ -23,12 +23,14 @@ fi
 "${RUN[@]}" schema "${WIT_ROOT}" --out "${TMP}/schema"
 "${RUN[@]}" glue "${WIT_ROOT}" --out "${TMP}/glue" \
     --plain-root crate::plain --proto-root crate::proto
+"${RUN[@]}" doc "${WIT_ROOT}" --out "${TMP}/doc"
 
 "${RUN[@]}" rust "${WIT_ROOT}" --out "${TMP}/plain" --check
 "${RUN[@]}" proto "${WIT_ROOT}" --out "${TMP}/proto" --check
 "${RUN[@]}" schema "${WIT_ROOT}" --out "${TMP}/schema" --check
 "${RUN[@]}" glue "${WIT_ROOT}" --out "${TMP}/glue" \
     --plain-root crate::plain --proto-root crate::proto --check
+"${RUN[@]}" doc "${WIT_ROOT}" --out "${TMP}/doc" --check
 
 for example in single evolved; do
     config="${ROOT}/examples/${example}/witforge.toml"

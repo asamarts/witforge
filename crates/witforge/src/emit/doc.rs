@@ -12,7 +12,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::diff::{self, ChangeKind, DecodeVerdict};
-use crate::emit::docs::normalize_lines;
+use crate::emit::docs::{normalize_lines, sanitize_markdown_inline, sanitize_rust_lines};
 use crate::emit::output::{
     GeneratedFileFinding, GeneratedFiles, ensure_outside_wit_root, html_comment_header,
 };
@@ -605,7 +605,7 @@ fn write_normalized_docs(out: &mut String, docs: &str) -> Result<()> {
     if docs.is_empty() {
         return Ok(());
     }
-    let lines = normalize_lines(docs);
+    let lines = sanitize_rust_lines(docs);
     if lines.is_empty() {
         return Ok(());
     }
@@ -624,15 +624,15 @@ fn inline_doc_cell(docs: &str) -> String {
     if lines.is_empty() {
         return "-".to_string();
     }
-    let joined: Vec<String> = lines
-        .into_iter()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| escape_table_cell(line.trim()))
+    let joined: Vec<&str> = lines
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
         .collect();
     if joined.is_empty() {
         "-".to_string()
     } else {
-        joined.join(" ")
+        escape_table_cell(&sanitize_markdown_inline(&joined.join(" ")))
     }
 }
 
@@ -664,13 +664,13 @@ fn change_summary(change: &diff::Change) -> (&'static str, String) {
         ChangeKind::Removed => ("removed", String::new()),
         ChangeKind::Reordered { before, after } => (
             "reordered",
-            format!("{} -> {}", before.join(", "), after.join(", ")),
+            format!("`{}` -> `{}`", before.join("`, `"), after.join("`, `")),
         ),
-        ChangeKind::Retyped { from, to } => ("retyped", format!("{from} -> {to}")),
-        ChangeKind::KindChanged { from, to } => ("kind-changed", format!("{from} -> {to}")),
-        ChangeKind::Renumbered { from, to } => ("renumbered", format!("{from} -> {to}")),
+        ChangeKind::Retyped { from, to } => ("retyped", format!("`{from}` -> `{to}`")),
+        ChangeKind::KindChanged { from, to } => ("kind-changed", format!("`{from}` -> `{to}`")),
+        ChangeKind::Renumbered { from, to } => ("renumbered", format!("`{from}` -> `{to}`")),
         ChangeKind::StabilityChanged { from, to } => {
-            ("stability-changed", format!("{from} -> {to}"))
+            ("stability-changed", format!("`{from}` -> `{to}`"))
         }
     }
 }

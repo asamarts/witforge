@@ -72,8 +72,9 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
 - [x] Evaluate a leaner glue surface that skips trivial structural aliases (the glue Option C)
       while keeping message-backed and `use` aliases. Declined for 1.0: no consumer requested the
       reduced surface, and the complete conversion surface is already tested and stable.
-- [x] Conditional `Eq`/`Hash` and a narrow `Default` policy: declined for 0.x/1.0; requires a
-      consumer request and a new contract version with an explicit float/default policy.
+- [x] Conditional `Eq`/`Hash` and a narrow `Default` policy: declined for default 0.x/1.0 output;
+      opt-in `--eq-hash` (`rust.eq-hash = true`) was later added in 0.9.0 (`W11-042`) while keeping
+      default derives unchanged and `Default` declined.
 - [x] Generated world metadata (`W6-004`): additive shared `worlds.rs` with explicit per-version
       imports and exports.
 - [x] `witforge.toml` configuration for multiple roots and emitters (`W6-005`): explicit projects,
@@ -94,7 +95,8 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       one file per version, with all named definitions and member descriptions.
 - [ ] Replacing the lockfile with in-source numbers if the WIT annotations proposal
       (component-model issue 695) lands with a suitable annotation.
-- [ ] Wider WIT coverage (maps, resources as opaque handles) only on demand.
+- [ ] Wider WIT coverage (resources as opaque handles, tuples) only on demand (`char`, fixed-length
+      `list<T, N>`, and `map<K, V>` landed in `0.9.0`).
 - [x] 1.0 criteria published: stable library API, conformance matrix, release gates, and
       deprecation runways; 1.0.0 has not yet been released.
 

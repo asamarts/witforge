@@ -2512,3 +2512,107 @@ fn eighth_wave_audit_git_base_sibling_released_and_error_path_redaction() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn ninth_wave_audit_git_base_released_dir_nested_git_and_single_quote_redaction() {
+    let root = workspace("git-base-ninth");
+    let repo = root.join("repo");
+    let quoted_tmp = root.join("tmp'quote");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir_all(&quoted_tmp).unwrap();
+
+    run_git_cmd(&repo, &["init", "-q"]);
+    run_git_cmd(&repo, &["config", "user.email", "test@example.com"]);
+    run_git_cmd(&repo, &["config", "user.name", "Test"]);
+
+    contract(
+        &repo,
+        "wit/v0.1",
+        "package example:ninth@0.1.0;\ninterface types { record item { id: u32 } }\n",
+    );
+    lock(&repo, "wit/v0.1");
+    run_git_cmd(&repo, &["add", "."]);
+    run_git_cmd(&repo, &["commit", "-m", "v0.1"]);
+
+    // 1. Single quote in TMPDIR: unlocked field at HEAD produces a shell-quoted hint; redaction
+    // MUST strip both raw and `'\''`-escaped temporary path variants in human, JSON, and SARIF.
+    fs::write(
+        repo.join("wit/v0.1/contract.wit"),
+        "package example:ninth@0.1.0;\ninterface types { record item { id: u32, extra: u32 } }\n",
+    )
+    .unwrap();
+    run_git_cmd(&repo, &["add", "wit/v0.1/contract.wit"]);
+    run_git_cmd(&repo, &["commit", "-m", "unlocked field"]);
+
+    for (mode, extra_args) in [
+        ("human", &[][..]),
+        ("json", &["--format", "json"][..]),
+        ("sarif", &["--format", "sarif"][..]),
+    ] {
+        let out = witforge()
+            .env("TMPDIR", &quoted_tmp)
+            .current_dir(&repo)
+            .args(["diff", "--git-base", "HEAD", "wit/v0.1"])
+            .args(extra_args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{mode}: {out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stdout.contains("witforge-git-base")
+                && !stderr.contains("witforge-git-base")
+                && !stdout.contains("tmp'quote")
+                && !stderr.contains("tmp'quote")
+                && !stdout.contains("tmp'\\''quote")
+                && !stderr.contains("tmp'\\''quote"),
+            "{mode} leaked single-quoted temp path!\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+    assert_eq!(fs::read_dir(&quoted_tmp).unwrap().count(), 0);
+
+    // Fix lockfile at HEAD for subsequent guard checks.
+    lock(&repo, "wit/v0.1");
+    run_git_cmd(&repo, &["add", "wit/v0.1/wire.lock"]);
+    run_git_cmd(&repo, &["commit", "-m", "lock v0.1"]);
+
+    // 2. Sibling `wit/released` committed as a directory (tree `040000`) at HEAD must fail with
+    // `WF9004` naming `HEAD:wit/released`.
+    fs::create_dir_all(repo.join("wit/released")).unwrap();
+    fs::write(repo.join("wit/released/dummy"), "x\n").unwrap();
+    run_git_cmd(&repo, &["add", "wit/released/dummy"]);
+    run_git_cmd(&repo, &["commit", "-m", "directory released"]);
+
+    let dir_rel = witforge()
+        .env("TMPDIR", &quoted_tmp)
+        .current_dir(&repo)
+        .args(["diff", "--git-base", "HEAD", "wit/v0.1", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(dir_rel.status.code(), Some(2), "{dir_rel:?}");
+    let dir_rel_json: serde_json::Value = serde_json::from_slice(&dir_rel.stdout).unwrap();
+    assert_eq!(dir_rel_json["diagnostics"][0]["code"], "WF9004");
+    assert_eq!(dir_rel_json["diagnostics"][0]["path"], "HEAD:wit/released");
+    assert_eq!(fs::read_dir(&quoted_tmp).unwrap().count(), 0);
+
+    // Remove the bogus directory `wit/released`.
+    run_git_cmd(&repo, &["rm", "-r", "-q", "wit/released"]);
+    run_git_cmd(&repo, &["commit", "-m", "remove directory released"]);
+
+    // 3. Nested `.git` directory inside working-tree target (untracked submodule/nested repo)
+    // must be refused with `WF9004`.
+    fs::create_dir_all(repo.join("wit/v0.1/nested/.git")).unwrap();
+    let nested_git = witforge()
+        .env("TMPDIR", &quoted_tmp)
+        .current_dir(&repo)
+        .args(["diff", "--git-base", "HEAD", "wit/v0.1", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(nested_git.status.code(), Some(2), "{nested_git:?}");
+    let nested_json: serde_json::Value = serde_json::from_slice(&nested_git.stdout).unwrap();
+    assert_eq!(nested_json["diagnostics"][0]["code"], "WF9004");
+    assert_eq!(fs::read_dir(&quoted_tmp).unwrap().count(), 0);
+
+    fs::remove_dir_all(&root).unwrap();
+}

@@ -1,8 +1,8 @@
 # witforge design overview
 
-Status: living design document (2026-10-14; decisions through 2026-11-24 are logged in section
-9). The internal model, lockfile format, and the Rust, protobuf, glue, conversion, and JSON
-Schema emitter conventions are specified normatively in [`model.md`](model.md),
+Status: living design document (2026-10-14; decisions through 2026-11-25 are logged in section
+9). The internal model, lockfile format, and the Rust, protobuf, glue, conversion, JSON Schema,
+and Markdown documentation emitter conventions are specified normatively in [`model.md`](model.md),
 [`lockfile.md`](lockfile.md), and [`emitters.md`](emitters.md). `diff`, diagnostics,
 dependencies, and the Action are specified in [`diff.md`](diff.md),
 [`diagnostics.md`](diagnostics.md), [`dependencies.md`](dependencies.md), and
@@ -44,7 +44,7 @@ WIT directory
   -> subset checker                                 subset::check
   -> internal model (types, docs, stability)        model
   -> wire lockfile reconcile / drift check          lock
-  -> emitters: Rust, protobuf, JSON Schema, glue   emit
+  -> emitters: Rust, protobuf, JSON Schema, glue, Markdown doc   emit
 ```
 
 `wit-parser` is pinned to an exact version: it makes breaking 0.x releases roughly monthly and its
@@ -62,9 +62,8 @@ Refused, each with the supported alternative:
 | `error-context` | part of async; the contract is synchronous | a record or variant describing the error |
 | `async` functions | the contract is synchronous | a plain function |
 | `get` and `set` accessors | no protobuf or plain-Rust counterpart | a function |
-| `map<K, V>` | new in WIT; protobuf maps restrict keys and values | `list<record>` |
-| fixed-length lists | no protobuf equivalent | `list` |
-| `char` | a one-scalar string on the wire, error-prone | `string` |
+| `map<K, V>` with non-scalar keys | keys outside `bool`, integers, `char`, and `string` have no canonical proto3/JSON map key | `list<record>` (or supported key types) |
+| `list<T, N>` outside `1..=65536` | zero-length or huge fixed arrays are impractical in Rust/wire projections | `list<T>` |
 | tuples | positional, unnamed fields | a named record |
 | empty records | rejected by WIT tooling; no useful message | a variant case without payload |
 | types defined in a world | lockfile keys are per interface | define the type in an interface |
@@ -89,7 +88,7 @@ the checker keeps its own empty-record rule in case a `wit-parser` bump stops do
 | `s8`, `s16` | `i8`, `i16` | `sint32` | number | range-checked on decode |
 | `s32`, `s64` | `i32`, `i64` | `sint32`, `sint64` | number, string | clean |
 | `f32`, `f64` | `f32`, `f64` | `float`, `double` | number or "NaN" / "Infinity" | clean |
-| `char` | `char` | `string` of one scalar value | string | refused by the subset checker; use `string` |
+| `char` | `char` | `string` of one scalar value | string | single Unicode scalar validated on decode (`InvalidChar`) |
 | `string` | `String` | `string` | string | UTF-8 on both sides |
 | `list<u8>` | `Vec<u8>` | `bytes` | base64 | clean |
 | `list<T>` | `Vec<T>` | `repeated singular(T)` | array | wraps nested list/option elements |
@@ -106,8 +105,9 @@ the checker keeps its own empty-record rule in case a `wit-parser` bump stops do
 | `flags` | struct of bools | message of bools | object | preferred over a bitmask (readable JSON, no 64-flag cap) |
 | `resource`, `own`, `borrow` | handle | opaque id message | n/a | refused by the subset checker |
 | `type a = b` | `pub type` | inlined | n/a | clean |
-| `map<K, V>` | `BTreeMap` | `map<K, V>` for string or integer keys | object | refused by the subset checker; use `list<record>` |
-| `future`, `stream`, fixed-length lists | n/a | n/a | n/a | refused by the subset checker |
+| `map<K, V>` | `BTreeMap<K, V>` | `map<K, V>` (or repeated entry message when key is `char` or value is non-singular) | object (or array of entries) | supported for `bool`, integer, `char`, and `string` keys (`0.9.0`) |
+| `list<T, N>` | `[T; N]` | `bytes` (for `u8`) or `repeated singular(T)` | base64 or array | supported for `1 <= N <= 65536`; exact length checked on decode (`InvalidLength`, `0.9.0`) |
+| `future`, `stream` | n/a | n/a | n/a | refused by the subset checker |
 | function | trait method | request message (parameters numbered from the lockfile) and response message, plus a method id | n/a | convention |
 | interface | trait or module | method-id enum, numbers from the lockfile | n/a | convention |
 | package `ns:name@x.y.0` | Rust module `v<major>_<minor>` | proto package `ns.name.vX` | n/a | major version only on the protobuf side |
@@ -227,7 +227,7 @@ The rules in this section describe the implemented format.
    major version starts a fresh lockfile. Package versions are `<major>.<minor>.0`; patch,
    pre-release, and build-metadata contract versions are out of scope for the current 0.x line (see
    [`lockfile.md`](lockfile.md)).
-3. Authoring policy for a new minor: new members should be defaulted (`option<T>` or `list<T>`),
+3. Authoring policy for a new minor: new members should be defaulted (`option<T>`, `list<T>`, or `map<K, V>`),
    so a later version adapter can convert old values to new ones; enum values and variant cases
    should only be appended; reorders, renames, and type changes should be avoided. `rust` enforces
    the defaultable-addition rule for generated conversions: a required added record field without
@@ -271,8 +271,8 @@ freeze remain the gates that protect a published version.
 
 ### 5.5 Machine-readable diagnostics
 
-Every command (`check`, `lock`, `diff`, `rust`, `proto`, `schema`, `glue`, `generate`, `init`,
-`new-version`, `release`, `retire`, `inspect`, `freeze`, `completions`, and `explain`) accepts
+Every command (`check`, `lock`, `diff`, `rust`, `proto`, `schema`, `glue`, `doc`, `generate`, `init`,
+`new-version`, `deps sync`, `release`, `retire`, `inspect`, `freeze`, `completions`, and `explain`) accepts
 `--format json` or `--format sarif`.
 Diagnostics have stable codes, severities, paths, and optional source positions; the default
 human output is unchanged. The envelope, SARIF mapping, and code catalogue are in
@@ -397,7 +397,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-01 | JSON Schema is a Draft 7 value projection: one file per version, all named types under `definitions`, all record fields required, closed enums, one-of result/variant cases, no runtime dependency | [`emitters.md`](emitters.md) section 10 |
 | 2026-11-01 | `witforge.toml` selects projects explicitly; config paths resolve from the file, CLI flags override every path, unknown keys are errors, and CLI-only invocation remains valid | [`emitters.md`](emitters.md) section 11 |
 | 2026-11-01 | Owned Rust parameters remain for 0.x and 1.0; measurements show clone cost but borrowing would require a second lifetime-bearing generated surface and does not remove native-to-WIT mapping. Revisit with a measured consumer path and a new contract version | section 10.1, [`emitters.md`](emitters.md) section 3.5 |
-| 2026-11-01 | Conditional `Eq`/`Hash`/`Default` are declined for 0.x/1.0; derives cannot be added retroactively to frozen version APIs, floats block Eq/Hash transitively, and WIT has no natural Default for enums/variants/results. Revisit with a consumer request and a new contract version | section 10.2, [`emitters.md`](emitters.md) section 3.3 |
+| 2026-11-01 | Conditional `Eq`/`Hash`/`Default` are declined for default 0.x/1.0 output; derives cannot be added retroactively to frozen version APIs, floats block Eq/Hash transitively, and WIT has no natural Default for enums/variants/results (opt-in `--eq-hash` added 2026-11-25; `Default` remains declined) | section 10.2, [`emitters.md`](emitters.md) section 3.3 |
 | 2026-11-01 | Worlds get additive shared `worlds.rs` metadata with per-version `WORLDS` constants, explicit imports/exports and no traits; per-version modules remain frozen | [`emitters.md`](emitters.md) section 3.6 |
 | 2026-11-01 | Docs-only patch versions and a memberless lockfile inventory are declined for 0.x/1.0; draft docs changes are accepted, memberless additions have no wire entry, and released docs are freeze-guarded | section 10.3, [`lockfile.md`](lockfile.md) section 15 |
 | 2026-11-01 | 1.0 keeps `anyhow::Error` at the boundary with the `ContractError` classification; the public API, conformance matrix, release criteria, and deprecation runways are published | [`public-api.md`](public-api.md), [`conformance.md`](conformance.md), [`release-1.0.md`](release-1.0.md) |
@@ -418,6 +418,7 @@ process protocol's framing and session, and the version adapters.
 | 2026-11-21 | 0.6.0 publishes the post-0.5.0 assurance work, the complete second-audit wire-identity, compile-contract, and tool-safety remediation, clean `rustfmt`/Clippy/`missing_docs` Rust output, hardened `convert.rs`, and complete JSON Schema `result` shapes and `f32` bounds. Library API remains minor-compatible with 0.5.0; MSRV remains 1.88; 1.0 remains gated on independent adoption and post-0.6.0 audit tasks | [`CHANGELOG.md`](../../CHANGELOG.md), [`W10-069`](../../aplan/tasks/W10-069.md) |
 | 2026-11-23 | 0.7.0 publishes the final planned pre-1.0 Rust-library break: extensible public data, library-owned structured workflows, and stability/deprecation projections. Contracts carrying stability annotations regenerate consumer-visible comments/attributes; wire numbers remain unchanged; MSRV remains 1.88. Later releases restore ordinary minor semver plus the tagged signature inventory baseline | [`CHANGELOG.md`](../../CHANGELOG.md), [`public-api.md`](public-api.md), [`W10-099`](../../aplan/tasks/W10-099.md) |
 | 2026-11-24 | Post-0.7.0 hardening and Tier 1 feature wave (`0.8.0` scope, additive over 0.7.0's public API): static `musl` Linux release archives alongside `gnu`, opt-in JSON Schema Draft 2020-12 and member descriptions, lifecycle CLI (`init`, `retire`, `new-version --from`), versioned JSON contract IR (`inspect --json`), opt-in `no_std` + `alloc` Rust/convert/glue output, and the optional `witforge-build` helper crate. Direct non-Rust generators and broader Tier 2/3 items are tracked under `M-p11` | [`CHANGELOG.md`](../../CHANGELOG.md), [`emitters.md`](emitters.md), [`action.md`](action.md), `aplan/` |
+| 2026-11-25 | `0.9.0` feature wave (strictly additive over `0.8.0` public API): WIT subset expansion (`char`, fixed-length `list<T, N>` for `1..=65536`, `map<K, V>` with scalar/string keys), Markdown reference emitter (`witforge doc` / `emit::doc`), opt-in `--eq-hash` and `--try-from` Rust/convert options (default derives unchanged), `witforge diff --git-base <rev>` (`diff::compare_git_base`), `[project.<name>.policy]` (`diff-check` and `forbid-unstable-in-release`), and `witforge deps sync`; CI plan gate advances to aplan 0.7.0 | [`CHANGELOG.md`](../../CHANGELOG.md), [`emitters.md`](emitters.md), [`diff.md`](diff.md), `aplan/` |
 
 ## 10. 0.1 evaluation baseline and deferred-option triage
 
@@ -500,16 +501,12 @@ rule is also mechanically feasible for primitives, strings, lists, options, flag
 whose fields are themselves defaultable. It is not natural for enums, variants, or results:
 WIT has no default annotation, and choosing the first case would silently change semantics.
 
-Neither rule is adopted for 0.x or 1.0. Adding a derive changes the generated public API for an
+Neither rule is adopted for default 0.x or 1.0 output. Adding a derive changes the generated public API for an
 already-generated contract version, while released per-version modules are frozen; applying it
-retroactively would also make two contracts with the same WIT emit different APIs. There is no
-consumer request for these bounds today; consumers can wrap generated values and derive what
-their own container needs. If a consumer needs map/Hash support or fixture defaults, the change
-belongs to a new contract version with an explicit, documented derive policy; `Eq`/`Hash` must
-still exclude every type with a transitive float, and `Default` must stay limited to naturally
-defaultable shapes. No implementation task is created now. The trigger is a consumer request
-plus that version decision; a separate implementation task with golden and compile tests is
-created then.
+retroactively would also make two contracts with the same WIT emit different APIs.
+Update (2026-11-25, `0.9.0`, `W11-042`): opt-in `--eq-hash` / `rust.eq-hash = true` now derives
+`Eq, Hash` on transitively float-free types for projects that choose it explicitly, while the
+default output remains `Debug, Clone, PartialEq` and `Default` remains declined.
 
 ### 10.3 Docs-only patches and memberless inventory (W6-006)
 
@@ -542,7 +539,7 @@ these options or change generated output.
 |---|---|---|
 | Declaration-order fingerprinting | `W6-001` | Done (2026-11-01): additive per-parent order fingerprints in the lockfile |
 | Borrowed Rust parameters | `W6-002` | Done (2026-11-01): owned retained for 0.x/1.0; revisit only with a new contract version when a measured consumer path is dominated by clone/mapping cost |
-| Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | Done (2026-11-01): declined for 0.x/1.0; requires a consumer request, a new contract version, and an explicit float/default policy |
+| Conditional `Eq`/`Hash` and narrow `Default` | `W6-003` | Done (2026-11-01): declined for default 0.x/1.0 output; opt-in `--eq-hash` later added in 0.9.0 (`W11-042`), `Default` remains declined |
 | Generated world metadata | `W6-004` | Done (2026-11-01): additive `worlds.rs` metadata with per-version imports/exports |
 | Configuration file for roots/emitters | `W6-005` | Done (2026-11-01): explicit `witforge.toml` projects, CLI flags override |
 | Docs-only patch versions and memberless inventory | `W6-006` | Done (2026-11-01): declined for 0.x/1.0; drafts accept docs-only changes, memberless additions have no wire entry, released docs are freeze-guarded |

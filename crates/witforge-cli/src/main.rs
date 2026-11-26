@@ -212,7 +212,7 @@ struct SchemaOptions {
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
     /// JSON Schema dialect (`7` or `2020-12`; defaults to `7` or `schema.draft` in config).
-    #[arg(long, value_name = "DRAFT")]
+    #[arg(long, value_name = "DRAFT", value_parser = ["7", "2020-12"])]
     draft: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
@@ -402,7 +402,7 @@ struct GenerateOptions {
     #[arg(long = "no-try-from", conflicts_with = "try_from")]
     no_try_from: bool,
     /// JSON Schema dialect for configured schema outputs (`7` or `2020-12`), overriding config.
-    #[arg(long, value_name = "DRAFT")]
+    #[arg(long, value_name = "DRAFT", value_parser = ["7", "2020-12"])]
     draft: Option<String>,
     /// Released-version manifest to validate; overrides a project's `released` setting.
     #[arg(long, value_name = "PATH")]
@@ -1627,7 +1627,7 @@ fn regenerate_command(
         None => {}
     }
     if let Some(draft) = schema_draft {
-        let _ = write!(command, " --draft {}", shell_quote(Path::new(draft)));
+        push_cli_option(&mut command, "--draft", draft);
     }
     if let Some(released) = released {
         let _ = write!(command, " --released {}", shell_quote(released));
@@ -1636,7 +1636,7 @@ fn regenerate_command(
         let _ = write!(command, " --config {}", shell_quote(cfg));
     }
     if let Some(project) = &config.project {
-        let _ = write!(command, " --project {}", shell_quote(Path::new(project)));
+        push_cli_option(&mut command, "--project", project);
     }
     command
 }
@@ -2114,21 +2114,27 @@ fn resolve_diff_policy_views(
     }
     if !options.config.no_config
         && let Some(found) = workflow::discover_config()
-        && config_dir_encloses_target(&found, target_for_discovery)
     {
-        let (config, base) = load_config_file(&found)?;
-        if let Some(project) =
-            match_discovered_project_for_path(&config, &base, target_for_discovery, false)
-            && let Some(views) = project
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.diff_check.as_deref())
-        {
-            return Ok(Some(parse_policy_diff_check(
-                views,
-                "policy.diff-check",
-                Some(found.display().to_string()),
-            )?));
+        match load_config_file(&found) {
+            Ok((config, base)) => {
+                if let Some(project) =
+                    match_discovered_project_for_path(&config, &base, target_for_discovery, false)
+                    && let Some(views) = project
+                        .policy
+                        .as_ref()
+                        .and_then(|policy| policy.diff_check.as_deref())
+                {
+                    return Ok(Some(parse_policy_diff_check(
+                        views,
+                        "policy.diff-check",
+                        Some(found.display().to_string()),
+                    )?));
+                }
+            }
+            Err(err) if config_dir_encloses_target(&found, target_for_discovery) => {
+                return Err(err);
+            }
+            Err(_) => {}
         }
     }
     Ok(Some(CheckViews::DEFAULT))
@@ -3173,7 +3179,7 @@ fn deps_sync_command(options: &DepsSyncOptions, reporter: &mut Reporter) -> Resu
             let _ = write!(fix_cmd, " {}", shell_quote(root));
         }
         if let Some(from) = &options.from {
-            let _ = write!(fix_cmd, " --from {}", shell_quote(Path::new(from)));
+            push_cli_option(&mut fix_cmd, "--from", from);
         }
         if let Some(released) = &options.released {
             let _ = write!(fix_cmd, " --released {}", shell_quote(released));
@@ -3182,7 +3188,7 @@ fn deps_sync_command(options: &DepsSyncOptions, reporter: &mut Reporter) -> Resu
             let _ = write!(fix_cmd, " --config {}", shell_quote(config));
         }
         if let Some(project) = &options.config.project {
-            let _ = write!(fix_cmd, " --project {}", shell_quote(Path::new(project)));
+            push_cli_option(&mut fix_cmd, "--project", project);
         }
         for entry in &report.changed {
             let deps_path = entry.target_dir.join("deps");
@@ -3314,15 +3320,23 @@ fn resolve_release_policy_forbid_unstable(
     }
     if !options.config.no_config
         && let Some(found) = workflow::discover_config()
-        && config_dir_encloses_target(&found, wit_root)
     {
-        let (config, base) = load_config_file(&found)?;
-        if let Some(project) = match_discovered_project_for_path(&config, &base, wit_root, true) {
-            return Ok(project
-                .policy
-                .as_ref()
-                .and_then(|policy| policy.forbid_unstable_in_release)
-                .unwrap_or(false));
+        match load_config_file(&found) {
+            Ok((config, base)) => {
+                if let Some(project) =
+                    match_discovered_project_for_path(&config, &base, wit_root, true)
+                {
+                    return Ok(project
+                        .policy
+                        .as_ref()
+                        .and_then(|policy| policy.forbid_unstable_in_release)
+                        .unwrap_or(false));
+                }
+            }
+            Err(err) if config_dir_encloses_target(&found, wit_root) => {
+                return Err(err);
+            }
+            Err(_) => {}
         }
     }
     Ok(false)
@@ -3994,6 +4008,30 @@ fn sibling_predecessor(dir: &Path) -> Option<(u64, PathBuf)> {
     best
 }
 
+/// `text` as one POSIX shell word (not a path: never prepends `./`).
+fn shell_quote_word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"%+,-./:=@_".contains(&byte));
+    if plain {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// Append a non-path CLI option to a shell command hint. Values starting with `-` use
+/// `--flag=<value>` so clap does not read the value as another flag.
+fn push_cli_option(command: &mut String, flag: &str, value: &str) {
+    let quoted = shell_quote_word(value);
+    if value.starts_with('-') {
+        let _ = write!(command, " {flag}={quoted}");
+    } else {
+        let _ = write!(command, " {flag} {quoted}");
+    }
+}
+
 /// `path` as one POSIX shell word that witforge reads as a path: unchanged when it holds only
 /// characters no shell treats specially, and single-quoted otherwise. A path that starts with
 /// `-` is relative, and gets a leading `./`, so the command line does not read it as an option.
@@ -4002,15 +4040,7 @@ fn shell_quote(path: &Path) -> String {
     if text.starts_with('-') {
         text.insert_str(0, "./");
     }
-    let plain = !text.is_empty()
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"%+,-./:=@_".contains(&byte));
-    if plain {
-        text
-    } else {
-        format!("'{}'", text.replace('\'', "'\\''"))
-    }
+    shell_quote_word(&text)
 }
 
 #[cfg(test)]

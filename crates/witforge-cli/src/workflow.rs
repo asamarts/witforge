@@ -1158,6 +1158,7 @@ fn diff_deps_snapshots(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn replace_deps_dir_atomic(
     src_deps: &Path,
     src_exists: bool,
@@ -1178,8 +1179,33 @@ fn replace_deps_dir_atomic(
         return Ok(());
     }
 
-    let stage_seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let staged = target_version_dir.join(format!(".witforge-deps-stage-{pid}-{stage_seq}"));
+    let mut staged = None;
+    for _ in 0..64 {
+        let stage_seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = target_version_dir.join(format!(".witforge-deps-stage-{pid}-{stage_seq}"));
+        match fs::create_dir(&candidate) {
+            Ok(()) => {
+                staged = Some(candidate);
+                break;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to create staging directory {}", candidate.display())
+                });
+            }
+        }
+    }
+    let staged = staged.ok_or_else(|| {
+        op_error(
+            codes::IO_ERROR,
+            format!(
+                "could not allocate a unique `deps sync` staging directory under `{}`",
+                target_version_dir.display()
+            ),
+            Some(target_version_dir.display().to_string()),
+        )
+    })?;
     if let Err(err) = copy_dir_no_symlinks(src_deps, &staged, "deps sync") {
         let _ = fs::remove_dir_all(&staged);
         return Err(err);
@@ -1199,8 +1225,34 @@ fn replace_deps_dir_atomic(
         return Ok(());
     }
 
-    let backup_seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let backup = target_version_dir.join(format!(".witforge-deps-old-{pid}-{backup_seq}"));
+    let mut backup = None;
+    for _ in 0..64 {
+        let backup_seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = target_version_dir.join(format!(".witforge-deps-old-{pid}-{backup_seq}"));
+        match fs::symlink_metadata(&candidate) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                backup = Some(candidate);
+                break;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                let _ = fs::remove_dir_all(&staged);
+                return Err(err)
+                    .with_context(|| format!("failed to inspect {}", candidate.display()));
+            }
+        }
+    }
+    let Some(backup) = backup else {
+        let _ = fs::remove_dir_all(&staged);
+        return Err(op_error(
+            codes::IO_ERROR,
+            format!(
+                "could not allocate a unique `deps sync` backup directory under `{}`",
+                target_version_dir.display()
+            ),
+            Some(target_version_dir.display().to_string()),
+        ));
+    };
     if let Err(err) = fs::rename(target_deps, &backup) {
         let _ = fs::remove_dir_all(&staged);
         return Err(err).with_context(|| {
@@ -1222,7 +1274,13 @@ fn replace_deps_dir_atomic(
             )
         });
     }
-    let _ = fs::remove_dir_all(&backup);
+    fs::remove_dir_all(&backup).with_context(|| {
+        format!(
+            "replaced {} successfully, but failed to remove backup directory {}",
+            target_deps.display(),
+            backup.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -1655,5 +1713,58 @@ mod tests {
             retire_released_entry_text("\u{feff}v0.1\nv0.2\n", "v0.1").unwrap(),
             "v0.1 retired\nv0.2\n"
         );
+    }
+
+    #[test]
+    fn replace_deps_dir_atomic_avoids_preexisting_stage_and_backup_collisions() {
+        let base = std::env::temp_dir().join(format!(
+            "witforge-deps-stage-collide-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let src = base.join("v0.1/deps");
+        let dst_ver = base.join("v0.2");
+        let dst_deps = dst_ver.join("deps");
+        fs::create_dir_all(src.join("shared")).unwrap();
+        fs::write(src.join("shared/types.wit"), "new-content\n").unwrap();
+        fs::create_dir_all(dst_deps.join("shared")).unwrap();
+        fs::write(dst_deps.join("shared/types.wit"), "old-content\n").unwrap();
+
+        // Pre-populate collisions for sequences 0..4 so both staging and backup paths must skip
+        // existing entries cleanly without touching them.
+        let pid = std::process::id();
+        for seq in 0..4 {
+            let pre_stage = dst_ver.join(format!(".witforge-deps-stage-{pid}-{seq}"));
+            let pre_old = dst_ver.join(format!(".witforge-deps-old-{pid}-{seq}"));
+            fs::create_dir_all(&pre_stage).unwrap();
+            fs::write(pre_stage.join("sentinel.txt"), "keep-stage\n").unwrap();
+            fs::create_dir_all(&pre_old).unwrap();
+            fs::write(pre_old.join("sentinel.txt"), "keep-old\n").unwrap();
+        }
+
+        replace_deps_dir_atomic(&src, true, &dst_ver, &dst_deps).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst_deps.join("shared/types.wit")).unwrap(),
+            "new-content\n"
+        );
+        for seq in 0..4 {
+            assert_eq!(
+                fs::read_to_string(
+                    dst_ver.join(format!(".witforge-deps-stage-{pid}-{seq}/sentinel.txt"))
+                )
+                .unwrap(),
+                "keep-stage\n"
+            );
+            assert_eq!(
+                fs::read_to_string(
+                    dst_ver.join(format!(".witforge-deps-old-{pid}-{seq}/sentinel.txt"))
+                )
+                .unwrap(),
+                "keep-old\n"
+            );
+        }
+
+        fs::remove_dir_all(&base).unwrap();
     }
 }

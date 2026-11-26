@@ -70,6 +70,11 @@ property's value; it does not make the property omittable (`option<option<T>>` s
 and `maximum` (JSON parsers using IEEE 754 doubles are exact only up to `±2^53`, and Draft 7
 `integer` accepts `1.0`). `f32` carries its finite bounds (`-3.4028235e38` to `3.4028235e38`)
 while accepting in-range decimals that round to `f32`; `NaN` and `±Infinity` have no JSON form.
+`char` is a JSON string with `minLength: 1` and `maxLength: 1` (Unicode scalar values); fixed-length
+`list<T, N>` is an array with `minItems: N` and `maxItems: N` (for `list<u8, N>`, an array of
+`0..=255` integers, matching `list<u8>`); and `map<K, V>` is an object with `additionalProperties`
+set to the value schema and `propertyNames` constraining non-`string` keys (`bool`, integer
+patterns, or single-character `char` keys).
 
 Every WIT `result`—including `result<T>`, `result<_, E>`, and bare `result`—is a closed single-key
 object with `"ok"` or `"err"`, using `null` for a side without a payload (matching payload-less
@@ -92,7 +97,10 @@ The emitted `.proto` determines this projection. Its standard JSON mapping uses:
 - lowerCamelCase output names, so protobuf `start_byte` becomes `startByte`; parsers also accept
   the original protobuf spelling `start_byte`;
 - decimal strings for `u64` and `s64`;
-- base64 strings for bytes and strings for non-finite floats;
+- base64 strings for `list<u8>` and fixed-length `list<u8, N>` bytes, single-character strings for
+  `char`, JSON arrays for other `list<T>` / `list<T, N>`, JSON objects for proto3 `map<K, V>` (and
+  arrays of `{key, value}` entry objects when the key is `char` or the value requires a wrapper),
+  and strings for non-finite floats;
 - enum names rather than integer values in normal output;
 - omitted fields for absent optional values. A WIT `option<T>` containing `None` is therefore
   normally absent rather than the explicit `null` emitted by Rust Serde.

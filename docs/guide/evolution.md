@@ -28,7 +28,9 @@ second tree (for example in a pull request), run
 
 The package version in `contract.wit` must match the directory name; with the copied `@0.1.0`
 still in place, every command refuses `wit/v0.2`. Copy every `.wit` file and the `deps/`
-directory when the version has more than one file or uses dependencies.
+directory when the version has more than one file or uses dependencies (or run
+`witforge deps sync wit` / `witforge deps sync wit --check` to keep `deps/` synchronized across
+unreleased versions within the same major).
 
 Never create a minor version with a fresh lockfile (`lock --first`). Copying preserves protobuf field numbers, method IDs, removed-member reservations, and declaration-order history.
 

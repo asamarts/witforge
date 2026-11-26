@@ -552,3 +552,147 @@ fn eighth_wave_audit_try_from_rustfmt_long_identifiers_and_float_free_diamond_da
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn ninth_wave_audit_try_from_value_shadowing_and_scoped_dep_serde_eq_hash_rustfmt() {
+    let root = scratch_dir("ninth-wave-value-dep");
+    let wit = root.join("wit");
+    fs::create_dir_all(wit.join("v0.1/deps/shared")).unwrap();
+    fs::create_dir_all(wit.join("v0.2/deps/shared")).unwrap();
+    fs::create_dir_all(wit.join("v1.0/deps/shared")).unwrap();
+
+    // Per-major upgraded dependency (indents structs at 12 spaces under `witforge_deps::v0`/`v1`)
+    // PLUS nominal record/enum named `value` (would collide with `fn try_from(value: ...)` in
+    // `convert.rs` without `self::value(...)`).
+    let dep_v0 = "package example:shared@0.1.0;\n\
+                  interface common {\n\
+                    record key { id: u32 }\n\
+                  }\n";
+    let dep_v1 = "package example:shared@1.0.0;\n\
+                  interface common {\n\
+                    record key { id: u64, label: string }\n\
+                  }\n";
+    fs::write(wit.join("v0.1/deps/shared/common.wit"), dep_v0).unwrap();
+    fs::write(wit.join("v0.2/deps/shared/common.wit"), dep_v0).unwrap();
+    fs::write(wit.join("v1.0/deps/shared/common.wit"), dep_v1).unwrap();
+
+    fs::write(
+        wit.join("v0.1/contract.wit"),
+        "package example:valshadow@0.1.0;\n\
+         interface a {\n\
+           use example:shared/common@0.1.0.{key};\n\
+           record value { id: u32, k: key }\n\
+         }\n\
+         interface b {\n\
+           enum value { alpha, beta }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        wit.join("v0.2/contract.wit"),
+        "package example:valshadow@0.2.0;\n\
+         interface a {\n\
+           use example:shared/common@0.1.0.{key};\n\
+           record value { id: u32, k: key, note: option<string> }\n\
+         }\n\
+         interface b {\n\
+           enum value { alpha, beta, gamma }\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        wit.join("v1.0/contract.wit"),
+        "package example:valshadow@1.0.0;\n\
+         interface a {\n\
+           use example:shared/common@1.0.0.{key};\n\
+           record value { id: u32, k: key }\n\
+         }\n\
+         interface b {\n\
+           enum value { alpha, beta }\n\
+         }\n",
+    )
+    .unwrap();
+
+    lock_version(&wit.join("v0.1"), None);
+    fs::copy(wit.join("v0.1/wire.lock"), wit.join("v0.2/wire.lock")).unwrap();
+    lock_version(&wit.join("v0.2"), Some(&wit.join("v0.1/wire.lock")));
+    lock_version(&wit.join("v1.0"), None);
+
+    let opts = RustOptions::new()
+        .with_serde(true)
+        .with_eq_hash(true)
+        .with_try_from(true);
+    let files = witforge::emit::rust::plan_with_options(&wit, None, &opts).unwrap();
+
+    let convert_rs = files.files().get("convert.rs").unwrap();
+    assert!(
+        convert_rs.contains("self::value(value)"),
+        "TryFrom impl must qualify `self::value(...)` to avoid parameter shadowing:\n{convert_rs}"
+    );
+
+    let crate_dir = root.join("crate");
+    let gen_dir = crate_dir.join("src/generated");
+    files.write(&gen_dir).unwrap();
+    let rs_files: Vec<PathBuf> = files.files().keys().map(|rel| gen_dir.join(rel)).collect();
+    check_rustfmt_both_editions(&rs_files);
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    fs::copy(
+        workspace_root.join("Cargo.lock"),
+        crate_dir.join("Cargo.lock"),
+    )
+    .unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"valshadow-test\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2024\"\n\
+         \n\
+         [dependencies]\n\
+         serde = { version = \"1\", features = [\"derive\"] }\n\
+         \n\
+         [workspace]\n",
+    )
+    .unwrap();
+    fs::write(
+        crate_dir.join("src/lib.rs"),
+        "#![deny(warnings, missing_docs)]\n\
+         //! Verify TryFrom for nominal types named `value` and scoped dep serde+eq_hash.\n\
+         /// Generated contract bindings.\n\
+         pub mod generated;\n\
+         \n\
+         #[cfg(test)]\n\
+         mod tests {\n\
+             use super::generated::{v0_1, v0_2, witforge_deps};\n\
+             #[test]\n\
+             fn try_from_nominal_value_works() {\n\
+                 let v1 = v0_1::a::Value {\n\
+                     id: 7,\n\
+                     k: witforge_deps::v0::example_shared::common::Key { id: 1 },\n\
+                 };\n\
+                 let v2_ref: v0_2::a::Value = (&v1).try_into().unwrap();\n\
+                 let v2_own: v0_2::a::Value = v1.try_into().unwrap();\n\
+                 assert_eq!(v2_ref, v2_own);\n\
+                 let e1 = v0_1::b::Value::Beta;\n\
+                 let e2: v0_2::b::Value = e1.try_into().unwrap();\n\
+                 assert_eq!(e2, v0_2::b::Value::Beta);\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+    let test_out = Command::new("cargo")
+        .current_dir(&crate_dir)
+        .args(["test", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        test_out.status.success(),
+        "cargo test failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&test_out.stdout),
+        String::from_utf8_lossy(&test_out.stderr),
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}

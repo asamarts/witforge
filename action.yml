@@ -59,7 +59,7 @@ inputs:
   generators:
     description: >-
       Comma- or whitespace-separated generators to run with `--check` against `config`
-      (`rust`, `proto`, `schema`, `glue`), or `all` to run `witforge generate --check` across every
+      (`rust`, `proto`, `schema`, `glue`, `doc`), or `all` to run `witforge generate --check` across every
       configured generator and project. Set to `''` to skip generation when using `config` only for
       `check: true` or `freeze: true`.
     required: false

@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **GitHub Action `generators: doc` (`W10-133`):** Added `doc` to the accepted `generators` input
+  values in `action.yml` and `action/index.js` alongside `rust`, `proto`, `schema`, `glue`, and
+  `all`.
 - **Deterministic Markdown contract documentation (`W11-044`):** Added `witforge doc`
   (`witforge::emit::doc`) and `[project.<name>.doc]` configuration support (integrated with
   `witforge generate`, `--check`, `--diff`, and HTML-comment ownership headers
@@ -67,6 +70,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **Ninth-wave pre-0.9.0 audit hardening (`W10-133`):** Qualified `TryFrom` conversion calls in
+  `convert.rs` as `self::{function}(...)` so nominal WIT types named `value` compile cleanly without
+  parameter shadowing (`E0618`); aligned `rustfmt` (Editions 2021 and 2024) parity for per-major
+  scoped `--serde --eq-hash` derives, `[Elem; N]` boundary wrapping, deeply nested
+  `FixedLengthList`/`Map` statements in `convert.rs` and `glue.rs`, and `glue.rs` 60-column
+  `.len()` chain-width hoisting; replaced flat depth-32 alias limits in `emit::rust` and `diff`
+  with visited-set cycle guards for >32-hop cross-package alias chains; sanitized WIT docs and
+  backticked `<...>` diff type expressions in `emit::doc` Markdown output; hardened
+  `diff::compare_git_base` against directory/submodule `released` entries, working-tree submodules
+  (`.git` / `160000` gitlinks), and `shell_quote`-escaped single quotes (`'\''`) in `TMPDIR`;
+  fixed upward-discovered `[project.<name>.policy]` enforcement for relative `../` and symlinked
+  `root` paths; fixed leading-`-` `--project` fix-it hint quoting (`--project=<name>`); hardened
+  `witforge deps sync` atomic staging/backup collision avoidance and backup cleanup error
+  propagation; added `--draft` value-parser completions (`7`, `2020-12`) and fixed Bash
+  `--flag=<value>`, Zsh `NS\:NAME`/`::VIEWS:`/`init DIR`, and Fish `help`/`diff --check`
+  completions; added `witforge doc` to `ci/check-generated.sh`; and updated guides and design specs
+  for the `0.9.0` feature set.
 - **Eighth-wave pre-0.9.0 audit hardening (`W10-130`):** Validated sibling `released` manifests
   directly against `<commit>` in `diff::compare_git_base` (fixing `WF9002` failures on
   single-version diffs when sibling released directories exist) and redacted ephemeral temporary

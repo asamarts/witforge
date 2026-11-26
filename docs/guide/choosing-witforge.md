@@ -37,8 +37,8 @@ witforge does not own those concerns.
 
 ## Current subset
 
-Supported: records, variants, enums, flags, aliases, lists, options, results, named interface functions, worlds, and standard `deps/` package references.
+Supported: records, variants, enums, flags, aliases, `char`, lists, fixed-length lists (`list<T, N>`, `1 <= N <= 65536`), maps (`map<K, V>` with `bool`, integer, `char`, or `string` keys), options, results, named interface functions, worlds, and standard `deps/` package references.
 
-Refused: resources and handles, maps, tuples, chars, fixed-length lists, futures, streams, async functions, accessors, and world-defined functions/types.
+Refused: resources and handles, tuples, futures, streams, async functions, accessors, world-defined functions/types, unsupported map key types, and out-of-range fixed-length lists.
 
 Run `witforge check` against the actual package for the authoritative answer.

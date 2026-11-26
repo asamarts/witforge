@@ -20,12 +20,13 @@ consumer validation.
 
 | Output | Purpose |
 |---|---|
-| Plain Rust | Owned structs, enums, interface traits, world metadata, optional Serde derives, and opt-in `no_std` |
+| Plain Rust | Owned structs, enums, interface traits, world metadata, and opt-in Serde, `no_std`, and `Eq`/`Hash` |
 | Protobuf | Messages and method IDs with append-only numbers from `wire.lock` |
 | JSON Schema | Draft 7 (default) and opt-in Draft 2020-12 definitions for WIT-shaped values |
 | Rust glue | Checked conversion between plain Rust and prost-generated protobuf types (including opt-in `no_std`) |
-| Version adapters | Old-to-new and new-to-old conversion between adjacent contract versions |
-| Diff, IR, and diagnostics | Human, JSON, and SARIF compatibility/change reports, plus versioned JSON contract IR (`inspect`) |
+| Markdown docs | Deterministic Markdown contract reference and per-version changelog (`witforge doc`) |
+| Version adapters | Old-to-new and new-to-old conversion between adjacent contract versions (with opt-in `TryFrom`) |
+| Diff, IR, and diagnostics | Human, JSON, and SARIF compatibility/change reports (including `--git-base` and project policies), plus versioned JSON contract IR (`inspect`) |
 
 ## When it fits
 
@@ -181,9 +182,9 @@ witforge diff wit/v0.1 wit/v0.2
 
 Released WIT, lockfiles, dependency packages, and generated per-version Rust modules are immutable.
 Create a new version directory instead of editing a released one (or use the shorthand workflow
-commands `witforge init`, `witforge release`, `witforge new-version`, `witforge retire`,
-`witforge check <root>`, `witforge generate`, `witforge inspect`, and `witforge freeze` with
-automatic `witforge.toml` discovery).
+commands `witforge init`, `witforge release`, `witforge new-version`, `witforge deps sync`,
+`witforge retire`, `witforge check <root>`, `witforge generate`, `witforge diff --git-base`,
+`witforge inspect`, and `witforge freeze` with automatic `witforge.toml` discovery).
 
 Add `--check` when CI must reject source- or generated-API-breaking changes. The evolved repository
 example intentionally adds defaultable fields, so its adapters can convert old values even though
