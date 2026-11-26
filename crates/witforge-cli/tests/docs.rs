@@ -584,8 +584,8 @@ fn wiring_guide_crate_generates_compiles_and_roundtrips() {
     fs::remove_dir_all(&directory).unwrap();
 }
 
-/// Compute GitHub Flavored Markdown heading anchors (matching GitHub and kramdown GFM slugs,
-/// including `-1`, `-2` suffixes for duplicate headings).
+/// Compute GitHub Flavored Markdown heading anchors (matching GitHub and Starlight's
+/// `github-slugger`, including `-1`, `-2` suffixes for duplicate headings).
 fn markdown_anchors(markdown: &str) -> std::collections::BTreeSet<String> {
     let mut anchors = std::collections::BTreeSet::new();
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -735,6 +735,10 @@ fn verify_anchor(
     anchor: &str,
     anchor_cache: &mut std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
 ) {
+    assert!(
+        !anchor.is_empty(),
+        "{source_label}:{line_no}: empty `#` anchor in `{raw_target}`"
+    );
     let anchors = anchor_cache
         .entry(target_file.to_path_buf())
         .or_insert_with(|| {
@@ -743,15 +747,48 @@ fn verify_anchor(
             });
             markdown_anchors(&text)
         });
-    // Also accept kramdown's collapsed-dash anchor form (e.g. `060-2026-11-21` vs `060---2026-11-21`).
-    let collapsed = anchor.replace("---", "-");
-    let found =
-        anchors.contains(anchor) || anchors.iter().any(|a| a.replace("---", "-") == collapsed);
     assert!(
-        found,
+        anchors.contains(anchor),
         "{source_label}:{line_no}: broken anchor `#{anchor}` in `{}` (from `{raw_target}`)",
         target_file.display()
     );
+}
+
+fn extract_astro_ids(source: &str) -> std::collections::BTreeSet<String> {
+    let mut ids = std::collections::BTreeSet::new();
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    while i + 4 < bytes.len() {
+        let prev_ok = i == 0 || bytes[i - 1].is_ascii_whitespace() || bytes[i - 1] == b'<';
+        if prev_ok && bytes[i] == b'i' && bytes[i + 1] == b'd' && bytes[i + 2] == b'=' {
+            let quote = bytes[i + 3];
+            if quote == b'"' || quote == b'\'' {
+                let start = i + 4;
+                if let Some(end_rel) = source[start..].find(quote as char) {
+                    let val = &source[start..start + end_rel];
+                    if !val.is_empty() && !val.contains('{') {
+                        ids.insert(val.to_string());
+                    }
+                    i = start + end_rel + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    ids
+}
+
+fn is_pages_published(path: &Path, docs_root: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(docs_root) else {
+        return false;
+    };
+    let first = rel
+        .components()
+        .next()
+        .and_then(|c| c.as_os_str().to_str())
+        .unwrap_or("");
+    first != "design" && first != "aplan-pilot.md" && first != "SUMMARY.md"
 }
 
 #[derive(serde::Deserialize)]
@@ -760,57 +797,152 @@ struct RedirectEntry {
     to: String,
 }
 
-fn parse_summary_paths(summary_text: &str) -> std::collections::BTreeSet<String> {
+fn parse_summary_paths(summary_text: &str) -> Result<std::collections::BTreeSet<String>, String> {
     let mut paths = std::collections::BTreeSet::new();
+    let mut in_group = false;
+    let mut current_group_label = String::new();
+    let mut current_group_count = 0usize;
+    let mut group_count = 0usize;
+
     for (idx, raw_line) in summary_text.lines().enumerate() {
+        let line_no = idx + 1;
         let trimmed = raw_line.trim();
-        if !trimmed.starts_with("- [") {
+        if trimmed.is_empty() || trimmed.starts_with("# ") || trimmed.starts_with("<!--") {
             continue;
         }
-        let Some(open_paren) = trimmed.find("](") else {
-            panic!(
-                "docs/SUMMARY.md:{}: malformed list item `{trimmed}`",
-                idx + 1
-            );
-        };
-        let rest = &trimmed[open_paren + 2..];
-        let Some(close_paren) = rest.find(')') else {
-            panic!("docs/SUMMARY.md:{}: unclosed link in `{trimmed}`", idx + 1);
-        };
-        let rel = rest[..close_paren].trim().to_string();
-        assert!(
-            paths.insert(rel.clone()),
-            "docs/SUMMARY.md:{}: duplicate entry `{rel}`",
-            idx + 1
-        );
+        if let Some(label) = trimmed.strip_prefix("## ") {
+            let label = label.trim();
+            if label.is_empty() {
+                return Err(format!("SUMMARY.md:{line_no}: empty section heading"));
+            }
+            if in_group && current_group_count == 0 {
+                return Err(format!(
+                    "SUMMARY.md:{line_no}: section `{current_group_label}` has no entries"
+                ));
+            }
+            in_group = true;
+            current_group_label = label.to_string();
+            current_group_count = 0;
+            group_count += 1;
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("- [") {
+            if !in_group {
+                return Err(format!(
+                    "SUMMARY.md:{line_no}: list item appears before any `## Section` heading"
+                ));
+            }
+            let Some(open_paren) = rest.find("](") else {
+                return Err(format!(
+                    "SUMMARY.md:{line_no}: malformed list item `{trimmed}`"
+                ));
+            };
+            let label = rest[..open_paren].trim();
+            if label.is_empty() {
+                return Err(format!("SUMMARY.md:{line_no}: empty link label"));
+            }
+            let after_paren = &rest[open_paren + 2..];
+            let Some(rel_raw) = after_paren.strip_suffix(')') else {
+                return Err(format!(
+                    "SUMMARY.md:{line_no}: malformed or trailing text in `{trimmed}`"
+                ));
+            };
+            let rel = rel_raw.trim();
+            if rel.is_empty()
+                || rel.contains('\\')
+                || rel.contains('#')
+                || rel.contains('?')
+                || rel.chars().any(char::is_whitespace)
+                || rel.starts_with('/')
+                || rel.starts_with("./")
+                || rel
+                    .split('/')
+                    .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+                || !Path::new(rel)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                return Err(format!(
+                    "SUMMARY.md:{line_no}: invalid docs relative path `{rel}`"
+                ));
+            }
+            if !paths.insert(rel.to_string()) {
+                return Err(format!("SUMMARY.md:{line_no}: duplicate entry `{rel}`"));
+            }
+            current_group_count += 1;
+            continue;
+        }
+        return Err(format!(
+            "SUMMARY.md:{line_no}: unrecognized line `{trimmed}`"
+        ));
     }
-    paths
+
+    if group_count == 0 {
+        return Err("SUMMARY.md must define at least one `## Section` group".to_string());
+    }
+    if in_group && current_group_count == 0 {
+        return Err(format!(
+            "SUMMARY.md section `{current_group_label}` has no entries"
+        ));
+    }
+    Ok(paths)
+}
+
+fn docs_rel_path_to_canonical_route(rel: &str) -> String {
+    if rel.eq_ignore_ascii_case("index.md") || rel.eq_ignore_ascii_case("guide/index.md") {
+        return "docs/".to_string();
+    }
+    if let Some(rest) = rel
+        .strip_prefix("guide/")
+        .and_then(|s| s.strip_suffix(".md"))
+    {
+        return format!("docs/{rest}/");
+    }
+    if let Some(stem) = rel.strip_suffix(".md") {
+        return format!("docs/{stem}/");
+    }
+    format!("docs/{rel}/")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RouteTarget {
+    Markdown(PathBuf),
+    Astro(PathBuf),
+    Asset(PathBuf),
 }
 
 fn resolve_canonical_pages_route(
     route: &str,
     repo: &Path,
-    docs_root: &Path,
-) -> Option<(PathBuf, bool)> {
+    docs_routes: &std::collections::BTreeMap<String, PathBuf>,
+) -> Option<RouteTarget> {
+    if route.contains('\\') || route.split('/').any(|seg| seg == "." || seg == "..") {
+        return None;
+    }
     if route.is_empty() {
-        return Some((repo.join("site/src/pages/index.astro"), false));
+        return Some(RouteTarget::Astro(repo.join("site/src/pages/index.astro")));
     }
     if route == "outputs/" {
-        return Some((repo.join("site/src/pages/outputs.astro"), false));
+        return Some(RouteTarget::Astro(
+            repo.join("site/src/pages/outputs.astro"),
+        ));
     }
-    if route == "docs/" {
-        return Some((docs_root.join("index.md"), true));
+    if route == "llms.txt" {
+        return Some(RouteTarget::Asset(repo.join("site/src/pages/llms.txt.ts")));
     }
-    if route == "docs/quickstart/" {
-        return Some((docs_root.join("quickstart.md"), true));
+    if route == "llms-full.txt" {
+        return Some(RouteTarget::Asset(
+            repo.join("site/src/pages/llms-full.txt.ts"),
+        ));
     }
-    if let Some(slug) = route
-        .strip_prefix("docs/")
-        .and_then(|s| s.strip_suffix('/'))
-        && !slug.is_empty()
-        && !slug.contains('/')
-    {
-        return Some((docs_root.join("guide").join(format!("{slug}.md")), true));
+    if let Some(doc_path) = docs_routes.get(route) {
+        return Some(RouteTarget::Markdown(doc_path.clone()));
+    }
+    if !route.ends_with('/') {
+        let public_asset = normalize_path(&repo.join("site/public").join(route));
+        if public_asset.starts_with(repo.join("site/public")) && public_asset.is_file() {
+            return Some(RouteTarget::Asset(public_asset));
+        }
     }
     None
 }
@@ -835,35 +967,89 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
     let summary_path = docs_root.join("SUMMARY.md");
     let summary_text = fs::read_to_string(&summary_path)
         .expect("docs/SUMMARY.md must exist for Starlight sidebar and docs sync");
-    let summary_paths = parse_summary_paths(&summary_text);
-    assert!(
-        !summary_paths.is_empty(),
-        "docs/SUMMARY.md must list published docs pages"
-    );
+    let summary_paths =
+        parse_summary_paths(&summary_text).expect("docs/SUMMARY.md must parse cleanly");
+    let mut docs_routes = std::collections::BTreeMap::new();
     for rel in &summary_paths {
         let full = normalize_path(&docs_root.join(rel));
         assert!(
-            full.is_file() && full.starts_with(&docs_root),
-            "docs/SUMMARY.md references missing or invalid file: docs/{rel}"
+            full.is_file() && is_pages_published(&full, &docs_root) && rel != "guide/index.md",
+            "docs/SUMMARY.md references missing, excluded, or colliding file: docs/{rel}"
+        );
+        let route = docs_rel_path_to_canonical_route(rel);
+        assert!(
+            docs_routes.insert(route.clone(), full).is_none(),
+            "docs/SUMMARY.md maps two files to the same Starlight route `{route}`"
         );
     }
 
-    // Load legacy Pages redirect manifest (`site/scripts/redirects.json`).
+    // Load and validate EVERY entry in the legacy Pages redirect manifest (`site/scripts/redirects.json`).
     let redirects_raw = fs::read_to_string(repo.join("site/scripts/redirects.json"))
         .expect("site/scripts/redirects.json must exist");
     let redirect_entries: Vec<RedirectEntry> = serde_json::from_str(&redirects_raw)
         .expect("site/scripts/redirects.json must be valid JSON");
+    assert!(
+        !redirect_entries.is_empty(),
+        "site/scripts/redirects.json must not be empty"
+    );
     let mut redirects = std::collections::BTreeMap::new();
+    let mut seen_lower = std::collections::BTreeSet::new();
     for entry in &redirect_entries {
         let from_rel = entry
             .from
             .strip_prefix('/')
             .expect("redirect `from` must start with `/`");
+        assert!(
+            Path::new(from_rel)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html")),
+            "redirect `from` must end with `.html`: {}",
+            entry.from
+        );
+        assert!(
+            seen_lower.insert(from_rel.to_ascii_lowercase()),
+            "duplicate redirect source in site/scripts/redirects.json: {}",
+            entry.from
+        );
         let to_rel = entry
             .to
             .strip_prefix("/witforge/")
             .expect("redirect `to` must start with `/witforge/`");
+        let resolved = resolve_canonical_pages_route(to_rel, &repo, &docs_routes).unwrap_or_else(
+            || {
+                panic!(
+                    "redirect target in site/scripts/redirects.json does not resolve to a canonical route: {} -> {}",
+                    entry.from, entry.to
+                )
+            },
+        );
+        match resolved {
+            RouteTarget::Markdown(ref p) | RouteTarget::Astro(ref p) => {
+                assert!(
+                    p.is_file(),
+                    "redirect target file missing on disk: {}",
+                    p.display()
+                );
+            }
+            RouteTarget::Asset(_) => {
+                panic!(
+                    "redirect target should resolve to an HTML route, not a static asset: {}",
+                    entry.to
+                );
+            }
+        }
         redirects.insert(from_rel.to_string(), to_rel.to_string());
+    }
+    // Pinned SemVer / Cargo.toml legacy entry points must always remain covered.
+    for required_redirect in [
+        "guide/diagnostics.html",
+        "guide/index.html",
+        "quickstart.html",
+    ] {
+        assert!(
+            redirects.contains_key(required_redirect),
+            "site/scripts/redirects.json must cover legacy path `/{required_redirect}`"
+        );
     }
 
     let mut md_files = Vec::new();
@@ -882,23 +1068,10 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
     }
     collect_markdown_files(&docs_root, &mut md_files);
 
-    // Internal specs, pilot notes, and the navigation index file are excluded from the Starlight site.
-    let is_pages_published = |path: &Path| -> bool {
-        let Ok(rel) = path.strip_prefix(&docs_root) else {
-            return false;
-        };
-        let first = rel
-            .components()
-            .next()
-            .and_then(|c| c.as_os_str().to_str())
-            .unwrap_or("");
-        first != "design" && first != "aplan-pilot.md" && first != "SUMMARY.md"
-    };
-
     // Every published doc under `docs/` (except `docs/guide/index.md`, which aliases `/docs/`)
     // must appear in `docs/SUMMARY.md`, and none may carry legacy Jekyll `layout:` frontmatter.
     for file in &md_files {
-        if !is_pages_published(file) {
+        if !is_pages_published(file, &docs_root) {
             continue;
         }
         let rel = file
@@ -920,6 +1093,11 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
     }
 
     let mut anchor_cache = std::collections::BTreeMap::new();
+    let base_layout_ids = extract_astro_ids(
+        &fs::read_to_string(repo.join("site/src/layouts/BaseLayout.astro"))
+            .expect("site/src/layouts/BaseLayout.astro must exist"),
+    );
+    let pages_base_no_slash = "https://asamarts.github.io/witforge";
     let pages_prefix = "https://asamarts.github.io/witforge/";
     let github_blob = "https://github.com/asamarts/witforge/blob/main/";
     let github_tree = "https://github.com/asamarts/witforge/tree/main/";
@@ -928,12 +1106,20 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
         let rel_source = file.strip_prefix(&repo).unwrap().display().to_string();
         let text = fs::read_to_string(file).unwrap();
         let in_docs = file.starts_with(&docs_root);
-        let published_on_pages = is_pages_published(file);
+        let published_on_pages = is_pages_published(file, &docs_root);
 
         for (line_no, raw_target) in extract_markdown_links(&text) {
+            if raw_target == pages_base_no_slash
+                || raw_target.starts_with("https://asamarts.github.io/witforge#")
+                || raw_target.starts_with("https://asamarts.github.io/witforge?")
+            {
+                panic!(
+                    "{rel_source}:{line_no}: Pages URL `{raw_target}` is missing trailing slash (`https://asamarts.github.io/witforge/`)"
+                );
+            }
             if let Some(rest) = raw_target.strip_prefix(pages_prefix) {
                 // Built GitHub Pages absolute URL (e.g. from README.md): verify it resolves to a
-                // canonical Astro/Starlight page or a declared legacy redirect in `redirects.json`.
+                // canonical Astro/Starlight page, public asset, or declared legacy redirect.
                 let (before_anchor, anchor) = match rest.split_once('#') {
                     Some((p, a)) => (p, Some(a)),
                     None => (rest, None),
@@ -951,30 +1137,64 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
                     page_path
                 };
 
-                let Some((mapped, is_markdown)) =
-                    resolve_canonical_pages_route(canonical_route, &repo, &docs_root)
+                let Some(resolved) =
+                    resolve_canonical_pages_route(canonical_route, &repo, &docs_routes)
                 else {
                     panic!(
-                        "{rel_source}:{line_no}: Pages URL `{raw_target}` does not match any canonical route or legacy redirect"
+                        "{rel_source}:{line_no}: Pages URL `{raw_target}` does not match any canonical route, public asset, or legacy redirect"
                     );
                 };
-                let mapped = normalize_path(&mapped);
-                assert!(
-                    mapped.is_file() && (!is_markdown || is_pages_published(&mapped)),
-                    "{rel_source}:{line_no}: Pages URL `{raw_target}` maps to missing or unpublished target ({})",
-                    mapped.display()
-                );
-                if let Some(anchor) = anchor
-                    && is_markdown
-                {
-                    verify_anchor(
-                        &rel_source,
-                        line_no,
-                        &raw_target,
-                        &mapped,
-                        anchor,
-                        &mut anchor_cache,
-                    );
+                match resolved {
+                    RouteTarget::Markdown(mapped) => {
+                        let mapped = normalize_path(&mapped);
+                        assert!(
+                            mapped.is_file() && is_pages_published(&mapped, &docs_root),
+                            "{rel_source}:{line_no}: Pages URL `{raw_target}` maps to missing or unpublished doc ({})",
+                            mapped.display()
+                        );
+                        if let Some(anchor) = anchor {
+                            verify_anchor(
+                                &rel_source,
+                                line_no,
+                                &raw_target,
+                                &mapped,
+                                anchor,
+                                &mut anchor_cache,
+                            );
+                        }
+                    }
+                    RouteTarget::Astro(astro_file) => {
+                        let astro_file = normalize_path(&astro_file);
+                        assert!(
+                            astro_file.is_file(),
+                            "{rel_source}:{line_no}: Pages URL `{raw_target}` maps to missing Astro page ({})",
+                            astro_file.display()
+                        );
+                        if let Some(anchor) = anchor {
+                            assert!(
+                                !anchor.is_empty(),
+                                "{rel_source}:{line_no}: empty `#` anchor in `{raw_target}`"
+                            );
+                            let page_ids =
+                                extract_astro_ids(&fs::read_to_string(&astro_file).unwrap());
+                            assert!(
+                                page_ids.contains(anchor) || base_layout_ids.contains(anchor),
+                                "{rel_source}:{line_no}: broken anchor `#{anchor}` in Astro page `{}` (from `{raw_target}`)",
+                                astro_file.display()
+                            );
+                        }
+                    }
+                    RouteTarget::Asset(asset_file) => {
+                        assert!(
+                            asset_file.is_file(),
+                            "{rel_source}:{line_no}: Pages URL `{raw_target}` maps to missing asset ({})",
+                            asset_file.display()
+                        );
+                        assert!(
+                            anchor.is_none(),
+                            "{rel_source}:{line_no}: non-HTML Pages asset `{raw_target}` should not carry a `#` anchor"
+                        );
+                    }
                 }
                 continue;
             }
@@ -1051,26 +1271,53 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
             );
 
             // 2. Built GitHub Pages site check: any relative link from a published page MUST stay
-            //    inside the published `docs/` tree (not `docs/design/`, `docs/aplan-pilot.md`, or
-            //    outside `docs/`), where `site/scripts/sync-docs.mjs` rewrites `.md` -> Starlight routes.
+            //    inside the published `docs/` tree and target a `.md` file or trailing-slash
+            //    directory containing `index.md`, where `site/scripts/sync-docs.mjs` rewrites it
+            //    to a canonical Starlight route.
             if published_on_pages {
                 assert!(
-                    is_pages_published(&target),
+                    is_pages_published(&target, &docs_root),
                     "{rel_source}:{line_no}: published page links relatively to excluded path `{raw_target}`; link to GitHub instead"
                 );
+                if target.is_dir() {
+                    assert!(
+                        rel_path.ends_with('/') && target.join("index.md").is_file(),
+                        "{rel_source}:{line_no}: published page directory link `{raw_target}` must end with `/` and contain `index.md`"
+                    );
+                } else {
+                    assert!(
+                        target
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("md")),
+                        "{rel_source}:{line_no}: published page relative link `{raw_target}` must target a `.md` file"
+                    );
+                }
             }
 
-            if let Some(anchor) = anchor
-                && target.extension().and_then(std::ffi::OsStr::to_str) == Some("md")
-            {
-                verify_anchor(
-                    &rel_source,
-                    line_no,
-                    &raw_target,
-                    &target,
-                    anchor,
-                    &mut anchor_cache,
-                );
+            if let Some(anchor) = anchor {
+                let anchor_target = if target.is_dir() {
+                    target.join("index.md")
+                } else {
+                    target.clone()
+                };
+                if anchor_target.extension().and_then(std::ffi::OsStr::to_str) == Some("md") {
+                    // `docs/guide/index.md` is aliased to `/witforge/docs/` (`docs/index.md`) in Starlight.
+                    let effective_target = if published_on_pages
+                        && anchor_target == docs_root.join("guide/index.md")
+                    {
+                        docs_root.join("index.md")
+                    } else {
+                        anchor_target
+                    };
+                    verify_anchor(
+                        &rel_source,
+                        line_no,
+                        &raw_target,
+                        &effective_target,
+                        anchor,
+                        &mut anchor_cache,
+                    );
+                }
             }
         }
     }
@@ -1094,12 +1341,17 @@ fn line_contains_em_dash(line: &str) -> bool {
                 j += 1;
             }
             let digits_start = j;
-            while j < bytes.len() && bytes[j] != b';' && j - digits_start <= 12 {
+            while j < bytes.len()
+                && if is_hex {
+                    bytes[j].is_ascii_hexdigit()
+                } else {
+                    bytes[j].is_ascii_digit()
+                }
+            {
                 j += 1;
             }
-            if j < bytes.len() && bytes[j] == b';' {
-                let digits = &lower[digits_start..j];
-                let trimmed = digits.trim_start_matches('0');
+            if j > digits_start && bytes.get(j) == Some(&b';') {
+                let trimmed = lower[digits_start..j].trim_start_matches('0');
                 if (!is_hex && trimmed == "8212") || (is_hex && trimmed == "2014") {
                     return true;
                 }
@@ -1111,16 +1363,96 @@ fn line_contains_em_dash(line: &str) -> bool {
 }
 
 #[test]
+fn doc_validators_reject_em_dashes_bad_summary_and_bad_routes() {
+    // Em-dash detection positive cases (literal, named, decimal, hex, arbitrarily zero-padded)
+    for bad in [
+        "hello \u{2014} world",
+        "hello &mdash; world",
+        "hello &MDASH; world",
+        "&&mdash;",
+        "&#8212;",
+        "&#08212;",
+        "&#000000000000008212;",
+        "&#x2014;",
+        "&#X2014;",
+        "&#x0000000000002014;",
+    ] {
+        assert!(
+            line_contains_em_dash(bad),
+            "expected em-dash detector to reject `{bad}`"
+        );
+    }
+    // Em-dash detection negative cases
+    for ok in [
+        "plain hyphen - and double -- and triple ---",
+        "en dash entity &#8211; and &#x2013;",
+        "unterminated &#8212 without semicolon",
+        "unrelated &amp; and &#65;",
+    ] {
+        assert!(
+            !line_contains_em_dash(ok),
+            "unexpected em-dash match on `{ok}`"
+        );
+    }
+
+    // SUMMARY.md strict parsing
+    assert!(parse_summary_paths("## Group\n- [A](index.md)\n").is_ok());
+    for bad_summary in [
+        "",
+        "## Empty\n",
+        "- [Before](index.md)\n",
+        "## G\n- [A](index.md)\n- [B](index.md)\n",
+        "## G\n- [A](../escape.md)\n",
+        "## G\n- [A](guide\\wiring.md)\n",
+        "## G\n- [A](index.md) trailing\n",
+        "## G\n- [A](not-markdown.txt)\n",
+        "## G\n- bare item\n",
+    ] {
+        assert!(
+            parse_summary_paths(bad_summary).is_err(),
+            "expected parse_summary_paths to reject `{bad_summary:?}`"
+        );
+    }
+
+    // Canonical route resolution rejects `/docs/index/` and traversal/backslashes
+    let repo = normalize_path(&repository());
+    let mut docs_routes = std::collections::BTreeMap::new();
+    docs_routes.insert("docs/".to_string(), repo.join("docs/index.md"));
+    docs_routes.insert(
+        "docs/wiring/".to_string(),
+        repo.join("docs/guide/wiring.md"),
+    );
+    assert_eq!(
+        resolve_canonical_pages_route("docs/", &repo, &docs_routes),
+        Some(RouteTarget::Markdown(repo.join("docs/index.md")))
+    );
+    assert_eq!(
+        resolve_canonical_pages_route("outputs/", &repo, &docs_routes),
+        Some(RouteTarget::Astro(
+            repo.join("site/src/pages/outputs.astro")
+        ))
+    );
+    assert!(resolve_canonical_pages_route("llms.txt", &repo, &docs_routes).is_some());
+    assert!(resolve_canonical_pages_route("docs/index/", &repo, &docs_routes).is_none());
+    assert!(resolve_canonical_pages_route("docs/wiring", &repo, &docs_routes).is_none());
+    assert!(resolve_canonical_pages_route("docs/..\\index/", &repo, &docs_routes).is_none());
+}
+
+#[test]
 fn published_docs_and_readme_contain_no_em_dashes() {
     let repo = normalize_path(&repository());
-    let mut files = vec![
-        repo.join("README.md"),
-        repo.join("docs/SUMMARY.md"),
-        repo.join("docs/index.md"),
-        repo.join("docs/quickstart.md"),
-    ];
-    collect_markdown_files(&repo.join("docs/guide"), &mut files);
+    let docs_root = repo.join("docs");
+    let mut all_docs = Vec::new();
+    collect_markdown_files(&docs_root, &mut all_docs);
+
+    let mut files = vec![repo.join("README.md"), docs_root.join("SUMMARY.md")];
+    files.extend(
+        all_docs
+            .into_iter()
+            .filter(|path| is_pages_published(path, &docs_root)),
+    );
     files.sort();
+    files.dedup();
 
     let mut violations = Vec::new();
     for file in &files {

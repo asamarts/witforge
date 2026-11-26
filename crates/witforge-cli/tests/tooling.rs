@@ -1,8 +1,9 @@
-//! Runs the repository's script and Action test suites from `cargo test`.
+//! Runs the repository's script, Action, and site-tooling test suites from `cargo test`.
 //!
-//! The release scripts are tested by shell scripts and the GitHub Action by `node --test`. CI
-//! runs both directly as well; running them here gives each suite a test name, so that a plan
-//! task whose work they cover can cite it as evidence.
+//! The release scripts are tested by shell scripts, and both the GitHub Action (`action/test.js`)
+//! and the documentation site scripts (`site/scripts/test-scripts.mjs`) are tested by
+//! `node --test`. CI runs them directly as well; running them here gives each suite a Cargo test
+//! name so plan tasks can cite it as evidence.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -54,15 +55,24 @@ fn run_node_test_suite(script_rel_path: &str) {
         .args(["--test", script_rel_path]);
     // CI always has Node, so a missing interpreter is a failure there. A contributor without
     // Node still gets a passing `cargo test`, and a line saying what did not run.
-    if let Err(error) = Command::new("node").arg("--version").output() {
-        assert!(
-            error.kind() == ErrorKind::NotFound && std::env::var_os("CI").is_none(),
-            "cannot run node: {error}"
-        );
-        eprintln!("node is not installed; {script_rel_path} did not run");
-        return;
-    }
-    assert_success(&format!("node --test {script_rel_path}"), &mut command);
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            assert!(
+                error.kind() == ErrorKind::NotFound && std::env::var_os("CI").is_none(),
+                "cannot run node: {error}"
+            );
+            eprintln!("node is not installed; {script_rel_path} did not run");
+            return;
+        }
+    };
+    assert!(
+        output.status.success(),
+        "node --test {script_rel_path} failed ({})\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
