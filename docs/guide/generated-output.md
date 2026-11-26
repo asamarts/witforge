@@ -65,10 +65,12 @@ pub mod ingest {
 Full files: [`v0_1.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/rust/v0_1.rs),
 [`worlds.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/rust/worlds.rs),
 and [`mod.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/rust/mod.rs).
-Passing `--serde` (or setting `serde = true` under `[project.<name>.rust]`) adds plain,
+Opt-in Rust flags enable additional profiles per project: `--serde` (`serde = true`) adds plain,
 format-independent `::serde::Serialize` and `::serde::Deserialize` derives using these Rust
-identifiers; see [JSON projections](json-projections.md) for the exact JSON keys, reading rules,
-and `serde_json` edge cases.
+identifiers; `--no-std` (`no-std = true`) emits `#![no_std]` + `alloc` paths; `--eq-hash`
+(`eq-hash = true`) derives `Eq` and `Hash` on float-free types; and `--try-from` (`try-from = true`)
+emits `TryFrom` impls in `convert.rs`. See [JSON projections](json-projections.md) for the exact
+Serde JSON keys, reading rules, and `serde_json` edge cases.
 
 ## Protobuf
 
@@ -236,3 +238,7 @@ pub fn task(
 
 Full file:
 [`convert.rs`](https://github.com/asamarts/witforge/blob/main/examples/evolved/generated/rust/convert.rs).
+
+To emit deterministic Markdown contract reference pages (`index.md` and per-version `v<major>_<minor>.md`)
+for your own contract, run `witforge doc`; to export the deterministic JSON contract IR for tooling,
+run `witforge inspect --json`.

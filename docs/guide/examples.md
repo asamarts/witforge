@@ -45,5 +45,9 @@ The example adds defaultable fields. Version-adapter generation accepts them, bu
 still reports a source/generated-API break. Use plain `diff` to review the example; add `--check`
 when project policy forbids those changes.
 
-Generated output is committed for review and checked for drift in CI. Run any generator without
-`--check` to update it, review the diff, then run the same command with `--check`.
+Generated output is committed for review and checked for drift in CI (or run
+`witforge generate --config witforge.toml --check` to verify every configured emitter in one step).
+You can also run `witforge inspect wit --json` to inspect either example's versioned contract IR,
+or `witforge doc wit --out /path/to/docs` to preview generated Markdown contract reference pages.
+Run any generator without `--check` to update committed files, review the diff, then run the same
+command with `--check`.

@@ -49,8 +49,9 @@ the record must be updated.
   minors of the same major can actually decode each other's protobuf binary messages under the
   decode profile ([`non-rust.md`](non-rust.md) / generated Rust glue):
   - `new<-old` (`new_reads_old`): whether a newer reader accepts messages sent by an older writer.
-    Adding a required record field or parameter — including required `list<u8>` (`optional bytes`),
-    `list<T, N>`, or `char` — breaks `new<-old` (`MissingField` or `InvalidLength`), as does removing an enum case, variant case, or function.
+    Adding a required record field or parameter (including required `list<u8>` (`optional bytes`),
+    `list<T, N>`, or `char`) breaks `new<-old` (`MissingField` or `InvalidLength`), as does
+    removing an enum case, variant case, or function.
     Adding an `option<T>` field, a non-byte `list<T>` field, a `map<K, V>` field, or a flag stays compatible.
   - `old<-new` (`old_reads_new`): whether an older reader accepts messages sent by a newer writer.
     Adding an enum case, variant case, or function breaks `old<-new` (`UnknownEnumValue` /
@@ -60,24 +61,27 @@ the record must be updated.
 
 `decode` applies within one major (two majors have two distinct protobuf packages negotiated
 separately) and is distinct from in-process `convert.rs` adapters. Bare `witforge diff --check`
-gates on `wire,source,api` and does not gate on `decode` by default; pass `--check=decode` or
+gates on `[project.<name>.policy].diff-check` when configured in `witforge.toml`, or on
+`wire,source,api` by default without `decode`; pass `--check=decode` or
 `--check=wire,decode` when rolling upgrades require two services at different minors to talk on
 the wire.
 
 ## Version adapters
 
-`witforge rust` emits `convert.rs` for adjacent versions in both directions.
+`witforge rust` emits `convert.rs` for adjacent versions in both directions. Pass `--try-from` (or
+set `try-from = true` under `[project.<name>.rust]`) to also generate `TryFrom<&From>` and owned
+`TryFrom<From>` implementations for converted nominal types.
 
-Old-to-new conversion defaults an added record field only when its type is `option<T>` (to `None`), `list<T>` (to an empty list), or `map<K, V>` (to an empty `BTreeMap`), and sets a flag added to an existing flags type to `false`. A required addition of any other type, including a field whose type is a fixed-length list, flags, record, or scalar type, is refused when the adapters are generated.
+Old-to-new conversion defaults an added record field only when its type is `option<T>` (to `None`), `list<T>` (to an empty list, including `list<u8>` in-process), or `map<K, V>` (to an empty `BTreeMap`), and sets a flag added to an existing flags type to `false`. A required addition of any other type, including a field whose type is a fixed-length list, flags, record, or scalar type, is refused within a major (`WF2002`) when the adapters are generated.
 
-New-to-old conversion drops fields and flags that the older version does not have; it does not report them. It returns `MissingMember` when the older version requires a field the newer version removed. In either direction, a value whose enum or variant case the target version does not have returns `UnknownCase`. Retypes and kind changes are refused.
+New-to-old conversion drops fields and flags that the older version does not have; it does not report them. It returns `MissingMember` when the older version requires a field the newer version removed (except `option<T>`, `list<T>`, or `map<K, V>`, which default to empty). In either direction, a value whose enum or variant case the target version does not have returns `UnknownCase`. Retypes and kind changes are refused within a major.
 
 ## Starting a new major
 
-A breaking change — retyping a field, changing a type's kind, adding a required field without a
-default, renaming a type, or upgrading a dependency — belongs in a new major version (`v1.0` after
-`v0.x`, or `v2.0` after `v1.x`). A new major starts with a fresh lockfile (`--first`) and gets its
-own protobuf package (`v1.proto`) and glue module (`v1.rs`).
+A breaking change (such as retyping a field, changing a type's kind, adding a required field
+without a default, renaming a type, or upgrading a dependency) belongs in a new major version
+(`v1.0` after `v0.x`, or `v2.0` after `v1.x`). A new major starts with a fresh lockfile (`--first`)
+and gets its own protobuf package (`v1.proto`) and glue module (`v1.rs`).
 
 ### In the same WIT root (recommended)
 
@@ -98,10 +102,10 @@ Across a major boundary:
 - **Plain types always generate.** `witforge rust` never refuses a major boundary, so `v1_0.rs`
   and every earlier live version's types are always written.
 - **Partial adapters generate per direction.** Types that still convert under the normal rules get
-  adapters in `convert.rs`. Types that do not — retypes, kind changes, required additions (in the
-  old-to-new direction only; new-to-old drops the new field and still generates), payload-presence
-  changes, types with no namesake, types using an upgraded dependency, and any containing type
-  transitively — are omitted in that direction.
+  adapters in `convert.rs`. Types that do not (retypes, kind changes, required additions in the
+  old-to-new direction, payload-presence changes, types with no namesake, types using an upgraded
+  dependency, and any containing type transitively) are omitted in that direction. Required
+  additions still generate new-to-old adapters because the new field is dropped.
 - **Every omission is listed twice.** The top of `convert.rs` carries a sorted, deterministic
   comment block listing every omitted `(from -> to, type, reason)` pair (`--check` covers it), and
   `witforge diff wit/v0.2 wit/v1.0` reports the exact same list. Write manual adapters for those
@@ -148,7 +152,9 @@ cross-major bridge in your own crate.
 ## Released versions
 
 List immutable version directories in `wit/released` using `witforge release wit/v0.1` (which
-validates the directory and predecessor before appending to `wit/released`). Do not edit a
+validates the directory and predecessor before appending to `wit/released`; pass
+`--forbid-unstable` or set `[project.<name>.policy].forbid-unstable-in-release = true` to reject
+releasing any `@unstable` declaration). Do not edit a
 released version's WIT, lockfile, dependency packages, or generated per-version Rust module.
 Create a new version directory instead (`witforge new-version wit` for a minor, or
 `witforge new-version wit --major` for a new major).

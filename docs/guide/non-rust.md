@@ -46,11 +46,14 @@ boundary.
 For every independently implemented contract, keep fixtures that cover:
 
 - each narrow integer's minimum, maximum, and one out-of-range value;
+- `char` valid Unicode scalars, UTF-16 surrogates (`0xD800..=0xDFFF`), and values above `0x10FFFF`;
 - every required optional/message field both present and absent;
 - `option<T>` absent and present;
 - enum zero, every known case, and an unknown number;
 - every variant/result case, an unset `oneof`, and a present option wrapper whose `oneof` is unset;
 - empty and non-empty lists, including nested wrappers;
+- fixed-length `list<T, N>` with exact length `N`, length `N - 1`, and length `N + 1`;
+- `map<K, V>` empty and non-empty, including narrow integer or `char` keys and invalid entry values;
 - protobuf binary and proto3-JSON when both transports are supported.
 
 Run the fixtures through every language implementation and through a Rust implementation using

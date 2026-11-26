@@ -85,7 +85,7 @@ request diffs regardless of `format`.
 - When `version` is empty and the Action ref is a release tag (`@v0.9.0`), the Action installs that
   exact release.
 - When `version` is empty and the Action ref is a commit SHA, branch, floating tag, or local `./`,
-  the Action installs the workspace version recorded in `Cargo.toml` at that exact ref — it never
+  the Action installs the workspace version recorded in `Cargo.toml` at that exact ref; it never
   silently falls back to `latest`. If that version has no published release assets yet, the step
   fails and names the `version` input.
 - Pass `version: latest` explicitly only if you intentionally want floating latest releases.
@@ -140,12 +140,19 @@ witforge diff wit/v0.1 wit/v0.2 --check
 witforge generate --config witforge.toml --check
 ```
 
-Run `witforge freeze` (with full Git history), `witforge check <wit-root>` (which checks every
-version directory, predecessor lockfile continuity, and the pinned dependency graph), `diff --check`
-(or `witforge diff --git-base origin/main --check`, defaulting to `[project.<name>.policy].diff-check`
-when configured in `witforge.toml`), `witforge deps sync --check` (when vendored `deps/` are shared
-across unreleased minors), and `witforge generate --check` (keeping generated
-per-version modules frozen alongside the released WIT directories).
+Recommended direct CI gates:
+
+- `witforge freeze --config witforge.toml` (with `fetch-depth: 0`) to verify released history and
+  one-way retirement transitions;
+- `witforge check <wit-root>` to check every version directory, predecessor lockfile continuity,
+  and the pinned dependency graph;
+- `witforge diff --git-base origin/main --check` (or `witforge diff old new --check`), which uses
+  `[project.<name>.policy].diff-check` when configured in `witforge.toml` (set
+  `forbid-unstable-in-release = true` in the same policy table to block releasing `@unstable`
+  items);
+- `witforge deps sync --check` when vendored `deps/` are shared across unreleased minors;
+- `witforge generate --config witforge.toml --check` to verify Rust, protobuf, JSON Schema, glue,
+  and Markdown docs (`witforge doc`) have not drifted.
 
 ## Consumer tests
 

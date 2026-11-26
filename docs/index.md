@@ -11,9 +11,9 @@ witforge compiles one hand-written WIT package into runtime-independent contract
 - protobuf messages with stable field and method numbers;
 - JSON Schema (Draft 7 default, opt-in Draft 2020-12);
 - checked Rust/protobuf conversion glue;
-- deterministic Markdown contract reference docs (`witforge doc`);
+- deterministic Markdown contract reference docs (`witforge doc`) and versioned JSON contract IR (`witforge inspect --json`);
 - adapters between adjacent contract versions;
-- compatibility reports (`diff`, `--git-base`, project policies) and deterministic CI checks.
+- compatibility reports (`diff`, `--git-base`, project policies), `deps sync`, and deterministic CI checks.
 
 It is a contract compiler, not a Wasm runtime, RPC framework, or replacement for wit-bindgen.
 

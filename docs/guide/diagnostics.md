@@ -15,14 +15,14 @@ with forward slashes when inside the working directory; SARIF uses an absolute `
 files outside the working directory. Logical WIT paths (such as `example:pkg/types/record.field`)
 appear in `logical` (JSON) and `logicalLocations` (SARIF).
 
-## Subset and contract codes (`WF1001`–`WF1033`)
+## Subset and contract codes (`WF1001`-`WF1033`)
 
 ### WF1001
 
 **Severity:** `error`
 
 Unrecognised WIT construct outside the supported subset. Legacy umbrella code; individual subset
-rules now emit `WF1010`–`WF1030`.
+rules now emit `WF1010`-`WF1030`.
 
 ### WF1002
 
@@ -114,8 +114,8 @@ Tuples are not supported; define a named `record` so every field has a stable wi
 
 **Severity:** `error` · **Prior:** `WF1001`
 
-Unsupported `map` key type. WIT `map<K, V>` keys must be `bool`, an integer (`u8`–`u64`,
-`s8`–`s64`), `char`, or `string`.
+Unsupported `map` key type. WIT `map<K, V>` keys must be `bool`, an integer (`u8`-`u64`,
+`s8`-`s64`), `char`, or `string`.
 
 ### WF1021
 
@@ -204,7 +204,7 @@ Pinned dependency graphs differ across versions under a WIT root, across `diff` 
 against a version-directory `--against` baseline, or between `deps/` trees checked by
 `witforge deps sync --check`.
 
-## Lockfile codes (`WF1100`–`WF1205`)
+## Lockfile codes (`WF1100`-`WF1205`)
 
 ### WF1100
 
@@ -307,7 +307,7 @@ version in place.
 
 `witforge lock` restored a draft removal.
 
-## Generation codes (`WF2001`–`WF2002`)
+## Generation codes (`WF2001`-`WF2002`)
 
 ### WF2001
 
@@ -323,7 +323,7 @@ suggested generator command.
 Version-to-version Rust conversion generation (`convert.rs`) refused an incompatible evolution
 between adjacent versions (such as adding a non-defaulted record field or retyping a member).
 
-## Diff codes (`WF3001`–`WF3004`)
+## Diff codes (`WF3001`-`WF3004`)
 
 ### WF3001
 
@@ -354,7 +354,7 @@ the older version requires a member removed in the newer version.
 `witforge diff` found a non-defaulted record field addition, retyped member, or cross-major
 conversion omission that will cause `convert.rs` generation to refuse or omit that item.
 
-## Operational and internal codes (`WF9000`–`WF9004`)
+## Operational and internal codes (`WF9000`-`WF9004`)
 
 ### WF9000
 

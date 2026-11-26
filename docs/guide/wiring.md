@@ -5,7 +5,7 @@ title: Wiring a Rust crate and installing witforge
 
 # Wiring a Rust crate and installing witforge
 
-This guide takes an empty Rust crate to a compiling plain-Rust ↔ protobuf round trip, explains how
+This guide takes an empty Rust crate to a compiling plain-Rust and protobuf round trip, explains how
 to install and verify prebuilt binaries, and covers the `--lock`, `--released`, and `released`
 configuration options.
 
@@ -31,9 +31,9 @@ provenance attestation):
 | Linux x86_64 (gnu) | `x86_64-unknown-linux-gnu` | glibc >= 2.39 (Ubuntu 24.04 runner) |
 | Linux arm64 (static) | `aarch64-unknown-linux-musl` | Portable across glibc/Alpine (from 0.8.0) |
 | Linux arm64 (gnu) | `aarch64-unknown-linux-gnu` | glibc >= 2.39, published from 0.7.0 |
-| macOS Intel | `x86_64-apple-darwin` | — |
-| macOS Apple silicon | `aarch64-apple-darwin` | — |
-| Windows x86_64 | `x86_64-pc-windows-msvc` | — |
+| macOS Intel | `x86_64-apple-darwin` | Native binary |
+| macOS Apple silicon | `aarch64-apple-darwin` | Native binary |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | Native binary |
 
 Windows `arm64` builds are **not** provided; install from crates.io with `cargo install
 witforge-cli --locked` on that target. `cargo binstall witforge-cli` is also configured via
@@ -263,6 +263,10 @@ cargo run --manifest-path my-contract-crate/Cargo.toml
   When a `#![no_std]` contract uses `map<K, V>`, configure `prost_build::Config::btree_map(["."])`
   in `build.rs` (or via `witforge_build::Config::with_prost_config`) so prost emits `BTreeMap`
   instead of `std::collections::HashMap`.
+- **Additional opt-in Rust derives and adapters:** Set `eq-hash = true` (`--eq-hash`) to derive
+  `Eq` and `Hash` on float-free generated types, and `try-from = true` (`--try-from`) to emit
+  `TryFrom` implementations in `convert.rs` for converted nominal types. See
+  [Generation](generation.md) for the full `witforge.toml` layout.
 
 ## Simplifying `build.rs` with `witforge-build`
 

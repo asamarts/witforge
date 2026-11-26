@@ -50,14 +50,15 @@ spelling rather than the WIT spelling:
 - **Reading and evolution:** derived Serde treats an omitted `option<T>` field as `None` (writing
   `None` as `null`) and silently ignores unknown fields. Reading a `v0.1` JSON document directly as
   `v0.2` therefore yields `None` for an added `option<T>` field, but fails with a missing-field
-  error for an added `list<T>` or `map<K, V>` field—unlike generated `convert.rs`, which defaults
-  `option<T>`, `list<T>`, and `map<K, V>`.
+  error for an added `list<T>` or `map<K, V>` field (unlike generated `convert.rs`, which defaults
+  `option<T>`, `list<T>`, and `map<K, V>`).
 - **`serde_json` losses:** because JSON has no distinct representation for nested nulls or
   non-finite floats, `serde_json` serializes `Some(None)` on nested options (`option<option<T>>`,
   through aliases, or in lists) as `null` and deserializes it as `None`, and serializes `NaN` /
   `±Infinity` as `null` (which fails to deserialize for required fields/lists and deserializes as
   `None` inside `option<f32>`/`option<f64>`). Formats that tag `Option` or encode binary IEEE-754
-  floats round-trip both. See `docs/design/emitters.md` section 3.3 for the full mapping table.
+  floats round-trip both. See [the emitter specification](https://github.com/asamarts/witforge/blob/main/docs/design/emitters.md)
+  section 3.3 for the full mapping table.
 
 ## JSON Schema (Draft 7 / Draft 2020-12)
 
@@ -76,7 +77,7 @@ while accepting in-range decimals that round to `f32`; `NaN` and `±Infinity` ha
 set to the value schema and `propertyNames` constraining non-`string` keys (`bool`, integer
 patterns, or single-character `char` keys).
 
-Every WIT `result`—including `result<T>`, `result<_, E>`, and bare `result`—is a closed single-key
+Every WIT `result` (including `result<T>`, `result<_, E>`, and bare `result`) is a closed single-key
 object with `"ok"` or `"err"`, using `null` for a side without a payload (matching payload-less
 variant cases):
 

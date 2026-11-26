@@ -91,5 +91,7 @@ Each emitter and project needs its own non-overlapping output directory. Every g
 ## Inspect the result
 
 The [generated-output guide](generated-output.md) shows current Rust, protobuf, JSON Schema,
-glue, and version-adapter output from the committed runnable examples. The full files are checked
-with `--check` in this repository's CI.
+glue, and version-adapter output from the committed runnable examples. Run `witforge doc` (or
+configure `[project.<name>.doc]`) to generate deterministic Markdown contract reference pages and
+per-version changelogs, or run `witforge inspect --json` to export the versioned JSON contract IR.
+The full example files are checked with `--check` in this repository's CI.

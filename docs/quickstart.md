@@ -32,7 +32,7 @@ Prebuilt archives (with `.sha256` checksums, `LICENSE-APACHE`, `LICENSE-MIT`, `R
 from 0.7.0 SLSA build provenance attestations) are published on GitHub Releases for Linux x86_64
 and Linux arm64 (static `musl` from 0.8.0 alongside `gnu`), macOS Intel and Apple silicon, and
 Windows x86_64; `cargo binstall witforge-cli` is also configured. Windows arm64 builds are not
-provided — use `cargo install witforge-cli --locked` on that platform (or see the
+provided; use `cargo install witforge-cli --locked` on that platform (or see the
 [wiring and installation guide](guide/wiring.md) for manual download and verification commands).
 
 From this repository, before or after publication:
@@ -244,17 +244,23 @@ witforge diff my-contract/wit/v0.1 my-contract/wit/v0.2 --json
 witforge diff my-contract/wit/v0.1 my-contract/wit/v0.2 --check   # exits 1: see below
 ```
 
-`--check` fails on wire-, source-, or generated-API-breaking changes. It exits 1 for the change
+`--check` fails on wire-, source-, or generated-API-breaking changes (or the view set configured in
+`[project.<name>.policy].diff-check`). It exits 1 for the change
 above: the two added fields keep every wire number and convert from old values, but Rust code
 that constructs a `Greeting` has to be updated, so `diff` reports them as source- and
-API-breaking. `--json` is the complete diff report. `diff` also reports a note when a shared record type's generated new-to-old converter
+API-breaking. To compare your working tree directly against a Git commit or branch without
+checking out a second tree, pass `--git-base <rev>`. `--json` is the complete diff report, and
+`witforge inspect --json` exports the versioned JSON contract IR for tooling. `diff` also reports a
+note when a shared record type's generated new-to-old converter
 is guaranteed to fail because the older version requires a member the newer version removed; the
 notes do not change the change counts or `--check` result. To make any command's diagnostics
 machine-readable, add `--format json` or `--format sarif`; the catalogue is in the
-[diagnostics specification](https://github.com/asamarts/witforge/blob/main/docs/design/diagnostics.md).
+[diagnostic codes guide](guide/diagnostics.md).
 
-For CI, [`asamarts/witforge`](https://github.com/asamarts/witforge) publishes an Action that
-installs the matching release and can run the same checks; see
+For Markdown contract reference pages (`index.md` and one `v<major>_<minor>.md` per live version),
+run `witforge doc` (or configure `[project.<name>.doc]`). For CI,
+[`asamarts/witforge`](https://github.com/asamarts/witforge) publishes an Action that
+installs the matching release and can run the same checks; see the [CI guide](guide/ci.md) and
 the [Action specification](https://github.com/asamarts/witforge/blob/main/docs/design/action.md).
 
 ## Non-Rust consumers
@@ -314,12 +320,13 @@ world plugin {
 }
 ```
 
-`witforge rust`, `proto`, `schema`, and `glue` generate the dependency bindings alongside the
-local output. See the
+`witforge rust`, `proto`, `schema`, `glue`, and `doc` generate the dependency bindings alongside the
+local output, and `witforge deps sync` keeps vendored `deps/` trees synchronized across unreleased
+versions within a major. See the
 [dependency specification](https://github.com/asamarts/witforge/blob/main/docs/design/dependencies.md)
 for the generated files and dependency glue layout.
 
-Serde is opt-in per project:
+Serde and other Rust profile options (`no-std`, `eq-hash`, `try-from`) are opt-in per project:
 
 ```toml
 [project.demo.rust]
@@ -327,8 +334,10 @@ out = "generated/rust"
 serde = true
 ```
 
-The default generated output is unchanged; enabling Serde requires the consumer's `serde` crate
-with the `derive` feature. `--serde` and `--no-serde` override the configuration.
+The default generated output has no external crate dependencies; enabling Serde requires the
+consumer's `serde` crate with the `derive` feature. CLI flags (`--serde`/`--no-serde`,
+`--no-std`/`--std`, `--eq-hash`/`--no-eq-hash`, `--try-from`/`--no-try-from`) override the
+configuration.
 
 ## JSON projections
 
@@ -348,10 +357,10 @@ protocol differs, and do not validate one projection with another projection's s
 
 ## Examples
 
-- [`examples/single`](https://github.com/asamarts/witforge/tree/main/examples/single) — one
+- [`examples/single`](https://github.com/asamarts/witforge/tree/main/examples/single): one
   version, all four generators, config-driven.
-- [`examples/evolved`](https://github.com/asamarts/witforge/tree/main/examples/evolved) — released
-  v0.1 plus draft v0.2, lock continuity and generated conversions.
+- [`examples/evolved`](https://github.com/asamarts/witforge/tree/main/examples/evolved): released
+  v0.1 plus draft v0.2, lock continuity, and generated conversions.
 
 ## Troubleshooting
 

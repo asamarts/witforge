@@ -200,7 +200,7 @@ explicit `--from` version.
 
 Manage vendored `deps/` trees across unreleased version directories. Subcommands:
 
-- `witforge deps sync` — synchronize `deps/` trees within each major without modifying released or retired directories.
+- `witforge deps sync`: synchronize `deps/` trees within each major without modifying released or retired directories.
 
 ### `witforge deps sync`
 

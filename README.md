@@ -10,8 +10,8 @@
 need.**
 
 witforge checks a deliberately portable WIT subset, locks protobuf field and method numbers, and
-generates stable Rust, protobuf, JSON Schema, glue, compatibility reports, and adapters between
-contract versions.
+generates stable Rust, protobuf, JSON Schema, glue, Markdown docs, compatibility reports, and
+adapters between contract versions.
 
 Current release: **0.9.0**. The 1.0 release remains intentionally gated on successful independent
 consumer validation.
