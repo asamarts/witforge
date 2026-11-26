@@ -36,7 +36,8 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   trailing whitespace and blank lines at end-of-file are rejected even when they entered in an
   earlier commit rather than the current diff.
 - **workflows and scripts**: pinned, checksum-verified actionlint and shellcheck (the runner
-  image's shellcheck changes version, and with it findings and codes) over both workflows, with
+  image's shellcheck changes version, and with it findings and codes) over all three workflows
+  (`ci.yml`, `release.yml`, and `docs.yml`), with
   shellcheck's masked-return check enabled for every `run:` script (a `$(...)` whose failure
   would not fail its step, as in `echo "x=$(cmd)"`), and shellcheck over `ci/`. It also runs
   `ci/test-release-asset.sh` for release archive/checksum generation,
@@ -167,15 +168,34 @@ The Action's own temporary directory is inside the disposable GitHub runner, not
 - **Rulesets.** `main` cannot be deleted or force-pushed, and a pull request into it needs
   `ci ok`. Release tags (`v*.*.*`) cannot be moved or deleted. Repository admins can bypass
   both, so a broken check never blocks a fix, but pull requests are the normal path.
-- **Dependabot** (`.github/dependabot.yml`) opens one grouped pull request per week for cargo
-  and one for GitHub Actions; CI, including the MSRV job, decides whether it can merge.
-  Dependabot alerts are on.
+- **Dependabot** (`.github/dependabot.yml`) opens one grouped pull request per week for cargo,
+  one for `/fuzz` cargo, one for `/site` npm dependencies, and one for GitHub Actions; CI
+  (including the MSRV job and `docs.yml`) decides whether it can merge. Dependabot alerts are on.
 - **Secret scanning** and push protection are on.
 
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
 `aplan check-docs`) runs in the **plan** job on a GitHub-hosted Ubuntu runner. The job installs
 the pinned published release, **aplan 0.7.0**, from crates.io with `cargo install --locked`; no
 aplan binary is committed to this repository. The job is part of `ci ok`.
+
+## Documentation site
+
+`.github/workflows/docs.yml` builds, verifies, and publishes the Astro + Starlight site under
+`site/` to GitHub Pages (`https://asamarts.github.io/witforge/`):
+
+- **triggers**: runs on `push` to `main` and `pull_request` when `site/**`, `docs/**`,
+  `examples/**`, `Cargo.toml`, or `.github/workflows/docs.yml` change, plus `workflow_dispatch`.
+- **build** (`contents: read`): installs Node 24 with npm lockfile caching (`site/package-lock.json`),
+  runs `npm --prefix site ci`, `test:scripts`, `check` (`astro check` with `@ts-check`), `build`
+  (`sync-docs.mjs`, `astro build`, and `emit-redirects.mjs` for all 16 legacy `.html` / `/guide/`
+  compatibility stubs), and `check:links` (`site/scripts/check-links.mjs` verifying internal links,
+  trailing slashes, fragments, all `WFxxxx` diagnostic anchors, redirects, GitHub repo links,
+  required artifacts and Pagefind index, SVG diagram accessibility/bounds, zero em/en dashes and
+  banned clichés, workspace version sync, and verbatim Output Tour example excerpts).
+- **deploy** (`contents: read`, `pages: write`, `id-token: write`, environment `github-pages`):
+  artifact upload and deployment are gated on
+  `github.event_name != 'pull_request' && github.ref == 'refs/heads/main'`, so fork PRs and
+  feature-branch manual dispatches only execute read-only verification.
 
 ## Releases
 

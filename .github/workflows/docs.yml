@@ -1,0 +1,76 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - docs/**
+      - examples/**
+      - Cargo.toml
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - site/**
+      - docs/**
+      - examples/**
+      - Cargo.toml
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions: {}
+
+# Pull requests cancel superseded runs on the same PR ref; main pushes never cancel an in-flight deploy.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build and verify site
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Install site dependencies
+        run: npm --prefix site ci
+      - name: Run site script unit tests
+        run: npm --prefix site run test:scripts
+      - name: Type-check Astro site
+        run: npm --prefix site run check
+      - name: Build site and legacy redirects
+        run: npm --prefix site run build
+      - name: Verify links, anchors, redirects, SVGs, prose, and examples
+        run: npm --prefix site run check:links
+      - name: Upload GitHub Pages artifact
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: site/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
