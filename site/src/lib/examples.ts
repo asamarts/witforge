@@ -125,12 +125,12 @@ export const OUTPUT_TOUR_TABS: OutputTourTab[] = [
     exampleGroup: 'evolved',
     sourcePath: 'examples/evolved/generated/rust/convert.rs',
     sourceUrl: `${REPO_URL}/blob/main/examples/evolved/generated/rust/convert.rs`,
-    caption: 'Adjacent-version adapter from the two-version evolved example (example:tasks v0.1 <-> v0.2, lines 57-130).',
+    caption: 'Adjacent-version adapters from the two-version evolved example (example:tasks v0.1 <-> v0.2, lines 57-149).',
     code: readRepoExcerpt(
       'examples/evolved/generated/rust/convert.rs',
-      'pub mod v0_1_to_v0_2',
+      'pub mod v0_2_to_v0_1',
       57,
-      130,
+      149,
     ),
   },
 ];

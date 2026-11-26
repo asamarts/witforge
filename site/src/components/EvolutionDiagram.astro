@@ -13,7 +13,7 @@
     <title id="wf-evo-title">witforge contract evolution lifecycle</title>
     <desc id="wf-evo-desc">
       Five-step contract evolution flow: a frozen released v0.1 baseline is copied by witforge
-      new-version into draft v0.2, validated and locked against v0.1 wire numbers, reviewed with
+      new-version into draft v0.2, validated and locked against v0.1 wire.lock, reviewed with
       4-view diff and convert.rs adapters, and finally marked released and enforced by witforge
       freeze in CI.
     </desc>
@@ -43,56 +43,56 @@
       <text x="28" y="152" class="evo-sub">Frozen in Git</text>
     </g>
 
-    <path d="M180 100 L204 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
+    <path d="M180 100 L203 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
 
     <!-- Step 2: new-version -->
     <g>
-      <rect x="208" y="34" width="164" height="132" rx="10" class="evo-card" />
-      <rect x="220" y="48" width="60" height="20" rx="10" class="pill-accent" />
-      <text x="250" y="61" text-anchor="middle" class="pill-accent-text">STEP 1</text>
-      <text x="220" y="94" class="evo-title">new-version</text>
-      <text x="220" y="116" class="evo-sub">Creates wit/v0.2</text>
-      <text x="220" y="134" class="evo-sub">Copies lock + deps</text>
-      <text x="220" y="152" class="evo-sub">Edit draft safely</text>
+      <rect x="207" y="34" width="164" height="132" rx="10" class="evo-card" />
+      <rect x="219" y="48" width="60" height="20" rx="10" class="pill-accent" />
+      <text x="249" y="61" text-anchor="middle" class="pill-accent-text">STEP 1</text>
+      <text x="219" y="94" class="evo-title">new-version</text>
+      <text x="219" y="116" class="evo-sub">Creates wit/v0.2</text>
+      <text x="219" y="134" class="evo-sub">Copies lock + deps</text>
+      <text x="219" y="152" class="evo-sub">Edit draft safely</text>
     </g>
 
-    <path d="M372 100 L396 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
+    <path d="M371 100 L394 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
 
     <!-- Step 3: lock & check -->
     <g>
-      <rect x="400" y="34" width="164" height="132" rx="10" class="evo-card" />
-      <rect x="412" y="48" width="60" height="20" rx="10" class="pill-accent" />
-      <text x="442" y="61" text-anchor="middle" class="pill-accent-text">STEP 2</text>
-      <text x="412" y="94" class="evo-title">lock &amp; check</text>
-      <text x="412" y="116" class="evo-sub">--against v0.1</text>
-      <text x="412" y="134" class="evo-sub">Append-only tags</text>
-      <text x="412" y="152" class="evo-sub">+ deps sync</text>
+      <rect x="398" y="34" width="164" height="132" rx="10" class="evo-card" />
+      <rect x="410" y="48" width="60" height="20" rx="10" class="pill-accent" />
+      <text x="440" y="61" text-anchor="middle" class="pill-accent-text">STEP 2</text>
+      <text x="410" y="94" class="evo-title">lock &amp; check</text>
+      <text x="410" y="116" class="evo-sub">Against v0.1 lock</text>
+      <text x="410" y="134" class="evo-sub">Append-only tags</text>
+      <text x="410" y="152" class="evo-sub">+ deps sync</text>
     </g>
 
-    <path d="M564 100 L588 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
+    <path d="M562 100 L585 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
 
     <!-- Step 4: diff & convert -->
     <g>
-      <rect x="592" y="34" width="164" height="132" rx="10" class="evo-card-active" />
-      <rect x="604" y="48" width="60" height="20" rx="10" class="pill-wire" />
-      <text x="634" y="61" text-anchor="middle" class="pill-wire-text">STEP 3</text>
-      <text x="604" y="94" class="evo-title">diff &amp; generate</text>
-      <text x="604" y="116" class="evo-sub">4-view diff / policy</text>
-      <text x="604" y="134" class="evo-sub">Emits convert.rs</text>
-      <text x="604" y="152" class="evo-sub">--check in CI</text>
+      <rect x="589" y="34" width="164" height="132" rx="10" class="evo-card-active" />
+      <rect x="601" y="48" width="60" height="20" rx="10" class="pill-wire" />
+      <text x="631" y="61" text-anchor="middle" class="pill-wire-text">STEP 3</text>
+      <text x="601" y="94" class="evo-title">diff &amp; generate</text>
+      <text x="601" y="116" class="evo-sub">4-view diff / policy</text>
+      <text x="601" y="134" class="evo-sub">Emits convert.rs</text>
+      <text x="601" y="152" class="evo-sub">--check in CI</text>
     </g>
 
-    <path d="M756 100 L780 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
+    <path d="M753 100 L776 100" class="evo-edge" marker-end="url(#wf-evo-arrow)" />
 
     <!-- Step 5: release & freeze -->
     <g>
-      <rect x="784" y="34" width="160" height="132" rx="10" class="evo-card-frozen" />
-      <rect x="796" y="48" width="76" height="20" rx="10" class="pill-ok" />
-      <text x="834" y="61" text-anchor="middle" class="pill-ok-text">FROZEN</text>
-      <text x="796" y="94" class="evo-title">release &amp; freeze</text>
-      <text x="796" y="116" class="evo-sub">Records wit/v0.2</text>
-      <text x="796" y="134" class="evo-sub">in wit/released</text>
-      <text x="796" y="152" class="evo-sub">History checked</text>
+      <rect x="780" y="34" width="164" height="132" rx="10" class="evo-card-frozen" />
+      <rect x="792" y="48" width="76" height="20" rx="10" class="pill-ok" />
+      <text x="830" y="61" text-anchor="middle" class="pill-ok-text">FROZEN</text>
+      <text x="792" y="94" class="evo-title">release &amp; freeze</text>
+      <text x="792" y="116" class="evo-sub">Records wit/v0.2</text>
+      <text x="792" y="134" class="evo-sub">in wit/released</text>
+      <text x="792" y="152" class="evo-sub">History checked</text>
     </g>
   </svg>
 </figure>

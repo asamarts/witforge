@@ -51,7 +51,7 @@ export default defineConfig({
         },
       ],
       expressiveCode: {
-        themes: ['github-light', 'github-dark'],
+        themes: ['github-light-default', 'github-dark-default'],
         useStarlightUiThemeColors: true,
       },
       social: [

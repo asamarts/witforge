@@ -31,14 +31,14 @@ const installTabs = [
     id: 'binstall',
     label: 'cargo binstall',
     lang: 'sh' as const,
-    note: 'Downloads the checksum-verified prebuilt archive for your platform.',
+    note: 'Downloads the prebuilt release archive for your platform (static musl on Linux).',
     code: `cargo binstall witforge-cli@${WORKSPACE_VERSION}\nwitforge --version`,
   },
   {
     id: 'action',
     label: 'GitHub Action',
     lang: 'yaml' as const,
-    note: 'Checks contracts, verifies generated drift, and gates diffs in CI.',
+    note: 'Checks contracts, verifies generated drift, and enforces release freeze (requires fetch-depth: 0).',
     code: `- uses: asamarts/witforge@v${WORKSPACE_VERSION}\n  with:\n    check: "true"\n    config: witforge.toml\n    generators: all\n    freeze: "true"`,
   },
   {
@@ -69,7 +69,7 @@ const proofMetrics = [
   {
     value: '7',
     label: 'SLSA-attested targets',
-    detail: 'Linux gnu and static musl, macOS Intel and arm64, Windows x64',
+    detail: 'Linux x64/arm64 (gnu and static musl), macOS Intel/arm64, Windows x64',
   },
 ];
 
@@ -194,11 +194,12 @@ const boundaries = [
               hidden={index !== 0}
               class="install-panel"
             >
+              <div class="no-js-panel-title install-nojs-heading">{tab.label}</div>
               <div class="install-code">
                 <Code
                   code={tab.code}
                   lang={tab.lang}
-                  themes={{ light: 'github-light', dark: 'github-dark' }}
+                  themes={{ light: 'github-light-default', dark: 'github-dark-default' }}
                 />
               </div>
               <div class="install-foot">
@@ -234,12 +235,12 @@ const boundaries = [
     <div class="section-head">
       <div>
         <span class="sec-kicker">Architecture</span>
-        <h2>One validated model, six deterministic outputs</h2>
+        <h2>One validated model, every deterministic output</h2>
       </div>
       <p class="sec-lede">
-        Every command reads the same owned internal model and lockfile. If <code>witforge check</code>
-        passes, every generator writes deterministic, LF-only files tagged with explicit ownership
-        headers.
+        Every command reads the same owned internal model and lockfile. If{' '}
+        <code>witforge check</code>{' '}passes, every generator writes deterministic, LF-only files
+        tagged with explicit ownership headers.
       </p>
     </div>
     <PipelineDiagram />
@@ -253,9 +254,9 @@ const boundaries = [
         <h2>From contract.wit to committed code</h2>
       </div>
       <p class="sec-lede">
-        Every snippet below is loaded directly from the committed
-        <a href={withBase('/docs/examples/')}>repository examples</a> tested in CI. For full WIT
-        type mappings and 4-view diff rules, see the
+        Every snippet below is loaded directly from the committed{' '}
+        <a href={withBase('/docs/examples/')}>repository examples</a>{' '}tested in CI. For full WIT
+        type mappings and 4-view diff rules, see the{' '}
         <a href={withBase('/outputs/')}>outputs and evolution matrix</a>.
       </p>
     </div>
@@ -359,6 +360,7 @@ const boundaries = [
 
   .hero-grid {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--s6);
     align-items: center;
   }
@@ -426,6 +428,24 @@ const boundaries = [
     gap: 4px;
   }
 
+  .install-tabs :global([role='tab']:hover) {
+    background: var(--bg);
+  }
+
+  .install-nojs-heading {
+    padding: var(--s2) var(--s4);
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-2);
+    color: var(--ink);
+    font-family: var(--font-code);
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  :global(:root:not(.js)) .install-panel + .install-panel {
+    border-top: 2px solid var(--rule);
+  }
+
   .install-code {
     overflow-x: auto;
   }
@@ -455,7 +475,7 @@ const boundaries = [
 
   .proof-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
     gap: var(--s5);
   }
 
@@ -500,6 +520,7 @@ const boundaries = [
 
   .section-head {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--s4);
     margin-bottom: var(--s6);
   }
@@ -519,7 +540,7 @@ const boundaries = [
   /* Feature guarantees grid */
   .card-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
     gap: var(--s5);
   }
 
@@ -570,7 +591,7 @@ const boundaries = [
   /* Boundaries grid */
   .boundary-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(270px, 100%), 1fr));
     gap: var(--s5);
   }
 

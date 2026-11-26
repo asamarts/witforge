@@ -26,7 +26,7 @@ const description =
       <p class="sec-lede page-lede">
         Inspect exactly how every supported WIT type compiles into Rust, Protobuf, JSON Schema,
         and checked glue, and how schema edits behave across wire lockfiles, 4-view diffs, and
-        generated <code>convert.rs</code> adapters.
+        generated{' '}<code>convert.rs</code>{' '}adapters.
       </p>
       <div class="jump-links">
         <a class="btn btn-primary" href="#type-matrix">Type mapping matrix</a>
@@ -47,7 +47,7 @@ const description =
       <p class="sec-lede">
         Every row reflects the normative emitter specification. Unsupported constructs (resources,
         handles, tuples, futures, streams, async functions, and unsupported map keys) are rejected
-        up front by <code>witforge check</code>.
+        up front by{' '}<code>witforge check</code>.
       </p>
     </div>
 
@@ -84,7 +84,7 @@ const description =
               <h3>{group.label}</h3>
               <p>{group.description}</p>
             </div>
-            <div class="table-scroll">
+            <div class="table-scroll" tabindex="0">
               <table class="spec-table">
                 <thead>
                   <tr>
@@ -123,9 +123,10 @@ const description =
           <h2>Explicit profiles, zero surprise dependencies</h2>
         </div>
         <p class="sec-lede">
-          Default plain Rust output requires no external crates and derives only
-          <code>Debug, Clone, PartialEq</code>. Enable additional traits, <code>no_std</code>, or
-          Draft 2020-12 JSON Schema per project in <code>witforge.toml</code> or via CLI flags.
+          Default plain Rust output requires no external crates and derives only{' '}
+          <code>Debug, Clone, PartialEq</code>. Enable additional traits,{' '}<code>no_std</code>,
+          or Draft 2020-12 JSON Schema per project in{' '}<code>witforge.toml</code>{' '}or via CLI
+          flags.
         </p>
       </div>
 
@@ -154,7 +155,7 @@ const description =
       </div>
       <p class="sec-lede">
         Released directories are immutable. A minor change lives in a new sibling directory that
-        continues the prior <code>wire.lock</code>; a wire-breaking change starts a new major
+        continues the prior{' '}<code>wire.lock</code>; a wire-breaking change starts a new major
         package.
       </p>
     </div>
@@ -170,14 +171,15 @@ const description =
           <h2>Four-view diff and adapter behavior</h2>
         </div>
         <p class="sec-lede">
-          <code>witforge diff --check</code> gates <code>wire,source,api</code> by default. Select
-          binary decode gating explicitly with <code>--check=wire,decode</code> or
+          <code>witforge diff --check</code>{' '}gates{' '}<code>wire,source,api</code>{' '}by
+          default. Select binary decode gating explicitly with{' '}
+          <code>--check=wire,decode</code>{' '}or{' '}
           <code>[project.&lt;name&gt;.policy]</code>.
         </p>
       </div>
 
       <div class="matrix-shell">
-        <div class="table-scroll">
+        <div class="table-scroll" tabindex="0">
           <table class="spec-table evo-table">
             <thead>
               <tr>
@@ -222,12 +224,14 @@ const description =
       <div class="note-box">
         <h3>Key boundary: binary decode vs in-process convert.rs</h3>
         <p>
-          <code>convert.rs</code> converts plain Rust values inside one process and defaults an
-          added <code>list&lt;u8&gt;</code> field to <code>Vec::new()</code>. On the wire, required
-          <code>list&lt;u8&gt;</code> is proto3 <code>optional bytes</code>, so a newer binary
-          reader rejects an omitted field from an older writer with <code>MissingField</code>
-          (reported as <code>decode: BREAKING (new&lt;-old)</code>). Strict proto3-JSON parsers also
-          reject unknown fields unless configured to ignore them.
+          <code>convert.rs</code>{' '}converts plain Rust values inside one process and defaults an
+          added or removed{' '}<code>list&lt;u8&gt;</code>{' '}field to{' '}<code>Vec::new()</code>.
+          On the wire, required{' '}<code>list&lt;u8&gt;</code>{' '}is proto3{' '}
+          <code>optional bytes</code>, so a reader rejects an omitted field from the opposite side
+          with{' '}<code>MissingField</code>{' '}(reported as{' '}
+          <code>decode: BREAKING (new&lt;-old)</code>{' '}on addition and{' '}
+          <code>decode: BREAKING (old&lt;-new)</code>{' '}on removal). Strict proto3-JSON parsers
+          also reject unknown fields unless configured to ignore them.
         </p>
       </div>
     </div>
@@ -291,6 +295,7 @@ const description =
 
   .section-head {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--s4);
     margin-bottom: var(--s5);
   }
@@ -339,6 +344,11 @@ const description =
     overflow-x: auto;
   }
 
+  .table-scroll:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
   .spec-table {
     width: 100%;
     border-collapse: collapse;
@@ -369,6 +379,9 @@ const description =
   }
 
   .spec-table td code {
+    padding: 0;
+    background: transparent;
+    color: var(--ink);
     font-size: 0.82rem;
     white-space: normal;
     word-break: break-word;
@@ -418,7 +431,7 @@ const description =
 
   .profile-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
     gap: var(--s4);
   }
 
@@ -503,7 +516,11 @@ const description =
     gap: 10px;
   }
 
-  /* When JS is disabled, separate revealed category panels cleanly */
+  /* When JS is disabled, hide dead tab bar and separate revealed category panels cleanly */
+  :global(:root:not(.js)) .matrix-bar {
+    display: none;
+  }
+
   :global(:root:not(.js)) .matrix-panel + .matrix-panel {
     border-top: 2px solid var(--rule);
   }

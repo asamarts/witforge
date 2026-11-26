@@ -46,24 +46,24 @@
 
     <!-- Subtle stage column labels -->
     <text x="20" y="24" class="stage-label">1. SOURCE OF TRUTH</text>
-    <text x="330" y="24" class="stage-label">2. CHECK AND LOCK GATE</text>
+    <text x="322" y="24" class="stage-label">2. CHECK AND LOCK GATE</text>
     <text x="646" y="24" class="stage-label">3. DETERMINISTIC OUTPUTS</text>
 
     <!-- Column 1: Source inputs -->
     <g>
-      <rect x="20" y="42" width="236" height="82" rx="10" class="box-source" />
+      <rect x="20" y="42" width="234" height="82" rx="10" class="box-source" />
       <rect x="20" y="42" width="5" height="82" rx="2.5" fill="var(--accent)" />
       <text x="40" y="72" class="node-title">contract.wit + deps/</text>
       <text x="40" y="94" class="node-sub">Versioned WIT packages</text>
       <text x="40" y="111" class="node-sub">v0.1/, v0.2/, v1.0/</text>
 
-      <rect x="20" y="142" width="236" height="82" rx="10" class="box-source" />
+      <rect x="20" y="142" width="234" height="82" rx="10" class="box-source" />
       <rect x="20" y="142" width="5" height="82" rx="2.5" fill="var(--wire)" />
       <text x="40" y="172" class="node-title">wire.lock (v2)</text>
       <text x="40" y="194" class="node-sub">Append-only wire numbers</text>
       <text x="40" y="211" class="node-sub">+ order fingerprints</text>
 
-      <rect x="20" y="242" width="236" height="82" rx="10" class="box-source" />
+      <rect x="20" y="242" width="234" height="82" rx="10" class="box-source" />
       <rect x="20" y="242" width="5" height="82" rx="2.5" fill="var(--ok)" />
       <text x="40" y="272" class="node-title">wit/released + toml</text>
       <text x="40" y="294" class="node-sub">Frozen release ledger</text>
@@ -71,36 +71,36 @@
     </g>
 
     <!-- Connectors: Column 1 -> Column 2 -->
-    <path d="M256 83 C292 83 292 146 326 146" class="edge-accent" marker-end="url(#wf-arrow)" />
-    <path d="M256 183 L326 183" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
-    <path d="M256 283 C292 283 292 220 326 220" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M254 83 C288 83 288 146 318 146" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M254 183 L318 183" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
+    <path d="M254 283 C288 283 288 220 318 220" class="edge-accent" marker-end="url(#wf-arrow)" />
 
     <!-- Column 2: Compiler Gate -->
     <g>
-      <rect x="330" y="64" width="244" height="238" rx="12" class="box-core" />
-      <rect x="348" y="82" width="208" height="28" rx="14" class="core-pill" />
-      <text x="452" y="100" text-anchor="middle" class="core-pill-text">WITFORGE COMPILER</text>
+      <rect x="322" y="64" width="256" height="238" rx="12" class="box-core" />
+      <rect x="340" y="82" width="220" height="28" rx="14" class="core-pill" />
+      <text x="450" y="100" text-anchor="middle" class="core-pill-text">WITFORGE COMPILER</text>
 
-      <rect x="348" y="124" width="208" height="44" rx="8" class="core-step" />
-      <text x="452" y="143" text-anchor="middle" class="step-title">Portable WIT subset</text>
-      <text x="452" y="159" text-anchor="middle" class="step-sub">char, list&lt;T, N&gt;, map&lt;K, V&gt;</text>
+      <rect x="340" y="124" width="220" height="44" rx="8" class="core-step" />
+      <text x="450" y="143" text-anchor="middle" class="step-title">Portable WIT subset</text>
+      <text x="450" y="159" text-anchor="middle" class="step-sub">char, list&lt;T, N&gt;, map&lt;K, V&gt;</text>
 
-      <rect x="348" y="180" width="208" height="44" rx="8" class="core-step" />
-      <text x="452" y="199" text-anchor="middle" class="step-title">Lock &amp; collision gate</text>
-      <text x="452" y="215" text-anchor="middle" class="step-sub">continuity, reserved tags, freeze</text>
+      <rect x="340" y="180" width="220" height="44" rx="8" class="core-step" />
+      <text x="450" y="199" text-anchor="middle" class="step-title">Lock &amp; collision gate</text>
+      <text x="450" y="215" text-anchor="middle" class="step-sub">continuity, reserved, freeze</text>
 
-      <rect x="348" y="236" width="208" height="48" rx="8" class="core-step" />
-      <text x="452" y="256" text-anchor="middle" class="step-title">Diagnostics &amp; policy</text>
-      <text x="452" y="273" text-anchor="middle" class="step-sub">WF1001-WF9004 (JSON / SARIF)</text>
+      <rect x="340" y="236" width="220" height="48" rx="8" class="core-step" />
+      <text x="450" y="256" text-anchor="middle" class="step-title">Diagnostics &amp; policy</text>
+      <text x="450" y="273" text-anchor="middle" class="step-sub">WF1001-WF9004 (JSON / SARIF)</text>
     </g>
 
     <!-- Connectors: Column 2 -> Column 3 -->
-    <path d="M574 183 C608 183 608 62 642 62" class="edge-accent" marker-end="url(#wf-arrow)" />
-    <path d="M574 183 C608 183 608 115 642 115" class="edge-accent" marker-end="url(#wf-arrow)" />
-    <path d="M574 183 C608 183 608 168 642 168" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
-    <path d="M574 183 C608 183 608 221 642 221" class="edge-accent" marker-end="url(#wf-arrow)" />
-    <path d="M574 183 C608 183 608 274 642 274" class="edge-accent" marker-end="url(#wf-arrow)" />
-    <path d="M574 183 C608 183 608 327 642 327" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
+    <path d="M578 183 C610 183 610 62 642 62" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M578 183 C610 183 610 115 642 115" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M578 183 C610 183 610 168 642 168" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
+    <path d="M578 183 C610 183 610 221 642 221" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M578 183 C610 183 610 274 642 274" class="edge-accent" marker-end="url(#wf-arrow)" />
+    <path d="M578 183 C610 183 610 327 642 327" class="edge-wire" marker-end="url(#wf-arrow-wire)" />
 
     <!-- Column 3: Deterministic Outputs -->
     <g>
@@ -126,7 +126,7 @@
 
       <rect x="646" y="305" width="294" height="44" rx="8" class="box-out-alt" />
       <text x="662" y="324" class="out-title">Diff, Freeze &amp; JSON IR</text>
-      <text x="662" y="340" class="out-sub">4-view diff, --git-base, witforge inspect</text>
+      <text x="662" y="340" class="out-sub">4-view diff, --git-base, inspect IR</text>
     </g>
   </svg>
 </figure>
@@ -204,11 +204,16 @@
   }
 
   .node-sub,
-  .out-sub,
+  .out-sub {
+    fill: var(--muted);
+    font-family: var(--font-code);
+    font-size: 10.8px;
+  }
+
   .step-sub {
     fill: var(--muted);
     font-family: var(--font-code);
-    font-size: 11.2px;
+    font-size: 10.4px;
   }
 
   .edge-accent {

@@ -277,7 +277,19 @@ pre.astro-code {
   }
 }
 
-/* Progressive enhancement: reveal all panels and hide copy controls when JS is disabled */
+/* Progressive enhancement: reveal all panels with clear labels and hide dead JS controls */
+.no-js-panel-title {
+  display: none;
+}
+
+:root:not(.js) .no-js-panel-title {
+  display: block;
+}
+
+:root:not(.js) [data-tabs] [role='tablist'] {
+  display: none;
+}
+
 :root:not(.js) [data-tabs] [role='tabpanel'][hidden] {
   display: block;
 }
