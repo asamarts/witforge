@@ -47,12 +47,11 @@ fn release_version_reference_script_passes_its_cases() {
     );
 }
 
-#[test]
-fn action_unit_tests_pass_under_node() {
+fn run_node_test_suite(script_rel_path: &str) {
     let mut command = Command::new("node");
     command
         .current_dir(repository())
-        .args(["--test", "action/test.js"]);
+        .args(["--test", script_rel_path]);
     // CI always has Node, so a missing interpreter is a failure there. A contributor without
     // Node still gets a passing `cargo test`, and a line saying what did not run.
     if let Err(error) = Command::new("node").arg("--version").output() {
@@ -60,8 +59,18 @@ fn action_unit_tests_pass_under_node() {
             error.kind() == ErrorKind::NotFound && std::env::var_os("CI").is_none(),
             "cannot run node: {error}"
         );
-        eprintln!("node is not installed; action/test.js did not run");
+        eprintln!("node is not installed; {script_rel_path} did not run");
         return;
     }
-    assert_success("node --test action/test.js", &mut command);
+    assert_success(&format!("node --test {script_rel_path}"), &mut command);
+}
+
+#[test]
+fn action_unit_tests_pass_under_node() {
+    run_node_test_suite("action/test.js");
+}
+
+#[test]
+fn site_script_unit_tests_pass_under_node() {
+    run_node_test_suite("site/scripts/test-scripts.mjs");
 }

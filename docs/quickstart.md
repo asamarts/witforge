@@ -1,8 +1,3 @@
----
-layout: default
-title: Quickstart
----
-
 # witforge quickstart
 
 witforge turns one hand-written [WIT](https://component-model.bytecodealliance.org/design/wit.html)

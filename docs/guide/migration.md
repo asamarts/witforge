@@ -1,8 +1,3 @@
----
-layout: default
-title: Migrating between witforge releases
----
-
 # Migrating between witforge releases
 
 ## General upgrade steps

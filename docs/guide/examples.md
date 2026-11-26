@@ -1,8 +1,3 @@
----
-layout: default
-title: Examples
----
-
 # Examples
 
 The repository contains two runnable examples with committed generated output.

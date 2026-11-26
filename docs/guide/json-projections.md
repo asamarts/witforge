@@ -1,8 +1,3 @@
----
-layout: default
-title: JSON projections
----
-
 # JSON projections
 
 witforge can participate in three different JSON shapes. They project the same WIT values but do

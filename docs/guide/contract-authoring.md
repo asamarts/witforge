@@ -1,8 +1,3 @@
----
-layout: default
-title: Contract authoring
----
-
 # Contract authoring
 
 ## Layout

@@ -1,8 +1,3 @@
----
-layout: default
-title: Choosing witforge
----
-
 # Choosing witforge
 
 ## Good fit

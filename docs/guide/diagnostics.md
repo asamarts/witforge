@@ -1,8 +1,3 @@
----
-layout: default
-title: Diagnostic codes
----
-
 # Diagnostic codes
 
 Every `witforge` command emits structured diagnostics with `--format json` or `--format sarif`.

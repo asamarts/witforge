@@ -158,7 +158,7 @@ enum ApiMethod {
 ```
 
 These excerpts are checked against current emitter output by the test suite, not hand-designed
-target APIs. The [generated-output guide](https://asamarts.github.io/witforge/guide/generated-output.html)
+target APIs. The [generated-output guide](https://asamarts.github.io/witforge/docs/generated-output/)
 shows complete Rust, protobuf, JSON Schema, glue, and version-adapter examples with links to
 committed generated files.
 
@@ -208,7 +208,7 @@ and runs the configured generators with `--check`. The second step prints the co
 `--check` to it to fail the job on a wire-, source-, or generated-API-breaking change, which
 includes an added record field. The Action also has `diff-old`, `diff-new`, and `diff-check`
 inputs (supported from v0.6.0; releases up to v0.5.0 ignored them). See the
-[CI guide](https://asamarts.github.io/witforge/guide/ci.html).
+[CI guide](https://asamarts.github.io/witforge/docs/ci/).
 
 ## Important JSON boundary
 
@@ -216,7 +216,7 @@ Rust Serde and JSON Schema project the same WIT values, but they do not define o
 wire format. Rust fields are snake_case; JSON Schema preserves WIT spelling, normally kebab-case.
 WIT `option<T>` permits `null` but does not make a schema property omittable.
 
-Read [JSON projections](https://asamarts.github.io/witforge/guide/json-projections.html) before
+Read [JSON projections](https://asamarts.github.io/witforge/docs/json-projections/) before
 choosing a JSON boundary.
 
 ## Documentation and examples
@@ -224,9 +224,9 @@ choosing a JSON boundary.
 - [Documentation site](https://asamarts.github.io/witforge/)
 - [API documentation](https://docs.rs/witforge/latest/witforge/)
 - [Quickstart](docs/quickstart.md)
-- [Wiring and installation guide](https://asamarts.github.io/witforge/guide/wiring.html)
-- [CLI and configuration reference](https://asamarts.github.io/witforge/guide/reference.html)
-- [Release migration guide](https://asamarts.github.io/witforge/guide/migration.html)
+- [Wiring and installation guide](https://asamarts.github.io/witforge/docs/wiring/)
+- [CLI and configuration reference](https://asamarts.github.io/witforge/docs/reference/)
+- [Release migration guide](https://asamarts.github.io/witforge/docs/migration/)
 - [Single-version example](examples/single)
 - [Evolved-contract example](examples/evolved)
 - [Design overview](docs/design/overview.md)

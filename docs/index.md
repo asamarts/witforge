@@ -1,8 +1,3 @@
----
-layout: default
-title: witforge documentation
----
-
 # witforge
 
 witforge compiles one hand-written WIT package into runtime-independent contract artifacts:

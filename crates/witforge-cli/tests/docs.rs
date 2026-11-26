@@ -754,16 +754,117 @@ fn verify_anchor(
     );
 }
 
+#[derive(serde::Deserialize)]
+struct RedirectEntry {
+    from: String,
+    to: String,
+}
+
+fn parse_summary_paths(summary_text: &str) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    for (idx, raw_line) in summary_text.lines().enumerate() {
+        let trimmed = raw_line.trim();
+        if !trimmed.starts_with("- [") {
+            continue;
+        }
+        let Some(open_paren) = trimmed.find("](") else {
+            panic!(
+                "docs/SUMMARY.md:{}: malformed list item `{trimmed}`",
+                idx + 1
+            );
+        };
+        let rest = &trimmed[open_paren + 2..];
+        let Some(close_paren) = rest.find(')') else {
+            panic!("docs/SUMMARY.md:{}: unclosed link in `{trimmed}`", idx + 1);
+        };
+        let rel = rest[..close_paren].trim().to_string();
+        assert!(
+            paths.insert(rel.clone()),
+            "docs/SUMMARY.md:{}: duplicate entry `{rel}`",
+            idx + 1
+        );
+    }
+    paths
+}
+
+fn resolve_canonical_pages_route(
+    route: &str,
+    repo: &Path,
+    docs_root: &Path,
+) -> Option<(PathBuf, bool)> {
+    if route.is_empty() {
+        return Some((repo.join("site/src/pages/index.astro"), false));
+    }
+    if route == "outputs/" {
+        return Some((repo.join("site/src/pages/outputs.astro"), false));
+    }
+    if route == "docs/" {
+        return Some((docs_root.join("index.md"), true));
+    }
+    if route == "docs/quickstart/" {
+        return Some((docs_root.join("quickstart.md"), true));
+    }
+    if let Some(slug) = route
+        .strip_prefix("docs/")
+        .and_then(|s| s.strip_suffix('/'))
+        && !slug.is_empty()
+        && !slug.contains('/')
+    {
+        return Some((docs_root.join("guide").join(format!("{slug}.md")), true));
+    }
+    None
+}
+
 #[allow(clippy::too_many_lines)]
 #[test]
 fn documentation_links_and_anchors_resolve_on_github_and_pages() {
     let repo = normalize_path(&repository());
     let docs_root = repo.join("docs");
-    let config = fs::read_to_string(docs_root.join("_config.yml")).unwrap();
+
+    // Legacy Jekyll config and assets must remain retired now that Astro + Starlight serves Pages.
     assert!(
-        config.contains("jekyll-relative-links"),
-        "docs/_config.yml must enable jekyll-relative-links so .md links rewrite to .html on Pages"
+        !docs_root.join("_config.yml").exists(),
+        "legacy docs/_config.yml should remain retired"
     );
+    assert!(
+        !docs_root.join("assets").exists(),
+        "legacy docs/assets/ should remain retired"
+    );
+
+    // `docs/SUMMARY.md` is the navigation source of truth for the published Starlight docs.
+    let summary_path = docs_root.join("SUMMARY.md");
+    let summary_text = fs::read_to_string(&summary_path)
+        .expect("docs/SUMMARY.md must exist for Starlight sidebar and docs sync");
+    let summary_paths = parse_summary_paths(&summary_text);
+    assert!(
+        !summary_paths.is_empty(),
+        "docs/SUMMARY.md must list published docs pages"
+    );
+    for rel in &summary_paths {
+        let full = normalize_path(&docs_root.join(rel));
+        assert!(
+            full.is_file() && full.starts_with(&docs_root),
+            "docs/SUMMARY.md references missing or invalid file: docs/{rel}"
+        );
+    }
+
+    // Load legacy Pages redirect manifest (`site/scripts/redirects.json`).
+    let redirects_raw = fs::read_to_string(repo.join("site/scripts/redirects.json"))
+        .expect("site/scripts/redirects.json must exist");
+    let redirect_entries: Vec<RedirectEntry> = serde_json::from_str(&redirects_raw)
+        .expect("site/scripts/redirects.json must be valid JSON");
+    let mut redirects = std::collections::BTreeMap::new();
+    for entry in &redirect_entries {
+        let from_rel = entry
+            .from
+            .strip_prefix('/')
+            .expect("redirect `from` must start with `/`");
+        let to_rel = entry
+            .to
+            .strip_prefix("/witforge/")
+            .expect("redirect `to` must start with `/witforge/`");
+        redirects.insert(from_rel.to_string(), to_rel.to_string());
+    }
 
     let mut md_files = Vec::new();
     for top in [
@@ -781,7 +882,7 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
     }
     collect_markdown_files(&docs_root, &mut md_files);
 
-    // Exclusions declared in `docs/_config.yml`: these files are NOT published on GitHub Pages.
+    // Internal specs, pilot notes, and the navigation index file are excluded from the Starlight site.
     let is_pages_published = |path: &Path| -> bool {
         let Ok(rel) = path.strip_prefix(&docs_root) else {
             return false;
@@ -791,8 +892,32 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
             .next()
             .and_then(|c| c.as_os_str().to_str())
             .unwrap_or("");
-        first != "design" && first != "aplan-pilot.md"
+        first != "design" && first != "aplan-pilot.md" && first != "SUMMARY.md"
     };
+
+    // Every published doc under `docs/` (except `docs/guide/index.md`, which aliases `/docs/`)
+    // must appear in `docs/SUMMARY.md`, and none may carry legacy Jekyll `layout:` frontmatter.
+    for file in &md_files {
+        if !is_pages_published(file) {
+            continue;
+        }
+        let rel = file
+            .strip_prefix(&docs_root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(file).unwrap();
+        assert!(
+            !text.starts_with("---\n") && !text.starts_with("---\r\n"),
+            "docs/{rel}: legacy YAML frontmatter should be removed"
+        );
+        if rel != "guide/index.md" {
+            assert!(
+                summary_paths.contains(&rel),
+                "published doc docs/{rel} is missing from docs/SUMMARY.md"
+            );
+        }
+    }
 
     let mut anchor_cache = std::collections::BTreeMap::new();
     let pages_prefix = "https://asamarts.github.io/witforge/";
@@ -807,28 +932,41 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
 
         for (line_no, raw_target) in extract_markdown_links(&text) {
             if let Some(rest) = raw_target.strip_prefix(pages_prefix) {
-                // Built GitHub Pages absolute URL (e.g. from README.md): verify it maps to an
-                // existing published `.md` page under `docs/` and valid anchor!
-                let (page_path, anchor) = match rest.split_once('#') {
+                // Built GitHub Pages absolute URL (e.g. from README.md): verify it resolves to a
+                // canonical Astro/Starlight page or a declared legacy redirect in `redirects.json`.
+                let (before_anchor, anchor) = match rest.split_once('#') {
                     Some((p, a)) => (p, Some(a)),
                     None => (rest, None),
                 };
-                let mapped = if page_path.is_empty() {
-                    docs_root.join("index.md")
-                } else if page_path.ends_with('/') {
-                    docs_root.join(page_path).join("index.md")
-                } else if let Some(stem) = page_path.strip_suffix(".html") {
-                    docs_root.join(format!("{stem}.md"))
+                let page_path = before_anchor
+                    .split_once('?')
+                    .map_or(before_anchor, |(p, _)| p);
+                let canonical_route = if let Some(target) = redirects.get(page_path) {
+                    target.as_str()
+                } else if page_path.ends_with('/')
+                    && let Some(target) = redirects.get(&format!("{page_path}index.html"))
+                {
+                    target.as_str()
                 } else {
-                    docs_root.join(page_path)
+                    page_path
+                };
+
+                let Some((mapped, is_markdown)) =
+                    resolve_canonical_pages_route(canonical_route, &repo, &docs_root)
+                else {
+                    panic!(
+                        "{rel_source}:{line_no}: Pages URL `{raw_target}` does not match any canonical route or legacy redirect"
+                    );
                 };
                 let mapped = normalize_path(&mapped);
                 assert!(
-                    mapped.is_file() && is_pages_published(&mapped),
-                    "{rel_source}:{line_no}: Pages URL `{raw_target}` does not map to a published page ({})",
+                    mapped.is_file() && (!is_markdown || is_pages_published(&mapped)),
+                    "{rel_source}:{line_no}: Pages URL `{raw_target}` maps to missing or unpublished target ({})",
                     mapped.display()
                 );
-                if let Some(anchor) = anchor {
+                if let Some(anchor) = anchor
+                    && is_markdown
+                {
                     verify_anchor(
                         &rel_source,
                         line_no,
@@ -914,7 +1052,7 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
 
             // 2. Built GitHub Pages site check: any relative link from a published page MUST stay
             //    inside the published `docs/` tree (not `docs/design/`, `docs/aplan-pilot.md`, or
-            //    outside `docs/`), where `jekyll-relative-links` rewrites `.md` -> `.html`.
+            //    outside `docs/`), where `site/scripts/sync-docs.mjs` rewrites `.md` -> Starlight routes.
             if published_on_pages {
                 assert!(
                     is_pages_published(&target),
@@ -936,4 +1074,68 @@ fn documentation_links_and_anchors_resolve_on_github_and_pages() {
             }
         }
     }
+}
+
+fn line_contains_em_dash(line: &str) -> bool {
+    if line.contains('\u{2014}') {
+        return true;
+    }
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("&mdash;") {
+        return true;
+    }
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'&' && bytes[i + 1] == b'#' {
+            let mut j = i + 2;
+            let is_hex = bytes.get(j) == Some(&b'x');
+            if is_hex {
+                j += 1;
+            }
+            let digits_start = j;
+            while j < bytes.len() && bytes[j] != b';' && j - digits_start <= 12 {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b';' {
+                let digits = &lower[digits_start..j];
+                let trimmed = digits.trim_start_matches('0');
+                if (!is_hex && trimmed == "8212") || (is_hex && trimmed == "2014") {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+#[test]
+fn published_docs_and_readme_contain_no_em_dashes() {
+    let repo = normalize_path(&repository());
+    let mut files = vec![
+        repo.join("README.md"),
+        repo.join("docs/SUMMARY.md"),
+        repo.join("docs/index.md"),
+        repo.join("docs/quickstart.md"),
+    ];
+    collect_markdown_files(&repo.join("docs/guide"), &mut files);
+    files.sort();
+
+    let mut violations = Vec::new();
+    for file in &files {
+        let rel = file.strip_prefix(&repo).unwrap().display();
+        let text = fs::read_to_string(file).unwrap();
+        for (idx, line) in text.lines().enumerate() {
+            if line_contains_em_dash(line) {
+                violations.push(format!("{rel}:{}: {}", idx + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "em dashes are forbidden in published docs and README.md:\n{}",
+        violations.join("\n")
+    );
 }

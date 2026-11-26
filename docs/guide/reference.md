@@ -1,8 +1,3 @@
----
-layout: default
-title: CLI and configuration reference
----
-
 # CLI and configuration reference
 
 This page lists every `witforge` subcommand, flag, `witforge.toml` configuration key, and exit

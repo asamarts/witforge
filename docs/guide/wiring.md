@@ -1,8 +1,3 @@
----
-layout: default
-title: Wiring a Rust crate and installing witforge
----
-
 # Wiring a Rust crate and installing witforge
 
 This guide takes an empty Rust crate to a compiling plain-Rust and protobuf round trip, explains how

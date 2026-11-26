@@ -47,9 +47,10 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
   version or the release before it, so that the commit preparing a release still runs a
   published Action and binary. Once the version's tag is on an earlier commit, the release is
   published and `ci.yml` must name it; the check sees that only in a checkout with its tags
-  (the `generated` job fetches them). `cargo test` runs the reference-check cases and the
-  Action's unit tests too (`crates/witforge-cli/tests/tooling.rs`), which gives both suites a
-  test name that a plan task can cite.
+  (the `generated` job fetches them). `cargo test` runs the reference-check cases, the
+  Action's unit tests, and the Astro site script tests (`site/scripts/test-scripts.mjs`) too
+  (`crates/witforge-cli/tests/tooling.rs`), which gives every suite a test name that a plan task
+  can cite.
 - **published Action**: invokes the pinned remote release ref on Linux x86_64, Linux arm64
   (`ubuntu-24.04-arm`), macOS arm64, macOS Intel, and Windows x86_64. Each job downloads its
   platform archive, verifies its checksum, extracts it, adds it to `PATH`, and runs a real
@@ -72,9 +73,11 @@ The workflow in `.github/workflows/ci.yml` runs the normal Rust jobs plus:
 - **documented output and links**: the CLI distribution and docs tests compare the README and
   generated-output guide excerpts with committed examples, execute the README, quickstart,
   evolution, and wiring-crate walkthroughs (compiling and round-tripping the wiring crate), verify
-  `docs/guide/reference.md` against `Cli::command()`, and verify every documentation cross-link
-  and heading anchor for both GitHub (relative `.md` paths) and the built GitHub Pages site
-  (rewritten `.html` paths, `docs/_config.yml` exclusions, and absolute Pages/GitHub URLs).
+  `docs/guide/reference.md` against `Cli::command()`, forbid em dashes in published docs and
+  `README.md`, and verify every documentation cross-link and heading anchor for both GitHub
+  (relative `.md` paths) and the Astro + Starlight GitHub Pages site (`docs/SUMMARY.md` coverage,
+  canonical Starlight routes, `site/scripts/redirects.json` legacy redirects, and absolute
+  Pages/GitHub URLs; legacy `docs/_config.yml` and `docs/assets/` are retired).
 - **security**: installs pinned `cargo-audit` and `cargo-deny`, then runs
   `ci/check-security.sh`: RustSec advisories, the `ci/deny.toml` advisory/ban/license/source
   policy, and the public [`SECURITY.md`](../SECURITY.md) policy.

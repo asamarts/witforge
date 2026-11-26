@@ -1,8 +1,3 @@
----
-layout: default
-title: Continuous integration
----
-
 # Continuous integration
 
 ## GitHub Action

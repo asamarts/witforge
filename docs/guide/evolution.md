@@ -1,8 +1,3 @@
----
-layout: default
-title: Contract evolution
----
-
 # Contract evolution
 
 ## Add a minor version

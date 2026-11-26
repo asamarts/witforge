@@ -1,8 +1,3 @@
----
-layout: default
-title: Guide
----
-
 # Guide
 
 | Guide | Purpose |

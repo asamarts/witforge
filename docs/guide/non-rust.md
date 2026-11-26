@@ -1,8 +1,3 @@
----
-layout: default
-title: Non-Rust implementations
----
-
 # Non-Rust implementations
 
 witforge emits protobuf schema for cross-language values and calls. Use the normal protobuf

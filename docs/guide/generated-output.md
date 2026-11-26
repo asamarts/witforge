@@ -1,8 +1,3 @@
----
-layout: default
-title: Generated output
----
-
 # Generated output
 
 This page shows representative output produced by the current repository build from the committed

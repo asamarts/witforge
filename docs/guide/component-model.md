@@ -1,8 +1,3 @@
----
-layout: default
-title: Component Model boundary
----
-
 # wit-bindgen, Wasmtime, and witforge
 
 These tools consume WIT for different purposes.
