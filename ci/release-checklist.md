@@ -409,3 +409,31 @@ another real consumer minor exists; a synthetic version or pin-only change is no
       baseline to `v0.8.0`, and ran the published `asamarts/witforge@v0.8.0` Action (with default
       `github-token` and static Linux `musl` archives) across Linux x86_64/arm64, macOS
       Intel/arm64, and Windows x86_64.
+
+## 0.9.0 record
+
+- [x] Release commit `feb215f`, annotated tag `v0.9.0` (tagged and published 2026-11-26).
+- [x] Exact-commit main CI run 45737368680
+      (`https://github.com/asamarts/witforge/actions/runs/45737368680/job/139636478714`) passed
+      all 21 active jobs on Linux, macOS 15, Windows, MSRV 1.88, both static Linux `musl` targets,
+      security, semver compatibility against `0.8.0`, documented public API inventory, benchmark,
+      packaging, generated output (including `witforge doc`), release freeze, workflows, the
+      five-target pinned `0.8.0` Action matrix, and the `aplan 0.7.0` plan gate.
+- [x] Pre-tag manual `release.yml` (`workflow_dispatch`) verify run 45737442799
+      (`https://github.com/asamarts/witforge/actions/runs/45737442799`) passed uncached
+      `ci/check-buf-history.sh` (across all 14 prior releases `v0.1.0`–`v0.8.0`),
+      `cargo-semver-checks`, `ci/publish.sh --dry-run`, and verified `.crate` digests on `main`.
+- [x] Tag release run 45739642998
+      (`https://github.com/asamarts/witforge/actions/runs/45739642998`) passed all 22/22 jobs:
+      exact-commit `ci ok` check, uncached historical `buf` check, all 7 platform archives
+      (including static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`), all 7
+      pre-publish smoke checks, OIDC Trusted Publishing of `witforge 0.9.0`, `witforge-build 0.9.0`,
+      and `witforge-cli 0.9.0`, draft-first GitHub Release
+      (`https://github.com/asamarts/witforge/releases/tag/v0.9.0`, 14 assets + SLSA provenance),
+      and the 5-runner tagged Action smoke.
+- [x] Independent verification confirmed 14 GitHub Release assets, `docs.rs` builds for
+      `witforge 0.9.0` and `witforge-build 0.9.0` (`HTTP 200`), downloaded Linux `musl` and `gnu`
+      archives, verified SHA-256 checksums, SLSA build provenance attestations, zero `PT_INTERP`
+      on `musl`, `LICENSE-APACHE`/`LICENSE-MIT`/`README.md` contents, `witforge --version`
+      (`witforge 0.9.0`), and `cargo install witforge-cli --version 0.9.0 --locked` (passing
+      `witforge generate --config examples/evolved/witforge.toml --check`).

@@ -15,6 +15,17 @@ For existing contracts accepted by 0.8.0, generated `glue/mod.rs` adds two addit
 `convert.rs`, `worlds.rs`, `.proto`, JSON Schema, and per-major glue modules are unchanged (with
 minor `rustfmt` and CommonMark sanitization fixes only on previously edge-case inputs).
 
+Release evidence: annotated tag `v0.9.0` points to commit `feb215f` (tagged and published
+2026-11-26); exact-commit
+[CI run 45737368680](https://github.com/asamarts/witforge/actions/runs/45737368680) (`ci ok` job
+[139636478714](https://github.com/asamarts/witforge/actions/runs/45737368680/job/139636478714)),
+manual dry-run verify
+[run 45737442799](https://github.com/asamarts/witforge/actions/runs/45737442799), and tag release
+[run 45739642998](https://github.com/asamarts/witforge/actions/runs/45739642998)
+([GitHub Release `v0.9.0`](https://github.com/asamarts/witforge/releases/tag/v0.9.0), 14 assets +
+SLSA provenance; `witforge 0.9.0`, `witforge-build 0.9.0`, and `witforge-cli 0.9.0` published via
+crates.io Trusted Publishing).
+
 ### Added
 
 - **GitHub Action `generators: doc` (`W10-133`):** Added `doc` to the accepted `generators` input
