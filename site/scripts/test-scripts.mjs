@@ -1,9 +1,17 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import {
+  emitRedirects,
+  escapeHtml,
+  escapeJsString,
+  loadRedirects,
+  REDIRECT_MARKER,
+  renderRedirectHtml,
+} from './emit-redirects.mjs';
 import {
   docsRelPathToContentFile,
   docsRelPathToRoute,
@@ -233,5 +241,125 @@ test('syncDocs writes deterministic content and sidebar into a temporary site ro
     assert.ok(!overview.includes('layout: default'));
   } finally {
     rmSync(scratchSite, { recursive: true, force: true });
+  }
+});
+
+test('redirects.json covers /guide/index.html, /quickstart.html, and every docs/guide/*.md page', () => {
+  const entries = loadRedirects();
+  assert.equal(entries.length, 16);
+
+  const fromSet = new Set(entries.map((entry) => entry.from));
+  assert.ok(fromSet.has('/guide/index.html'));
+  assert.ok(fromSet.has('/quickstart.html'));
+
+  const guidePages = readdirSync(join(DOCS_ROOT, 'guide'))
+    .filter((name) => name.endsWith('.md') && name !== 'index.md')
+    .sort();
+  assert.equal(guidePages.length, 14);
+  for (const filename of guidePages) {
+    const slug = filename.replace(/\.md$/, '');
+    const entry = entries.find((item) => item.from === `/guide/${slug}.html`);
+    assert.ok(entry, `Missing redirect entry for /guide/${slug}.html`);
+    assert.equal(entry.to, `/witforge/docs/${slug}/`);
+  }
+});
+
+test('renderRedirectHtml emits canonical URL, noindex, fragment-preserving JS, noscript refresh, and escapes HTML/JS', () => {
+  const html = renderRedirectHtml({
+    to: '/witforge/docs/diagnostics/',
+    title: 'Diagnostic codes & "quotes" <script>',
+  });
+
+  assert.ok(html.startsWith(`<!DOCTYPE html>\n${REDIRECT_MARKER}\n`));
+  assert.ok(html.includes('<meta name="robots" content="noindex">'));
+  assert.ok(
+    html.includes(
+      '<link rel="canonical" href="https://asamarts.github.io/witforge/docs/diagnostics/">',
+    ),
+  );
+  assert.ok(
+    html.includes(
+      '<noscript><meta http-equiv="refresh" content="0; url=/witforge/docs/diagnostics/"></noscript>',
+    ),
+  );
+  assert.ok(
+    html.includes('window.location.replace(target + window.location.search + window.location.hash);'),
+  );
+  assert.ok(
+    html.includes(
+      '<a href="/witforge/docs/diagnostics/">Diagnostic codes &amp; &quot;quotes&quot; &lt;script&gt;</a>',
+    ),
+  );
+  assert.equal(findEmDashesInHtml(html).length, 0);
+
+  assert.equal(escapeHtml(`a & <b> "c" 'd'`), 'a &amp; &lt;b&gt; &quot;c&quot; &#39;d&#39;');
+  assert.equal(escapeJsString('</script>&'), '"\\u003c/script\\u003e\\u0026"');
+});
+
+test('emitRedirects writes all 16 stubs, is idempotent, and refuses missing targets or route collisions', () => {
+  const scratchDist = makeTempDir('witforge-redirects-test-');
+  try {
+    const entries = loadRedirects();
+    for (const entry of entries) {
+      const sub = entry.to.replace(/^\/witforge\//, '').replace(/\/$/, '');
+      const destFile = sub
+        ? join(scratchDist, ...sub.split('/'), 'index.html')
+        : join(scratchDist, 'index.html');
+      mkdirSync(dirname(destFile), { recursive: true });
+      writeFileSync(destFile, '<!DOCTYPE html><html><body>Canonical page</body></html>\n', 'utf8');
+    }
+
+    const firstRun = emitRedirects({ distDir: scratchDist });
+    assert.equal(firstRun.count, 16);
+    assert.ok(firstRun.written.includes('guide/index.html'));
+    assert.ok(firstRun.written.includes('guide/diagnostics.html'));
+    assert.ok(firstRun.written.includes('quickstart.html'));
+
+    const diagStub = readFileSync(join(scratchDist, 'guide', 'diagnostics.html'), 'utf8');
+    assert.ok(diagStub.includes('https://asamarts.github.io/witforge/docs/diagnostics/'));
+    assert.ok(diagStub.includes('window.location.search + window.location.hash'));
+    assert.equal(findEmDashesInHtml(diagStub).length, 0);
+
+    // Re-running on the same dist directory is idempotent because stubs carry REDIRECT_MARKER
+    const secondRun = emitRedirects({ distDir: scratchDist });
+    assert.equal(secondRun.count, 16);
+
+    // Collision with an existing canonical route without REDIRECT_MARKER must fail
+    const collisionPath = join(scratchDist, 'quickstart.html');
+    writeFileSync(collisionPath, '<!DOCTYPE html><html><body>Real Astro route</body></html>\n', 'utf8');
+    assert.throws(() => emitRedirects({ distDir: scratchDist }), /collides with an existing canonical route/);
+
+    // Restore stub, then remove a destination page and ensure missing destination fails atomically
+    writeFileSync(collisionPath, `${REDIRECT_MARKER}\n`, 'utf8');
+    rmSync(join(scratchDist, 'docs', 'examples', 'index.html'));
+    rmSync(join(scratchDist, 'guide', 'ci.html'));
+    assert.throws(() => emitRedirects({ distDir: scratchDist }), /Redirect target does not exist in dist/);
+    assert.ok(!existsSync(join(scratchDist, 'guide', 'ci.html')), 'Must not write partial stubs on validation failure');
+  } finally {
+    rmSync(scratchDist, { recursive: true, force: true });
+  }
+});
+
+test('loadRedirects rejects invalid, duplicate, reserved, or escaping entries', () => {
+  const scratchDir = makeTempDir('witforge-redirects-manifest-');
+  try {
+    const badCases = [
+      [{ from: '/index.html', to: '/witforge/docs/' }],
+      [{ from: '/guide/../escape.html', to: '/witforge/docs/' }],
+      [{ from: '/guide/no-ext', to: '/witforge/docs/' }],
+      [{ from: '/guide/a.html', to: '/docs/' }],
+      [{ from: '/guide/a.html', to: '/witforge/docs' }],
+      [
+        { from: '/guide/dup.html', to: '/witforge/docs/' },
+        { from: '/guide/DUP.html', to: '/witforge/docs/quickstart/' },
+      ],
+    ];
+    for (const [idx, payload] of badCases.entries()) {
+      const file = join(scratchDir, `bad-${idx}.json`);
+      writeFileSync(file, JSON.stringify(payload), 'utf8');
+      assert.throws(() => loadRedirects(file), `Expected case #${idx} to fail validation`);
+    }
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
   }
 });

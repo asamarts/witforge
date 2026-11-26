@@ -1,0 +1,82 @@
+[
+  {
+    "from": "/guide/index.html",
+    "to": "/witforge/docs/",
+    "title": "Documentation overview"
+  },
+  {
+    "from": "/quickstart.html",
+    "to": "/witforge/docs/quickstart/",
+    "title": "Quickstart"
+  },
+  {
+    "from": "/guide/choosing-witforge.html",
+    "to": "/witforge/docs/choosing-witforge/",
+    "title": "Choosing witforge"
+  },
+  {
+    "from": "/guide/contract-authoring.html",
+    "to": "/witforge/docs/contract-authoring/",
+    "title": "Contract authoring"
+  },
+  {
+    "from": "/guide/generation.html",
+    "to": "/witforge/docs/generation/",
+    "title": "Generation"
+  },
+  {
+    "from": "/guide/wiring.html",
+    "to": "/witforge/docs/wiring/",
+    "title": "Wiring and installation"
+  },
+  {
+    "from": "/guide/generated-output.html",
+    "to": "/witforge/docs/generated-output/",
+    "title": "Generated output"
+  },
+  {
+    "from": "/guide/non-rust.html",
+    "to": "/witforge/docs/non-rust/",
+    "title": "Non-Rust implementations"
+  },
+  {
+    "from": "/guide/evolution.html",
+    "to": "/witforge/docs/evolution/",
+    "title": "Contract evolution"
+  },
+  {
+    "from": "/guide/ci.html",
+    "to": "/witforge/docs/ci/",
+    "title": "Continuous integration"
+  },
+  {
+    "from": "/guide/reference.html",
+    "to": "/witforge/docs/reference/",
+    "title": "CLI and configuration reference"
+  },
+  {
+    "from": "/guide/migration.html",
+    "to": "/witforge/docs/migration/",
+    "title": "Migrating between witforge releases"
+  },
+  {
+    "from": "/guide/diagnostics.html",
+    "to": "/witforge/docs/diagnostics/",
+    "title": "Diagnostic codes"
+  },
+  {
+    "from": "/guide/json-projections.html",
+    "to": "/witforge/docs/json-projections/",
+    "title": "JSON projections"
+  },
+  {
+    "from": "/guide/component-model.html",
+    "to": "/witforge/docs/component-model/",
+    "title": "Component Model boundary"
+  },
+  {
+    "from": "/guide/examples.html",
+    "to": "/witforge/docs/examples/",
+    "title": "Examples"
+  }
+]
