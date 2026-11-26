@@ -121,9 +121,11 @@ TMPDIR="$HOME/.tmp" npm --prefix site run verify            # site tests, check,
 
 - Design decisions live in `docs/design/overview.md` and the linked specs.
 - User-facing guides live under `docs/` and are indexed by `docs/SUMMARY.md`;
-  `site/scripts/sync-docs.mjs` syncs them into Starlight and generates
-  `llms.txt` / `llms-full.txt`. Legacy `.html` and `/guide/` compatibility
-  redirects are declared in `site/scripts/redirects.json`.
+  `site/scripts/sync-docs.mjs` syncs them into Starlight content and
+  `site/src/data/sidebar.json`, while `site/src/pages/llms.txt.ts` and
+  `site/src/pages/llms-full.txt.ts` emit `llms.txt` and `llms-full.txt` during
+  `astro build`. Legacy `.html` and `/guide/` compatibility redirects are
+  declared in `site/scripts/redirects.json`.
 - Published `docs/` guides, `README.md`, and `site/` pages must contain natural
   human prose with zero em dashes (checked by `site/scripts/check-links.mjs` and
   `crates/witforge-cli/tests/docs.rs`).

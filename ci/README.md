@@ -173,11 +173,11 @@ The Action's own temporary directory is inside the disposable GitHub runner, not
   both, so a broken check never blocks a fix, but pull requests are the normal path.
 - **Dependabot** (`.github/dependabot.yml`) opens one weekly grouped pull request for patch and
   minor updates in each of cargo, `/fuzz` cargo, and `/site` npm (with breaking major bumps in
-  separate pull requests; `@types/node` major bumps are ignored while `docs.yml` runs Node 24 LTS)
-  plus one grouped pull request for GitHub Actions. `ci ok` (including the MSRV job) is the
-  required ruleset merge gate, and `docs.yml` runs path-filtered PR verification on site/docs
-  changes so reviewers confirm `Build and verify site` passes before merging. Dependabot alerts
-  are on.
+  separate pull requests; `@types/node` major bumps are ignored while `docs.yml` runs Node 24 LTS,
+  and `typescript >=7.0.0` is ignored until `@astrojs/check` supports TypeScript 7) plus one
+  grouped pull request for GitHub Actions. `ci ok` (including the MSRV job) is the required
+  ruleset merge gate, and `docs.yml` runs path-filtered PR verification on site/docs changes so
+  reviewers confirm `Build and verify site` passes before merging. Dependabot alerts are on.
 - **Secret scanning** and push protection are on.
 
 The aplan plan (`aplan check`, `aplan verify`, `aplan export-agents-md --check AGENTS.md`, and
