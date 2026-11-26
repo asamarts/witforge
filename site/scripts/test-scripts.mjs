@@ -14,6 +14,12 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  checkSite,
+  findProseIssuesInHtml,
+  findProseIssuesInPlainText,
+  validateSvgDiagramsInHtml,
+} from './check-links.mjs';
+import {
   emitRedirects,
   escapeHtml,
   escapeJsString,
@@ -520,5 +526,184 @@ test('loadRedirects rejects invalid, duplicate, reserved, prefix-colliding, malf
     assert.throws(() => loadRedirects(validFile, { basePath: 'witforge' }), /Invalid basePath/);
   } finally {
     rmSync(scratchDir, { recursive: true, force: true });
+  }
+});
+
+test('findProseIssuesInHtml and findProseIssuesInPlainText catch em dashes, en dashes, clichés, and table leaks', () => {
+  const cleanHtml =
+    '<html><head><meta name="description" content="Direct engineering prose."></head>' +
+    '<body><pre><code>seamlessly — delve</code></pre><table><tr><td><code>--format json</code></td></tr></table>' +
+    '<p>Clear sentence with zero clichés.</p></body></html>';
+  assert.deepEqual(findProseIssuesInHtml(cleanHtml), []);
+
+  const dirtyHtml = [
+    '<html><head><meta property="og:description" content="Supercharge your contracts"></head>',
+    '<body>',
+    '<p>Bad em dash \u2014 here and en dash \u2013 here.</p>',
+    '<p>We seamlessly delve into cutting-edge tooling.</p>',
+    '<table><tr><td>Added <code>witforge diff</code>, `--format json</td></tr></table>',
+    '</body></html>',
+  ].join('\n');
+  const htmlIssues = findProseIssuesInHtml(dirtyHtml);
+  assert.ok(htmlIssues.some((msg) => msg.includes('em dash')));
+  assert.ok(htmlIssues.some((msg) => msg.includes('en dash')));
+  assert.ok(htmlIssues.some((msg) => msg.includes('leaked backtick in table cell')));
+  assert.ok(htmlIssues.some((msg) => msg.includes('Supercharge')));
+  assert.ok(htmlIssues.some((msg) => msg.includes('seamlessly')));
+  assert.ok(htmlIssues.some((msg) => msg.includes('delve')));
+  assert.ok(htmlIssues.some((msg) => msg.includes('cutting-edge')));
+
+  const cleanText = '# Docs\n\n```sh\n# seamlessly delve\n```\n\nDirect guide text.\n';
+  assert.deepEqual(findProseIssuesInPlainText(cleanText), []);
+
+  const dirtyText = 'Overview \u2014 unlock the power of WIT.\n';
+  const textIssues = findProseIssuesInPlainText(dirtyText);
+  assert.ok(textIssues.some((msg) => msg.includes('em dash')));
+  assert.ok(textIssues.some((msg) => msg.includes('unlock the power')));
+});
+
+test('validateSvgDiagramsInHtml accepts valid diagrams and catches missing metadata or out-of-bounds shapes', () => {
+  const validSvg = [
+    '<figure>',
+    '<svg viewBox="0 0 200 100" role="img" aria-labelledby="t d">',
+    '<title id="t">Valid diagram</title>',
+    '<desc id="d">A box inside bounds.</desc>',
+    '<rect x="10" y="10" width="180" height="80" />',
+    '<text x="100" y="50">OK</text>',
+    '<path d="M10 50 L190 50" />',
+    '</svg>',
+    '</figure>',
+    // Small decorative UI icon must be ignored
+    '<svg width="16" height="16" viewBox="0 0 24 24"><path d="M0 0 L24 24" /></svg>',
+  ].join('\n');
+  const ok = validateSvgDiagramsInHtml(validSvg, 'index.html');
+  assert.equal(ok.diagramCount, 1);
+  assert.deepEqual(ok.errors, []);
+
+  const badSvg = [
+    '<figure>',
+    '<svg viewBox="0 0 200 100" aria-labelledby="missing-id">',
+    '<rect x="10" y="10" width="250" height="80" />',
+    '<path d="M0 50 L250 50" />',
+    '</svg>',
+    '</figure>',
+  ].join('\n');
+  const bad = validateSvgDiagramsInHtml(badSvg, 'bad.html');
+  assert.equal(bad.diagramCount, 1);
+  assert.ok(bad.errors.some((e) => e.includes('missing role="img"')));
+  assert.ok(bad.errors.some((e) => e.includes('missing id "missing-id"')));
+  assert.ok(bad.errors.some((e) => e.includes('missing non-empty <title>')));
+  assert.ok(bad.errors.some((e) => e.includes('missing non-empty <desc>')));
+  assert.ok(bad.errors.some((e) => e.includes('outside SVG viewBox')));
+
+  const badViewBox = '<svg role="img" viewBox="0 0 -10 100" aria-labelledby="a"><title id="a">T</title><desc>D</desc></svg>';
+  const badVb = validateSvgDiagramsInHtml(badViewBox, 'vb.html');
+  assert.ok(badVb.errors.some((e) => e.includes('invalid or missing numeric viewBox')));
+});
+
+test('checkSite catches broken links, missing trailing slashes, missing fragments, bad GitHub links, and drifted examples', () => {
+  const scratchRoot = makeTempDir('witforge-check-links-test-');
+  try {
+    const dist = join(scratchRoot, 'dist');
+    const docs = join(scratchRoot, 'docs');
+    const manifest = join(scratchRoot, 'redirects.json');
+    mkdirSync(join(dist, 'docs', 'diagnostics'), { recursive: true });
+    mkdirSync(join(dist, 'pagefind', 'fragment'), { recursive: true });
+    mkdirSync(join(docs, 'guide'), { recursive: true });
+    mkdirSync(join(scratchRoot, 'examples', 'single'), { recursive: true });
+    mkdirSync(join(scratchRoot, 'examples', 'evolved'), { recursive: true });
+
+    writeFileSync(join(scratchRoot, 'Cargo.toml'), '[workspace.package]\nversion = "0.9.0"\n', 'utf8');
+    writeFileSync(join(scratchRoot, 'examples', 'single', 'contract.wit'), 'package a:b@0.1.0;\n', 'utf8');
+    writeFileSync(join(scratchRoot, 'examples', 'evolved', 'convert.rs'), 'pub fn convert() {}\n', 'utf8');
+    writeFileSync(join(docs, 'guide', 'diagnostics.md'), '### WF1001\n\nBody.\n', 'utf8');
+    writeFileSync(
+      manifest,
+      JSON.stringify([{ from: '/guide/diagnostics.html', to: '/witforge/docs/diagnostics/', title: 'Diagnostics' }]),
+      'utf8',
+    );
+
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    writeFileSync(join(dist, 'robots.txt'), 'Sitemap: https://asamarts.github.io/witforge/sitemap-index.xml\n', 'utf8');
+    writeFileSync(
+      join(dist, 'sitemap-index.xml'),
+      '<sitemapindex><sitemap><loc>https://asamarts.github.io/witforge/sitemap-0.xml</loc></sitemap></sitemapindex>\n',
+      'utf8',
+    );
+    writeFileSync(join(dist, 'sitemap-0.xml'), '<urlset><url><loc>https://asamarts.github.io/witforge/</loc></url></urlset>\n', 'utf8');
+    writeFileSync(join(dist, '404.html'), '<!DOCTYPE html><html><body><p>Not found.</p></body></html>\n', 'utf8');
+    writeFileSync(join(dist, 'favicon.svg'), '<svg></svg>\n', 'utf8');
+    writeFileSync(join(dist, 'og-card.svg'), '<svg></svg>\n', 'utf8');
+    writeFileSync(join(dist, 'og-card.png'), pngHeader);
+    writeFileSync(join(dist, 'llms.txt'), '# witforge v0.9.0\n', 'utf8');
+    writeFileSync(join(dist, 'llms-full.txt'), '# witforge v0.9.0\n', 'utf8');
+    writeFileSync(join(dist, 'pagefind', 'pagefind.js'), '// stub\n', 'utf8');
+    writeFileSync(join(dist, 'pagefind', 'pagefind-entry.json'), '{}\n', 'utf8');
+    writeFileSync(join(dist, 'pagefind', 'fragment', 'en_1.pf_fragment'), 'data\n', 'utf8');
+
+    const validIndex = [
+      '<!DOCTYPE html><html><body>',
+      '<p>witforge v0.9.0</p>',
+      '<a href="/witforge/docs/diagnostics/#wf1001">WF1001</a>',
+      '<figure><svg viewBox="0 0 240 100" role="img" aria-labelledby="t1 d1"><title id="t1">Diagram</title><desc id="d1">Desc</desc><rect x="10" y="10" width="200" height="80"/></svg></figure>',
+      '<section><div><div>',
+      '<div id="tour-panel-wit"><a href="https://github.com/asamarts/witforge/blob/main/examples/single/contract.wit">src</a><pre><code>package a:b@0.1.0;</code></pre></div>',
+      '<div id="tour-panel-convert"><a href="https://github.com/asamarts/witforge/blob/main/examples/evolved/convert.rs">src</a><pre><code>pub fn convert() {}</code></pre></div>',
+      '</div></div></section>',
+      '</body></html>',
+    ].join('\n');
+    writeFileSync(join(dist, 'index.html'), validIndex, 'utf8');
+    writeFileSync(
+      join(dist, 'docs', 'diagnostics', 'index.html'),
+      '<!DOCTYPE html><html><body><h3 id="wf1001">WF1001</h3></body></html>\n',
+      'utf8',
+    );
+    emitRedirects({ distDir: dist, manifestPath: manifest });
+
+    // Positive run must succeed with zero errors
+    const ok = checkSite({
+      distDir: dist,
+      repoRoot: scratchRoot,
+      docsRoot: docs,
+      manifestPath: manifest,
+      minDiagrams: 1,
+    });
+    assert.deepEqual(ok.errors, []);
+    assert.equal(ok.stats.verifiedDiagnosticCodes, 1);
+    assert.equal(ok.stats.verifiedTourPanels, 2);
+
+    // Negative run: inject broken link, missing trailing slash, missing fragment, bad repo link,
+    // em dash, cliché, drifted tour excerpt, and missing WF1001 anchor
+    const brokenIndex = validIndex
+      .replace('/witforge/docs/diagnostics/#wf1001', '/witforge/docs/diagnostics#missing-frag')
+      .replace(
+        '</body>',
+        '<a href="/witforge/nope/">404</a><a href="https://github.com/asamarts/witforge/blob/main/no/such/file.rs">bad</a><p>Bad \u2014 seamlessly</p></body>',
+      )
+      .replace('package a:b@0.1.0;', 'package drifted:code@0.1.0;');
+    writeFileSync(join(dist, 'index.html'), brokenIndex, 'utf8');
+    writeFileSync(
+      join(dist, 'docs', 'diagnostics', 'index.html'),
+      '<!DOCTYPE html><html><body><h3>WF1001</h3></body></html>\n',
+      'utf8',
+    );
+
+    const bad = checkSite({
+      distDir: dist,
+      repoRoot: scratchRoot,
+      docsRoot: docs,
+      manifestPath: manifest,
+      minDiagrams: 1,
+    });
+    assert.ok(bad.errors.some((e) => e.includes('missing trailing slash')));
+    assert.ok(bad.errors.some((e) => e.includes('broken fragment "#missing-frag"')));
+    assert.ok(bad.errors.some((e) => e.includes('broken internal link "/witforge/nope/"')));
+    assert.ok(bad.errors.some((e) => e.includes('GitHub repo link target does not exist')));
+    assert.ok(bad.errors.some((e) => e.includes('em dash')));
+    assert.ok(bad.errors.some((e) => e.includes('banned prose cliché')));
+    assert.ok(bad.errors.some((e) => e.includes('excerpt drifted')));
+    assert.ok(bad.errors.some((e) => e.includes('missing lowercase anchor id="wf1001"')));
+  } finally {
+    rmSync(scratchRoot, { recursive: true, force: true });
   }
 });

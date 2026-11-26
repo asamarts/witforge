@@ -10,11 +10,13 @@
   "scripts": {
     "sync:docs": "node scripts/sync-docs.mjs",
     "emit:redirects": "node scripts/emit-redirects.mjs",
+    "check:links": "node scripts/check-links.mjs",
     "dev": "node scripts/sync-docs.mjs && astro dev",
     "build": "node scripts/sync-docs.mjs && astro build && node scripts/emit-redirects.mjs",
     "preview": "astro preview",
     "check": "node scripts/sync-docs.mjs && astro check",
     "test:scripts": "node --test scripts/test-scripts.mjs",
+    "verify": "npm run test:scripts && npm run check && npm run build && npm run check:links",
     "astro": "astro"
   },
   "dependencies": {
