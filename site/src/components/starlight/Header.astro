@@ -1,0 +1,63 @@
+---
+import Search from '@astrojs/starlight/components/Search.astro';
+import SiteNav from '../SiteNav.astro';
+import ThemeToggle from '../ThemeToggle.astro';
+---
+
+<SiteNav as="div">
+  <div slot="search" class="docs-search">
+    <Search />
+  </div>
+  <ThemeToggle slot="end" />
+</SiteNav>
+
+<style>
+  .docs-search {
+    display: flex;
+    align-items: center;
+  }
+
+  .docs-search :global(button[data-open-modal]) {
+    height: 34px;
+    border-radius: var(--radius-sm);
+    border-color: var(--rule);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 0.84rem;
+  }
+
+  .docs-search :global(button[data-open-modal]:hover) {
+    border-color: var(--border-strong);
+    color: var(--ink);
+  }
+
+  @media (max-width: 1180px) and (min-width: 50rem) {
+    .docs-search :global(button[data-open-modal]) {
+      min-width: 0;
+      width: 9.5rem;
+    }
+  }
+
+  @media (max-width: 960px) and (min-width: 50rem) {
+    .docs-search :global(button[data-open-modal]) {
+      width: auto;
+      padding-inline: 8px;
+    }
+
+    .docs-search :global(button[data-open-modal] > span),
+    .docs-search :global(button[data-open-modal] kbd) {
+      display: none;
+    }
+  }
+
+  @media (max-width: 49.99rem) {
+    :global(:root[data-has-sidebar] .header .site-nav) {
+      padding-inline-end: calc(var(--gutter) + var(--sl-menu-button-size) + 8px);
+    }
+
+    :global(:root[data-has-sidebar] .header .nav-version),
+    :global(:root[data-has-sidebar] .header .nav-icon) {
+      display: none;
+    }
+  }
+</style>

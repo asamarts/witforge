@@ -1,0 +1,40 @@
+---
+import { THEME_COLOR_DARK, THEME_COLOR_LIGHT } from '../lib/site';
+---
+
+<script is:inline define:vars={{ THEME_COLOR_DARK, THEME_COLOR_LIGHT }}>
+  (() => {
+    document.documentElement.classList.add('js');
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+
+    const syncMeta = (theme) => {
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) {
+        meta.setAttribute('content', theme === 'dark' ? THEME_COLOR_DARK : THEME_COLOR_LIGHT);
+      }
+    };
+
+    const readSaved = () => {
+      try {
+        const value = localStorage.getItem('starlight-theme');
+        return value === 'light' || value === 'dark' ? value : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const applyTheme = (theme) => {
+      document.documentElement.dataset.theme = theme;
+      syncMeta(theme);
+    };
+
+    const initial = readSaved() ?? (mq.matches ? 'dark' : 'light');
+    applyTheme(initial);
+
+    mq.addEventListener?.('change', (event) => {
+      if (!readSaved()) {
+        applyTheme(event.matches ? 'dark' : 'light');
+      }
+    });
+  })();
+</script>

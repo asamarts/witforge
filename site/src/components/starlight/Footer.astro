@@ -1,0 +1,46 @@
+---
+import Default from '@astrojs/starlight/components/Footer.astro';
+import { DOCS_RS_URL, REPO_URL, withBase } from '../../lib/site';
+---
+
+<Default {...Astro.props} />
+<nav class="docs-extra-footer" aria-label="Site links">
+  <a href={withBase('/')}>Home</a>
+  <span aria-hidden="true">&middot;</span>
+  <a href={withBase('/outputs/')}>Outputs</a>
+  <span aria-hidden="true">&middot;</span>
+  <a href={withBase('/docs/quickstart/')}>Quickstart</a>
+  <span aria-hidden="true">&middot;</span>
+  <a href={withBase('/docs/reference/')}>CLI reference</a>
+  <span aria-hidden="true">&middot;</span>
+  <a href={withBase('/docs/diagnostics/')}>Diagnostics</a>
+  <span aria-hidden="true">&middot;</span>
+  <a href={withBase('/llms.txt')}>llms.txt</a>
+  <span aria-hidden="true">&middot;</span>
+  <a href={DOCS_RS_URL} target="_blank" rel="noopener noreferrer">docs.rs</a>
+  <span aria-hidden="true">&middot;</span>
+  <a href={REPO_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
+</nav>
+
+<style>
+  .docs-extra-footer {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--sl-color-hairline);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .docs-extra-footer a {
+    color: var(--sl-color-gray-2);
+    text-decoration: none;
+  }
+
+  .docs-extra-footer a:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+</style>

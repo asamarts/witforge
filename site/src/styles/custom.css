@@ -1,0 +1,145 @@
+/*
+ * Starlight theme bridge: binds Starlight CSS custom properties onto witforge's
+ * Cobalt/Sapphire Blue tokens.css so documentation pages match the marketing
+ * and outputs pages as one cohesive product.
+ */
+
+:root {
+  --sl-font: var(--font-body);
+  --sl-font-mono: var(--font-code);
+
+  --sl-color-white: var(--ink);
+  --sl-color-gray-1: var(--ink);
+  --sl-color-gray-2: var(--text);
+  --sl-color-gray-3: var(--muted);
+  --sl-color-gray-4: var(--border-strong);
+  --sl-color-gray-5: var(--rule);
+  --sl-color-gray-6: var(--surface-2);
+  --sl-color-gray-7: var(--surface);
+  --sl-color-black: var(--bg);
+
+  --sl-color-accent-low: var(--accent-wash);
+  --sl-color-accent: var(--accent);
+  --sl-color-accent-high: var(--accent-strong);
+
+  --sl-color-text: var(--text);
+  --sl-color-text-accent: var(--accent);
+  --sl-color-text-invert: var(--on-accent);
+  --sl-color-bg: var(--bg);
+  --sl-color-bg-nav: var(--bg);
+  --sl-color-bg-sidebar: var(--surface);
+  --sl-color-bg-inline-code: var(--surface-2);
+  --sl-color-hairline-light: var(--rule);
+  --sl-color-hairline: var(--rule);
+  --sl-color-hairline-shade: var(--rule);
+
+  --sl-nav-height: calc(var(--nav-h) + 1px);
+  --sl-sidebar-width: 18.5rem;
+  --sl-content-width: 50rem;
+  --sl-line-height: 1.65;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+.sl-markdown-content h4,
+.content-panel h1 {
+  font-family: var(--font-display);
+  letter-spacing: -0.025em;
+}
+
+.sl-markdown-content :not(pre) > code {
+  padding: 0.12em 0.36em;
+  border-radius: 4px;
+  font-size: 0.87em;
+}
+
+.sl-markdown-content a {
+  color: var(--accent);
+  text-underline-offset: 0.2em;
+}
+
+.sl-markdown-content a:hover {
+  color: var(--accent-hover);
+}
+
+.sl-markdown-content table {
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.sl-markdown-content th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink);
+  border-bottom: 1.5px solid var(--rule);
+}
+
+.sl-markdown-content td {
+  border-bottom: 1px solid var(--rule);
+}
+
+.sidebar-content a[aria-current='page'] {
+  background: var(--accent-wash);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.sidebar-content a:hover {
+  color: var(--ink);
+}
+
+/* Pagefind search modal readability and highlight contrast */
+#starlight__search .pagefind-ui__search-input,
+#starlight__search .pagefind-ui__result {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+}
+
+#starlight__search .pagefind-ui__search-input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+#starlight__search mark {
+  background: var(--accent-wash);
+  color: var(--accent-strong);
+  font-weight: 600;
+  border-radius: 3px;
+  padding-inline: 2px;
+}
+
+/* Hide Starlight's mobile drawer theme dropdown because our header always renders ThemeToggle */
+starlight-theme-select {
+  display: none;
+}
+
+/* Starlight Header override integration */
+header.header {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg);
+}
+
+header.header .site-header {
+  position: static;
+  border-bottom: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+header.header .site-nav {
+  max-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

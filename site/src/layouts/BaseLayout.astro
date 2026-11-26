@@ -1,0 +1,143 @@
+---
+import '@fontsource-variable/plus-jakarta-sans/wght.css';
+import '@fontsource-variable/inter/wght.css';
+import '@fontsource-variable/inter/wght-italic.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/600.css';
+import '../styles/tokens.css';
+import '../styles/site.css';
+import SiteNav from '../components/SiteNav.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ThemeInit from '../components/ThemeInit.astro';
+import ThemeToggle from '../components/ThemeToggle.astro';
+import {
+  OG_IMAGE_URL,
+  SITE_TITLE,
+  THEME_COLOR_LIGHT,
+  canonicalUrl,
+  withBase,
+} from '../lib/site';
+
+interface Props {
+  title: string;
+  description: string;
+  canonical?: string;
+  indexInSearch?: boolean;
+}
+
+const {
+  title,
+  description,
+  canonical = canonicalUrl(Astro.url.pathname),
+  indexInSearch = true,
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <ThemeInit />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:site_name" content={SITE_TITLE} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content={OG_IMAGE_URL} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={OG_IMAGE_URL} />
+    <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
+    <meta name="theme-color" content={THEME_COLOR_LIGHT} />
+    <slot name="head" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <SiteNav>
+      <ThemeToggle slot="end" />
+    </SiteNav>
+    <main id="main" data-pagefind-body={indexInSearch ? '' : undefined}>
+      <slot />
+    </main>
+    <SiteFooter />
+    <div id="copy-status" class="sr-only" role="status" aria-live="polite"></div>
+    <script is:inline>
+      (() => {
+        // Accessible WAI-ARIA tablist controller for install cards, code tours, and filters.
+        for (const root of document.querySelectorAll('[data-tabs]')) {
+          const tabs = [...root.querySelectorAll('[role="tab"]')];
+          if (tabs.length === 0) continue;
+
+          const select = (tab, moveFocus) => {
+            for (const candidate of tabs) {
+              const active = candidate === tab;
+              candidate.setAttribute('aria-selected', String(active));
+              candidate.tabIndex = active ? 0 : -1;
+              const panelId = candidate.getAttribute('aria-controls');
+              if (panelId) {
+                const panel = document.getElementById(panelId);
+                if (panel) panel.hidden = !active;
+              }
+            }
+            if (moveFocus) tab.focus();
+          };
+
+          root.addEventListener('click', (event) => {
+            const target = event.target instanceof Element ? event.target.closest('[role="tab"]') : null;
+            if (target && tabs.includes(target)) {
+              select(target, false);
+            }
+          });
+
+          root.addEventListener('keydown', (event) => {
+            const currentIdx = tabs.indexOf(document.activeElement);
+            if (currentIdx < 0) return;
+            const keyMap = {
+              ArrowRight: (currentIdx + 1) % tabs.length,
+              ArrowLeft: (currentIdx - 1 + tabs.length) % tabs.length,
+              Home: 0,
+              End: tabs.length - 1,
+            };
+            const nextIdx = keyMap[event.key];
+            if (nextIdx === undefined) return;
+            event.preventDefault();
+            select(tabs[nextIdx], true);
+          });
+        }
+
+        // One-click copy buttons with polite screen-reader status updates.
+        const live = document.getElementById('copy-status');
+        const timers = new WeakMap();
+        for (const button of document.querySelectorAll('[data-copy]')) {
+          button.dataset.origLabel ??= button.textContent?.trim() || 'Copy';
+          button.addEventListener('click', async () => {
+            const text = button.getAttribute('data-copy') || '';
+            const prevTimer = timers.get(button);
+            if (prevTimer) clearTimeout(prevTimer);
+            try {
+              await navigator.clipboard.writeText(text);
+              button.textContent = 'Copied';
+              if (live) live.textContent = 'Copied to clipboard';
+            } catch {
+              button.textContent = 'Copy failed';
+              if (live) live.textContent = 'Could not copy to clipboard';
+            }
+            timers.set(
+              button,
+              setTimeout(() => {
+                button.textContent = button.dataset.origLabel || 'Copy';
+              }, 1600),
+            );
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>
