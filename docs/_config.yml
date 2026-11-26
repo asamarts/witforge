@@ -17,3 +17,4 @@ relative_links:
 exclude:
   - aplan-pilot.md
   - design
+  - SUMMARY.md

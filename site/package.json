@@ -8,10 +8,12 @@
     "node": ">=22.23.4"
   },
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
+    "sync:docs": "node scripts/sync-docs.mjs",
+    "dev": "node scripts/sync-docs.mjs && astro dev",
+    "build": "node scripts/sync-docs.mjs && astro build",
     "preview": "astro preview",
     "check": "astro check",
+    "test:scripts": "node --test scripts/test-scripts.mjs",
     "astro": "astro"
   },
   "dependencies": {

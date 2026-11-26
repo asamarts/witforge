@@ -1,9 +1,25 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const LIB_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(LIB_DIR, '..', '..', '..');
+function findRepoRoot(): string {
+  const starts = [process.cwd(), dirname(fileURLToPath(import.meta.url))];
+  for (const start of starts) {
+    let dir = resolve(start);
+    while (true) {
+      if (existsSync(resolve(dir, 'Cargo.toml')) && existsSync(resolve(dir, 'docs'))) {
+        return dir;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  throw new Error('Could not locate witforge repository root containing Cargo.toml and docs/');
+}
+
+export const REPO_ROOT = findRepoRoot();
+export const DOCS_ROOT = resolve(REPO_ROOT, 'docs');
 const WORKSPACE_CARGO_TOML = resolve(REPO_ROOT, 'Cargo.toml');
 
 interface WorkspaceMetadata {
