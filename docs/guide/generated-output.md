@@ -67,10 +67,11 @@ Full files: [`v0_1.rs`](https://github.com/asamarts/witforge/blob/main/examples/
 and [`mod.rs`](https://github.com/asamarts/witforge/blob/main/examples/single/generated/rust/mod.rs).
 Opt-in Rust flags enable additional profiles per project: `--serde` (`serde = true`) adds plain,
 format-independent `::serde::Serialize` and `::serde::Deserialize` derives using these Rust
-identifiers; `--no-std` (`no-std = true`) emits `#![no_std]` + `alloc` paths; `--eq-hash`
-(`eq-hash = true`) derives `Eq` and `Hash` on float-free types; and `--try-from` (`try-from = true`)
-emits `TryFrom` impls in `convert.rs`. See [JSON projections](json-projections.md) for the exact
-Serde JSON keys, reading rules, and `serde_json` edge cases.
+identifiers; `--no-std` (`no-std = true`) emits `#![no_std]`-compatible `::alloc::*` and
+`::core::*` paths; `--eq-hash` (`eq-hash = true`) derives `Eq` and `Hash` on float-free types;
+and `--try-from` (`try-from = true`) emits `TryFrom` impls in `convert.rs`. See
+[JSON projections](json-projections.md) for the exact Serde JSON keys, reading rules, and
+`serde_json` edge cases.
 
 ## Protobuf
 

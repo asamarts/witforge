@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -9,6 +18,7 @@ import {
   escapeHtml,
   escapeJsString,
   loadRedirects,
+  REDIRECT_HEADER,
   REDIRECT_MARKER,
   renderRedirectHtml,
 } from './emit-redirects.mjs';
@@ -294,6 +304,18 @@ test('renderRedirectHtml emits canonical URL, noindex, fragment-preserving JS, n
 
   assert.equal(escapeHtml(`a & <b> "c" 'd'`), 'a &amp; &lt;b&gt; &quot;c&quot; &#39;d&#39;');
   assert.equal(escapeJsString('</script>&'), '"\\u003c/script\\u003e\\u0026"');
+
+  // Blank or whitespace-only title falls back to the target URL rather than empty anchor text
+  const blankTitle = renderRedirectHtml({ to: '/witforge/docs/', title: '   ' });
+  assert.ok(blankTitle.includes('<a href="/witforge/docs/">/witforge/docs/</a>'));
+  assert.throws(
+    () => renderRedirectHtml({ to: '/witforge/docs/', siteOrigin: 'javascript:alert(1)' }),
+    /Invalid siteOrigin/,
+  );
+  assert.throws(
+    () => renderRedirectHtml({ to: '/witforge/docs/', siteOrigin: 'https://example.com/sub' }),
+    /must not include a path/,
+  );
 });
 
 test('emitRedirects writes all 16 stubs, is idempotent, and refuses missing targets or route collisions', () => {
@@ -320,38 +342,171 @@ test('emitRedirects writes all 16 stubs, is idempotent, and refuses missing targ
     assert.ok(diagStub.includes('window.location.search + window.location.hash'));
     assert.equal(findEmDashesInHtml(diagStub).length, 0);
 
-    // Re-running on the same dist directory is idempotent because stubs carry REDIRECT_MARKER
+    // Re-running on the same dist directory is idempotent because stubs start with REDIRECT_HEADER
     const secondRun = emitRedirects({ distDir: scratchDist });
     assert.equal(secondRun.count, 16);
 
-    // Collision with an existing canonical route without REDIRECT_MARKER must fail
+    // Collision with a canonical route that merely mentions REDIRECT_MARKER in body prose must fail
     const collisionPath = join(scratchDist, 'quickstart.html');
-    writeFileSync(collisionPath, '<!DOCTYPE html><html><body>Real Astro route</body></html>\n', 'utf8');
-    assert.throws(() => emitRedirects({ distDir: scratchDist }), /collides with an existing canonical route/);
+    writeFileSync(
+      collisionPath,
+      `<!DOCTYPE html><html><body><p>Example marker: ${REDIRECT_MARKER}</p></body></html>\n`,
+      'utf8',
+    );
+    assert.throws(
+      () => emitRedirects({ distDir: scratchDist }),
+      /collides with an existing canonical route/,
+    );
 
-    // Restore stub, then remove a destination page and ensure missing destination fails atomically
-    writeFileSync(collisionPath, `${REDIRECT_MARKER}\n`, 'utf8');
+    // Restore valid stub header, then remove a destination page and ensure missing destination fails atomically
+    writeFileSync(collisionPath, `${REDIRECT_HEADER}`, 'utf8');
     rmSync(join(scratchDist, 'docs', 'examples', 'index.html'));
     rmSync(join(scratchDist, 'guide', 'ci.html'));
-    assert.throws(() => emitRedirects({ distDir: scratchDist }), /Redirect target does not exist in dist/);
-    assert.ok(!existsSync(join(scratchDist, 'guide', 'ci.html')), 'Must not write partial stubs on validation failure');
+    assert.throws(
+      () => emitRedirects({ distDir: scratchDist }),
+      /Redirect target does not exist in dist/,
+    );
+    assert.ok(
+      !existsSync(join(scratchDist, 'guide', 'ci.html')),
+      'Must not write partial stubs on validation failure',
+    );
   } finally {
     rmSync(scratchDist, { recursive: true, force: true });
   }
 });
 
-test('loadRedirects rejects invalid, duplicate, reserved, or escaping entries', () => {
+test('emitRedirects refuses symlinks, ancestor file collisions, self-redirects, chains, and bad distDir', () => {
+  const scratchRoot = makeTempDir('witforge-redirects-hardening-');
+  try {
+    assert.throws(
+      () => emitRedirects({ distDir: join(scratchRoot, 'missing') }),
+      /Built dist directory not found/,
+    );
+
+    const fileAsDist = join(scratchRoot, 'not-a-dir');
+    writeFileSync(fileAsDist, 'file', 'utf8');
+    assert.throws(() => emitRedirects({ distDir: fileAsDist }), /not a directory/);
+
+    const dist = join(scratchRoot, 'dist');
+    const manifest = join(scratchRoot, 'manifest.json');
+    mkdirSync(join(dist, 'docs', 'target'), { recursive: true });
+    writeFileSync(join(dist, 'docs', 'target', 'index.html'), '<!DOCTYPE html><html></html>\n', 'utf8');
+    writeFileSync(
+      manifest,
+      JSON.stringify([
+        { from: '/first.html', to: '/witforge/docs/target/', title: 'Target' },
+        { from: '/guide/nested.html', to: '/witforge/docs/target/', title: 'Target' },
+      ]),
+      'utf8',
+    );
+
+    // File blocking ancestor directory ("dist/guide" is a file) must fail atomically before writing /first.html
+    writeFileSync(join(dist, 'guide'), 'blocking file', 'utf8');
+    assert.throws(
+      () => emitRedirects({ distDir: dist, manifestPath: manifest }),
+      /collides with non-directory path/,
+    );
+    assert.ok(!existsSync(join(dist, 'first.html')), 'Must not write earlier stubs when ancestor fails');
+    rmSync(join(dist, 'guide'));
+
+    // Directory at outFile ("dist/first.html/") must fail
+    mkdirSync(join(dist, 'first.html'));
+    assert.throws(
+      () => emitRedirects({ distDir: dist, manifestPath: manifest }),
+      /collides with non-file path/,
+    );
+    rmSync(join(dist, 'first.html'), { recursive: true });
+
+    // Dangling symlink at outFile and symlinked ancestor directory must both be refused
+    if (process.platform !== 'win32') {
+      const outside = join(scratchRoot, 'outside.html');
+      symlinkSync(outside, join(dist, 'first.html'));
+      assert.throws(
+        () => emitRedirects({ distDir: dist, manifestPath: manifest }),
+        /Refusing symlinked redirect output path/,
+      );
+      assert.ok(!existsSync(outside), 'Must never follow dangling symlink outside dist');
+      rmSync(join(dist, 'first.html'));
+
+      const outsideDir = join(scratchRoot, 'outside-dir');
+      mkdirSync(outsideDir);
+      symlinkSync(outsideDir, join(dist, 'guide'));
+      assert.throws(
+        () => emitRedirects({ distDir: dist, manifestPath: manifest }),
+        /Refusing symlinked directory in dist/,
+      );
+      rmSync(join(dist, 'guide'));
+    }
+
+    // Self-redirect loop and redirect-to-redirect chain must be refused even on re-runs
+    const loopManifest = join(scratchRoot, 'loop.json');
+    writeFileSync(
+      loopManifest,
+      JSON.stringify([{ from: '/guide/index.html', to: '/witforge/guide/' }]),
+      'utf8',
+    );
+    assert.throws(
+      () => emitRedirects({ distDir: dist, manifestPath: loopManifest }),
+      /loop or chain/,
+    );
+
+    // Pre-existing redirect stub at target must also be refused as a chain
+    mkdirSync(join(dist, 'docs', 'stub-target'), { recursive: true });
+    writeFileSync(join(dist, 'docs', 'stub-target', 'index.html'), `${REDIRECT_HEADER}`, 'utf8');
+    const chainManifest = join(scratchRoot, 'chain.json');
+    writeFileSync(
+      chainManifest,
+      JSON.stringify([{ from: '/chain.html', to: '/witforge/docs/stub-target/' }]),
+      'utf8',
+    );
+    assert.throws(
+      () => emitRedirects({ distDir: dist, manifestPath: chainManifest }),
+      /itself a redirect stub/,
+    );
+
+    // Root basePath "/" works cleanly
+    const rootManifest = join(scratchRoot, 'root-base.json');
+    writeFileSync(
+      rootManifest,
+      JSON.stringify([{ from: '/old.html', to: '/docs/target/', title: 'Target' }]),
+      'utf8',
+    );
+    const rootResult = emitRedirects({ distDir: dist, manifestPath: rootManifest, basePath: '/' });
+    assert.equal(rootResult.count, 1);
+    const rootHtml = readFileSync(join(dist, 'old.html'), 'utf8');
+    assert.ok(rootHtml.includes('<link rel="canonical" href="https://asamarts.github.io/docs/target/">'));
+  } finally {
+    rmSync(scratchRoot, { recursive: true, force: true });
+  }
+});
+
+test('loadRedirects rejects invalid, duplicate, reserved, prefix-colliding, malformed, or escaping entries', () => {
   const scratchDir = makeTempDir('witforge-redirects-manifest-');
   try {
+    const badJsonFile = join(scratchDir, 'bad-json.json');
+    writeFileSync(badJsonFile, '{ not valid json', 'utf8');
+    assert.throws(() => loadRedirects(badJsonFile), /Invalid JSON in .*bad-json\.json/);
+
     const badCases = [
+      [],
+      { from: '/guide/a.html', to: '/witforge/docs/' },
+      [null],
       [{ from: '/index.html', to: '/witforge/docs/' }],
+      [{ from: '/.html', to: '/witforge/docs/' }],
+      [{ from: '/guide/.html', to: '/witforge/docs/' }],
       [{ from: '/guide/../escape.html', to: '/witforge/docs/' }],
+      [{ from: '/D:/escape.html', to: '/witforge/docs/' }],
       [{ from: '/guide/no-ext', to: '/witforge/docs/' }],
       [{ from: '/guide/a.html', to: '/docs/' }],
       [{ from: '/guide/a.html', to: '/witforge/docs' }],
+      [{ from: '/guide/a.html', to: '/witforge/docs/', title: '   ' }],
       [
         { from: '/guide/dup.html', to: '/witforge/docs/' },
         { from: '/guide/DUP.html', to: '/witforge/docs/quickstart/' },
+      ],
+      [
+        { from: '/guide/a.html', to: '/witforge/docs/' },
+        { from: '/guide/a.html/nested.html', to: '/witforge/docs/quickstart/' },
       ],
     ];
     for (const [idx, payload] of badCases.entries()) {
@@ -359,6 +514,10 @@ test('loadRedirects rejects invalid, duplicate, reserved, or escaping entries', 
       writeFileSync(file, JSON.stringify(payload), 'utf8');
       assert.throws(() => loadRedirects(file), `Expected case #${idx} to fail validation`);
     }
+
+    const validFile = join(scratchDir, 'ok.json');
+    writeFileSync(validFile, JSON.stringify([{ from: '/a.html', to: '/witforge/docs/' }]), 'utf8');
+    assert.throws(() => loadRedirects(validFile, { basePath: 'witforge' }), /Invalid basePath/);
   } finally {
     rmSync(scratchDir, { recursive: true, force: true });
   }

@@ -63,8 +63,8 @@ spelling rather than the WIT spelling:
 ## JSON Schema (Draft 7 / Draft 2020-12)
 
 The schema preserves the WIT member spelling, including `start-byte` (Draft 7 is the default with
-`definitions`; opt-in Draft 2020-12 uses `$defs` and native `deprecated: true` with the same JSON
-value shape). Every record property is
+`definitions`; opt-in Draft 2020-12 uses `$defs` and standardizes `deprecated: true`, which
+witforge also emits as an annotation in Draft 7 with the same JSON value shape). Every record property is
 required and records set `additionalProperties: false`. `option<T>` permits `null` as the
 property's value; it does not make the property omittable (`option<option<T>>` shares `null` for
 `None` and `Some(None)`, as in Serde). Integer schemas use the WIT type's exact numeric `minimum`
@@ -98,10 +98,11 @@ The emitted `.proto` determines this projection. Its standard JSON mapping uses:
 - lowerCamelCase output names, so protobuf `start_byte` becomes `startByte`; parsers also accept
   the original protobuf spelling `start_byte`;
 - decimal strings for `u64` and `s64`;
-- base64 strings for `list<u8>` and fixed-length `list<u8, N>` bytes, single-character strings for
-  `char`, JSON arrays for other `list<T>` / `list<T, N>`, JSON objects for proto3 `map<K, V>` (and
-  arrays of `{key, value}` entry objects when the key is `char` or the value requires a wrapper),
-  and strings for non-finite floats;
+- base64 strings for `list<u8>` and fixed-length `list<u8, N>` bytes, unsigned integer code points
+  (`uint32`) for `char`, JSON arrays for other `list<T>` / `list<T, N>` (wrapped as
+  `{"values": [...]}` when nested), JSON objects with stringified protobuf keys for `map<K, V>`
+  (decimal `uint32` strings for `char` keys, wrapper objects when values are lists/maps/options/results,
+  and `{"entries": {...}}` when the map itself is nested), and strings for non-finite floats;
 - enum names rather than integer values in normal output;
 - omitted fields for absent optional values. A WIT `option<T>` containing `None` is therefore
   normally absent rather than the explicit `null` emitted by Rust Serde.

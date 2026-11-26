@@ -102,7 +102,7 @@ request diffs regardless of `format`.
 | `against` | empty | Baseline `wire.lock` path(s) for `witforge check --against`: a single lockfile path when `check` lists one directory, or `<check-dir>=<baseline-lockfile>` lines when `check` lists multiple directories. Cannot be combined with `check: true`. |
 | `diff-old` | empty | Old version directory or WIT root for `witforge diff` (must be paired with `diff-new`). |
 | `diff-new` | empty | New version directory or WIT root for `witforge diff` (must be paired with `diff-old`). |
-| `diff-check` | `true` | `true` (`--check`, gates on `wire,source,api`), `false` (report only), or comma-separated views from `wire`, `source`, `api`, `decode` (`--check=<views>`). |
+| `diff-check` | `true` | `true` (`--check`, defaults to `[project.<name>.policy].diff-check` when configured, otherwise `wire,source,api`), `false` (report only), or comma-separated views from `wire`, `source`, `api`, `decode` (`--check=<views>`). |
 | `config` | empty | Path to `witforge.toml` for `check: true`, `freeze: true`, and configured generators. |
 | `project` | empty | Optional project name in `witforge.toml`. |
 | `generators` | `rust` | Comma- or whitespace-separated subset of `rust`, `proto`, `schema`, `glue`, `doc` (from `v0.9.0`) run with `--config` and `--check`, or `all` (from `v0.8.0`) to run `witforge generate --config ... --check` across every configured generator and project. Empty skips generation (pass `generators: ""` when using `config` only for `check: true` or `freeze: true`). |

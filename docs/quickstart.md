@@ -320,9 +320,10 @@ world plugin {
 }
 ```
 
-`witforge rust`, `proto`, `schema`, `glue`, and `doc` generate the dependency bindings alongside the
-local output, and `witforge deps sync` keeps vendored `deps/` trees synchronized across unreleased
-versions within a major. See the
+`witforge rust`, `proto`, `schema`, and `glue` generate dependency bindings alongside the local
+output (`witforge doc` lists the pinned dependencies on each version page), and
+`witforge deps sync` keeps vendored `deps/` trees synchronized across unreleased versions within a
+major. See the
 [dependency specification](https://github.com/asamarts/witforge/blob/main/docs/design/dependencies.md)
 for the generated files and dependency glue layout.
 
@@ -358,7 +359,7 @@ protocol differs, and do not validate one projection with another projection's s
 ## Examples
 
 - [`examples/single`](https://github.com/asamarts/witforge/tree/main/examples/single): one
-  version, all four generators, config-driven.
+  version, Rust, protobuf, JSON Schema, and glue generators, config-driven.
 - [`examples/evolved`](https://github.com/asamarts/witforge/tree/main/examples/evolved): released
   v0.1 plus draft v0.2, lock continuity, and generated conversions.
 

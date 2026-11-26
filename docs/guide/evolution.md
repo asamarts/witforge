@@ -138,7 +138,8 @@ v1.0
   stay frozen; `witforge freeze` accepts the one-way transition from live to `retired` and refuses
   un-retiring (`retired` back to live) or editing a retired directory.
 - Retired versions stop being generated: running the generators removes their plain Rust modules,
-  JSON Schema files, and adapters through normal stale-file cleanup. Retiring an older minor of a
+  JSON Schema files, Markdown reference pages (`v<major>_<minor>.md`), and adapters through normal
+  stale-file cleanup (while `index.md` lists them under retired versions). Retiring an older minor of a
   live major leaves `v<major>.proto` unchanged (the highest minor carries every reservation);
   retiring every version of a major removes that major's `.proto` file and glue module as well.
 

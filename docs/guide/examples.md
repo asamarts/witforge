@@ -48,6 +48,6 @@ when project policy forbids those changes.
 Generated output is committed for review and checked for drift in CI (or run
 `witforge generate --config witforge.toml --check` to verify every configured emitter in one step).
 You can also run `witforge inspect wit --json` to inspect either example's versioned contract IR,
-or `witforge doc wit --out /path/to/docs` to preview generated Markdown contract reference pages.
+or `witforge doc wit --out preview-doc` to preview generated Markdown contract reference pages.
 Run any generator without `--check` to update committed files, review the diff, then run the same
 command with `--check`.
