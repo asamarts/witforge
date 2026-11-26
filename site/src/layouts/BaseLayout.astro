@@ -21,7 +21,7 @@ import {
 interface Props {
   title: string;
   description: string;
-  canonical?: string;
+  canonical?: string | null;
   indexInSearch?: boolean;
 }
 
@@ -38,14 +38,15 @@ const {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content={THEME_COLOR_LIGHT} />
     <ThemeInit />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <link rel="canonical" href={canonical} />
+    {canonical && <link rel="canonical" href={canonical} />}
     <meta property="og:site_name" content={SITE_TITLE} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:url" content={canonical} />
+    {canonical && <meta property="og:url" content={canonical} />}
     <meta property="og:type" content="website" />
     <meta property="og:image" content={OG_IMAGE_URL} />
     <meta property="og:image:width" content="1200" />
@@ -55,7 +56,6 @@ const {
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={OG_IMAGE_URL} />
     <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
-    <meta name="theme-color" content={THEME_COLOR_LIGHT} />
     <slot name="head" />
   </head>
   <body>
@@ -70,9 +70,11 @@ const {
     <div id="copy-status" class="sr-only" role="status" aria-live="polite"></div>
     <script is:inline>
       (() => {
-        // Accessible WAI-ARIA tablist controller for install cards, code tours, and filters.
+        // Accessible WAI-ARIA tablist controller supporting nested [data-tabs] safely.
         for (const root of document.querySelectorAll('[data-tabs]')) {
-          const tabs = [...root.querySelectorAll('[role="tab"]')];
+          const tabs = [...root.querySelectorAll('[role="tab"]')].filter(
+            (el) => el.closest('[data-tabs]') === root,
+          );
           if (tabs.length === 0) continue;
 
           const select = (tab, moveFocus) => {
@@ -90,8 +92,9 @@ const {
           };
 
           root.addEventListener('click', (event) => {
-            const target = event.target instanceof Element ? event.target.closest('[role="tab"]') : null;
-            if (target && tabs.includes(target)) {
+            const target =
+              event.target instanceof Element ? event.target.closest('[role="tab"]') : null;
+            if (target && target.closest('[data-tabs]') === root && tabs.includes(target)) {
               select(target, false);
             }
           });
@@ -112,27 +115,40 @@ const {
           });
         }
 
-        // One-click copy buttons with polite screen-reader status updates.
+        // One-click copy buttons with polite screen-reader re-announcement and child label safety.
         const live = document.getElementById('copy-status');
         const timers = new WeakMap();
         for (const button of document.querySelectorAll('[data-copy]')) {
-          button.dataset.origLabel ??= button.textContent?.trim() || 'Copy';
+          const labelEl = button.querySelector('[data-copy-label]') || button;
+          button.dataset.origLabel ??= labelEl.textContent?.trim() || 'Copy';
           button.addEventListener('click', async () => {
             const text = button.getAttribute('data-copy') || '';
             const prevTimer = timers.get(button);
             if (prevTimer) clearTimeout(prevTimer);
+            if (live) live.textContent = '';
             try {
+              if (!navigator.clipboard?.writeText) {
+                throw new Error('Clipboard API unavailable');
+              }
               await navigator.clipboard.writeText(text);
-              button.textContent = 'Copied';
-              if (live) live.textContent = 'Copied to clipboard';
+              labelEl.textContent = 'Copied';
+              if (live) {
+                queueMicrotask(() => {
+                  live.textContent = 'Copied to clipboard';
+                });
+              }
             } catch {
-              button.textContent = 'Copy failed';
-              if (live) live.textContent = 'Could not copy to clipboard';
+              labelEl.textContent = 'Copy failed';
+              if (live) {
+                queueMicrotask(() => {
+                  live.textContent = 'Could not copy to clipboard';
+                });
+              }
             }
             timers.set(
               button,
               setTimeout(() => {
-                button.textContent = button.dataset.origLabel || 'Copy';
+                labelEl.textContent = button.dataset.origLabel || 'Copy';
               }, 1600),
             );
           });

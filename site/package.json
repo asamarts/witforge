@@ -12,7 +12,7 @@
     "dev": "node scripts/sync-docs.mjs && astro dev",
     "build": "node scripts/sync-docs.mjs && astro build",
     "preview": "astro preview",
-    "check": "astro check",
+    "check": "node scripts/sync-docs.mjs && astro check",
     "test:scripts": "node --test scripts/test-scripts.mjs",
     "astro": "astro"
   },

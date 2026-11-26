@@ -64,6 +64,7 @@ export default defineConfig({
       components: {
         Header: './src/components/starlight/Header.astro',
         Footer: './src/components/starlight/Footer.astro',
+        ThemeProvider: './src/components/ThemeInit.astro',
       },
       customCss: [
         '@fontsource-variable/plus-jakarta-sans/wght.css',

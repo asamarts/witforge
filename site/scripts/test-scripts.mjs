@@ -16,6 +16,7 @@ import {
   parseSummary,
   rewriteLinkTarget,
   rewriteMarkdownLinks,
+  stripInlineMarkdown,
   stripLeadingH1,
   stripYamlFrontmatter,
   toPosix,
@@ -66,6 +67,7 @@ test('slug, content file, and route mapping preserve clean flat URLs', () => {
   assert.equal(docsRelPathToSlug('guide/index.md'), 'docs');
   assert.equal(docsRelPathToSlug('quickstart.md'), 'docs/quickstart');
   assert.equal(docsRelPathToSlug('guide/diagnostics.md'), 'docs/diagnostics');
+  assert.equal(docsRelPathToSlug('guide/Wiring.MD'), 'docs/Wiring');
 
   assert.equal(docsRelPathToContentFile('index.md'), 'docs/index.md');
   assert.equal(docsRelPathToContentFile('quickstart.md'), 'docs/quickstart.md');
@@ -88,8 +90,22 @@ test('stripYamlFrontmatter and stripLeadingH1 preserve body and horizontal rules
   assert.equal(clean, 'Para.\n\n---\n\nAfter.\n');
 });
 
-test('extractDescription strips Markdown formatting, prefers complete sentences, and skips list intros', () => {
+test('stripInlineMarkdown preserves snake_case code and non-HTML angle operators', () => {
+  assert.equal(stripInlineMarkdown('Run `cargo_test_foo` and __bold__ and _italic_.'), 'Run cargo_test_foo and bold and italic.');
+  assert.equal(stripInlineMarkdown('foo_bar_baz stays intact'), 'foo_bar_baz stays intact');
+  assert.equal(stripInlineMarkdown('WIT <-> Rust <span>tag</span>'), 'WIT <-> Rust tag');
+});
+
+test('extractDescription strips Markdown, prefers sentences, and skips comments/rules/images/lists', () => {
   const md = [
+    '<!--',
+    'multiline comment interior',
+    '-->',
+    '',
+    '---',
+    '',
+    '![diagram](diagram.svg)',
+    '',
     '## Section',
     '',
     'Short intro:',
@@ -101,16 +117,20 @@ test('extractDescription strips Markdown formatting, prefers complete sentences,
     'package a:b@0.1.0;',
     '```',
     '',
-    'Use [`witforge lock`](guide/reference.md) for **stable** wire numbers. This second sentence pushes the total paragraph length well past one hundred and sixty characters so the trimmer should stop cleanly at the first sentence.',
+    'Use [`witforge lock`](guide/reference.md) for **stable** `wire_lock` numbers. This second sentence pushes the total paragraph length well past one hundred and sixty characters so the trimmer should stop cleanly at the first sentence.',
   ].join('\n');
   assert.equal(
     extractDescription(md),
-    'Use witforge lock for stable wire numbers.',
+    'Use witforge lock for stable wire_lock numbers.',
   );
   assert.equal(yamlString('Title: with "quotes"'), '"Title: with \\"quotes\\""');
 });
 
-test('githubSlug matches lowercase wfxxxx anchors for every documented diagnostic code', () => {
+test('githubSlug matches github-slugger on snake_case, operators, and all documented diagnostic codes', () => {
+  assert.equal(githubSlug('foo_bar_baz'), 'foo_bar_baz');
+  assert.equal(githubSlug('`v0_1` -> `v0_2`'), 'v0_1---v0_2');
+  assert.equal(githubSlug('WIT <-> Rust'), 'wit---rust');
+
   const diagnosticsMd = readFileSync(join(DOCS_ROOT, 'guide', 'diagnostics.md'), 'utf8');
   const codes = [...diagnosticsMd.matchAll(/^###\s+(WF\d{4})\s*$/gm)].map((m) => m[1]);
   assert.ok(codes.length >= 50, `Expected >= 50 diagnostic headings, found ${codes.length}`);
@@ -120,17 +140,25 @@ test('githubSlug matches lowercase wfxxxx anchors for every documented diagnosti
   }
 });
 
-test('rewriteMarkdownLinks rewrites doc links while preserving fragments and code blocks', () => {
+test('rewriteMarkdownLinks handles root-relative paths, queries, dot dirs, uppercase .MD, and escaped brackets', () => {
+  // Root-relative links must pass through untouched from both top-level and nested docs
+  assert.equal(rewriteLinkTarget('/witforge/docs/', 'index.md'), '/witforge/docs/');
+  assert.equal(rewriteLinkTarget('/witforge/docs/', 'guide/wiring.md'), '/witforge/docs/');
+  assert.equal(rewriteLinkTarget('/outputs/', 'guide/wiring.md'), '/outputs/');
+
+  // Relative paths, fragments, queries, bare dot, and case-insensitive .MD
   assert.equal(
     rewriteLinkTarget('../quickstart.md#step-2', 'guide/wiring.md'),
     '/witforge/docs/quickstart/#step-2',
   );
   assert.equal(
-    rewriteLinkTarget('guide/wiring.md#prebuilt-binaries', 'index.md'),
-    '/witforge/docs/wiring/#prebuilt-binaries',
+    rewriteLinkTarget('guide/wiring.md?tab=cargo#prebuilt-binaries', 'index.md'),
+    '/witforge/docs/wiring/?tab=cargo#prebuilt-binaries',
   );
   assert.equal(rewriteLinkTarget('index.md', 'guide/wiring.md'), '/witforge/docs/');
   assert.equal(rewriteLinkTarget('./', 'guide/wiring.md'), '/witforge/docs/');
+  assert.equal(rewriteLinkTarget('.', 'guide/wiring.md'), '/witforge/docs/');
+  assert.equal(rewriteLinkTarget('guide/wiring.MD', 'index.md'), '/witforge/docs/wiring/');
   assert.equal(
     rewriteLinkTarget('design/model.md#shape', 'index.md'),
     'https://github.com/asamarts/witforge/blob/main/docs/design/model.md#shape',
@@ -141,7 +169,7 @@ test('rewriteMarkdownLinks rewrites doc links while preserving fragments and cod
   );
 
   const md = [
-    'See [wiring](guide/wiring.md#install) and `[literal](guide/wiring.md)` and `` `[nested](guide/ci.md)` ``.',
+    'See [wiring](guide/wiring.md#install), \\[escaped](guide/wiring.md), `[literal](guide/wiring.md)` and `` `[nested](guide/ci.md)` ``.',
     '',
     '```markdown',
     '[inside fence](guide/wiring.md)',
@@ -152,25 +180,36 @@ test('rewriteMarkdownLinks rewrites doc links while preserving fragments and cod
 
   const rewritten = rewriteMarkdownLinks(md, 'index.md', '/witforge');
   assert.ok(rewritten.includes('See [wiring](/witforge/docs/wiring/#install)'));
+  assert.ok(rewritten.includes('\\[escaped](guide/wiring.md)'));
   assert.ok(rewritten.includes('`[literal](guide/wiring.md)`'));
   assert.ok(rewritten.includes('`` `[nested](guide/ci.md)` ``'));
   assert.ok(rewritten.includes('[inside fence](guide/wiring.md)'));
   assert.ok(rewritten.includes('[ref]: /witforge/docs/evolution/#adapters "Adapters"'));
 });
 
-test('findEmDashesInText and findEmDashesInHtml catch prose dashes and ignore code blocks', () => {
+test('findEmDashesInText and findEmDashesInHtml catch OG meta tags, padded entities, and ignore nested code', () => {
   assert.equal(findEmDashesInText('Clean sentence, no dashes.').length, 0);
-  assert.equal(findEmDashesInText('Bad \u2014 dash and &mdash; and &#8212; and &#x2014;.').length, 4);
+  assert.equal(
+    findEmDashesInText('Bad \u2014 dash, &mdash;, &#8212;, &#08212;, &#x2014;, &#x02014;.').length,
+    6,
+  );
 
   const cleanHtml =
-    '<html><head><title>witforge</title><meta name="description" content="Clean desc"></head>' +
-    '<body><pre><code>// \u2014 inside code is ignored</code></pre><p>Clean prose.</p></body></html>';
+    '<html><head><title>witforge</title><meta property="og:description" content="Clean desc"></head>' +
+    '<body><pre><code>outer <code>\u2014 inner</code> end</code ></pre><p>Clean prose.</p></body></html>';
   assert.equal(findEmDashesInHtml(cleanHtml).length, 0);
 
-  const dirtyHtml =
-    '<html><head><meta name="description" content="Desc \u2014 bad"></head>' +
-    '<body><p>Prose &mdash; bad</p></body></html>';
-  assert.equal(findEmDashesInHtml(dirtyHtml).length, 2);
+  const dirtyHtml = [
+    '<html><head>',
+    '<meta name="description" content="Desc \u2014 bad">',
+    '<meta property="og:description" content="OG \u2014 bad">',
+    '<meta property="og:title" content="Title &mdash; bad">',
+    '</head><body><p>Prose &#08212; bad</p></body></html>',
+  ].join('\n');
+  const hits = findEmDashesInHtml(dirtyHtml);
+  assert.equal(hits.length, 4);
+  assert.equal(hits[1].line, 3);
+  assert.equal(hits[2].line, 4);
 });
 
 test('syncDocs writes deterministic content and sidebar into a temporary site root', () => {

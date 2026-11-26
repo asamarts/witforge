@@ -137,9 +137,6 @@ import { THEME_COLOR_DARK, THEME_COLOR_LIGHT } from '../lib/site';
         } catch {
           // ignore storage restrictions
         }
-        if (window.StarlightThemeProvider?.updatePickers) {
-          window.StarlightThemeProvider.updatePickers(next);
-        }
         syncUi();
       });
     }

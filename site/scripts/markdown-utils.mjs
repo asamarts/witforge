@@ -3,7 +3,10 @@ import { posix } from 'node:path';
 export const REPO_BLOB_DOCS_BASE = 'https://github.com/asamarts/witforge/blob/main/docs';
 
 const SCHEME_OR_PROTOCOL_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
-const EM_DASH_TEXT_RE = /\u2014|&mdash;|&#8212;|&#x2014;/gi;
+const EM_DASH_TEXT_RE = /\u2014|&mdash;|&#0*8212;|&#x0*2014;/gi;
+const REAL_HTML_TAG_RE = /<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?>/gi;
+const THEMATIC_BREAK_RE = /^(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
+const STANDALONE_IMAGE_RE = /^!\[[^\]]*\]\([^)]+\)$/;
 
 /**
  * Normalize OS path separators to POSIX forward slashes.
@@ -67,7 +70,7 @@ export function parseSummary(markdown) {
       }
       const label = itemMatch[1].trim();
       const relPath = normalizeDocsRelPath(itemMatch[2].trim());
-      if (!relPath.endsWith('.md')) {
+      if (!/\.md$/i.test(relPath)) {
         throw new Error(`SUMMARY.md:${lineNo}: expected a .md file path, got "${relPath}"`);
       }
       if (seenPaths.has(relPath)) {
@@ -102,14 +105,15 @@ export function parseSummary(markdown) {
  */
 export function docsRelPathToSlug(relPath) {
   const norm = normalizeDocsRelPath(relPath);
-  if (norm === 'index.md' || norm === 'guide/index.md') {
+  const lower = norm.toLowerCase();
+  if (lower === 'index.md' || lower === 'guide/index.md') {
     return 'docs';
   }
-  if (norm.startsWith('guide/') && norm.endsWith('.md')) {
+  if (lower.startsWith('guide/') && lower.endsWith('.md')) {
     const rest = norm.slice('guide/'.length, -'.md'.length);
     return `docs/${rest}`;
   }
-  if (norm.endsWith('.md')) {
+  if (lower.endsWith('.md')) {
     const stem = norm.slice(0, -'.md'.length);
     return `docs/${stem}`;
   }
@@ -188,20 +192,59 @@ export function stripLeadingH1(body) {
 }
 
 /**
- * Strip inline Markdown syntax into plain readable text.
+ * Strip inline Markdown syntax while preserving code-span identifiers
+ * (such as `snake_case`) and non-HTML angle operators (such as `<->`).
+ *
+ * @param {string} text
+ * @param {{ collapseWhitespace?: boolean }} [options]
+ * @returns {string}
  */
-export function stripInlineMarkdown(text) {
-  return String(text)
+export function stripInlineMarkdown(text, { collapseWhitespace = true } = {}) {
+  const codeSpans = [];
+  let out = '';
+  const src = String(text);
+  let i = 0;
+  const n = src.length;
+
+  while (i < n) {
+    if (src[i] === '`') {
+      let ticks = 0;
+      while (i + ticks < n && src[i + ticks] === '`') ticks++;
+      const closer = '`'.repeat(ticks);
+      const end = src.indexOf(closer, i + ticks);
+      if (end !== -1) {
+        const inner = src.slice(i + ticks, end);
+        const token = `\uE000${codeSpans.length}\uE001`;
+        codeSpans.push(inner);
+        out += token;
+        i = end + ticks;
+        continue;
+      }
+      out += src.slice(i, i + ticks);
+      i += ticks;
+      continue;
+    }
+    out += src[i];
+    i++;
+  }
+
+  out = out
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/_([^_]+)_/g, '$1')
-    .replace(/<[^>]+>/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/(^|[^\p{L}\p{N}_])__([^_]+)__(?=[^\p{L}\p{N}_]|$)/gu, '$1$2')
+    .replace(/(^|[^\p{L}\p{N}_])_([^_]+)_(?=[^\p{L}\p{N}_]|$)/gu, '$1$2')
+    .replace(REAL_HTML_TAG_RE, '');
+
+  out = out.replace(/\uE000(\d+)\uE001/g, (_, idx) => codeSpans[Number(idx)] ?? '');
+
+  if (collapseWhitespace) {
+    out = out.replace(/\s+/g, ' ').trim();
+  } else {
+    out = out.trim();
+  }
+  return out;
 }
 
 /** @type {Record<string, string>} */
@@ -265,11 +308,27 @@ export function extractDescription(body, fallback = 'witforge documentation.') {
   let inFence = false;
   let fenceChar = '';
   let fenceLen = 0;
+  let inComment = false;
   let inList = false;
   const paragraphLines = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
+
+    if (inComment) {
+      if (trimmed.includes('-->')) {
+        inComment = false;
+      }
+      continue;
+    }
+
+    if (!inFence && trimmed.startsWith('<!--')) {
+      if (!trimmed.includes('-->')) {
+        inComment = true;
+      }
+      continue;
+    }
+
     if (!inFence) {
       const fenceMatch = /^(`{3,}|~{3,})/.exec(trimmed);
       if (fenceMatch) {
@@ -311,12 +370,14 @@ export function extractDescription(body, fallback = 'witforge documentation.') {
     }
     inList = false;
 
+    if (THEMATIC_BREAK_RE.test(trimmed) || STANDALONE_IMAGE_RE.test(trimmed)) {
+      if (paragraphLines.length > 0) break;
+      continue;
+    }
+
     if (
       paragraphLines.length === 0 &&
-      (trimmed.startsWith('#') ||
-        trimmed.startsWith('|') ||
-        trimmed.startsWith('>') ||
-        trimmed.startsWith('<!--'))
+      (trimmed.startsWith('#') || trimmed.startsWith('|') || trimmed.startsWith('>'))
     ) {
       continue;
     }
@@ -345,10 +406,9 @@ export function extractDescription(body, fallback = 'witforge documentation.') {
 
   const cut = plain.slice(0, 157);
   const lastSpace = cut.lastIndexOf(' ');
-  const clipped = (lastSpace > 80 ? cut.slice(0, lastSpace) : cut).replace(
-    /(?:\s+(?:the|a|an|and|or|of|to|for|in|with|on|by|so))+$/i,
-    '',
-  ).replace(/[.,;:\s]+$/, '');
+  const clipped = (lastSpace > 80 ? cut.slice(0, lastSpace) : cut)
+    .replace(/(?:\s+(?:the|a|an|and|or|of|to|for|in|with|on|by|so))+$/i, '')
+    .replace(/[.,;:\s]+$/, '');
   return `${clipped}.`;
 }
 
@@ -364,7 +424,7 @@ export function yamlString(value) {
  * Pass an optional `counts` Map to deduplicate repeated headings on one page.
  */
 export function githubSlug(heading, counts = null) {
-  const plain = stripInlineMarkdown(heading).toLowerCase();
+  const plain = stripInlineMarkdown(heading, { collapseWhitespace: false }).toLowerCase();
   const base = plain
     .replace(/[^\p{L}\p{N}\s_-]/gu, '')
     .replace(/\s/g, '-');
@@ -378,11 +438,12 @@ export function githubSlug(heading, counts = null) {
 }
 
 function isExcludedDocsPath(normRelPath) {
+  const lower = normRelPath.toLowerCase();
   return (
-    normRelPath === 'aplan-pilot.md' ||
-    normRelPath === 'SUMMARY.md' ||
-    normRelPath === 'design' ||
-    normRelPath.startsWith('design/')
+    lower === 'aplan-pilot.md' ||
+    lower === 'summary.md' ||
+    lower === 'design' ||
+    lower.startsWith('design/')
   );
 }
 
@@ -391,20 +452,33 @@ function isExcludedDocsPath(normRelPath) {
  */
 export function rewriteLinkTarget(rawTarget, relPath, urlPrefix = '/witforge') {
   const trimmed = String(rawTarget).trim();
-  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('?') || SCHEME_OR_PROTOCOL_RE.test(trimmed)) {
+  if (
+    !trimmed ||
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('?') ||
+    trimmed.startsWith('/') ||
+    SCHEME_OR_PROTOCOL_RE.test(trimmed)
+  ) {
     return rawTarget;
   }
 
-  const hashIdx = trimmed.indexOf('#');
-  const pathPart = hashIdx === -1 ? trimmed : trimmed.slice(0, hashIdx);
-  const fragment = hashIdx === -1 ? '' : trimmed.slice(hashIdx);
+  const suffixIdx = trimmed.search(/[?#]/);
+  const pathPart = suffixIdx === -1 ? trimmed : trimmed.slice(0, suffixIdx);
+  const suffix = suffixIdx === -1 ? '' : trimmed.slice(suffixIdx);
 
   if (!pathPart) {
     return rawTarget;
   }
 
   const relDir = posix.dirname(normalizeDocsRelPath(relPath));
-  let resolved = posix.normalize(relDir === '.' ? pathPart : posix.join(relDir, pathPart));
+  const normalizedInput = pathPart === '.' ? './' : pathPart;
+  let resolved = posix.normalize(
+    relDir === '.' ? normalizedInput : posix.join(relDir, normalizedInput),
+  );
+
+  if (normalizedInput.endsWith('/') && !resolved.endsWith('/')) {
+    resolved = `${resolved}/`;
+  }
 
   if (resolved === '.' || resolved === './') {
     resolved = relDir === '.' ? 'index.md' : posix.join(relDir, 'index.md');
@@ -412,24 +486,24 @@ export function rewriteLinkTarget(rawTarget, relPath, urlPrefix = '/witforge') {
     resolved = posix.join(resolved, 'index.md');
   }
 
-  if (resolved.startsWith('../') || resolved === '..') {
+  if (resolved.startsWith('../') || resolved === '..' || resolved.startsWith('/')) {
     return rawTarget;
   }
 
-  if (!resolved.endsWith('.md')) {
+  if (!/\.md$/i.test(resolved)) {
     return rawTarget;
   }
 
   if (isExcludedDocsPath(resolved)) {
-    return `${REPO_BLOB_DOCS_BASE}/${resolved}${fragment}`;
+    return `${REPO_BLOB_DOCS_BASE}/${resolved}${suffix}`;
   }
 
-  return `${docsRelPathToRoute(resolved, urlPrefix)}${fragment}`;
+  return `${docsRelPathToRoute(resolved, urlPrefix)}${suffix}`;
 }
 
 /**
  * Rewrite inline Markdown links `[label](target)` on a single prose line while
- * skipping inline backtick code spans of arbitrary fence width.
+ * skipping inline backtick code spans and backslash-escaped delimiters.
  */
 function rewriteProseLine(line, relPath, urlPrefix) {
   // Handle Markdown reference link definitions: `[id]: target "optional title"`
@@ -447,6 +521,13 @@ function rewriteProseLine(line, relPath, urlPrefix) {
   const n = line.length;
 
   while (i < n) {
+    // Preserve backslash-escaped characters (e.g. `\[not a link](foo.md)`).
+    if (line[i] === '\\' && i + 1 < n) {
+      out += line.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+
     // Skip inline code spans (matching exact backtick count).
     if (line[i] === '`') {
       let ticks = 0;
@@ -573,7 +654,7 @@ export function rewriteMarkdownLinks(body, relPath, urlPrefix = '/witforge') {
 }
 
 /**
- * Find em-dash occurrences (`U+2014`, `&mdash;`, `&#8212;`, `&#x2014;`) in plain text.
+ * Find em-dash occurrences (`U+2014`, `&mdash;`, `&#0*8212;`, `&#x0*2014;`) in plain text.
  * Returns array of `{ line, match, excerpt }`.
  */
 export function findEmDashesInText(text) {
@@ -594,36 +675,51 @@ export function findEmDashesInText(text) {
   return findings;
 }
 
+function stripPairedTagBlocks(src, tagName) {
+  const re = new RegExp(`<${tagName}\\b[^>]*>(?:(?!<${tagName}\\b)[\\s\\S])*?<\\/${tagName}\\s*>`, 'gi');
+  let prev = src;
+  while (true) {
+    const next = prev.replace(re, (block) => block.replace(/[^\n]/g, ' '));
+    if (next === prev) return next;
+    prev = next;
+  }
+}
+
 /**
  * Find em-dash occurrences in rendered HTML prose (excluding `<pre>`, `<code>`,
  * `<script>`, and `<style>` blocks, while scanning visible text, `<title>`,
- * `<meta name="description">`, and SVG `<text>`/`<title>`/`<desc>`).
+ * meta description/title tags including OpenGraph `property="..."`, and SVG
+ * `<text>`/`<title>`/`<desc>`).
  */
 export function findEmDashesInHtml(html) {
   const findings = [];
   const src = String(html).replace(/\r\n/g, '\n');
 
-  // Inspect meta description attributes explicitly before stripping tags.
-  const metaRe = /<meta\b[^>]*\bname=["'](?:description|og:description|twitter:description)["'][^>]*>/gi;
+  // Inspect meta description and title tags (`name="..."` and OpenGraph `property="..."`).
+  const metaRe =
+    /<meta\b[^>]*\b(?:name|property)=["'](?:description|og:description|og:title|twitter:description|twitter:title)["'][^>]*>/gi;
   let metaMatch;
   while ((metaMatch = metaRe.exec(src)) !== null) {
     const contentMatch = /\bcontent=(["'])([\s\S]*?)\1/i.exec(metaMatch[0]);
     if (contentMatch) {
+      const metaLine = src.slice(0, metaMatch.index).split('\n').length;
       for (const hit of findEmDashesInText(contentMatch[2])) {
         findings.push({
-          line: 1,
+          line: metaLine,
           match: hit.match,
-          excerpt: `meta description: ${hit.excerpt}`,
+          excerpt: `meta tag: ${hit.excerpt}`,
         });
       }
     }
   }
 
-  // Strip script, style, pre, and code blocks while preserving line numbers.
-  const stripped = src
-    .replace(/<(script|style|pre|code)\b[^>]*>[\s\S]*?<\/\1>/gi, (block) =>
-      block.replace(/[^\n]/g, ' '),
-    )
+  // Strip script, style, code (innermost first for nested code), pre, comments, and tags.
+  let stripped = src;
+  stripped = stripPairedTagBlocks(stripped, 'script');
+  stripped = stripPairedTagBlocks(stripped, 'style');
+  stripped = stripPairedTagBlocks(stripped, 'code');
+  stripped = stripPairedTagBlocks(stripped, 'pre');
+  stripped = stripped
     .replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\n]/g, ' '))
     .replace(/<[^>]+>/g, ' ');
 

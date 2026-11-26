@@ -17,18 +17,26 @@ import ThemeToggle from '../ThemeToggle.astro';
     align-items: center;
   }
 
-  .docs-search :global(button[data-open-modal]) {
-    height: 34px;
-    border-radius: var(--radius-sm);
-    border-color: var(--rule);
-    background: var(--surface);
-    color: var(--muted);
-    font-size: 0.84rem;
+  .docs-search :global(button[data-open-modal]:focus-visible) {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
 
-  .docs-search :global(button[data-open-modal]:hover) {
-    border-color: var(--border-strong);
-    color: var(--ink);
+  @media (min-width: 50rem) {
+    .docs-search :global(button[data-open-modal]) {
+      width: 12rem;
+      height: 34px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    .docs-search :global(button[data-open-modal]:hover) {
+      border-color: var(--accent);
+      color: var(--ink);
+    }
   }
 
   @media (max-width: 1180px) and (min-width: 50rem) {
@@ -51,6 +59,23 @@ import ThemeToggle from '../ThemeToggle.astro';
   }
 
   @media (max-width: 49.99rem) {
+    .docs-search :global(button[data-open-modal]) {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      justify-content: center;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .docs-search :global(button[data-open-modal]:hover) {
+      background: var(--surface-2);
+      border-color: var(--rule);
+      color: var(--ink);
+    }
+
     :global(:root[data-has-sidebar] .header .site-nav) {
       padding-inline-end: calc(var(--gutter) + var(--sl-menu-button-size) + 8px);
     }
