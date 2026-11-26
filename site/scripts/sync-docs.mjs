@@ -1,3 +1,4 @@
+// @ts-check
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -27,6 +28,19 @@ const EXCLUDED_TOP_LEVEL = new Set([
 
 const EXCLUDED_REL_FILES = new Set(['guide/index.md']);
 
+/**
+ * @typedef {{ label: string, slug: string }} SidebarItem
+ * @typedef {{ label: string, items: SidebarItem[] }} SidebarGroup
+ * @typedef {{ docsRoot?: string, siteRoot?: string, urlPrefix?: string }} SyncDocsOptions
+ * @typedef {{ pageCount: number, groupCount: number, writtenFiles: string[], sidebar: SidebarGroup[] }} SyncDocsResult
+ */
+
+/**
+ * @param {string} rootDir
+ * @param {string} [currentDir]
+ * @param {string[]} [out]
+ * @returns {string[]}
+ */
 function collectPublishedMarkdown(rootDir, currentDir = rootDir, out = []) {
   for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
     const fullPath = join(currentDir, entry.name);
@@ -47,6 +61,9 @@ function collectPublishedMarkdown(rootDir, currentDir = rootDir, out = []) {
 /**
  * Synchronize `docs/` into Starlight content (`site/src/content/docs/docs/`)
  * and emit `site/src/data/sidebar.json` according to `docs/SUMMARY.md`.
+ *
+ * @param {SyncDocsOptions} [options]
+ * @returns {SyncDocsResult}
  */
 export function syncDocs({
   docsRoot = DEFAULT_DOCS_ROOT,
@@ -61,6 +78,7 @@ export function syncDocs({
   const summaryRaw = readFileSync(summaryPath, 'utf8');
   const groups = parseSummary(summaryRaw);
 
+  /** @type {Set<string>} */
   const summaryPaths = new Set();
   for (const group of groups) {
     for (const item of group.items) {
@@ -84,10 +102,13 @@ export function syncDocs({
   rmSync(contentDocsDir, { recursive: true, force: true });
   mkdirSync(contentDocsDir, { recursive: true });
 
+  /** @type {SidebarGroup[]} */
   const sidebar = [];
+  /** @type {string[]} */
   const writtenFiles = [];
 
   for (const group of groups) {
+    /** @type {SidebarItem[]} */
     const sidebarItems = [];
     for (const item of group.items) {
       const srcPath = join(docsRoot, ...item.relPath.split('/'));

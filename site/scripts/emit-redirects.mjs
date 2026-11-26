@@ -1,3 +1,4 @@
+// @ts-check
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +18,18 @@ const RESERVED_SOURCES = new Set(['/index.html', '/404.html']);
 const SAFE_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
+ * @typedef {{ from: string, to: string, title: string }} RedirectEntry
+ * @typedef {{ basePath?: string }} RedirectManifestOptions
+ * @typedef {{ to: string, title?: string | null, siteOrigin?: string }} RenderRedirectOptions
+ * @typedef {{ distDir?: string, manifestPath?: string, siteOrigin?: string, basePath?: string }} EmitRedirectsOptions
+ * @typedef {{ count: number, written: string[] }} EmitRedirectsResult
+ */
+
+/**
  * Escape HTML special characters for safe inclusion in text nodes and attribute values.
+ *
+ * @param {unknown} value
+ * @returns {string}
  */
 export function escapeHtml(value) {
   return String(value)
@@ -30,6 +42,9 @@ export function escapeHtml(value) {
 
 /**
  * Serialize a string as an inline JS string literal safe inside `<script>` tags.
+ *
+ * @param {unknown} value
+ * @returns {string}
  */
 export function escapeJsString(value) {
   return JSON.stringify(String(value))
@@ -40,6 +55,10 @@ export function escapeJsString(value) {
     .replace(/\u2029/g, '\\u2029');
 }
 
+/**
+ * @param {unknown} basePath
+ * @returns {string}
+ */
 function normalizeBasePath(basePath) {
   if (typeof basePath !== 'string') {
     throw new Error(`Invalid basePath (${JSON.stringify(basePath)}); expected string`);
@@ -60,15 +79,21 @@ function normalizeBasePath(basePath) {
   return trimmed;
 }
 
+/**
+ * @param {unknown} siteOrigin
+ * @returns {string}
+ */
 function normalizeSiteOrigin(siteOrigin) {
   if (typeof siteOrigin !== 'string' || siteOrigin.trim().length === 0) {
     throw new Error(`Invalid siteOrigin (${JSON.stringify(siteOrigin)}); expected http(s) origin`);
   }
+  /** @type {URL} */
   let parsed;
   try {
     parsed = new URL(siteOrigin);
   } catch (err) {
-    throw new Error(`Invalid siteOrigin (${JSON.stringify(siteOrigin)}): ${err.message}`);
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid siteOrigin (${JSON.stringify(siteOrigin)}): ${message}`);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Invalid siteOrigin protocol (${parsed.protocol}); expected http: or https:`);
@@ -81,6 +106,11 @@ function normalizeSiteOrigin(siteOrigin) {
   return parsed.origin;
 }
 
+/**
+ * @param {string} route
+ * @param {string} kind
+ * @returns {string[]}
+ */
 function validateRouteSegments(route, kind) {
   if (route.includes('\\') || route.includes('?') || route.includes('#') || route.includes('//')) {
     throw new Error(`Unsafe ${kind} path: ${route}`);
@@ -103,6 +133,11 @@ function validateRouteSegments(route, kind) {
 
 /**
  * Validate a single redirect manifest entry.
+ *
+ * @param {unknown} entry
+ * @param {number} index
+ * @param {RedirectManifestOptions} [options]
+ * @returns {RedirectEntry}
  */
 export function validateRedirectEntry(entry, index, { basePath = DEFAULT_BASE_PATH } = {}) {
   const normalizedBase = normalizeBasePath(basePath);
@@ -110,7 +145,8 @@ export function validateRedirectEntry(entry, index, { basePath = DEFAULT_BASE_PA
     throw new Error(`redirects.json entry #${index + 1} must be an object`);
   }
 
-  const { from, to, title } = entry;
+  const record = /** @type {Record<string, unknown>} */ (entry);
+  const { from, to, title } = record;
   if (typeof from !== 'string' || !from.startsWith('/') || !from.endsWith('.html')) {
     throw new Error(
       `redirects.json entry #${index + 1} has invalid "from" (${JSON.stringify(from)}); expected leading "/" and ".html" suffix`,
@@ -140,12 +176,16 @@ export function validateRedirectEntry(entry, index, { basePath = DEFAULT_BASE_PA
   return {
     from,
     to,
-    title: title ? title.trim() : to,
+    title: typeof title === 'string' ? title.trim() : to,
   };
 }
 
 /**
  * Load and validate a redirect manifest JSON file.
+ *
+ * @param {string} [manifestPath]
+ * @param {RedirectManifestOptions} [options]
+ * @returns {RedirectEntry[]}
  */
 export function loadRedirects(
   manifestPath = DEFAULT_MANIFEST_PATH,
@@ -155,17 +195,20 @@ export function loadRedirects(
   if (!manifestStat || !manifestStat.isFile()) {
     throw new Error(`Missing redirect manifest at ${manifestPath}`);
   }
+  /** @type {unknown} */
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
   } catch (err) {
-    throw new Error(`Invalid JSON in ${manifestPath}: ${err.message}`);
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid JSON in ${manifestPath}: ${message}`);
   }
   if (!Array.isArray(parsed) || parsed.length === 0) {
     throw new Error(`Redirect manifest ${manifestPath} must be a non-empty JSON array`);
   }
 
   const normalizedBase = normalizeBasePath(basePath);
+  /** @type {Set<string>} */
   const seen = new Set();
   const entries = parsed.map((raw, index) => {
     const entry = validateRedirectEntry(raw, index, { basePath: normalizedBase });
@@ -196,6 +239,9 @@ export function loadRedirects(
 /**
  * Render a minimal, self-contained HTML5 redirect stub that preserves
  * `?query` and `#fragment` (including HELP_BASE_URL `#wfxxxx` anchors).
+ *
+ * @param {RenderRedirectOptions} options
+ * @returns {string}
  */
 export function renderRedirectHtml({ to, title, siteOrigin = DEFAULT_SITE_ORIGIN }) {
   const origin = normalizeSiteOrigin(siteOrigin);
@@ -252,21 +298,36 @@ export function renderRedirectHtml({ to, title, siteOrigin = DEFAULT_SITE_ORIGIN
   ].join('\n');
 }
 
+/**
+ * @param {string} targetPath
+ * @returns {import('node:fs').Stats | null}
+ */
 function lstatOrNull(targetPath) {
   try {
     return lstatSync(targetPath);
   } catch (err) {
-    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+    const code = err && typeof err === 'object' && 'code' in err ? /** @type {{ code?: unknown }} */ (err).code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
       return null;
     }
     throw err;
   }
 }
 
+/**
+ * @param {string} content
+ * @returns {boolean}
+ */
 function isRedirectStubContent(content) {
   return content.replace(/\r\n/g, '\n').startsWith(REDIRECT_HEADER);
 }
 
+/**
+ * @param {string} rootDir
+ * @param {string[]} relSegments
+ * @param {string} label
+ * @returns {{ resolved: string, rel: string }}
+ */
 function resolveInsideDir(rootDir, relSegments, label) {
   const absRoot = resolve(rootDir);
   const resolved = resolve(absRoot, ...relSegments);
@@ -277,6 +338,12 @@ function resolveInsideDir(rootDir, relSegments, label) {
   return { resolved, rel };
 }
 
+/**
+ * @param {string} absDist
+ * @param {string[]} relSegments
+ * @param {string} label
+ * @returns {void}
+ */
 function assertSafeAncestors(absDist, relSegments, label) {
   let cursor = absDist;
   for (let i = 0; i < relSegments.length - 1; i += 1) {
@@ -300,6 +367,9 @@ function assertSafeAncestors(absDist, relSegments, label) {
  * Emit all legacy compatibility redirect HTML stubs into `site/dist/`.
  *
  * Validates every destination page, symlink safety, and collision check before writing any file.
+ *
+ * @param {EmitRedirectsOptions} [options]
+ * @returns {EmitRedirectsResult}
  */
 export function emitRedirects({
   distDir = DEFAULT_DIST_DIR,
@@ -323,6 +393,7 @@ export function emitRedirects({
   const normalizedBase = normalizeBasePath(basePath);
   const entries = loadRedirects(manifestPath, { basePath: normalizedBase });
   const plannedSources = new Set(entries.map((entry) => entry.from.slice(1).toLowerCase()));
+  /** @type {Array<{ entry: RedirectEntry, outFile: string, outRel: string, html: string }>} */
   const planned = [];
 
   for (const entry of entries) {

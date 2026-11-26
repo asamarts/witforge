@@ -1,3 +1,4 @@
+// @ts-check
 import { posix } from 'node:path';
 
 export const REPO_BLOB_DOCS_BASE = 'https://github.com/asamarts/witforge/blob/main/docs';
@@ -10,6 +11,9 @@ const STANDALONE_IMAGE_RE = /^!\[[^\]]*\]\([^)]+\)$/;
 
 /**
  * Normalize OS path separators to POSIX forward slashes.
+ *
+ * @param {string} filePath
+ * @returns {string}
  */
 export function toPosix(filePath) {
   return String(filePath).replace(/\\/g, '/');
@@ -17,6 +21,9 @@ export function toPosix(filePath) {
 
 /**
  * Normalize a relative path within `docs/` and reject escaping paths.
+ *
+ * @param {string} relPath
+ * @returns {string}
  */
 export function normalizeDocsRelPath(relPath) {
   const cleaned = posix.normalize(toPosix(relPath).replace(/^\.\//, ''));
@@ -29,6 +36,7 @@ export function normalizeDocsRelPath(relPath) {
 /**
  * @typedef {{ label: string, relPath: string }} SummaryItem
  * @typedef {{ label: string, items: SummaryItem[] }} SummaryGroup
+ * @typedef {{ line: number, match: string, excerpt: string }} EmDashFinding
  */
 
 /**
@@ -45,6 +53,7 @@ export function parseSummary(markdown) {
   const normalized = String(markdown).replace(/\r\n/g, '\n');
   /** @type {SummaryGroup[]} */
   const groups = [];
+  /** @type {Set<string>} */
   const seenPaths = new Set();
   /** @type {SummaryGroup | null} */
   let currentGroup = null;
@@ -102,6 +111,9 @@ export function parseSummary(markdown) {
  * - `guide/index.md` -> `docs` (canonical alias to `/witforge/docs/`)
  * - `quickstart.md` -> `docs/quickstart`
  * - `guide/<slug>.md` -> `docs/<slug>`
+ *
+ * @param {string} relPath
+ * @returns {string}
  */
 export function docsRelPathToSlug(relPath) {
   const norm = normalizeDocsRelPath(relPath);
@@ -123,6 +135,9 @@ export function docsRelPathToSlug(relPath) {
 /**
  * Map a relative path under `docs/` to its target file path inside
  * `site/src/content/docs/`.
+ *
+ * @param {string} relPath
+ * @returns {string}
  */
 export function docsRelPathToContentFile(relPath) {
   const slug = docsRelPathToSlug(relPath);
@@ -135,6 +150,10 @@ export function docsRelPathToContentFile(relPath) {
 /**
  * Map a relative path under `docs/` to a canonical site route with `urlPrefix`
  * (e.g. `/witforge` or `https://asamarts.github.io/witforge`).
+ *
+ * @param {string} relPath
+ * @param {string} [urlPrefix]
+ * @returns {string}
  */
 export function docsRelPathToRoute(relPath, urlPrefix = '/witforge') {
   const prefix = String(urlPrefix).replace(/\/+$/, '');
@@ -144,6 +163,9 @@ export function docsRelPathToRoute(relPath, urlPrefix = '/witforge') {
 
 /**
  * Strip leading YAML frontmatter (`---\n...\n---`) if present.
+ *
+ * @param {string} markdown
+ * @returns {{ frontmatter: string | null, body: string }}
  */
 export function stripYamlFrontmatter(markdown) {
   const normalized = String(markdown).replace(/\r\n/g, '\n');
@@ -168,6 +190,9 @@ export function stripYamlFrontmatter(markdown) {
 /**
  * Strip a single leading Markdown H1 heading (`# Title`) so Starlight does not
  * duplicate the page heading rendered from frontmatter.
+ *
+ * @param {string} body
+ * @returns {{ h1: string | null, body: string }}
  */
 export function stripLeadingH1(body) {
   const lines = String(body).replace(/\r\n/g, '\n').split('\n');
@@ -200,6 +225,7 @@ export function stripLeadingH1(body) {
  * @returns {string}
  */
 export function stripInlineMarkdown(text, { collapseWhitespace = true } = {}) {
+  /** @type {string[]} */
   const codeSpans = [];
   let out = '';
   const src = String(text);
@@ -302,6 +328,10 @@ export function resolvePageDescription(relPath, body, label) {
 
 /**
  * Extract a concise plain-text meta description from the first body paragraph.
+ *
+ * @param {string} body
+ * @param {string} [fallback]
+ * @returns {string}
  */
 export function extractDescription(body, fallback = 'witforge documentation.') {
   const lines = String(body).replace(/\r\n/g, '\n').split('\n');
@@ -310,6 +340,7 @@ export function extractDescription(body, fallback = 'witforge documentation.') {
   let fenceLen = 0;
   let inComment = false;
   let inList = false;
+  /** @type {string[]} */
   const paragraphLines = [];
 
   for (const line of lines) {
@@ -414,6 +445,9 @@ export function extractDescription(body, fallback = 'witforge documentation.') {
 
 /**
  * Serialize a single-line string safely for YAML frontmatter.
+ *
+ * @param {unknown} value
+ * @returns {string}
  */
 export function yamlString(value) {
   return JSON.stringify(String(value).replace(/\r?\n/g, ' ').trim());
@@ -422,6 +456,10 @@ export function yamlString(value) {
 /**
  * Generate a GitHub/Starlight (`github-slugger`) compatible heading anchor ID.
  * Pass an optional `counts` Map to deduplicate repeated headings on one page.
+ *
+ * @param {string} heading
+ * @param {Map<string, number> | null} [counts]
+ * @returns {string}
  */
 export function githubSlug(heading, counts = null) {
   const plain = stripInlineMarkdown(heading, { collapseWhitespace: false }).toLowerCase();
@@ -437,6 +475,10 @@ export function githubSlug(heading, counts = null) {
   return seen === 0 ? base : `${base}-${seen}`;
 }
 
+/**
+ * @param {string} normRelPath
+ * @returns {boolean}
+ */
 function isExcludedDocsPath(normRelPath) {
   const lower = normRelPath.toLowerCase();
   return (
@@ -449,6 +491,11 @@ function isExcludedDocsPath(normRelPath) {
 
 /**
  * Rewrite a single Markdown link target relative to `relPath` within `docs/`.
+ *
+ * @param {string} rawTarget
+ * @param {string} relPath
+ * @param {string} [urlPrefix]
+ * @returns {string}
  */
 export function rewriteLinkTarget(rawTarget, relPath, urlPrefix = '/witforge') {
   const trimmed = String(rawTarget).trim();
@@ -504,6 +551,11 @@ export function rewriteLinkTarget(rawTarget, relPath, urlPrefix = '/witforge') {
 /**
  * Rewrite inline Markdown links `[label](target)` on a single prose line while
  * skipping inline backtick code spans and backslash-escaped delimiters.
+ *
+ * @param {string} line
+ * @param {string} relPath
+ * @param {string} urlPrefix
+ * @returns {string}
  */
 function rewriteProseLine(line, relPath, urlPrefix) {
   // Handle Markdown reference link definitions: `[id]: target "optional title"`
@@ -577,6 +629,11 @@ function rewriteProseLine(line, relPath, urlPrefix) {
   return out;
 }
 
+/**
+ * @param {string} line
+ * @param {number} openIdx
+ * @returns {number}
+ */
 function findMatchingBracket(line, openIdx) {
   let depth = 0;
   for (let i = openIdx; i < line.length; i++) {
@@ -602,6 +659,11 @@ function findMatchingBracket(line, openIdx) {
   return -1;
 }
 
+/**
+ * @param {string} line
+ * @param {number} openIdx
+ * @returns {number}
+ */
 function findMatchingParen(line, openIdx) {
   let depth = 0;
   for (let i = openIdx; i < line.length; i++) {
@@ -621,9 +683,15 @@ function findMatchingParen(line, openIdx) {
 /**
  * Rewrite relative `.md` links across a Markdown body while skipping fenced
  * code blocks and inline code spans.
+ *
+ * @param {string} body
+ * @param {string} relPath
+ * @param {string} [urlPrefix]
+ * @returns {string}
  */
 export function rewriteMarkdownLinks(body, relPath, urlPrefix = '/witforge') {
   const lines = String(body).replace(/\r\n/g, '\n').split('\n');
+  /** @type {string[]} */
   const out = [];
   let inFence = false;
   let fenceChar = '';
@@ -656,8 +724,12 @@ export function rewriteMarkdownLinks(body, relPath, urlPrefix = '/witforge') {
 /**
  * Find em-dash occurrences (`U+2014`, `&mdash;`, `&#0*8212;`, `&#x0*2014;`) in plain text.
  * Returns array of `{ line, match, excerpt }`.
+ *
+ * @param {string} text
+ * @returns {EmDashFinding[]}
  */
 export function findEmDashesInText(text) {
+  /** @type {EmDashFinding[]} */
   const findings = [];
   const lines = String(text).replace(/\r\n/g, '\n').split('\n');
   for (let idx = 0; idx < lines.length; idx++) {
@@ -682,6 +754,11 @@ const RAW_HTML_SKIP_RE = new RegExp(
 );
 const ANY_HTML_TAG_RE = new RegExp(`<\\/?[a-z][a-z0-9-]*\\b${TAG_ATTRS_PATTERN}>|<![^>]*>`, 'gi');
 
+/**
+ * @param {string} src
+ * @param {string} tagName
+ * @returns {string}
+ */
 function stripPairedTagBlocks(src, tagName) {
   const re = new RegExp(
     `<${tagName}\\b${TAG_ATTRS_PATTERN}>(?:(?!<${tagName}\\b)[\\s\\S])*?<\\/${tagName}\\s*>`,
@@ -699,6 +776,9 @@ function stripPairedTagBlocks(src, tagName) {
  * Strip HTML comments, `<script>...</script>`, and `<style>...</style>` in a single
  * left-to-right pass (preserving line numbers) without tripping on `"<script>"` strings
  * or `>` inside quoted attribute values.
+ *
+ * @param {string} html
+ * @returns {string}
  */
 export function stripHtmlNoise(html) {
   return String(html)
@@ -711,8 +791,12 @@ export function stripHtmlNoise(html) {
  * `<script>`, and `<style>` blocks, while scanning visible text, `<title>`,
  * meta description/title tags including OpenGraph `property="..."`, and SVG
  * `<text>`/`<title>`/`<desc>`).
+ *
+ * @param {string} html
+ * @returns {EmDashFinding[]}
  */
 export function findEmDashesInHtml(html) {
+  /** @type {EmDashFinding[]} */
   const findings = [];
   const src = stripHtmlNoise(html);
 

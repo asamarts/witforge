@@ -1,3 +1,4 @@
+// @ts-check
 import assert from 'node:assert/strict';
 import {
   existsSync,
@@ -56,6 +57,10 @@ const SITE_ROOT = resolve(SCRIPTS_DIR, '..');
 const REPO_ROOT = resolve(SITE_ROOT, '..');
 const DOCS_ROOT = resolve(REPO_ROOT, 'docs');
 
+/**
+ * @param {string} prefix
+ * @returns {string}
+ */
 function makeTempDir(prefix) {
   const base = process.env.TMPDIR || tmpdir();
   mkdirSync(base, { recursive: true });
@@ -844,5 +849,20 @@ test('checkSite enforces all 8 gates across positive and comprehensive negative 
     }
   } finally {
     rmSync(scratchRoot, { recursive: true, force: true });
+  }
+});
+
+test('every site/scripts/*.mjs module opts into TypeScript // @ts-check', () => {
+  const scripts = readdirSync(SCRIPTS_DIR)
+    .filter((name) => name.endsWith('.mjs'))
+    .sort();
+  assert.ok(scripts.length >= 5, `Expected at least 5 scripts in ${SCRIPTS_DIR}`);
+  for (const name of scripts) {
+    const firstLine = readFileSync(join(SCRIPTS_DIR, name), 'utf8').split('\n')[0].trim();
+    assert.equal(
+      firstLine,
+      '// @ts-check',
+      `site/scripts/${name} must start with "// @ts-check" for end-to-end TypeScript checking`,
+    );
   }
 });

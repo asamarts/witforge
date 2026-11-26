@@ -196,8 +196,9 @@ aplan binary is committed to this repository. The job is part of `ci ok`.
   `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`, so superseded PR builds cancel
   without blocking `main`, and in-flight `main` deploys are never cancelled.
 - **build** (`contents: read`): installs Node 24 with npm lockfile caching (`site/package-lock.json`),
-  runs `npm --prefix site ci --ignore-scripts`, `test:scripts`, `check` (`sync-docs.mjs` +
-  `astro check`, including `@ts-check` on `astro.config.mjs` and `check-links.mjs`), `build`
+  runs `npm --prefix site ci --ignore-scripts`, `test:scripts`, `check` (`sync-docs.mjs`,
+  `astro check`, and `tsc --noEmit`, including `// @ts-check` on `astro.config.mjs` and every
+  `site/scripts/*.mjs` module), `build`
   (`sync-docs.mjs`, `astro build`, and `emit-redirects.mjs` for all 16 legacy `.html` / `/guide/`
   compatibility stubs), and `check:links` (`site/scripts/check-links.mjs` verifying internal links,
   trailing slashes, fragments, all `WFxxxx` diagnostic anchors, redirects, GitHub repo links,
