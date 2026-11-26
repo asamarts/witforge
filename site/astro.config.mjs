@@ -3,7 +3,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
-import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
 
 const SITE_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +24,7 @@ export default defineConfig({
       disable404Route: true,
       expressiveCode: {
         themes: ['github-light', 'github-dark'],
+        useStarlightUiThemeColors: true,
       },
       social: [
         {
@@ -36,12 +36,12 @@ export default defineConfig({
       customCss: [
         '@fontsource-variable/plus-jakarta-sans/wght.css',
         '@fontsource-variable/inter/wght.css',
+        '@fontsource-variable/inter/wght-italic.css',
         '@fontsource/jetbrains-mono/400.css',
         '@fontsource/jetbrains-mono/600.css',
         './src/styles/tokens.css',
       ],
       sidebar,
     }),
-    sitemap(),
   ],
 });

@@ -7,7 +7,16 @@ interface Props {
 }
 
 const { size = 28, showWordmark = true, class: className = '', id = 'brand' } = Astro.props;
-const gradId = `wf-logo-hex-${id}`;
+const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-') || 'brand';
+const locals = Astro.locals as unknown as Record<string, unknown>;
+let seen = locals.__wfLogoIds as Map<string, number> | undefined;
+if (!seen) {
+  seen = new Map<string, number>();
+  locals.__wfLogoIds = seen;
+}
+const count = (seen.get(safeId) ?? 0) + 1;
+seen.set(safeId, count);
+const gradId = count === 1 ? `wf-logo-hex-${safeId}` : `wf-logo-hex-${safeId}-${count}`;
 ---
 
 <span class:list={['wf-logo', className]}>
@@ -91,16 +100,28 @@ const gradId = `wf-logo-hex-${id}`;
       stroke: #60a5fa;
       stroke-width: 1.1;
     }
+
+    :global(:root:not([data-theme='light'])) .wf-logo-rim {
+      stroke: #bfdbfe;
+      stroke-opacity: 0.48;
+    }
   }
 
-  :global(:root[data-theme='dark']) .wf-logo {
-    --wf-logo-start: #3b82f6;
-    --wf-logo-mid: #1d4ed8;
-    --wf-logo-end: #172554;
-  }
+  @media screen {
+    :global(:root[data-theme='dark']) .wf-logo {
+      --wf-logo-start: #3b82f6;
+      --wf-logo-mid: #1d4ed8;
+      --wf-logo-end: #172554;
+    }
 
-  :global(:root[data-theme='dark']) .wf-logo-shell {
-    stroke: #60a5fa;
-    stroke-width: 1.1;
+    :global(:root[data-theme='dark']) .wf-logo-shell {
+      stroke: #60a5fa;
+      stroke-width: 1.1;
+    }
+
+    :global(:root[data-theme='dark']) .wf-logo-rim {
+      stroke: #bfdbfe;
+      stroke-opacity: 0.48;
+    }
   }
 </style>

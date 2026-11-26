@@ -11,6 +11,9 @@ interface WorkspaceMetadata {
   msrv: string;
 }
 
+const WORKSPACE_PACKAGE_HEADER_RE = /^\[\s*workspace\.package\s*\](?:\s*#.*)?$/;
+const SCHEME_OR_PROTOCOL_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+
 function readWorkspaceMetadata(): WorkspaceMetadata {
   const raw = readFileSync(WORKSPACE_CARGO_TOML, 'utf8');
   let inWorkspacePackage = false;
@@ -20,7 +23,7 @@ function readWorkspaceMetadata(): WorkspaceMetadata {
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (trimmed.startsWith('[')) {
-      inWorkspacePackage = trimmed === '[workspace.package]';
+      inWorkspacePackage = WORKSPACE_PACKAGE_HEADER_RE.test(trimmed);
       continue;
     }
     if (!inWorkspacePackage) continue;
@@ -76,13 +79,23 @@ export const THEME_COLOR_DARK = '#0a0f1a';
 
 /**
  * Prefix a site-relative path with BASE_PATH (`/witforge`).
- * Preserves already-prefixed paths, external URLs, and hash-only links.
+ * Preserves already-prefixed paths, scheme URLs (http/https/mailto/tel),
+ * protocol-relative URLs, and query/hash-only links.
  */
 export function withBase(path: string): string {
-  if (!path || path.startsWith('#') || /^https?:\/\//i.test(path)) {
+  if (!path) {
+    return `${BASE_PATH}/`;
+  }
+  if (path.startsWith('#') || path.startsWith('?') || SCHEME_OR_PROTOCOL_RE.test(path)) {
     return path;
   }
-  if (path === BASE_PATH || path.startsWith(`${BASE_PATH}/`)) {
+  if (path === BASE_PATH) {
+    return `${BASE_PATH}/`;
+  }
+  if (path.startsWith(`${BASE_PATH}?`) || path.startsWith(`${BASE_PATH}#`)) {
+    return `${BASE_PATH}/${path.slice(BASE_PATH.length)}`;
+  }
+  if (path.startsWith(`${BASE_PATH}/`)) {
     return path;
   }
   const normalized = path.startsWith('/') ? path : `/${path}`;
@@ -90,8 +103,15 @@ export function withBase(path: string): string {
 }
 
 /**
- * Build an absolute canonical URL for a site-relative path.
+ * Build an absolute canonical URL for a site-relative or absolute path.
  */
 export function canonicalUrl(path: string): string {
-  return `${SITE_ORIGIN}${withBase(path)}`;
+  if (/^https?:\/\//i.test(path)) {
+    return new URL(path).href;
+  }
+  if (!path || path.startsWith('#') || path.startsWith('?')) {
+    return SITE_URL;
+  }
+  const cleanPath = path.split(/[?#]/, 1)[0] || '/';
+  return new URL(withBase(cleanPath), SITE_ORIGIN).href;
 }

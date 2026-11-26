@@ -94,5 +94,5 @@
   <!-- Bottom footer divider and badges -->
   <line x1="72" y1="518" x2="1128" y2="518" stroke="#243248" stroke-width="1.5"/>
   <text x="72" y="566" fill="#94a3b8" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="18">asamarts.github.io/witforge</text>
-  <text x="1128" y="566" text-anchor="end" fill="#7dd3fc" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="16">Apache-2.0 / MIT  |  Zero-dep Rust  |  SLSA</text>
+  <text x="1128" y="566" text-anchor="end" fill="#7dd3fc" font-family="JetBrains Mono, Adwaita Mono, DejaVu Sans Mono, monospace" font-size="16">Apache-2.0 / MIT  |  Zero-dep emitted Rust  |  SLSA</text>
 </svg>
