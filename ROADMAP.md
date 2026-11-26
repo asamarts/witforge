@@ -182,6 +182,20 @@ changelog's 0.8.0 section is the full list.
 - [x] Release 0.8.0 (2026-11-25, `W10-123`) with `witforge-build` crates.io bootstrap and Trusted
       Publishing, static Linux `musl` archives, and 5-runner tagged Action verification.
 
+## 0.9.0: WIT subset expansion, Markdown docs, `diff --git-base`, policies, `deps sync`, and opt-in Rust derives (released)
+
+This is a summary of what tag `v0.9.0` contains (strictly additive over 0.8.0's public API); the
+changelog's 0.9.0 section is the full list.
+
+- [x] WIT subset expansion (`char`, fixed-length `list<T, N>`, primitive-keyed `map<K, V>`,
+      `W11-040`), deterministic Markdown reference emitter (`witforge doc` / `emit::doc` / Action
+      `generators: doc`, `W11-044`), opt-in float-free `--eq-hash` and `convert.rs` `--try-from`
+      (`W11-045`), Git-ref diffing (`witforge diff --git-base`, `W11-043`), `[project.<name>.policy]`
+      governance (`diff-check` and `forbid-unstable-in-release`, `W11-042`), unreleased `deps/`
+      synchronization (`witforge deps sync`, `W11-047`), Protobuf Editions 2023 readiness evaluation
+      (`W11-046`), and four rounds of post-0.8.0 audit hardening (`W10-127`, `W10-128`, `W10-130`–`W10-133`).
+- [x] Release 0.9.0 (2026-11-26, `W10-129`).
+
 ## 1.0 and beyond
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is

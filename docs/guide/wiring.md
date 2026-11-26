@@ -14,7 +14,7 @@ configuration options.
 ### From crates.io
 
 ```sh
-cargo install witforge-cli --version 0.8.0 --locked
+cargo install witforge-cli --version 0.9.0 --locked
 witforge --version
 ```
 
@@ -42,7 +42,7 @@ witforge-cli --locked` on that target. `cargo binstall witforge-cli` is also con
 Download and verify a prebuilt archive before extracting it:
 
 ```sh
-VERSION=0.8.0
+VERSION=0.9.0
 TARGET=x86_64-unknown-linux-musl
 BASE="https://github.com/asamarts/witforge/releases/download/v${VERSION}"
 curl -sSfLO "${BASE}/witforge-${VERSION}-${TARGET}.tar.gz"
@@ -272,7 +272,7 @@ you can use the optional `witforge-build` helper crate (first published on crate
 
 ```toml
 [build-dependencies]
-witforge-build = "0.8.0"
+witforge-build = "0.9.0"
 ```
 
 ```rust

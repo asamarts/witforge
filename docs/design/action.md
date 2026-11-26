@@ -38,7 +38,7 @@ platform/arch rather than running the wrong binary.
 ## Installing a prebuilt archive
 
 ```sh
-VERSION=0.8.0
+VERSION=0.9.0
 TARGET=x86_64-unknown-linux-musl
 BASE="https://github.com/asamarts/witforge/releases/download/v${VERSION}"
 curl -sSfLO "${BASE}/witforge-${VERSION}-${TARGET}.tar.gz"
@@ -66,7 +66,7 @@ macOS Intel, and Windows x86_64. Running `action/test.js` alone does not exercis
 resolution, archive extraction, or PATH propagation.
 
 ```yaml
-- uses: asamarts/witforge@v0.8.0 # pinned: installs witforge 0.8.0
+- uses: asamarts/witforge@v0.9.0 # pinned: installs witforge 0.9.0
   with:
     check: wit/v0.2
     diff-old: wit/v0.1
@@ -85,7 +85,7 @@ only when floating latest is explicitly desired, or pass `version` to pin anothe
 ```yaml
 - uses: asamarts/witforge@main # pins to the tree's version, or override explicitly:
   with:
-    version: 0.8.0
+    version: 0.9.0
 ```
 
 Starting in `v0.8.0`, `github-token` defaults to `${{ github.token }}` so `gh attestation verify`

@@ -13,7 +13,7 @@ body:
     attributes:
       label: witforge version
       description: Output of `witforge --version` (or the GitHub Action ref / commit SHA).
-      placeholder: "witforge 0.8.0"
+      placeholder: "witforge 0.9.0"
     validations:
       required: true
   - type: input

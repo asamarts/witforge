@@ -21,7 +21,7 @@ additive minor evolution; this exact combination passes on `examples/evolved`:
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- uses: asamarts/witforge@v0.8.0
+- uses: asamarts/witforge@v0.9.0
   with:
     check: examples/evolved/wit/v0.2
     against: examples/evolved/wit/v0.1/wire.lock
@@ -56,7 +56,7 @@ steps:
     with:
       fetch-depth: 0
   - id: witforge
-    uses: asamarts/witforge@v0.8.0
+    uses: asamarts/witforge@v0.9.0
     with:
       check: wit/v0.2
       against: wit/v0.1/wire.lock
@@ -82,7 +82,7 @@ request diffs regardless of `format`.
 
 ### Version pinning and SHA pins
 
-- When `version` is empty and the Action ref is a release tag (`@v0.8.0`), the Action installs that
+- When `version` is empty and the Action ref is a release tag (`@v0.9.0`), the Action installs that
   exact release.
 - When `version` is empty and the Action ref is a commit SHA, branch, floating tag, or local `./`,
   the Action installs the workspace version recorded in `Cargo.toml` at that exact ref — it never

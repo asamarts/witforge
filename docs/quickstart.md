@@ -24,7 +24,7 @@ types directly.
 Install the current release:
 
 ```sh
-cargo install witforge-cli --version 0.8.0 --locked
+cargo install witforge-cli --version 0.9.0 --locked
 witforge --version
 ```
 

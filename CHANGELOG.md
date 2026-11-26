@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-26
+
+All library API changes since 0.8.0 are strictly additive (`docs/design/public-api-inventory.txt`
+retains every v0.8.0 symbol and signature). Wire numbers and lockfile identity do not change.
+For existing contracts accepted by 0.8.0, generated `glue/mod.rs` adds two additive
+`#[non_exhaustive]` `GlueError` variants (`InvalidChar` and `InvalidLength`), while plain Rust,
+`convert.rs`, `worlds.rs`, `.proto`, JSON Schema, and per-major glue modules are unchanged (with
+minor `rustfmt` and CommonMark sanitization fixes only on previously edge-case inputs).
+
 ### Added
 
 - **GitHub Action `generators: doc` (`W10-133`):** Added `doc` to the accepted `generators` input
