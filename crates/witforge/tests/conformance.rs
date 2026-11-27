@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use witforge::emit::{glue, json_schema, proto, rust, typescript};
+use witforge::emit::{glue, json_schema, proto, rust, typescript, typescript_glue};
 use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model::{self, TypeDefKind, TypeExpr};
@@ -320,6 +320,13 @@ fn dependency_and_serde_fixtures_cover_every_emitter() {
         assert!(
             !typescript::plan(&root).unwrap().files().is_empty(),
             "{name} ts"
+        );
+        assert!(
+            !typescript_glue::plan(&root, "../plain", "../proto")
+                .unwrap()
+                .files()
+                .is_empty(),
+            "{name} ts-glue"
         );
     }
 

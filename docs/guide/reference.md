@@ -166,6 +166,27 @@ Generate or check zero-dependency strict ESM TypeScript types, shared `Option` h
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Project name in `witforge.toml`. |
 
+### `witforge ts-glue`
+
+Generate or check TypeScript checked protobuf glue targeting `@bufbuild/protobuf` (`protobuf-es`
+v2): `toProto` / `fromProto` conversions, per-function `toRequest` / `fromRequest` /
+`toResponse` / `fromResponse` helpers, `METHOD` constants, message schema references, and
+structured `WitforgeGlueError` diagnostics enforcing all 13 rows of the WIT decode profile plus
+encode-side range, scalar `char`, closed-enum, and exact fixed-length list bounds.
+
+| Option / Argument | Description |
+|---|---|
+| `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
+| `--out <DIR>` | Output directory for generated TypeScript protobuf glue files. |
+| `--plain-root <PATH>` | ESM import root containing generated plain TypeScript files (relative path such as `../plain` or bare npm package specifier such as `@acme/plain`). |
+| `--proto-root <PATH>` | ESM import root containing generated `@bufbuild/protobuf` `*_pb.js` files (relative path such as `../proto` or bare npm package specifier such as `@acme/proto`). |
+| `--check` | Verify existing files match without writing; exits `1` on drift. |
+| `--diff` | Print a unified diff of output changes without changing the exit status. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Project name in `witforge.toml`. |
+
 ### `witforge conformance`
 
 Generate or check the versioned cross-language protobuf conformance fixture bundle
@@ -381,6 +402,10 @@ expansion.
 | `project.<name>.doc.out` | yes (if section set) | path | Output directory for generated Markdown reference files. |
 | `[project.<name>.typescript]` | no | table | Strict ESM TypeScript plain types and interfaces generator configuration. |
 | `project.<name>.typescript.out` | yes (if section set) | path | Output directory for generated TypeScript files. |
+| `[project.<name>.typescript-glue]` | no | table | Checked TypeScript protobuf glue (`@bufbuild/protobuf`) generator configuration. |
+| `project.<name>.typescript-glue.out` | yes (if section set) | path | Output directory for generated TypeScript protobuf glue files. |
+| `project.<name>.typescript-glue.plain-root` | yes (if section set) | string | ESM import root for generated plain TypeScript files (relative path or bare npm package specifier). |
+| `project.<name>.typescript-glue.proto-root` | yes (if section set) | string | ESM import root for generated `@bufbuild/protobuf` `*_pb.js` files (relative path or bare npm package specifier). |
 | `[project.<name>.policy]` | no | table | Project governance policy table. |
 | `project.<name>.policy.diff-check` | no | array of strings | Default compatibility views for bare `witforge diff --check` (non-empty subset of `"wire"`, `"source"`, `"api"`, `"decode"`). |
 | `project.<name>.policy.forbid-unstable-in-release` | no | boolean | Refuse `witforge release` when any `@unstable` declaration is present (default `false`). |

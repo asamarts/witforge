@@ -6,3 +6,4 @@
 /site/.astro/
 /site/src/content/docs/
 /site/src/data/sidebar.json
+/ci/ts-conformance/node_modules/

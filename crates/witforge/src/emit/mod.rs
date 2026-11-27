@@ -34,6 +34,7 @@ pub mod proto;
 pub mod rust;
 pub(crate) mod rustfmt;
 pub mod typescript;
+pub mod typescript_glue;
 pub(crate) mod versions;
 
 use crate::model::{Model, Stability, TypeDefKind, TypeExpr};
@@ -202,7 +203,7 @@ mod tests {
     use std::path::Path;
 
     use super::versions::{Version, load_versions};
-    use super::{glue, proto, rust, typescript};
+    use super::{glue, proto, rust, typescript, typescript_glue};
     use crate::is_contract_error;
     use crate::lock::WireLock;
     use crate::model::{QualifiedName, TypeDefKind, TypeExpr};
@@ -253,6 +254,16 @@ mod tests {
             &glue::plan_versions(&dangling, "crate::plain", "crate::proto").unwrap_err(),
             "is not in the model",
         );
+        assert_internal(
+            &typescript_glue::plan_versions_with_options(
+                &dangling,
+                "../plain",
+                "../proto",
+                &typescript_glue::TypeScriptGlueOptions::new(),
+            )
+            .unwrap_err(),
+            "is not in the model",
+        );
 
         // A lockfile without the model's members.
         let mut unlocked = versions();
@@ -277,6 +288,16 @@ mod tests {
         }
         assert_internal(
             &glue::plan_versions(&reserved, "crate::plain", "crate::proto").unwrap_err(),
+            "is live in the model",
+        );
+        assert_internal(
+            &typescript_glue::plan_versions_with_options(
+                &reserved,
+                "../plain",
+                "../proto",
+                &typescript_glue::TypeScriptGlueOptions::new(),
+            )
+            .unwrap_err(),
             "is live in the model",
         );
     }

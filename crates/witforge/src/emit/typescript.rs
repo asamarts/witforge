@@ -504,7 +504,7 @@ fn emit_dependency_tree(
     Ok(())
 }
 
-fn dependency_model(dependency: &Dependency, dependencies: &[Dependency]) -> Model {
+pub(crate) fn dependency_model(dependency: &Dependency, dependencies: &[Dependency]) -> Model {
     Model {
         package: dependency.package.clone(),
         interfaces: dependency.interfaces.clone(),
@@ -1442,7 +1442,7 @@ fn write_world_string_array(
     Ok(())
 }
 
-fn safe_interface_file_stem(wit_name: &str) -> Result<String> {
+pub(crate) fn safe_interface_file_stem(wit_name: &str) -> Result<String> {
     let mut stem = to_snake_case(wit_name);
     if stem.is_empty() {
         contract_bail!("WIT interface name `{wit_name}` produces an empty TypeScript filename");
@@ -1453,7 +1453,7 @@ fn safe_interface_file_stem(wit_name: &str) -> Result<String> {
     Ok(stem)
 }
 
-fn safe_pkg_segment(namespace: &str, name: &str) -> Result<String> {
+pub(crate) fn safe_pkg_segment(namespace: &str, name: &str) -> Result<String> {
     let ns_snake = to_snake_case(namespace);
     let name_snake = to_snake_case(name);
     let seg = dep_package_segment(namespace, name);
@@ -1471,7 +1471,7 @@ fn safe_pkg_segment(namespace: &str, name: &str) -> Result<String> {
     Ok(seg)
 }
 
-fn ts_type_ident(wit_name: &str, what: &str) -> Result<String> {
+pub(crate) fn ts_type_ident(wit_name: &str, what: &str) -> Result<String> {
     let pascal = to_pascal_case(wit_name);
     if pascal.is_empty() || pascal.as_bytes()[0].is_ascii_digit() {
         contract_bail!(
@@ -1481,7 +1481,7 @@ fn ts_type_ident(wit_name: &str, what: &str) -> Result<String> {
     Ok(escape_typescript_ident(&pascal))
 }
 
-fn ts_value_ident(wit_name: &str, what: &str) -> Result<String> {
+pub(crate) fn ts_value_ident(wit_name: &str, what: &str) -> Result<String> {
     let camel = to_camel_case(wit_name);
     if camel.is_empty() || camel.as_bytes()[0].is_ascii_digit() {
         contract_bail!(
@@ -1491,7 +1491,7 @@ fn ts_value_ident(wit_name: &str, what: &str) -> Result<String> {
     Ok(escape_typescript_ident(&camel))
 }
 
-fn insert_name(
+pub(crate) fn insert_name(
     names: &mut BTreeMap<String, String>,
     ident: &str,
     source: &str,
@@ -1509,7 +1509,7 @@ fn escape_jsdoc_line(line: &str) -> String {
     line.replace("*/", "*\\/")
 }
 
-fn write_jsdoc(
+pub(crate) fn write_jsdoc(
     out: &mut String,
     indent: usize,
     raw_docs: &str,
@@ -1567,7 +1567,7 @@ fn write_jsdoc(
     Ok(())
 }
 
-fn escape_ts_string(s: &str) -> String {
+pub(crate) fn escape_ts_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for ch in s.chars() {

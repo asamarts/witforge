@@ -18,6 +18,9 @@
 //!                [--check] [--diff] [--released PATH]
 //! witforge ts    [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
+//! witforge ts-glue [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
+//!                  [--config PATH | --no-config] [--project NAME] [--check] [--diff]
+//!                  [--released PATH]
 //! witforge conformance --out DIR [--polyglot-proto-options] [--go-package VALUE]
 //!                      [--java-package VALUE] [--java-multiple-files | --no-java-multiple-files]
 //!                      [--java-outer-classname NAME] [--csharp-namespace VALUE] [--check] [--diff]
@@ -116,6 +119,9 @@ enum Command {
     Doc(DocOptions),
     /// Generate zero-dependency strict ESM TypeScript types and interfaces.
     Ts(TsOptions),
+    /// Generate checked TypeScript protobuf glue targeting `@bufbuild/protobuf`.
+    #[command(name = "ts-glue")]
+    TsGlue(TsGlueOptions),
     /// Generate the versioned cross-language protobuf conformance fixture bundle.
     Conformance(ConformanceCliOptions),
     /// Run every generator configured in `witforge.toml`.
@@ -327,6 +333,34 @@ struct TsOptions {
     /// Output root for generated TypeScript files.
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct TsGlueOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Output root for generated TypeScript protobuf glue files.
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
+    /// ESM import root containing generated plain TypeScript files (relative path or npm package).
+    #[arg(long, value_name = "PATH")]
+    plain_root: Option<String>,
+    /// ESM import root containing generated `@bufbuild/protobuf` `*_pb.js` files.
+    #[arg(long, value_name = "PATH")]
+    proto_root: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -688,11 +722,13 @@ struct ProjectConfig {
     glue: Option<GlueConfig>,
     doc: Option<OutConfig>,
     typescript: Option<OutConfig>,
+    #[serde(rename = "typescript-glue")]
+    typescript_glue: Option<TsGlueConfig>,
     policy: Option<PolicyConfig>,
 }
 
 impl ProjectConfig {
-    fn configured_outputs(&self) -> [(Emitter, &'static str, Option<&Path>); 6] {
+    fn configured_outputs(&self) -> [(Emitter, &'static str, Option<&Path>); 7] {
         [
             (
                 Emitter::Rust,
@@ -723,6 +759,11 @@ impl ProjectConfig {
                 Emitter::TypeScript,
                 "typescript",
                 self.typescript.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::TypeScriptGlue,
+                "typescript-glue",
+                self.typescript_glue.as_ref().map(|c| c.out.as_path()),
             ),
         ]
     }
@@ -826,6 +867,16 @@ struct GlueConfig {
     no_std: Option<bool>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TsGlueConfig {
+    out: PathBuf,
+    #[serde(rename = "plain-root")]
+    plain_root: Option<String>,
+    #[serde(rename = "proto-root")]
+    proto_root: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Emitter {
     Rust,
@@ -834,6 +885,7 @@ enum Emitter {
     Glue,
     Doc,
     TypeScript,
+    TypeScriptGlue,
 }
 
 struct PathOverrides {
@@ -974,9 +1026,10 @@ fn resolve_paths(
         schema_draft,
         proto_overrides,
     } = overrides;
+    let needs_roots = matches!(emitter, Emitter::Glue | Emitter::TypeScriptGlue);
     let cli_complete = root.is_some()
         && out.is_some()
-        && (!matches!(emitter, Emitter::Glue) || (plain_root.is_some() && proto_root.is_some()));
+        && (!needs_roots || (plain_root.is_some() && proto_root.is_some()));
     let effective_config = resolve_config_path_opt(config_args, !cli_complete)?;
     let Some(config_path) = effective_config.as_deref() else {
         if config_args.project.is_some() {
@@ -1000,10 +1053,14 @@ fn resolve_paths(
                 None,
             ));
         };
-        if matches!(emitter, Emitter::Glue) && (plain_root.is_none() || proto_root.is_none()) {
+        if needs_roots && (plain_root.is_none() || proto_root.is_none()) {
+            let cmd = match emitter {
+                Emitter::TypeScriptGlue => "ts-glue",
+                _ => "glue",
+            };
             return Err(op_error(
                 codes::CLI_USAGE,
-                "glue requires --plain-root and --proto-root (or use --config)",
+                format!("{cmd} requires --plain-root and --proto-root (or use --config)"),
                 None,
             ));
         }
@@ -1074,6 +1131,10 @@ fn resolve_paths(
             .typescript
             .as_ref()
             .map(|config| from_config(&config.out)),
+        Emitter::TypeScriptGlue => project
+            .typescript_glue
+            .as_ref()
+            .map(|config| from_config(&config.out)),
     });
     let Some(out) = out else {
         return Err(op_error(
@@ -1083,22 +1144,40 @@ fn resolve_paths(
         ));
     };
     let released = released.or_else(|| project.released.as_deref().map(from_config));
-    let plain_root = plain_root.or_else(|| {
-        project
+    let plain_root = plain_root.or_else(|| match emitter {
+        Emitter::Glue => project
             .glue
             .as_ref()
-            .and_then(|config| config.plain_root.clone())
+            .and_then(|config| config.plain_root.clone()),
+        Emitter::TypeScriptGlue => project
+            .typescript_glue
+            .as_ref()
+            .and_then(|config| config.plain_root.clone()),
+        Emitter::Rust | Emitter::Proto | Emitter::Schema | Emitter::Doc | Emitter::TypeScript => {
+            None
+        }
     });
-    let proto_root = proto_root.or_else(|| {
-        project
+    let proto_root = proto_root.or_else(|| match emitter {
+        Emitter::Glue => project
             .glue
             .as_ref()
-            .and_then(|config| config.proto_root.clone())
+            .and_then(|config| config.proto_root.clone()),
+        Emitter::TypeScriptGlue => project
+            .typescript_glue
+            .as_ref()
+            .and_then(|config| config.proto_root.clone()),
+        Emitter::Rust | Emitter::Proto | Emitter::Schema | Emitter::Doc | Emitter::TypeScript => {
+            None
+        }
     });
-    if matches!(emitter, Emitter::Glue) && (plain_root.is_none() || proto_root.is_none()) {
+    if needs_roots && (plain_root.is_none() || proto_root.is_none()) {
+        let cmd = match emitter {
+            Emitter::TypeScriptGlue => "ts-glue",
+            _ => "glue",
+        };
         return Err(op_error(
             codes::CLI_USAGE,
-            "glue requires --plain-root and --proto-root (or a configuration section)",
+            format!("{cmd} requires --plain-root and --proto-root (or a configuration section)"),
             Some(config_path.display().to_string()),
         ));
     }
@@ -1109,7 +1188,11 @@ fn resolve_paths(
         .or_else(|| match emitter {
             Emitter::Rust => project.rust.as_ref().and_then(|config| config.no_std),
             Emitter::Glue => project.glue.as_ref().and_then(|config| config.no_std),
-            Emitter::Proto | Emitter::Schema | Emitter::Doc | Emitter::TypeScript => None,
+            Emitter::Proto
+            | Emitter::Schema
+            | Emitter::Doc
+            | Emitter::TypeScript
+            | Emitter::TypeScriptGlue => None,
         })
         .unwrap_or(false);
     let eq_hash = eq_hash
@@ -1252,6 +1335,13 @@ fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<
                 config_path,
             )?;
         }
+        if let Some(ts_glue) = &proj.typescript_glue {
+            check_config_path(
+                &format!("project.{proj_name}.typescript-glue.out"),
+                &ts_glue.out,
+                config_path,
+            )?;
+        }
         if let Some(policy) = &proj.policy
             && let Some(views) = &policy.diff_check
         {
@@ -1331,16 +1421,27 @@ fn parse_schema_draft(
 
 fn validate_configured_module_roots(config: &ConfigFile) -> Result<()> {
     for (proj_name, proj) in &config.project {
-        let Some(glue) = &proj.glue else {
-            continue;
-        };
-        if let Some(plain_root) = &glue.plain_root {
-            emit::glue::validate_module_root(plain_root)
-                .with_context(|| format!("invalid project.{proj_name}.glue.plain-root"))?;
+        if let Some(glue) = &proj.glue {
+            if let Some(plain_root) = &glue.plain_root {
+                emit::glue::validate_module_root(plain_root)
+                    .with_context(|| format!("invalid project.{proj_name}.glue.plain-root"))?;
+            }
+            if let Some(proto_root) = &glue.proto_root {
+                emit::glue::validate_module_root(proto_root)
+                    .with_context(|| format!("invalid project.{proj_name}.glue.proto-root"))?;
+            }
         }
-        if let Some(proto_root) = &glue.proto_root {
-            emit::glue::validate_module_root(proto_root)
-                .with_context(|| format!("invalid project.{proj_name}.glue.proto-root"))?;
+        if let Some(ts_glue) = &proj.typescript_glue {
+            if let Some(plain_root) = &ts_glue.plain_root {
+                emit::typescript_glue::validate_import_root(plain_root).with_context(|| {
+                    format!("invalid project.{proj_name}.typescript-glue.plain-root")
+                })?;
+            }
+            if let Some(proto_root) = &ts_glue.proto_root {
+                emit::typescript_glue::validate_import_root(proto_root).with_context(|| {
+                    format!("invalid project.{proj_name}.typescript-glue.proto-root")
+                })?;
+            }
         }
     }
     Ok(())
@@ -1523,6 +1624,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Glue(options) => glue(&options, &mut reporter),
         Command::Doc(options) => doc_command(&options, &mut reporter),
         Command::Ts(options) => ts_command(&options, &mut reporter),
+        Command::TsGlue(options) => ts_glue_command(&options, &mut reporter),
         Command::Conformance(options) => conformance_command(&options, &mut reporter),
         Command::Generate(options) => generate_command(&options, &mut reporter),
         Command::Init(options) => init_command(&options, &mut reporter),
@@ -2268,6 +2370,64 @@ fn ts_command(options: &TsOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         options.released.as_deref(),
         None,
         None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
+}
+
+fn ts_glue_command(options: &TsGlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let paths = resolve_paths(
+        Emitter::TypeScriptGlue,
+        &options.config,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: options.plain_root.clone(),
+            proto_root: options.proto_root.clone(),
+            serde: None,
+            no_std: None,
+            eq_hash: None,
+            try_from: None,
+            schema_draft: None,
+            proto_overrides: ProtoCliOverrides::default(),
+        },
+    )?;
+    let plain_root = paths
+        .plain_root
+        .as_deref()
+        .context("ts-glue requires --plain-root or a config typescript-glue section")?;
+    let proto_root = paths
+        .proto_root
+        .as_deref()
+        .context("ts-glue requires --proto-root or a config typescript-glue section")?;
+    guard_output_root(&paths)?;
+    let files = emit::typescript_glue::plan_with_released(
+        &paths.root,
+        plain_root,
+        proto_root,
+        paths.released.as_deref(),
+    )?;
+    let regen = regenerate_command(
+        "ts-glue",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        options.plain_root.as_deref(),
+        options.proto_root.as_deref(),
         None,
         None,
         None,
@@ -3275,12 +3435,15 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         if proj.typescript.is_some() {
             emitters.push(Emitter::TypeScript);
         }
+        if proj.typescript_glue.is_some() {
+            emitters.push(Emitter::TypeScriptGlue);
+        }
         if emitters.is_empty() {
             return Err(op_error(
                 codes::CLI_USAGE,
                 format!(
                     "project `{proj_name}` in {} configures no generators (rust, proto, schema, \
-                     glue, doc, or typescript)",
+                     glue, doc, typescript, or typescript-glue)",
                     config_path.display()
                 ),
                 Some(config_path.display().to_string()),
@@ -3405,6 +3568,23 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                     &TsOptions {
                         root: None,
                         out: None,
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::TypeScriptGlue => ts_glue_command(
+                    &TsGlueOptions {
+                        root: None,
+                        out: None,
+                        plain_root: None,
+                        proto_root: None,
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),
@@ -4590,6 +4770,10 @@ mod reference_doc_tests {
             "`project.<name>.doc.out`",
             "`[project.<name>.typescript]`",
             "`project.<name>.typescript.out`",
+            "`[project.<name>.typescript-glue]`",
+            "`project.<name>.typescript-glue.out`",
+            "`project.<name>.typescript-glue.plain-root`",
+            "`project.<name>.typescript-glue.proto-root`",
             "`[project.<name>.policy]`",
             "`project.<name>.policy.diff-check`",
             "`project.<name>.policy.forbid-unstable-in-release`",

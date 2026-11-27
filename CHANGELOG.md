@@ -42,6 +42,19 @@ All notable changes to this project are documented here. The format follows
   `u64`/`s64`, `worlds.ts`, `witforge_deps/` with cross-major `DepLayout` canonical-owner
   re-exports, JSDoc with `*/` escaping and `@deprecated` tags, keyword escaping, and Windows
   reserved filename stem protection) verified offline and against `tsc --noEmit --strict`.
+- **TypeScript checked protobuf glue emitter (`W13-003`):** Added additive
+  `witforge::emit::typescript_glue` (`#[non_exhaustive]` `TypeScriptGlueOptions`,
+  `validate_import_root`, `plan`, `plan_with_released`, `plan_with_options`, `generate`,
+  `generate_with_options`, `check`, and `check_with_options`), the `witforge ts-glue` CLI
+  subcommand, and `[project.<name>.typescript-glue]` configuration in `witforge.toml` (wired into
+  `ensure_distinct_output_roots` and `witforge generate`). Emits deterministic strict ESM
+  TypeScript targeting `@bufbuild/protobuf` (`protobuf-es` v2) with `toProto`/`fromProto`,
+  per-function `toRequest`/`fromRequest`/`toResponse`/`fromResponse`, `METHOD` constants, message
+  `schema` references, `witforge_deps/` cross-major `DepLayout` glue, and structured
+  `WitforgeGlueError` enforcing all 13 rows of the WIT decode profile plus encode-side integer,
+  Unicode scalar `char`, closed-enum, exact `list<T, N>` length, and `map<K, V>` key checks,
+  verified offline and in a SHA-pinned `ts-conformance` CI job against every `W11-034` binary,
+  proto3-JSON, and encode-bounds vector.
 - **Cross-language protobuf conformance profile and fixture bundle (`W11-034`):** Added additive
   `witforge::conformance` (`CONFORMANCE_VERSION = 1`, `#[non_exhaustive]` `ConformanceOptions` and
   `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, and

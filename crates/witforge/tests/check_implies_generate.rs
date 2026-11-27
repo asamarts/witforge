@@ -16,7 +16,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proptest::prelude::*;
-use witforge::emit::{glue, json_schema, proto, rust, typescript};
+use witforge::emit::{glue, json_schema, proto, rust, typescript, typescript_glue};
 use witforge::load;
 use witforge::lock::{LockMode, WireLock};
 use witforge::model;
@@ -130,6 +130,7 @@ fn unreachable_unsupported_dependency_chains_and_cross_dep_refs_are_pruned_clean
     let schema_files = json_schema::plan(&wit_root).unwrap();
     let glue_files = glue::plan(&wit_root, "crate::plain", "crate::proto").unwrap();
     let ts_files = typescript::plan(&wit_root).unwrap();
+    let ts_glue_files = typescript_glue::plan(&wit_root, "../plain", "../proto").unwrap();
     for forbidden in [
         "Hidden",
         "Wrap",
@@ -141,7 +142,7 @@ fn unreachable_unsupported_dependency_chains_and_cross_dep_refs_are_pruned_clean
         "takeOuter",
         "takeBad",
     ] {
-        for (path, content) in ts_files.files() {
+        for (path, content) in ts_files.files().iter().chain(ts_glue_files.files()) {
             assert!(
                 !content.contains(forbidden),
                 "pruned dependency symbol `{forbidden}` leaked into {path}:\n{content}"
@@ -305,6 +306,7 @@ fn proto_keyword_package_segments_pass_check_and_compile_in_protox_and_prost() {
         json_schema::plan(&root).unwrap();
         glue::plan(&root, "crate::plain", "crate::proto").unwrap();
         typescript::plan(&root).unwrap();
+        typescript_glue::plan(&root, "../plain", "../proto").unwrap();
 
         let proto_dir = base.join(format!("proto_{idx}"));
         proto_files.write(&proto_dir).unwrap();
@@ -468,6 +470,7 @@ fn every_known_generator_refusal_is_reported_by_check_with_a_code() {
         json_schema::plan(&upper_dir).unwrap();
         glue::plan(&upper_dir, "crate::plain", "crate::proto").unwrap();
         typescript::plan(&upper_dir).unwrap();
+        typescript_glue::plan(&upper_dir, "../plain", "../proto").unwrap();
     } else {
         assert!(
             upper_diags.iter().all(|d| !d.code.is_empty()),
@@ -541,6 +544,12 @@ fn deterministic_property_sample_covers_passing_contracts_and_implies_generate()
                     contract.root_wit
                 )
             });
+            typescript_glue::plan(&wit_root, "../plain", "../proto").unwrap_or_else(|e| {
+                panic!(
+                    "sample {idx}: check passed but ts-glue failed: {e:#}\n{}",
+                    contract.root_wit
+                )
+            });
         }
     }
 
@@ -604,6 +613,10 @@ proptest! {
                 ("schema", json_schema::plan(&wit_root)),
                 ("glue", glue::plan(&wit_root, "crate::plain", "crate::proto")),
                 ("ts", typescript::plan(&wit_root)),
+                (
+                    "ts-glue",
+                    typescript_glue::plan(&wit_root, "../plain", "../proto"),
+                ),
             ] {
                 if let Err(err) = res {
                     let kind = if witforge::is_contract_error(&err) {
