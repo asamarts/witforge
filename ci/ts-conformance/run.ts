@@ -494,35 +494,30 @@ function makeRunner<Desc extends DescMessage, Plain>(opts: {
       assert.equal(binErr.target, v.error_target, `${v.id}: binary error target mismatch`);
       binErrors.add(binErr.kind);
 
-      // 2. Proto3-JSON decode must reject (either inside fromJsonString for malformed proto3 JSON
-      //    or via WitforgeGlueError with exact kind and target).
-      let jsonErr: unknown = undefined;
-      let parsedFromJson: MessageShape<Desc> | undefined = undefined;
+      // 2. Proto3-JSON decode must reach `fromProto` and reject with the exact `WitforgeGlueError`
+      //    kind and target (do not mask unexpected `fromJsonString` parse failures).
+      let parsedFromJson: MessageShape<Desc>;
       try {
         parsedFromJson = fromJsonString(opts.schema, v.proto3_json);
       } catch (err) {
+        throw new Error(
+          `${v.id}: unexpected fromJsonString failure (expected WitforgeGlueError ${v.error_kind} on ${v.error_target}): ${String(err)}`,
+        );
+      }
+      let jsonErr: unknown = undefined;
+      try {
+        opts.fromProto(parsedFromJson);
+      } catch (err) {
         jsonErr = err;
       }
-      if (parsedFromJson !== undefined) {
-        try {
-          opts.fromProto(parsedFromJson);
-        } catch (err) {
-          jsonErr = err;
-        }
-        if (!(jsonErr instanceof g.WitforgeGlueError)) {
-          throw new Error(
-            `${v.id}: expected proto3-JSON WitforgeGlueError, got ${String(jsonErr)}`,
-          );
-        }
-        assert.equal(jsonErr.kind, v.error_kind, `${v.id}: JSON error kind mismatch`);
-        assert.equal(jsonErr.target, v.error_target, `${v.id}: JSON error target mismatch`);
-        jsonErrors.add(jsonErr.kind);
-      } else {
-        if (jsonErr === undefined) {
-          throw new Error(`${v.id}: expected proto3-JSON rejection`);
-        }
-        jsonErrors.add(v.error_kind);
+      if (!(jsonErr instanceof g.WitforgeGlueError)) {
+        throw new Error(
+          `${v.id}: expected proto3-JSON WitforgeGlueError, got ${String(jsonErr)}`,
+        );
       }
+      assert.equal(jsonErr.kind, v.error_kind, `${v.id}: JSON error kind mismatch`);
+      assert.equal(jsonErr.target, v.error_target, `${v.id}: JSON error target mismatch`);
+      jsonErrors.add(jsonErr.kind);
     },
   };
 }

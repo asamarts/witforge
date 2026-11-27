@@ -425,5 +425,37 @@ fn fixtures_generate_check_diff_prune_and_enforce_ownership_and_collision_guards
         stems_files.files()["v0/index_.ts"]
     );
 
+    // 7. Same-interface types named `value` and functions with parameters matching type names
+    //    reference non-shadowable `_wf_t_*` internal bindings.
+    let shadow_wit = base.join("shadow-safe");
+    let shadow_v01 = shadow_wit.join("v0.1");
+    fs::create_dir_all(&shadow_v01).unwrap();
+    fs::write(
+        shadow_v01.join("contract.wit"),
+        "package acme:shadow@0.1.0;\n\
+         interface api {\n\
+           record value { n: u8 }\n\
+           record request { v: value }\n\
+           send: func(request: request) -> request;\n\
+         }\n",
+    )
+    .unwrap();
+    lock_version_first(&shadow_v01);
+    let shadow_files = typescript_glue::plan(&shadow_wit, "../plain", "../proto").unwrap();
+    let shadow_api = &shadow_files.files()["v0/api.ts"];
+    assert!(shadow_api.contains("const _wf_t_value = {"), "{shadow_api}");
+    assert!(
+        shadow_api.contains("export const value = _wf_t_value;"),
+        "{shadow_api}"
+    );
+    assert!(
+        shadow_api.contains("_wf_t_value.toProto(value.v)"),
+        "{shadow_api}"
+    );
+    assert!(
+        shadow_api.contains("_wf_t_request.toProto(request)"),
+        "{shadow_api}"
+    );
+
     fs::remove_dir_all(&base).unwrap();
 }

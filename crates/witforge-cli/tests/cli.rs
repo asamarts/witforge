@@ -6667,7 +6667,8 @@ fn ts_glue_command_config_generate_overlap_and_completions() {
     assert_eq!(overlap_diags.len(), 1, "{overlap_json:#}");
     assert_eq!(overlap_diags[0]["code"], "WF9004");
 
-    // 4. Invalid configured `typescript-glue.plain-root` is refused upfront with exit 2.
+    // 4. Invalid configured `typescript-glue.plain-root` is refused upfront with exit 2 and
+    //    preserves both the key label and config file path in JSON/SARIF diagnostics.
     let bad_root_cfg = base.join("bad-root.toml");
     fs::write(
         &bad_root_cfg,
@@ -6681,16 +6682,134 @@ fn ts_glue_command_config_generate_overlap_and_completions() {
     )
     .unwrap();
     let bad_root = witforge()
-        .args(["generate", "--config", bad_root_cfg.to_str().unwrap()])
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            bad_root_cfg.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     assert_eq!(bad_root.status.code(), Some(2), "{bad_root:?}");
+    let bad_root_json: serde_json::Value = serde_json::from_slice(&bad_root.stdout).unwrap();
+    let bad_diags = bad_root_json["diagnostics"].as_array().unwrap();
+    assert_eq!(bad_diags.len(), 1, "{bad_root_json:#}");
+    assert_eq!(bad_diags[0]["code"], "WF9001");
     assert!(
-        String::from_utf8_lossy(&bad_root.stderr).contains("typescript-glue.plain-root"),
-        "{bad_root:?}"
+        bad_diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("project.demo.typescript-glue.plain-root"),
+        "{bad_root_json:#}"
+    );
+    assert!(
+        bad_diags[0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("bad-root.toml"),
+        "{bad_root_json:#}"
     );
 
-    // 5. Shell completions include `ts-glue`.
+    // 5. Missing `proto-root` in `[project.<name>.typescript-glue]` aborts `witforge generate`
+    //    upfront before writing earlier emitters (`typescript`).
+    let incomplete_cfg = base.join("incomplete-ts-glue.toml");
+    fs::write(
+        &incomplete_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.typescript]\n\
+         out = \"gen/never-written-ts\"\n\
+         [project.demo.typescript-glue]\n\
+         out = \"gen/never-written-glue\"\n\
+         plain-root = \"../never-written-ts\"\n",
+    )
+    .unwrap();
+    let incomplete = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            incomplete_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(incomplete.status.code(), Some(2), "{incomplete:?}");
+    assert!(
+        !base.join("gen/never-written-ts").exists(),
+        "upfront root validation must prevent partial writes"
+    );
+
+    // 6. Rust `[project.<name>.glue]` roots never leak into `witforge ts-glue`, and `--out`
+    //    overlap, `--project`, `--released`, and `-q` work cleanly.
+    let rust_only_cfg = base.join("rust-glue-only.toml");
+    fs::write(
+        &rust_only_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.glue]\n\
+         out = \"gen/rust-glue\"\n\
+         plain-root = \"crate::plain\"\n\
+         proto-root = \"crate::proto\"\n",
+    )
+    .unwrap();
+    let no_leak = witforge()
+        .args([
+            "ts-glue",
+            "--config",
+            rust_only_cfg.to_str().unwrap(),
+            "--out",
+            base.join("gen/ts-glue-noleak").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(no_leak.status.code(), Some(2), "{no_leak:?}");
+    assert!(
+        String::from_utf8_lossy(&no_leak.stderr).contains("ts-glue requires --plain-root"),
+        "{no_leak:?}"
+    );
+
+    let cli_overlap = witforge()
+        .args([
+            "--format",
+            "json",
+            "ts-glue",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--out",
+            base.join("gen/ts-plain").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(cli_overlap.status.code(), Some(2), "{cli_overlap:?}");
+    assert!(
+        String::from_utf8_lossy(&cli_overlap.stdout).contains("WF9004"),
+        "{cli_overlap:?}"
+    );
+
+    let rel_manifest = wit.join("released");
+    fs::write(&rel_manifest, "v0.1\n").unwrap();
+    let ts_glue_quiet = witforge()
+        .args([
+            "-q",
+            "ts-glue",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--project",
+            "demo",
+            "--released",
+            rel_manifest.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(ts_glue_quiet.status.code(), Some(0), "{ts_glue_quiet:?}");
+    assert!(ts_glue_quiet.stdout.is_empty(), "{ts_glue_quiet:?}");
+
+    // 7. Shell completions include `ts-glue`.
     for shell in ["bash", "zsh", "fish"] {
         let comp = witforge().args(["completions", shell]).output().unwrap();
         assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");

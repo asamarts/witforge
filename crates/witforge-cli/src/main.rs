@@ -1113,7 +1113,7 @@ fn resolve_paths(
     };
     let from_config = |path: &Path| resolve_config_path(&base, path);
     validate_configured_outputs(&config, &name, emitter, out.as_deref(), &from_config)?;
-    validate_configured_module_roots(&config)?;
+    validate_configured_module_roots(&config, config_path)?;
     let root = root.unwrap_or_else(|| from_config(&project.root));
     let out = out.or_else(|| match emitter {
         Emitter::Rust => project.rust.as_ref().map(|config| from_config(&config.out)),
@@ -1419,28 +1419,47 @@ fn parse_schema_draft(
     }
 }
 
-fn validate_configured_module_roots(config: &ConfigFile) -> Result<()> {
+fn validate_configured_module_roots(config: &ConfigFile, config_path: &Path) -> Result<()> {
+    let path_str = Some(config_path.display().to_string());
     for (proj_name, proj) in &config.project {
         if let Some(glue) = &proj.glue {
-            if let Some(plain_root) = &glue.plain_root {
-                emit::glue::validate_module_root(plain_root)
-                    .with_context(|| format!("invalid project.{proj_name}.glue.plain-root"))?;
+            if let Some(plain_root) = &glue.plain_root
+                && let Err(err) = emit::glue::validate_module_root(plain_root)
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!("invalid project.{proj_name}.glue.plain-root: {err:#}"),
+                    path_str,
+                ));
             }
-            if let Some(proto_root) = &glue.proto_root {
-                emit::glue::validate_module_root(proto_root)
-                    .with_context(|| format!("invalid project.{proj_name}.glue.proto-root"))?;
+            if let Some(proto_root) = &glue.proto_root
+                && let Err(err) = emit::glue::validate_module_root(proto_root)
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!("invalid project.{proj_name}.glue.proto-root: {err:#}"),
+                    path_str,
+                ));
             }
         }
         if let Some(ts_glue) = &proj.typescript_glue {
-            if let Some(plain_root) = &ts_glue.plain_root {
-                emit::typescript_glue::validate_import_root(plain_root).with_context(|| {
-                    format!("invalid project.{proj_name}.typescript-glue.plain-root")
-                })?;
+            if let Some(plain_root) = &ts_glue.plain_root
+                && let Err(err) = emit::typescript_glue::validate_import_root(plain_root)
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!("invalid project.{proj_name}.typescript-glue.plain-root: {err:#}"),
+                    path_str,
+                ));
             }
-            if let Some(proto_root) = &ts_glue.proto_root {
-                emit::typescript_glue::validate_import_root(proto_root).with_context(|| {
-                    format!("invalid project.{proj_name}.typescript-glue.proto-root")
-                })?;
+            if let Some(proto_root) = &ts_glue.proto_root
+                && let Err(err) = emit::typescript_glue::validate_import_root(proto_root)
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!("invalid project.{proj_name}.typescript-glue.proto-root: {err:#}"),
+                    path_str,
+                ));
             }
         }
     }
@@ -3354,7 +3373,7 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         .map(|(label, path)| (label.as_str(), path.as_path()))
         .collect();
     emit::output::ensure_distinct_output_roots(&refs)?;
-    validate_configured_module_roots(&config)?;
+    validate_configured_module_roots(&config, &config_path)?;
 
     let selected: Vec<(String, ProjectConfig)> = if let Some(name) = &options.config.project {
         let Some(project) = config.project.get(name) else {
@@ -3426,7 +3445,17 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         if proj.schema.is_some() {
             emitters.push(Emitter::Schema);
         }
-        if proj.glue.is_some() {
+        if let Some(glue) = &proj.glue {
+            if glue.plain_root.is_none() || glue.proto_root.is_none() {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "project `{proj_name}` glue section requires both `plain-root` and \
+                         `proto-root`"
+                    ),
+                    Some(config_path.display().to_string()),
+                ));
+            }
             emitters.push(Emitter::Glue);
         }
         if proj.doc.is_some() {
@@ -3435,7 +3464,17 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         if proj.typescript.is_some() {
             emitters.push(Emitter::TypeScript);
         }
-        if proj.typescript_glue.is_some() {
+        if let Some(ts_glue) = &proj.typescript_glue {
+            if ts_glue.plain_root.is_none() || ts_glue.proto_root.is_none() {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "project `{proj_name}` typescript-glue section requires both `plain-root` \
+                         and `proto-root`"
+                    ),
+                    Some(config_path.display().to_string()),
+                ));
+            }
             emitters.push(Emitter::TypeScriptGlue);
         }
         if emitters.is_empty() {

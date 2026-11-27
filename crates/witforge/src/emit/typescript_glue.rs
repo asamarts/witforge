@@ -124,6 +124,13 @@ fn validate_import_root_inner(root: &str) -> Result<()> {
         return Ok(());
     }
 
+    if root.starts_with('.') {
+        bail!(
+            "TypeScript import root `{root}` starts with `.` without `/`; use `./...` or `../...` \
+             for a relative path"
+        );
+    }
+
     if let Some(first) = segments.first()
         && first.starts_with('@')
     {
@@ -135,30 +142,37 @@ fn validate_import_root_inner(root: &str) -> Result<()> {
         }
         let scope = &first[1..];
         if scope.is_empty()
-            || scope == "."
-            || scope == ".."
+            || scope.starts_with('.')
+            || scope.starts_with('_')
+            || scope.chars().all(|ch| ch == '.')
             || !scope
                 .chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
         {
             bail!("TypeScript import root `{root}` has invalid npm scope `{first}`");
         }
-        for segment in &segments[1..] {
-            validate_pkg_segment(root, segment)?;
+        validate_pkg_segment(root, segments[1], true)?;
+        for segment in &segments[2..] {
+            validate_pkg_segment(root, segment, false)?;
         }
         return Ok(());
     }
 
-    for segment in &segments {
-        validate_pkg_segment(root, segment)?;
+    if let Some((pkg_name, subpath)) = segments.split_first() {
+        validate_pkg_segment(root, pkg_name, true)?;
+        for segment in subpath {
+            validate_pkg_segment(root, segment, false)?;
+        }
     }
     Ok(())
 }
 
-fn validate_pkg_segment(root: &str, segment: &str) -> Result<()> {
+fn validate_pkg_segment(root: &str, segment: &str, is_package_name: bool) -> Result<()> {
     if segment.is_empty()
         || segment == "."
         || segment == ".."
+        || segment.chars().all(|ch| ch == '.')
+        || (is_package_name && (segment.starts_with('.') || segment.starts_with('_')))
         || !segment
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
@@ -810,7 +824,7 @@ fn emit_helpers_module(header: &str, namespace: &str, name: &str) -> Result<Stri
     Ok(out)
 }
 
-const HELPERS_BODY: &str = r#"const BASE10_INT_RE = /^-?(?:0|[1-9][0-9]*)$/;
+const HELPERS_BODY: &str = r#"const BASE10_INT_RE = /^(?:0|-?[1-9][0-9]*)$/;
 const U64_MAX = 18446744073709551615n;
 const S64_MIN = -9223372036854775808n;
 const S64_MAX = 9223372036854775807n;
@@ -1122,14 +1136,14 @@ impl EsFileNames {
                 if let Some(rest) = line.strip_prefix("message ")
                     && let Some(name) = rest.split_whitespace().next()
                 {
-                    let name = name.trim_end_matches('{');
+                    let name = name.trim_end_matches(['{', '}']);
                     if !name.is_empty() {
                         messages.push(name.to_string());
                     }
                 } else if let Some(rest) = line.strip_prefix("enum ")
                     && let Some(name) = rest.split_whitespace().next()
                 {
-                    let name = name.trim_end_matches('{');
+                    let name = name.trim_end_matches(['{', '}']);
                     if !name.is_empty() {
                         enums.push((name.to_string(), Vec::new()));
                         current_enum = Some(enums.len() - 1);
@@ -2864,7 +2878,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             return Ok(format!("{alias}.{member}"));
         }
         if name.interface == self.interface.name {
-            return Ok(member);
+            return Ok(format!("_wf_t_{member}"));
         }
         let stem = self
             .local_stems
@@ -2882,47 +2896,49 @@ impl<'a> InterfaceGlueEmitter<'a> {
 
     fn emit_type(&mut self, out: &mut String, def: &TypeDef) -> Result<()> {
         let export_ident = ts_value_ident(&def.name, "type glue")?;
+        let internal_ident = format!("_wf_t_{export_ident}");
         let plain = self.plain_named_type(&QualifiedName {
             interface: self.interface.name.clone(),
             name: def.name.clone(),
         })?;
+        match &def.kind {
+            TypeDefKind::Record(fields) => {
+                self.emit_record(out, &internal_ident, &plain, &def.name, fields)?;
+            }
+            TypeDefKind::Variant(cases) => {
+                self.emit_variant(out, &internal_ident, &plain, &def.name, cases)?;
+            }
+            TypeDefKind::Enum(cases) => {
+                self.emit_enum(out, &internal_ident, &plain, &def.name, cases)?;
+            }
+            TypeDefKind::Flags(flags) => {
+                self.emit_flags(out, &internal_ident, &plain, &def.name, flags)?;
+            }
+            TypeDefKind::Result(result) => {
+                self.emit_result(out, &internal_ident, &plain, &def.name, result)?;
+            }
+            TypeDefKind::Alias(target) => {
+                self.emit_alias(out, &internal_ident, &plain, &def.name, target)?;
+            }
+            TypeDefKind::List(element) => {
+                self.emit_list(out, &internal_ident, &plain, &def.name, element)?;
+            }
+            TypeDefKind::FixedLengthList(element, len) => {
+                self.emit_fixed_list(out, &internal_ident, &plain, &def.name, element, *len)?;
+            }
+            TypeDefKind::Map(key, value) => {
+                self.emit_map(out, &internal_ident, &plain, &def.name, key, value)?;
+            }
+            TypeDefKind::Option(payload) => {
+                self.emit_option(out, &internal_ident, &plain, &def.name, payload)?;
+            }
+        }
         let fallback = format!(
             "Checked protobuf glue for `{}/{}`.",
             self.interface.name, def.name
         );
         write_jsdoc(out, 0, &def.docs, &def.stability, Some(&fallback))?;
-        match &def.kind {
-            TypeDefKind::Record(fields) => {
-                self.emit_record(out, &export_ident, &plain, &def.name, fields)?;
-            }
-            TypeDefKind::Variant(cases) => {
-                self.emit_variant(out, &export_ident, &plain, &def.name, cases)?;
-            }
-            TypeDefKind::Enum(cases) => {
-                self.emit_enum(out, &export_ident, &plain, &def.name, cases)?;
-            }
-            TypeDefKind::Flags(flags) => {
-                self.emit_flags(out, &export_ident, &plain, &def.name, flags)?;
-            }
-            TypeDefKind::Result(result) => {
-                self.emit_result(out, &export_ident, &plain, &def.name, result)?;
-            }
-            TypeDefKind::Alias(target) => {
-                self.emit_alias(out, &export_ident, &plain, &def.name, target)?;
-            }
-            TypeDefKind::List(element) => {
-                self.emit_list(out, &export_ident, &plain, &def.name, element)?;
-            }
-            TypeDefKind::FixedLengthList(element, len) => {
-                self.emit_fixed_list(out, &export_ident, &plain, &def.name, element, *len)?;
-            }
-            TypeDefKind::Map(key, value) => {
-                self.emit_map(out, &export_ident, &plain, &def.name, key, value)?;
-            }
-            TypeDefKind::Option(payload) => {
-                self.emit_option(out, &export_ident, &plain, &def.name, payload)?;
-            }
-        }
+        writeln!(out, "export const {export_ident} = {internal_ident};")?;
         Ok(())
     }
 
@@ -2940,7 +2956,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let proto_schema = self.local_proto_schema_ref(&proto_name);
         self.imports.use_create();
 
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
         writeln!(out, "  schema: {proto_schema},")?;
 
         if fields.is_empty() {
@@ -3054,7 +3070,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let identity_lit = escape_ts_string(&identity);
         self.imports.use_error();
 
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
         writeln!(out, "  schema: {proto_schema},")?;
 
         // toProto
@@ -3173,7 +3189,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let identity_lit = escape_ts_string(&identity);
         self.imports.use_error();
 
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
         writeln!(out, "  toProto(value: {plain}): {proto_ty} {{")?;
         writeln!(out, "    switch (value) {{")?;
         for case in cases {
@@ -3223,7 +3239,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let proto_schema = self.local_proto_schema_ref(&proto_name);
         self.imports.use_create();
 
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
         writeln!(out, "  schema: {proto_schema},")?;
         if flags.is_empty() {
             writeln!(out, "  toProto(_value: {plain}): {proto_ty} {{")?;
@@ -3276,7 +3292,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         self.imports.use_create();
         self.imports.use_error();
 
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
         writeln!(out, "  schema: {proto_schema},")?;
 
         // toProto
@@ -3408,7 +3424,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
     ) -> Result<()> {
         let proto_ty = self.proto_direct_type(target)?;
         let identity = format!("{}/{type_name}", self.interface.name);
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
 
         if let TypeExpr::Named(target_name) = target {
             let target_ref = self.glue_target_expr(target_name)?;
@@ -3464,7 +3480,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let list_ty = TypeExpr::List(Box::new(element.clone()));
         let proto_ty = self.proto_direct_type(&list_ty)?;
         let identity = format!("{}/{type_name}", self.interface.name);
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
 
         writeln!(out, "  toProto(value: {plain}): {proto_ty} {{")?;
         let mut stmts = Vec::new();
@@ -3509,7 +3525,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let list_ty = TypeExpr::FixedLengthList(Box::new(element.clone()), len);
         let proto_ty = self.proto_direct_type(&list_ty)?;
         let identity = format!("{}/{type_name}", self.interface.name);
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
 
         writeln!(out, "  toProto(value: {plain}): {proto_ty} {{")?;
         let mut stmts = Vec::new();
@@ -3554,7 +3570,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let map_ty = TypeExpr::Map(Box::new(key.clone()), Box::new(value.clone()));
         let proto_ty = self.proto_direct_type(&map_ty)?;
         let identity = format!("{}/{type_name}", self.interface.name);
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
 
         writeln!(out, "  toProto(value: {plain}): {proto_ty} {{")?;
         let mut stmts = Vec::new();
@@ -3606,7 +3622,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let form = self.form(payload)?;
         let proto_wrapper_name = ident::proto_type_name(&self.interface.name, type_name);
 
-        writeln!(out, "export const {export_ident} = {{")?;
+        writeln!(out, "const {export_ident} = {{")?;
         match form {
             Form::List => {
                 let wrapper_schema = self.local_proto_schema_ref(&proto_wrapper_name);
@@ -4555,6 +4571,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
             TypeExpr::U64 | TypeExpr::S64 => format!("{checked_key}.toString()"),
             _ => checked_key,
         };
+        let key_out = temps.fresh();
+        loop_stmts.push(format!("{inner_pad}const {key_out} = {raw_key_expr};"));
         let encoded_val = self.emit_encode_singular(
             &mut loop_stmts,
             indent + 2,
@@ -4574,7 +4592,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         }
         let _ = writeln!(
             block,
-            "{inner_pad}_wf_h.setMapEntry({out_var}, {raw_key_expr}, {encoded_val});"
+            "{inner_pad}_wf_h.setMapEntry({out_var}, {key_out}, {encoded_val});"
         );
         let _ = write!(block, "{pad}}}");
         stmts.push(block);
@@ -5167,6 +5185,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
             }
             _ => bail!("map key `{key:?}` is not a valid primitive map key"),
         };
+        let key_out = temps.fresh();
+        loop_stmts.push(format!("{inner_pad}const {key_out} = {dec_key};"));
         let dec_val =
             self.emit_decode_singular(&mut loop_stmts, indent + 2, temps, &raw_v, value, identity)?;
 
@@ -5178,7 +5198,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         for stmt in loop_stmts {
             let _ = writeln!(block, "{stmt}");
         }
-        let _ = writeln!(block, "{inner_pad}{out_var}.set({dec_key}, {dec_val});");
+        let _ = writeln!(block, "{inner_pad}{out_var}.set({key_out}, {dec_val});");
         let _ = write!(block, "{pad}}}");
         stmts.push(block);
         Ok(out_var)
@@ -5496,6 +5516,15 @@ mod tests {
             "@scope-only",
             "@/pkg",
             "@scope/..",
+            "@scope/.pkg",
+            "@.scope/pkg",
+            "@_scope/pkg",
+            "@scope/_pkg",
+            ".plain",
+            "..plain",
+            "...",
+            "_internal",
+            "pkg/.../sub",
             "pkg/../escape",
             "https://example.com/pkg",
         ] {
