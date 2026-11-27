@@ -64,9 +64,9 @@ use wit_parser::{
 /// A contract, lockfile, or generated-output violation, as opposed to a usage, I/O, parse, or
 /// internal error.
 ///
-/// The generators ([`emit::rust`], [`emit::proto`], [`emit::json_schema`], [`emit::glue`], and
-/// [`emit::doc`]) and [`diff`] report a contract or lockfile violation as this type inside the
-/// returned [`anyhow::Error`], so callers can tell the two classes apart with
+/// The generators ([`emit::rust`], [`emit::proto`], [`emit::json_schema`], [`emit::glue`],
+/// [`emit::doc`], and [`conformance`]) and [`diff`] report a contract or lockfile violation as
+/// this type inside the returned [`anyhow::Error`], so callers can tell the two classes apart with
 /// [`is_contract_error`]; the `witforge` CLI does the same for `check` and `lock`, and exits with
 /// `1` for a violation and `2` for any other error. The lower-level [`lock::WireLock`] methods
 /// return plain errors, which their callers classify.

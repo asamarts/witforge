@@ -243,6 +243,10 @@ pub struct GeneratedFiles {
     header: String,
     files: BTreeMap<String, String>,
     markers: BTreeSet<String>,
+    /// Internal allowlist for canonical `wire.lock` files owned by a specific `(namespace, name)`
+    /// package (used by `witforge::conformance` so `v0.1/wire.lock` reports `Changed` on drift,
+    /// renders unified diffs, and upgrades cleanly while refusing foreign-contract lockfiles).
+    owned_lockfiles: BTreeMap<String, (String, String)>,
     /// Case-folded (`to_lowercase()`) relative file path -> exact registered file path.
     /// Populated whenever `nested == true` so collision and rename checks stay O(depth * log N).
     lower_files: BTreeMap<String, String>,
@@ -400,6 +404,7 @@ impl GeneratedFiles {
             header: header.into(),
             files: BTreeMap::new(),
             markers: BTreeSet::new(),
+            owned_lockfiles: BTreeMap::new(),
             lower_files: BTreeMap::new(),
             lower_dirs: BTreeMap::new(),
             nested: false,
@@ -420,6 +425,7 @@ impl GeneratedFiles {
             header: header.into(),
             files: BTreeMap::new(),
             markers: BTreeSet::new(),
+            owned_lockfiles: BTreeMap::new(),
             lower_files: BTreeMap::new(),
             lower_dirs: BTreeMap::new(),
             nested: true,
@@ -501,6 +507,26 @@ impl GeneratedFiles {
     ) -> Result<()> {
         let path = path.into();
         self.insert_nested_entry(path, contents.into(), true)
+    }
+
+    /// Register a nested `wire.lock` file owned by `(namespace, name)`.
+    ///
+    /// On disk, an existing file is treated as owned if it is a valid v2 `WireLock` whose entries
+    /// are non-empty and all belong to `namespace:name` (allowing drift detection via `Changed`,
+    /// unified diffs, and in-place upgrades while refusing hand-written or foreign-contract
+    /// lockfiles).
+    pub(crate) fn insert_owned_lockfile(
+        &mut self,
+        path: impl Into<String>,
+        namespace: &str,
+        name: &str,
+        contents: impl Into<String>,
+    ) -> Result<()> {
+        let path = path.into();
+        self.insert_nested_entry(path.clone(), contents.into(), false)?;
+        self.owned_lockfiles
+            .insert(path, (namespace.to_string(), name.to_string()));
+        Ok(())
     }
 
     fn insert_nested_entry(
@@ -1084,6 +1110,51 @@ impl GeneratedFiles {
     }
 
     fn classify_expected(&self, rel_path: &str, abs_path: &Path) -> Result<HeaderKind> {
+        // Cap read size so a multi-gigabyte unrelated file at a lockfile path is never loaded
+        // into memory just to classify it as unowned.
+        const MAX_OWNED_LOCKFILE_BYTES: usize = 4 * 1024 * 1024;
+        if let Some((expected_ns, expected_name)) = self.owned_lockfiles.get(rel_path) {
+            let header_kind = self.classify(abs_path)?;
+            match header_kind {
+                HeaderKind::Owned | HeaderKind::LegacyShared | HeaderKind::Foreign(_) => {
+                    return Ok(header_kind);
+                }
+                HeaderKind::Unowned => {}
+            }
+            let mut buf = Vec::new();
+            File::open(abs_path)
+                .with_context(|| format!("failed to open {}", abs_path.display()))?
+                .take((MAX_OWNED_LOCKFILE_BYTES + 1) as u64)
+                .read_to_end(&mut buf)
+                .with_context(|| format!("failed to read {}", abs_path.display()))?;
+            if buf.len() > MAX_OWNED_LOCKFILE_BYTES {
+                return Ok(HeaderKind::Unowned);
+            }
+            let Ok(text) = std::str::from_utf8(&buf) else {
+                return Ok(HeaderKind::Unowned);
+            };
+            let normalized = text.replace("\r\n", "\n");
+            let Ok(lock) = crate::lock::WireLock::parse(&normalized) else {
+                return Ok(HeaderKind::Unowned);
+            };
+            let mut has_entries = false;
+            for (key, _) in lock.entries() {
+                has_entries = true;
+                let pkg = match key {
+                    crate::lock::MemberKey::TypeMember { package, .. }
+                    | crate::lock::MemberKey::Method { package, .. }
+                    | crate::lock::MemberKey::Parameter { package, .. } => package,
+                };
+                if pkg.namespace != *expected_ns || pkg.name != *expected_name {
+                    return Ok(HeaderKind::Unowned);
+                }
+            }
+            return Ok(if has_entries {
+                HeaderKind::Owned
+            } else {
+                HeaderKind::Unowned
+            });
+        }
         if self.markers.contains(rel_path) {
             let header_kind = self.classify(abs_path)?;
             match header_kind {

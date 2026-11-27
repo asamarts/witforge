@@ -15,18 +15,19 @@ JSON Schema, and protobuf glue.
   `map<K, V>`), the append-only lockfile (v2, with declaration-order
   fingerprints), the Rust emitter (opt-in Serde derives, opt-in `no_std` +
   `alloc`, opt-in float-free `Eq`/`Hash` derives, `convert.rs` version adapters
-  with opt-in `TryFrom` impls, `worlds.rs`), the protobuf, JSON Schema (Draft 7
-  default, opt-in Draft 2020-12), glue, and Markdown documentation (`doc`)
-  emitters, versioned JSON contract IR (`inspect`), contract `diff` (including
-  `--git-base <REV>`), release-freeze enforcement, structured diagnostics
-  (`--format human|json|sarif`), `witforge.toml` projects (including
+  with opt-in `TryFrom` impls, `worlds.rs`), the protobuf (with opt-in Go/Java/C#
+  file options), JSON Schema (Draft 7 default, opt-in Draft 2020-12), glue, and
+  Markdown documentation (`doc`) emitters, cross-language protobuf conformance
+  bundle (`conformance`), versioned JSON contract IR (`inspect`), contract `diff`
+  (including `--git-base <REV>`), release-freeze enforcement, structured
+  diagnostics (`--format human|json|sarif`), `witforge.toml` projects (including
   `[project.<name>.policy]`), the optional `witforge-build` helper crate, static
   `musl` Linux release archives, the GitHub Action, and the Astro + Starlight
   documentation and promotional site under `site/` (deployed via
   `.github/workflows/docs.yml`).
 - The commands are `witforge check`, `lock`, `rust`, `proto`, `schema`, `glue`,
-  `doc`, `generate`, `init`, `new-version`, `deps sync`, `release`, `retire`,
-  `diff`, `inspect`, `freeze`, `completions`, and `explain`.
+  `doc`, `conformance`, `generate`, `init`, `new-version`, `deps sync`,
+  `release`, `retire`, `diff`, `inspect`, `freeze`, `completions`, and `explain`.
 - The normative specifications are [`docs/design/model.md`](docs/design/model.md),
   [`docs/design/lockfile.md`](docs/design/lockfile.md), and
   [`docs/design/emitters.md`](docs/design/emitters.md) (Rust, protobuf, glue,

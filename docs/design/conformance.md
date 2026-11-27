@@ -136,9 +136,29 @@ consumers and the built-in polyglot checked glue emitters (`M-p13`):
       matching Rust glue);
     - `proto_binary_base64` (RFC 4648 base64 protobuf wire bytes for `"decode"`, `null` for
       `"encode"`), `proto3_json` (canonical proto3-JSON string for `"decode"`, `null` for
-      `"encode"`), `plain_json` (language-neutral plain value payload, encoding 64-bit integers as
-      decimal strings so JSON parsers without 64-bit integers preserve exact precision), and
-      `description`.
+      `"encode"`), `plain_json` (language-neutral plain value payload for `"decode"` `"accept"` and
+      `"encode"` `"reject"` vectors; `null` for `"decode"` `"reject"` vectors), and `description`.
+- **`plain_json` representation:**
+
+  | WIT construct | `plain_json` encoding |
+  |---|---|
+  | `u8`, `u16`, `u32`, `s8`, `s16`, `s32` | JSON integer (`-2147483648`..`4294967295`; out-of-range integers on `encode` vectors) |
+  | `u64`, `s64` | Base-10 decimal string (`"18446744073709551615"`, `"-9223372036854775808"`) so JSON parsers without 64-bit integers never truncate |
+  | `f32`, `f64` | JSON number for finite values (preserving `-0.0`); `"NaN"`, `"Infinity"`, `"-Infinity"` for non-finite values |
+  | `bool`, `string` | JSON boolean / JSON string |
+  | `char` | Single Unicode scalar JSON string (`"\u0000"`, `"🚀"`); on `encode` vectors testing invalid code points (`-1`, `0xD800`, `0xDFFF`, `0x110000`) that JSON strings cannot represent cleanly, the field `"a-char"` is replaced by integer field `"a-char-codepoint"` |
+  | `list<u8>`, `list<u8, N>` | JSON array of integer byte values `0..=255` (not base64) |
+  | `list<T>`, `list<T, N>` | JSON array of encoded elements |
+  | `option<T>` (`T` not `option`) | `null` (`None`) or encoded `<value>` (`Some`) |
+  | `option<option<T>>` | `null` (`None`), `{"none": null}` (`Some(None)`), or `{"some": <value>}` (`Some(Some(v))`) |
+  | `map<K, V>` | JSON object with stringified keys (`map<char, V>` uses the single-scalar string key, e.g. `"a"`, `"🚀"`, unlike `proto3_json` decimal code points) |
+  | `enum` | Kebab-case WIT case string (`"red"`, `"active"`); on `encode` vectors testing invalid host enum values (for Go/C# typed enums), an invalid integer (`0`, `99`) |
+  | `flags` | JSON object mapping every kebab-case flag name to `true`/`false` |
+  | `record` | JSON object with kebab-case WIT field names |
+  | `variant` | `{"case": "<name>"}` (unit case) or `{"case": "<name>", "value": <payload>}` |
+  | `result` (all 4 forms) | `{"ok": <val-or-null>}` or `{"err": <val-or-null>}` (`null` on unit side) |
+  | Function request / response | Request: JSON object keyed by kebab-case parameter names. Response: `{"result": <val>}` or `{}` (void) |
+
 - **Decode and encode rules:**
   - Every `"decode"` `"accept"` vector must decode identically from both `proto_binary_base64` and
     `proto3_json`, re-encode through `toProto`, and round-trip losslessly (preserving `NaN`,

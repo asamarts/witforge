@@ -306,30 +306,33 @@ impl ConformanceBundle {
 
     /// Write the full conformance bundle under `out`.
     ///
-    /// Validates every target root (`out`, `out/proto`, `out/wit`) for symlinks, non-directory
-    /// blockers, foreign witforge headers, and unowned collisions before writing any file.
+    /// Validates `out`, `out/proto`, and `out/wit` for empty paths, symlinks (including trailing-
+    /// slash and dangling symlinks), non-directory blockers, foreign witforge headers, and unowned
+    /// collisions before writing any file.
     ///
     /// # Errors
     ///
-    /// Returns an operational error (`WF9004`) if any target path is a symlink, non-directory,
-    /// foreign-owned generated file, or unowned colliding file, or an I/O error if writing fails.
+    /// Returns an operational error (`WF9004`) if `out` or any target path is empty, a symlink,
+    /// a non-directory, a foreign-owned generated file, or an unowned colliding file, or an I/O
+    /// error if writing fails.
     pub fn write(&self, out: &Path) -> Result<()> {
-        if out.exists() {
-            ensure_subdir_writable(&out.join("proto"))?;
-            ensure_subdir_writable(&out.join("wit"))?;
-            preflight_check_owned(&self.root, out)?;
-            let proto_dir = out.join("proto");
-            if proto_dir.exists() {
+        let (out_norm, exists) = validate_bundle_root(out, false)?;
+        if exists {
+            let proto_dir = out_norm.join("proto");
+            let wit_dir = out_norm.join("wit");
+            let proto_exists = ensure_subdir_writable(&proto_dir)?;
+            let wit_exists = ensure_subdir_writable(&wit_dir)?;
+            preflight_check_owned(&self.root, &out_norm)?;
+            if proto_exists {
                 preflight_check_owned(&self.proto, &proto_dir)?;
             }
-            let wit_dir = out.join("wit");
-            if wit_dir.exists() {
+            if wit_exists {
                 preflight_check_owned(&self.wit, &wit_dir)?;
             }
         }
-        self.root.write(out)?;
-        self.proto.write(&out.join("proto"))?;
-        self.wit.write(&out.join("wit"))?;
+        self.root.write(&out_norm)?;
+        self.proto.write(&out_norm.join("proto"))?;
+        self.wit.write(&out_norm.join("wit"))?;
         Ok(())
     }
 
@@ -337,8 +340,9 @@ impl ConformanceBundle {
     ///
     /// # Errors
     ///
-    /// Returns an error if `out` does not exist, contains foreign witforge-owned output, or cannot
-    /// be inspected.
+    /// Returns `WF9004` if `out` is empty, a symlink, or not a directory; `WF9002` if `out` does
+    /// not exist; or an error if any directory contains foreign witforge-owned output or cannot be
+    /// inspected.
     pub fn check(&self, out: &Path) -> Result<Vec<GeneratedFileFinding>> {
         self.check_inner(out, None)
     }
@@ -362,14 +366,17 @@ impl ConformanceBundle {
         out: &Path,
         regenerate_command: Option<&str>,
     ) -> Result<Vec<GeneratedFileFinding>> {
+        let (out_norm, _) = validate_bundle_root(out, true)?;
         let mut findings = match regenerate_command {
-            Some(cmd) => self.root.check_with_command(out, cmd)?,
-            None => self.root.check(out)?,
+            Some(cmd) => self.root.check_with_command(&out_norm, cmd)?,
+            None => self.root.check(&out_norm)?,
         };
+        let mut blocked_subdirs = std::collections::BTreeSet::new();
         for (subdir, files) in [("proto", &self.proto), ("wit", &self.wit)] {
-            let sub_path = out.join(subdir);
+            let sub_path = out_norm.join(subdir);
             match fs::symlink_metadata(&sub_path) {
                 Ok(meta) if meta.file_type().is_symlink() => {
+                    blocked_subdirs.insert(sub_path.clone());
                     findings.push(GeneratedFileFinding::new(
                         sub_path,
                         GeneratedFileStatus::Symlink,
@@ -377,6 +384,7 @@ impl ConformanceBundle {
                     ));
                 }
                 Ok(meta) if !meta.is_dir() => {
+                    blocked_subdirs.insert(sub_path.clone());
                     findings.push(GeneratedFileFinding::new(
                         sub_path,
                         GeneratedFileStatus::NotDirectory,
@@ -405,6 +413,12 @@ impl ConformanceBundle {
                 }
             }
         }
+        if !blocked_subdirs.is_empty() {
+            findings.retain(|finding| {
+                !(finding.status == GeneratedFileStatus::Extra
+                    && blocked_subdirs.contains(&finding.path))
+            });
+        }
         findings.sort_by(|left, right| {
             left.status
                 .sort_rank()
@@ -418,15 +432,24 @@ impl ConformanceBundle {
     ///
     /// # Errors
     ///
-    /// Returns an error if any directory contains foreign witforge-owned files or cannot be read.
+    /// Returns `WF9004` if `out` is empty, a symlink, or a non-directory, or an error if any
+    /// directory contains foreign witforge-owned files or cannot be inspected.
     pub fn unified_diff(&self, out: &Path) -> Result<String> {
-        let mut diff = self.root.unified_diff(out)?;
+        let (out_norm, _) = validate_bundle_root(out, false)?;
+        let mut diff = self.root.unified_diff(&out_norm)?;
         for (subdir, files) in [("proto", &self.proto), ("wit", &self.wit)] {
-            let sub_path = out.join(subdir);
+            let sub_path = out_norm.join(subdir);
             match fs::symlink_metadata(&sub_path) {
                 Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {}
-                Ok(_) | Err(_) => {
+                Ok(_) => {
                     diff.push_str(&files.unified_diff(&sub_path)?);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    diff.push_str(&files.unified_diff(&sub_path)?);
+                }
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to inspect {}", sub_path.display()));
                 }
             }
         }
@@ -434,7 +457,64 @@ impl ConformanceBundle {
     }
 }
 
-fn ensure_subdir_writable(path: &Path) -> Result<()> {
+fn normalize_root_for_lstat(path: &Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(crate::operational_error(
+            crate::diagnostic::codes::GUARD_REFUSED,
+            "conformance output root must not be empty",
+            None,
+        ));
+    }
+    let raw = path.to_string_lossy();
+    let trimmed = raw.trim_end_matches(|c| c == '/' || (cfg!(windows) && c == '\\'));
+    if trimmed.is_empty() {
+        return Ok(path.to_path_buf());
+    }
+    #[cfg(windows)]
+    if trimmed.len() == 2 && trimmed.as_bytes()[1] == b':' {
+        return Ok(path.to_path_buf());
+    }
+    Ok(PathBuf::from(trimmed))
+}
+
+fn validate_bundle_root(out: &Path, must_exist: bool) -> Result<(PathBuf, bool)> {
+    let norm = normalize_root_for_lstat(out)?;
+    match fs::symlink_metadata(&norm) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(crate::operational_error(
+            crate::diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "refusing to use `{}` as conformance output root: it is a symlink, and \
+                 generation never writes through one",
+                norm.display()
+            ),
+            Some(norm.display().to_string()),
+        )),
+        Ok(meta) if !meta.is_dir() => Err(crate::operational_error(
+            crate::diagnostic::codes::GUARD_REFUSED,
+            format!(
+                "refusing to use `{}` as conformance output root: path exists and is not a \
+                 directory",
+                norm.display()
+            ),
+            Some(norm.display().to_string()),
+        )),
+        Ok(_) => Ok((norm, true)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if must_exist {
+                Err(crate::operational_error(
+                    crate::diagnostic::codes::IO_ERROR,
+                    format!("output root {} does not exist", norm.display()),
+                    Some(norm.display().to_string()),
+                ))
+            } else {
+                Ok((norm, false))
+            }
+        }
+        Err(err) => Err(err).with_context(|| format!("failed to inspect {}", norm.display())),
+    }
+}
+
+fn ensure_subdir_writable(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(crate::operational_error(
             crate::diagnostic::codes::GUARD_REFUSED,
@@ -453,8 +533,8 @@ fn ensure_subdir_writable(path: &Path) -> Result<()> {
             ),
             Some(path.display().to_string()),
         )),
-        Ok(_) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
     }
 }
@@ -493,7 +573,9 @@ fn join_posix(base: &Path, rel: &str) -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns an error if `options.proto` fails validation or causes a file-option collision.
+/// Returns an operational error (`WF9001`) if `options.proto` fails syntax/identifier validation
+/// or contains unused per-package overrides, or a [`crate::ContractError`] (`WF1003`) if
+/// configured protobuf file options cause a cross-file or same-file collision.
 pub fn plan(options: &ConformanceOptions) -> Result<ConformanceBundle> {
     let loaded = load_sources(vec![
         SourceFile::new("contract.wit".to_string(), CONTRACT_WIT.to_string()),
@@ -548,7 +630,7 @@ pub fn plan(options: &ConformanceOptions) -> Result<ConformanceBundle> {
     let mut wit_files = GeneratedFiles::new_nested(wit_header);
     wit_files.insert_relative("v0.1/contract.wit", CONTRACT_WIT)?;
     wit_files.insert_relative("v0.1/deps/conformance-dep/dep.wit", DEP_WIT)?;
-    wit_files.insert_marker("v0.1/wire.lock", lock_text)?;
+    wit_files.insert_owned_lockfile("v0.1/wire.lock", ROOT_NAMESPACE, ROOT_NAME, lock_text)?;
 
     Ok(ConformanceBundle {
         root: root_files,
@@ -1388,11 +1470,6 @@ impl ScalarFields<'_> {
             p3.push(("aChar".to_string(), JsonValue::Uint(u64::from(cp))));
             if let Some(ch) = char::from_u32(cp) {
                 plain.push(("a-char".to_string(), JsonValue::str(ch.to_string())));
-            } else {
-                plain.push((
-                    "a-char-codepoint".to_string(),
-                    JsonValue::Uint(u64::from(cp)),
-                ));
             }
         }
         if let Some(s) = self.a_string {
@@ -1407,6 +1484,11 @@ impl ScalarFields<'_> {
         ))
     }
 }
+
+/// Explicit canonical IEEE-754 positive quiet NaNs so `proto_binary_base64` never depends on
+/// platform or compiler-default `f32::NAN` / `f64::NAN` payload bits.
+const CANONICAL_F32_NAN: f32 = f32::from_bits(0x7fc0_0000);
+const CANONICAL_F64_NAN: f64 = f64::from_bits(0x7ff8_0000_0000_0000);
 
 #[allow(clippy::too_many_lines)]
 fn push_scalar_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Result<()> {
@@ -1456,6 +1538,28 @@ fn push_scalar_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Result<()
             "f32::MAX, f64::MIN_POSITIVE, and lowest post-surrogate scalar U+E000.",
         ),
         (
+            "scalars-valid-min-and-subnormals",
+            ScalarFields {
+                a_f32: Some((f32::MIN, "-3.4028235e38")),
+                a_f64: Some((f64::MIN, "-1.7976931348623157e308")),
+                a_bool: Some(false),
+                a_char: Some(u32::from('m')),
+                a_string: Some("finite-min"),
+            },
+            "Negative finite float extremes f32::MIN and f64::MIN.",
+        ),
+        (
+            "scalars-valid-subnormals",
+            ScalarFields {
+                a_f32: Some((f32::from_bits(1), "1.4012985e-45")),
+                a_f64: Some((f64::from_bits(1), "5e-324")),
+                a_bool: Some(true),
+                a_char: Some(u32::from('s')),
+                a_string: Some("subnormal"),
+            },
+            "Smallest positive IEEE-754 subnormal f32 (2^-149) and f64 (2^-1074).",
+        ),
+        (
             "scalars-valid-char-10ffff",
             ScalarFields {
                 a_f32: Some((1.0, "1")),
@@ -1469,7 +1573,7 @@ fn push_scalar_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Result<()
         (
             "scalars-valid-f32-nan-f64-pos-inf",
             ScalarFields {
-                a_f32: Some((f32::NAN, "NaN")),
+                a_f32: Some((CANONICAL_F32_NAN, "NaN")),
                 a_f64: Some((f64::INFINITY, "Infinity")),
                 a_bool: Some(true),
                 a_char: Some(u32::from('A')),
@@ -1481,7 +1585,7 @@ fn push_scalar_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Result<()
             "scalars-valid-f32-neg-inf-f64-nan",
             ScalarFields {
                 a_f32: Some((f32::NEG_INFINITY, "-Infinity")),
-                a_f64: Some((f64::NAN, "NaN")),
+                a_f64: Some((CANONICAL_F64_NAN, "NaN")),
                 a_bool: Some(false),
                 a_char: Some(u32::from('Z')),
                 a_string: Some("non-finite-2"),
@@ -1809,7 +1913,79 @@ fn push_optional_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Result<
         });
     }
 
+    // 4. Present option<T> carrying zero/empty default values (catches falsy/truthiness bugs)
+    {
+        let mut pb = ProtoBuf::new();
+        pb.uint32(f_unsigned_byte, 0);
+        pb.sint32(f_signed_byte, 0);
+        pb.uint32(f_char, 0);
+        pb.string_field(f_str, "");
+        pb.bytes_field(f_bytes, &[]);
+        let (pt_wire, pt_json, pt_plain) = encode_point(w, 0, 0)?;
+        pb.message(f_point, &pt_wire);
+        let p3 = JsonValue::obj([
+            ("optU8", JsonValue::Uint(0)),
+            ("optS8", JsonValue::Int(0)),
+            ("optChar", JsonValue::Uint(0)),
+            ("optString", JsonValue::str("")),
+            ("optBytes", JsonValue::str("")),
+            ("optPoint", pt_json),
+        ]);
+        let plain = JsonValue::obj([
+            ("opt-u8", JsonValue::Uint(0)),
+            ("opt-s8", JsonValue::Int(0)),
+            ("opt-char", JsonValue::str("\0")),
+            ("opt-string", JsonValue::str("")),
+            ("opt-bytes", JsonValue::arr([])),
+            ("opt-fixed-bytes", JsonValue::Null),
+            ("opt-list", JsonValue::Null),
+            ("opt-enum", JsonValue::Null),
+            ("opt-point", pt_plain),
+            ("nested-opt", JsonValue::Null),
+            ("opt-map", JsonValue::Null),
+        ]);
+        out.push(VectorSpec {
+            id: "optionals-valid-some-zero-defaults",
+            category: "optionals",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_OPTIONALS,
+            proto_message: MSG_OPTIONALS,
+            expected: "accept",
+            error_kind: None,
+            error_target: None,
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(p3.render_compact()),
+            plain_json: plain,
+            description: "Present option<T> fields carrying zero/empty defaults (Some(0), Some('\\0'), Some(\"\"), Some([])) stay Some rather than collapsing to None.",
+        });
+    }
+
     // Rejections inside Optionals
+    {
+        let mut pb = ProtoBuf::new();
+        let mut bad_pt = ProtoBuf::new();
+        bad_pt.sint32(w.root("witforge:conformance/types/point.y")?, 1);
+        pb.message(f_point, &bad_pt);
+        out.push(VectorSpec {
+            id: "optionals-reject-opt-point-missing-x",
+            category: "optionals",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_OPTIONALS,
+            proto_message: MSG_OPTIONALS,
+            expected: "reject",
+            error_kind: Some("MissingField"),
+            error_target: Some("types/point.x"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(
+                JsonValue::obj([("optPoint", JsonValue::obj([("y", JsonValue::Int(1))]))])
+                    .render_compact(),
+            ),
+            plain_json: JsonValue::Null,
+            description: "Present option<point> whose nested point is missing required field x is rejected.",
+        });
+    }
     {
         let mut pb = ProtoBuf::new();
         pb.uint32(f_unsigned_byte, 256);
@@ -2081,12 +2257,10 @@ fn push_collection_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Resul
         let (pt_wire, pt_json, pt_plain) = encode_point(w, -5, 10)?;
         pb.message(f_pts, &pt_wire);
 
-        let mut nl_empty = ProtoBuf::new();
         let mut nl_two = ProtoBuf::new();
         nl_two.packed_uint32(1, &[1, 2]);
-        pb.message(f_nested_lists, &nl_empty);
+        pb.empty_message(f_nested_lists);
         pb.message(f_nested_lists, &nl_two);
-        let _ = &mut nl_empty;
 
         let mut nf1 = ProtoBuf::new();
         nf1.packed_uint32(1, &[1, 2]);
@@ -2520,6 +2694,150 @@ fn push_collection_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Resul
             description: "list<result<u8, color>> containing an unset WitforgeResultOfU8AndTypesColor wrapper is rejected with UnknownCase.",
         });
     }
+    // Recursive element validation inside list<u16>, list<point>, list<list<u16>>, and list<u16, 3>
+    {
+        let (mut pb, mut p3) = base_valid_collections(w)?;
+        pb.packed_uint32(f_u16s, &[1, 65_536]);
+        p3.push((
+            "u16Items".to_string(),
+            JsonValue::arr([JsonValue::Uint(1), JsonValue::Uint(65_536)]),
+        ));
+        out.push(VectorSpec {
+            id: "collections-reject-u16-item-overflow",
+            category: "lists",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_COLLECTIONS,
+            proto_message: MSG_COLLECTIONS,
+            expected: "reject",
+            error_kind: Some("IntegerOutOfRange"),
+            error_target: Some("types/collections.u16-items"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(JsonValue::obj_owned(p3).render_compact()),
+            plain_json: JsonValue::Null,
+            description: "list<u16> containing out-of-range element 65536 is rejected.",
+        });
+    }
+    {
+        let (mut pb, mut p3) = base_valid_collections(w)?;
+        let mut bad_pt = ProtoBuf::new();
+        bad_pt.sint32(w.root("witforge:conformance/types/point.y")?, 1);
+        pb.message(f_pts, &bad_pt);
+        p3.push((
+            "pointItems".to_string(),
+            JsonValue::arr([JsonValue::obj([("y", JsonValue::Int(1))])]),
+        ));
+        out.push(VectorSpec {
+            id: "collections-reject-point-item-missing-x",
+            category: "lists",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_COLLECTIONS,
+            proto_message: MSG_COLLECTIONS,
+            expected: "reject",
+            error_kind: Some("MissingField"),
+            error_target: Some("types/point.x"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(JsonValue::obj_owned(p3).render_compact()),
+            plain_json: JsonValue::Null,
+            description: "list<point> containing a point missing required field x is rejected.",
+        });
+    }
+    {
+        let (mut pb, mut p3) = base_valid_collections(w)?;
+        let mut bad_inner = ProtoBuf::new();
+        bad_inner.packed_uint32(1, &[65_536]);
+        pb.message(f_nested_lists, &bad_inner);
+        p3.push((
+            "nestedLists".to_string(),
+            JsonValue::arr([JsonValue::obj([(
+                "values",
+                JsonValue::arr([JsonValue::Uint(65_536)]),
+            )])]),
+        ));
+        out.push(VectorSpec {
+            id: "collections-reject-nested-list-u16-overflow",
+            category: "lists",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_COLLECTIONS,
+            proto_message: MSG_COLLECTIONS,
+            expected: "reject",
+            error_kind: Some("IntegerOutOfRange"),
+            error_target: Some("types/collections.nested-lists"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(JsonValue::obj_owned(p3).render_compact()),
+            plain_json: JsonValue::Null,
+            description: "list<list<u16>> wrapper containing out-of-range element 65536 is rejected.",
+        });
+    }
+    {
+        let mut pb = ProtoBuf::new();
+        pb.bytes_field(f_raw, &[]);
+        pb.bytes_field(f_fixed_b, &[1, 2, 3, 4]);
+        pb.packed_uint32(f_fixed_ch, &[65, 66]);
+        let p3 = JsonValue::obj([
+            ("rawBytes", JsonValue::str("")),
+            ("fixedBytes", JsonValue::str(base64_encode(&[1, 2, 3, 4]))),
+            (
+                "fixedChars",
+                JsonValue::arr([JsonValue::Uint(65), JsonValue::Uint(66)]),
+            ),
+        ]);
+        out.push(VectorSpec {
+            id: "collections-reject-fixed-u16s-empty",
+            category: "fixed-lists",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_COLLECTIONS,
+            proto_message: MSG_COLLECTIONS,
+            expected: "reject",
+            error_kind: Some("InvalidLength"),
+            error_target: Some("types/collections.fixed-u16s"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(p3.render_compact()),
+            plain_json: JsonValue::Null,
+            description: "Omitted/empty list<u16, 3> (0 elements) is rejected with InvalidLength.",
+        });
+    }
+    {
+        let mut pb = ProtoBuf::new();
+        pb.bytes_field(f_raw, &[]);
+        pb.bytes_field(f_fixed_b, &[1, 2, 3, 4]);
+        pb.packed_uint32(f_fixed_u16, &[0, 65_536, 1]);
+        pb.packed_uint32(f_fixed_ch, &[65, 66]);
+        let p3 = JsonValue::obj([
+            ("rawBytes", JsonValue::str("")),
+            ("fixedBytes", JsonValue::str(base64_encode(&[1, 2, 3, 4]))),
+            (
+                "fixedU16s",
+                JsonValue::arr([
+                    JsonValue::Uint(0),
+                    JsonValue::Uint(65_536),
+                    JsonValue::Uint(1),
+                ]),
+            ),
+            (
+                "fixedChars",
+                JsonValue::arr([JsonValue::Uint(65), JsonValue::Uint(66)]),
+            ),
+        ]);
+        out.push(VectorSpec {
+            id: "collections-reject-fixed-u16s-element-overflow",
+            category: "fixed-lists",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_COLLECTIONS,
+            proto_message: MSG_COLLECTIONS,
+            expected: "reject",
+            error_kind: Some("IntegerOutOfRange"),
+            error_target: Some("types/collections.fixed-u16s"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(p3.render_compact()),
+            plain_json: JsonValue::Null,
+            description: "Exact-length list<u16, 3> containing out-of-range element 65536 is rejected.",
+        });
+    }
     Ok(())
 }
 
@@ -2872,6 +3190,105 @@ fn push_map_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Result<()> {
             description: "Nested list<map<u8, u16>> wrapper carrying u16 value 70000 is rejected.",
         });
     }
+    {
+        let mut pb = ProtoBuf::new();
+        let (pt_wire, pt_json, _) = encode_point(w, 0, 0)?;
+        pb.map_entry(f_s8_pt, |e| {
+            e.sint32(1, 128);
+            e.message(2, &pt_wire);
+        });
+        out.push(VectorSpec {
+            id: "maps-reject-s8-key-overflow",
+            category: "maps",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_MAPS,
+            proto_message: MSG_MAPS,
+            expected: "reject",
+            error_kind: Some("IntegerOutOfRange"),
+            error_target: Some("types/maps.s8-to-point"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(
+                JsonValue::obj([("s8ToPoint", JsonValue::obj([("128", pt_json)]))])
+                    .render_compact(),
+            ),
+            plain_json: JsonValue::Null,
+            description: "map<s8, point> entry with key 128 exceeds i8::MAX (127).",
+        });
+    }
+    {
+        let mut pb = ProtoBuf::new();
+        let mut bad_pt = ProtoBuf::new();
+        bad_pt.sint32(w.root("witforge:conformance/types/point.y")?, 1);
+        pb.map_entry(f_s8_pt, |e| {
+            e.sint32(1, 0);
+            e.message(2, &bad_pt);
+        });
+        out.push(VectorSpec {
+            id: "maps-reject-s8-point-value-missing-x",
+            category: "maps",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_MAPS,
+            proto_message: MSG_MAPS,
+            expected: "reject",
+            error_kind: Some("MissingField"),
+            error_target: Some("types/point.x"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(
+                JsonValue::obj([(
+                    "s8ToPoint",
+                    JsonValue::obj([("0", JsonValue::obj([("y", JsonValue::Int(1))]))]),
+                )])
+                .render_compact(),
+            ),
+            plain_json: JsonValue::Null,
+            description: "map<s8, point> entry whose value point is missing required field x is rejected.",
+        });
+    }
+    for (id, key_bool, key_str, bad_s16, desc) in [
+        (
+            "maps-reject-bool-s16-underflow",
+            false,
+            "false",
+            -32_769,
+            "map<bool, s16> entry carrying value -32769 is below i16::MIN.",
+        ),
+        (
+            "maps-reject-bool-s16-overflow",
+            true,
+            "true",
+            32_768,
+            "map<bool, s16> entry carrying value 32768 exceeds i16::MAX.",
+        ),
+    ] {
+        let mut pb = ProtoBuf::new();
+        pb.map_entry(f_bool_s16, |e| {
+            e.bool_field(1, key_bool);
+            e.sint32(2, bad_s16);
+        });
+        out.push(VectorSpec {
+            id,
+            category: "maps",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_MAPS,
+            proto_message: MSG_MAPS,
+            expected: "reject",
+            error_kind: Some("IntegerOutOfRange"),
+            error_target: Some("types/maps.bool-to-s16"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(
+                JsonValue::obj([(
+                    "boolToS16",
+                    JsonValue::obj([(key_str, JsonValue::Int(i64::from(bad_s16)))]),
+                )])
+                .render_compact(),
+            ),
+            plain_json: JsonValue::Null,
+            description: desc,
+        });
+    }
     Ok(())
 }
 
@@ -3193,6 +3610,38 @@ fn push_choice_and_result_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -
     // Results rejections
     {
         let mut pb = ProtoBuf::new();
+        let mut m_ok = ProtoBuf::new();
+        m_ok.uint32(1, 1);
+        let mut m_err = ProtoBuf::new();
+        m_err.empty_message(1);
+        let mut m_bare = ProtoBuf::new();
+        m_bare.empty_message(1);
+        pb.message(r_ok_only, &m_ok);
+        pb.message(r_err_only, &m_err);
+        pb.message(r_bare, &m_bare);
+        let p3 = JsonValue::obj([
+            ("onlyOk", JsonValue::obj([("ok", JsonValue::Uint(1))])),
+            ("onlyErr", JsonValue::obj([("ok", JsonValue::obj([]))])),
+            ("bare", JsonValue::obj([("ok", JsonValue::obj([]))])),
+        ]);
+        out.push(VectorSpec {
+            id: "results-reject-missing-both",
+            category: "presence",
+            direction: "decode",
+            target_kind: "type",
+            target: TGT_RESULTS,
+            proto_message: MSG_RESULTS,
+            expected: "reject",
+            error_kind: Some("MissingField"),
+            error_target: Some("types/results.both"),
+            proto_binary: Some(pb.bytes),
+            proto3_json: Some(p3.render_compact()),
+            plain_json: JsonValue::Null,
+            description: "Required result field both is absent on the wire.",
+        });
+    }
+    {
+        let mut pb = ProtoBuf::new();
         pb.empty_message(r_both); // unset oneof!
         let mut m_ok = ProtoBuf::new();
         m_ok.uint32(1, 1);
@@ -3325,6 +3774,16 @@ fn encode_shared_meta(
     Ok((pb, p3))
 }
 
+struct CompositesInput {
+    origin: Option<()>,
+    color: Option<(i32, JsonValue)>,
+    perms: Option<()>,
+    choice: Option<()>,
+    outcome: Option<()>,
+    foreign: Option<()>,
+    foreign_status: Option<(i32, JsonValue)>,
+}
+
 #[allow(clippy::too_many_lines)]
 fn push_permissions_composites_and_dep_vectors(
     w: &WireNums<'_>,
@@ -3393,52 +3852,60 @@ fn push_permissions_composites_and_dep_vectors(
     let paused = w.dep_enum("witforge:conformance-dep/shared/shared-status.paused")?;
     let ch_glyph = w.root("witforge:conformance/types/choice.glyph")?;
 
-    let build_composites = |include_origin: bool,
-                            color_val: i32,
-                            color_json: JsonValue,
-                            include_foreign: bool,
-                            fstatus_val: i32,
-                            fstatus_json: JsonValue|
-     -> Result<(Vec<u8>, String)> {
+    let full_composites = || CompositesInput {
+        origin: Some(()),
+        color: Some((blue, JsonValue::str("TYPES_COLOR_BLUE"))),
+        perms: Some(()),
+        choice: Some(()),
+        outcome: Some(()),
+        foreign: Some(()),
+        foreign_status: Some((paused, JsonValue::str("SHARED_SHARED_STATUS_PAUSED"))),
+    };
+
+    let build_composites = |input: CompositesInput| -> Result<(Vec<u8>, String)> {
         let mut pb = ProtoBuf::new();
         let mut p3 = Vec::new();
-        if include_origin {
+        if input.origin.is_some() {
             let (pt_wire, pt_json, _) = encode_point(w, 10, -20)?;
             pb.message(c_origin, &pt_wire);
             p3.push(("origin".to_string(), pt_json));
         }
-        pb.enum_i32(c_color, color_val);
-        p3.push(("color".to_string(), color_json));
-
-        let mut perms_pb = ProtoBuf::new();
-        perms_pb.bool_field(p_read, true);
-        perms_pb.bool_field(p_exec, true);
-        pb.message(c_perms, &perms_pb);
-        p3.push((
-            "perms".to_string(),
-            JsonValue::obj([
-                ("read", JsonValue::Bool(true)),
-                ("execute", JsonValue::Bool(true)),
-            ]),
-        ));
-
-        let mut ch_pb = ProtoBuf::new();
-        ch_pb.uint32(ch_glyph, u32::from('\u{03BB}'));
-        pb.message(c_choice, &ch_pb);
-        p3.push((
-            "choice".to_string(),
-            JsonValue::obj([("glyph", JsonValue::Uint(u64::from(u32::from('\u{03BB}'))))]),
-        ));
-
-        let mut out_pb = ProtoBuf::new();
-        out_pb.uint32(1, 42);
-        pb.message(c_outcome, &out_pb);
-        p3.push((
-            "outcome".to_string(),
-            JsonValue::obj([("ok", JsonValue::Uint(42))]),
-        ));
-
-        if include_foreign {
+        if let Some((color_val, color_json)) = input.color {
+            pb.enum_i32(c_color, color_val);
+            p3.push(("color".to_string(), color_json));
+        }
+        if input.perms.is_some() {
+            let mut perms_pb = ProtoBuf::new();
+            perms_pb.bool_field(p_read, true);
+            perms_pb.bool_field(p_exec, true);
+            pb.message(c_perms, &perms_pb);
+            p3.push((
+                "perms".to_string(),
+                JsonValue::obj([
+                    ("read", JsonValue::Bool(true)),
+                    ("execute", JsonValue::Bool(true)),
+                ]),
+            ));
+        }
+        if input.choice.is_some() {
+            let mut ch_pb = ProtoBuf::new();
+            ch_pb.uint32(ch_glyph, u32::from('\u{03BB}'));
+            pb.message(c_choice, &ch_pb);
+            p3.push((
+                "choice".to_string(),
+                JsonValue::obj([("glyph", JsonValue::Uint(u64::from(u32::from('\u{03BB}'))))]),
+            ));
+        }
+        if input.outcome.is_some() {
+            let mut out_pb = ProtoBuf::new();
+            out_pb.uint32(1, 42);
+            pb.message(c_outcome, &out_pb);
+            p3.push((
+                "outcome".to_string(),
+                JsonValue::obj([("ok", JsonValue::Uint(42))]),
+            ));
+        }
+        if input.foreign.is_some() {
             let (fm_wire, fm_json) = encode_shared_meta(
                 w,
                 u64::MAX,
@@ -3449,22 +3916,17 @@ fn push_permissions_composites_and_dep_vectors(
             pb.message(c_foreign, &fm_wire);
             p3.push(("foreign".to_string(), fm_json));
         }
-        pb.enum_i32(c_fstatus, fstatus_val);
-        p3.push(("foreignStatus".to_string(), fstatus_json));
+        if let Some((fstatus_val, fstatus_json)) = input.foreign_status {
+            pb.enum_i32(c_fstatus, fstatus_val);
+            p3.push(("foreignStatus".to_string(), fstatus_json));
+        }
 
         Ok((pb.bytes, JsonValue::obj_owned(p3).render_compact()))
     };
 
     // Valid Composites
     {
-        let (bin, p3) = build_composites(
-            true,
-            blue,
-            JsonValue::str("TYPES_COLOR_BLUE"),
-            true,
-            paused,
-            JsonValue::str("SHARED_SHARED_STATUS_PAUSED"),
-        )?;
+        let (bin, p3) = build_composites(full_composites())?;
         let plain = JsonValue::obj([
             (
                 "origin",
@@ -3515,42 +3977,91 @@ fn push_permissions_composites_and_dep_vectors(
     }
 
     // Composites rejections
-    for (id, cat, inc_origin, col_v, col_j, inc_for, fst_v, fst_j, ek, et, desc) in [
+    for (id, cat, input, ek, et, desc) in [
         (
             "composites-reject-missing-origin",
             "presence",
-            false,
-            blue,
-            JsonValue::str("TYPES_COLOR_BLUE"),
-            true,
-            paused,
-            JsonValue::str("SHARED_SHARED_STATUS_PAUSED"),
+            CompositesInput {
+                origin: None,
+                ..full_composites()
+            },
             "MissingField",
             "types/composites.origin",
             "Required record field origin is absent on the wire.",
         ),
         (
+            "composites-reject-missing-color",
+            "presence",
+            CompositesInput {
+                color: None,
+                ..full_composites()
+            },
+            "MissingField",
+            "types/composites.color",
+            "Required closed enum field color is absent on the wire.",
+        ),
+        (
+            "composites-reject-missing-perms",
+            "presence",
+            CompositesInput {
+                perms: None,
+                ..full_composites()
+            },
+            "MissingField",
+            "types/composites.perms",
+            "Required flags field perms is absent on the wire.",
+        ),
+        (
+            "composites-reject-missing-choice",
+            "presence",
+            CompositesInput {
+                choice: None,
+                ..full_composites()
+            },
+            "MissingField",
+            "types/composites.choice",
+            "Required variant field choice is absent on the wire.",
+        ),
+        (
+            "composites-reject-missing-outcome",
+            "presence",
+            CompositesInput {
+                outcome: None,
+                ..full_composites()
+            },
+            "MissingField",
+            "types/composites.outcome",
+            "Required result field outcome is absent on the wire.",
+        ),
+        (
             "composites-reject-color-zero",
             "enums",
-            true,
-            0,
-            JsonValue::str("TYPES_COLOR_UNSPECIFIED"),
-            true,
-            paused,
-            JsonValue::str("SHARED_SHARED_STATUS_PAUSED"),
+            CompositesInput {
+                color: Some((0, JsonValue::str("TYPES_COLOR_UNSPECIFIED"))),
+                ..full_composites()
+            },
             "UnknownEnumValue",
             "types/color",
             "Closed enum field carrying UNSPECIFIED (0) is rejected.",
         ),
         (
+            "composites-reject-color-negative",
+            "enums",
+            CompositesInput {
+                color: Some((-1, JsonValue::Int(-1))),
+                ..full_composites()
+            },
+            "UnknownEnumValue",
+            "types/color",
+            "Closed enum field carrying negative numeric value -1 is rejected.",
+        ),
+        (
             "composites-reject-color-unknown",
             "enums",
-            true,
-            99,
-            JsonValue::Int(99),
-            true,
-            paused,
-            JsonValue::str("SHARED_SHARED_STATUS_PAUSED"),
+            CompositesInput {
+                color: Some((99, JsonValue::Int(99))),
+                ..full_composites()
+            },
             "UnknownEnumValue",
             "types/color",
             "Closed enum field carrying unknown numeric value 99 is rejected.",
@@ -3558,31 +4069,38 @@ fn push_permissions_composites_and_dep_vectors(
         (
             "composites-reject-foreign-missing",
             "deps",
-            true,
-            blue,
-            JsonValue::str("TYPES_COLOR_BLUE"),
-            false,
-            paused,
-            JsonValue::str("SHARED_SHARED_STATUS_PAUSED"),
+            CompositesInput {
+                foreign: None,
+                ..full_composites()
+            },
             "MissingField",
             "types/composites.foreign",
             "Required foreign deps/ record field is absent on the wire.",
         ),
         (
+            "composites-reject-missing-foreign-status",
+            "deps",
+            CompositesInput {
+                foreign_status: None,
+                ..full_composites()
+            },
+            "MissingField",
+            "types/composites.foreign-status",
+            "Required foreign deps/ enum field foreign-status is absent on the wire.",
+        ),
+        (
             "composites-reject-foreign-status-zero",
             "deps",
-            true,
-            blue,
-            JsonValue::str("TYPES_COLOR_BLUE"),
-            true,
-            0,
-            JsonValue::str("SHARED_SHARED_STATUS_UNSPECIFIED"),
+            CompositesInput {
+                foreign_status: Some((0, JsonValue::str("SHARED_SHARED_STATUS_UNSPECIFIED"))),
+                ..full_composites()
+            },
             "UnknownEnumValue",
             "shared/shared-status",
             "Foreign deps/ closed enum carrying UNSPECIFIED (0) is rejected.",
         ),
     ] {
-        let (bin, p3) = build_composites(inc_origin, col_v, col_j, inc_for, fst_v, fst_j)?;
+        let (bin, p3) = build_composites(input)?;
         out.push(VectorSpec {
             id,
             category: cat,
@@ -3889,6 +4407,21 @@ fn push_function_vectors(w: &WireNums<'_>, out: &mut Vec<VectorSpec>) -> Result<
             description: "Valid process-foreign response carrying Err(color::red).",
         });
     }
+    out.push(VectorSpec {
+        id: "api-process-foreign-response-reject-missing-result",
+        category: "functions",
+        direction: "decode",
+        target_kind: "response",
+        target: TGT_PROC,
+        proto_message: MSG_PROC_RES,
+        expected: "reject",
+        error_kind: Some("MissingField"),
+        error_target: Some("api#process-foreign.result"),
+        proto_binary: Some(Vec::new()),
+        proto3_json: Some("{}".to_string()),
+        plain_json: JsonValue::Null,
+        description: "process-foreign response missing required result field is rejected.",
+    });
     {
         let mut pb = ProtoBuf::new();
         pb.empty_message(1); // result wrapper present with unset oneof -> UnknownCase
@@ -4036,6 +4569,13 @@ fn push_encode_rejection_vectors(out: &mut Vec<VectorSpec>) {
             "toProto must reject u8 value 256 (> 255).",
         ),
         (
+            "encode-reject-u16-negative",
+            "a-u16",
+            JsonValue::Int(-1),
+            "types/integers.a-u16",
+            "toProto must reject negative u16 value -1.",
+        ),
+        (
             "encode-reject-u16-overflow",
             "a-u16",
             JsonValue::Uint(65_536),
@@ -4099,6 +4639,13 @@ fn push_encode_rejection_vectors(out: &mut Vec<VectorSpec>) {
             "toProto must reject s16 value 32768 (> 32767).",
         ),
         (
+            "encode-reject-s32-underflow",
+            "a-s32",
+            JsonValue::Int(-2_147_483_649),
+            "types/integers.a-s32",
+            "toProto must reject s32 value -2147483649 (< i32::MIN).",
+        ),
+        (
             "encode-reject-s32-overflow",
             "a-s32",
             JsonValue::Int(2_147_483_648),
@@ -4158,10 +4705,22 @@ fn push_encode_rejection_vectors(out: &mut Vec<VectorSpec>) {
             "toProto must reject multi-scalar combining character sequence for WIT char.",
         ),
         (
+            "encode-reject-char-negative-codepoint",
+            "a-char-codepoint",
+            JsonValue::Int(-1),
+            "toProto must reject negative code point -1 for WIT char.",
+        ),
+        (
             "encode-reject-char-surrogate-codepoint",
             "a-char-codepoint",
             JsonValue::Uint(0xD800),
             "toProto must reject UTF-16 surrogate code point 0xD800 for WIT char.",
+        ),
+        (
+            "encode-reject-char-surrogate-high-codepoint",
+            "a-char-codepoint",
+            JsonValue::Uint(0xDFFF),
+            "toProto must reject UTF-16 low-surrogate end 0xDFFF for WIT char.",
         ),
         (
             "encode-reject-char-above-max-codepoint",
@@ -4257,6 +4816,25 @@ fn push_encode_rejection_vectors(out: &mut Vec<VectorSpec>) {
             "toProto must reject list<u16, 3> with 2 elements.",
         ),
         (
+            "encode-reject-fixed-u16s-long",
+            "fixed-u16s",
+            JsonValue::arr([
+                JsonValue::Uint(1),
+                JsonValue::Uint(2),
+                JsonValue::Uint(3),
+                JsonValue::Uint(4),
+            ]),
+            "types/collections.fixed-u16s",
+            "toProto must reject list<u16, 3> with 4 elements.",
+        ),
+        (
+            "encode-reject-fixed-chars-short",
+            "fixed-chars",
+            JsonValue::arr([JsonValue::str("a")]),
+            "types/collections.fixed-chars",
+            "toProto must reject list<char, 2> with 1 element.",
+        ),
+        (
             "encode-reject-fixed-chars-long",
             "fixed-chars",
             JsonValue::arr([
@@ -4284,8 +4862,88 @@ fn push_encode_rejection_vectors(out: &mut Vec<VectorSpec>) {
             description: desc,
         });
     }
+    out.push(VectorSpec {
+        id: "encode-reject-fixed-u16s-element-overflow",
+        category: "encode-bounds",
+        direction: "encode",
+        target_kind: "type",
+        target: TGT_COLLECTIONS,
+        proto_message: MSG_COLLECTIONS,
+        expected: "reject",
+        error_kind: Some("IntegerOutOfRange"),
+        error_target: Some("types/collections.fixed-u16s"),
+        proto_binary: None,
+        proto3_json: None,
+        plain_json: base_cols(
+            "fixed-u16s",
+            JsonValue::arr([
+                JsonValue::Uint(0),
+                JsonValue::Uint(65_536),
+                JsonValue::Uint(1),
+            ]),
+        ),
+        description: "toProto must reject exact-length list<u16, 3> carrying element 65536 (> u16::MAX).",
+    });
 
-    // Encode map key rejections
+    // Encode closed-enum rejections (for languages with integer-backed enums such as Go and C#)
+    for (id, bad_color, desc) in [
+        (
+            "encode-reject-enum-zero",
+            JsonValue::Int(0),
+            "toProto must reject UNSPECIFIED / zero-value closed enum 0.",
+        ),
+        (
+            "encode-reject-enum-unknown",
+            JsonValue::Int(99),
+            "toProto must reject unknown numeric closed enum value 99.",
+        ),
+    ] {
+        out.push(VectorSpec {
+            id,
+            category: "encode-bounds",
+            direction: "encode",
+            target_kind: "type",
+            target: TGT_COMPOSITES,
+            proto_message: MSG_COMPOSITES,
+            expected: "reject",
+            error_kind: Some("UnknownEnumValue"),
+            error_target: Some("types/color"),
+            proto_binary: None,
+            proto3_json: None,
+            plain_json: JsonValue::obj([
+                (
+                    "origin",
+                    JsonValue::obj([("x", JsonValue::Int(0)), ("y", JsonValue::Int(0))]),
+                ),
+                ("color", bad_color),
+                (
+                    "perms",
+                    JsonValue::obj([
+                        ("read", JsonValue::Bool(false)),
+                        ("write", JsonValue::Bool(false)),
+                        ("execute", JsonValue::Bool(false)),
+                    ]),
+                ),
+                (
+                    "choice",
+                    JsonValue::obj([("case", JsonValue::str("unit-case"))]),
+                ),
+                ("outcome", JsonValue::obj([("ok", JsonValue::Uint(0))])),
+                (
+                    "foreign",
+                    JsonValue::obj([
+                        ("id", JsonValue::str("0")),
+                        ("tag", JsonValue::Uint(0)),
+                        ("status", JsonValue::str("active")),
+                    ]),
+                ),
+                ("foreign-status", JsonValue::str("paused")),
+            ]),
+            description: desc,
+        });
+    }
+
+    // Encode map key and value rejections
     out.push(VectorSpec {
         id: "encode-reject-map-u8-key-overflow",
         category: "encode-bounds",
@@ -4311,6 +4969,58 @@ fn push_encode_rejection_vectors(out: &mut Vec<VectorSpec>) {
             ("nested-maps", JsonValue::arr([])),
         ]),
         description: "toProto must reject map<u8, string> entry with key 256 (> u8::MAX).",
+    });
+    out.push(VectorSpec {
+        id: "encode-reject-map-s8-key-underflow",
+        category: "encode-bounds",
+        direction: "encode",
+        target_kind: "type",
+        target: TGT_MAPS,
+        proto_message: MSG_MAPS,
+        expected: "reject",
+        error_kind: Some("IntegerOutOfRange"),
+        error_target: Some("types/maps.s8-to-point"),
+        proto_binary: None,
+        proto3_json: None,
+        plain_json: JsonValue::obj([
+            ("str-to-u8", JsonValue::obj([])),
+            ("u8-to-str", JsonValue::obj([])),
+            (
+                "s8-to-point",
+                JsonValue::obj([(
+                    "-129",
+                    JsonValue::obj([("x", JsonValue::Int(0)), ("y", JsonValue::Int(0))]),
+                )]),
+            ),
+            ("char-to-color", JsonValue::obj([])),
+            ("bool-to-s16", JsonValue::obj([])),
+            ("u64-to-s64", JsonValue::obj([])),
+            ("nested-maps", JsonValue::arr([])),
+        ]),
+        description: "toProto must reject map<s8, point> entry with key -129 (< i8::MIN).",
+    });
+    out.push(VectorSpec {
+        id: "encode-reject-map-str-value-u8-overflow",
+        category: "encode-bounds",
+        direction: "encode",
+        target_kind: "type",
+        target: TGT_MAPS,
+        proto_message: MSG_MAPS,
+        expected: "reject",
+        error_kind: Some("IntegerOutOfRange"),
+        error_target: Some("types/maps.str-to-u8"),
+        proto_binary: None,
+        proto3_json: None,
+        plain_json: JsonValue::obj([
+            ("str-to-u8", JsonValue::obj([("k", JsonValue::Uint(256))])),
+            ("u8-to-str", JsonValue::obj([])),
+            ("s8-to-point", JsonValue::obj([])),
+            ("char-to-color", JsonValue::obj([])),
+            ("bool-to-s16", JsonValue::obj([])),
+            ("u64-to-s64", JsonValue::obj([])),
+            ("nested-maps", JsonValue::arr([])),
+        ]),
+        description: "toProto must reject map<string, u8> entry with value 256 (> u8::MAX).",
     });
     out.push(VectorSpec {
         id: "encode-reject-map-char-key-empty",
@@ -4482,5 +5192,193 @@ mod tests {
         );
 
         fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn bundle_wire_lock_ownership_root_guards_and_proto_option_errors() {
+        let base = std::env::temp_dir().join(format!(
+            "witforge-conformance-hardening-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let bundle = plan(&ConformanceOptions::polyglot()).unwrap();
+
+        // 1. Empty root path and regular-file root path are refused across write/check/diff (H1).
+        for bad_root in [Path::new(""), base.join("regular-file").as_path()] {
+            if !bad_root.as_os_str().is_empty() {
+                fs::write(bad_root, "not a dir\n").unwrap();
+            }
+            assert!(bundle.write(bad_root).is_err(), "write {bad_root:?}");
+            assert!(bundle.check(bad_root).is_err(), "check {bad_root:?}");
+            assert!(bundle.unified_diff(bad_root).is_err(), "diff {bad_root:?}");
+        }
+
+        // 2. `out/proto` blocked by a file carrying `root`'s header reports NotDirectory without
+        //    also reporting a duplicate Extra finding (L1).
+        let out = base.join("bundle");
+        bundle.write(&out).unwrap();
+        fs::remove_dir_all(out.join("proto")).unwrap();
+        let root_hdr =
+            HeaderStyle::JsonComment.format_header("conformance", ROOT_NAMESPACE, ROOT_NAME);
+        fs::write(out.join("proto"), format!("{root_hdr}\n}}\n")).unwrap();
+        let blocked = bundle.check(&out).unwrap();
+        assert!(
+            blocked.iter().any(|f| {
+                f.path == out.join("proto") && f.status == GeneratedFileStatus::NotDirectory
+            }),
+            "expected NotDirectory for proto: {blocked:?}"
+        );
+        assert!(
+            !blocked
+                .iter()
+                .any(|f| f.path == out.join("proto") && f.status == GeneratedFileStatus::Extra),
+            "must not emit duplicate Extra for proto: {blocked:?}"
+        );
+        fs::remove_file(out.join("proto")).unwrap();
+        bundle.write(&out).unwrap();
+
+        // 3. v2 wire.lock ownership (H3):
+        //    (a) Valid v2 lockfile belonging to `witforge:conformance` with drift reports Changed,
+        //        renders in unified_diff, and upgrades cleanly in place on write().
+        let lock_path = out.join("wit/v0.1/wire.lock");
+        let original_lock = fs::read_to_string(&lock_path).unwrap();
+        let drifted_lock = format!(
+            "{original_lock}witforge:conformance/types/point.extra = 99 field u32 reserved\n"
+        );
+        fs::write(&lock_path, &drifted_lock).unwrap();
+        let drifted = bundle.check(&out).unwrap();
+        assert_eq!(drifted.len(), 1, "{drifted:?}");
+        assert_eq!(drifted[0].path, lock_path);
+        assert!(
+            matches!(drifted[0].status, GeneratedFileStatus::Changed { .. }),
+            "{drifted:?}"
+        );
+        let diff = bundle.unified_diff(&out).unwrap();
+        assert!(diff.contains("wit/v0.1/wire.lock"), "{diff}");
+        assert!(
+            diff.contains("-witforge:conformance/types/point.extra"),
+            "{diff}"
+        );
+        bundle.write(&out).unwrap();
+        assert!(bundle.check(&out).unwrap().is_empty());
+
+        //    (b) A lockfile containing another package's entries is refused as Unowned.
+        let foreign_lock =
+            format!("{original_lock}other:pkg/types/item.id = 1 field u32 reserved\n");
+        fs::write(&lock_path, &foreign_lock).unwrap();
+        let foreign_findings = bundle.check(&out).unwrap();
+        assert_eq!(foreign_findings.len(), 1, "{foreign_findings:?}");
+        assert_eq!(foreign_findings[0].path, lock_path);
+        assert_eq!(foreign_findings[0].status, GeneratedFileStatus::Unowned);
+        assert!(bundle.write(&out).is_err());
+
+        //    (c) Hand-written non-lockfile text at `wit/v0.1/wire.lock` is refused as Unowned.
+        fs::write(&lock_path, "# hand-written notes\n").unwrap();
+        let unowned_findings = bundle.check(&out).unwrap();
+        assert_eq!(unowned_findings.len(), 1, "{unowned_findings:?}");
+        assert_eq!(unowned_findings[0].status, GeneratedFileStatus::Unowned);
+        assert!(bundle.write(&out).is_err());
+
+        // Restore cleanly.
+        fs::write(&lock_path, &original_lock).unwrap();
+        assert!(bundle.check(&out).unwrap().is_empty());
+
+        // 4. Unix symlink guards across root, subdirectories, nested files, live, dangling, and
+        //    trailing-slash paths (H1 + M1).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let real_target = base.join("real-target");
+            fs::create_dir_all(&real_target).unwrap();
+            let live_link = base.join("live-link");
+            let dangling_link = base.join("dangling-link");
+            symlink(&real_target, &live_link).unwrap();
+            symlink(base.join("does-not-exist"), &dangling_link).unwrap();
+            let trailing_live = PathBuf::from(format!("{}/", live_link.display()));
+            let trailing_dangling = PathBuf::from(format!("{}/", dangling_link.display()));
+
+            for link in [
+                &live_link,
+                &dangling_link,
+                &trailing_live,
+                &trailing_dangling,
+            ] {
+                assert!(bundle.write(link).is_err(), "write {link:?}");
+                assert!(bundle.check(link).is_err(), "check {link:?}");
+                assert!(bundle.unified_diff(link).is_err(), "diff {link:?}");
+            }
+
+            // Symlinked `proto/` or `wit/` subdirectory or `wit/v0.1/wire.lock` file:
+            // write() refuses with WF9004, check() reports Symlink, and unified_diff() skips
+            // symlinked subtrees/leaves without following them into the link target.
+            let sub_out = base.join("sub-links");
+            bundle.write(&sub_out).unwrap();
+            fs::remove_dir_all(sub_out.join("proto")).unwrap();
+            symlink(&real_target, sub_out.join("proto")).unwrap();
+            assert!(bundle.write(&sub_out).is_err());
+            let proto_link_findings = bundle.check(&sub_out).unwrap();
+            assert!(
+                proto_link_findings.iter().any(|f| {
+                    f.path == sub_out.join("proto") && f.status == GeneratedFileStatus::Symlink
+                }),
+                "{proto_link_findings:?}"
+            );
+            assert_eq!(bundle.unified_diff(&sub_out).unwrap(), "");
+            fs::remove_file(sub_out.join("proto")).unwrap();
+            bundle.write(&sub_out).unwrap();
+
+            fs::remove_file(sub_out.join("wit/v0.1/wire.lock")).unwrap();
+            symlink(
+                base.join("missing-lock"),
+                sub_out.join("wit/v0.1/wire.lock"),
+            )
+            .unwrap();
+            assert!(bundle.write(&sub_out).is_err());
+            let lock_link_findings = bundle.check(&sub_out).unwrap();
+            assert!(
+                lock_link_findings.iter().any(|f| {
+                    f.path == sub_out.join("wit/v0.1/wire.lock")
+                        && f.status == GeneratedFileStatus::Symlink
+                }),
+                "{lock_link_findings:?}"
+            );
+            assert_eq!(bundle.unified_diff(&sub_out).unwrap(), "");
+        }
+
+        // 5. ProtoOptions validation errors propagate cleanly through plan().
+        let bad_java = ConformanceOptions::new()
+            .with_proto(ProtoOptions::new().with_java_package_prefix("123invalid"));
+        let bad_java_err = plan(&bad_java).unwrap_err();
+        assert!(
+            bad_java_err.to_string().contains("java_package"),
+            "{bad_java_err:#}"
+        );
+
+        let go_alias = ConformanceOptions::new().with_proto(
+            ProtoOptions::new().with_go_package_prefix("example.com/gen;explicit_alias"),
+        );
+        let go_alias_err = plan(&go_alias).unwrap_err();
+        assert!(
+            go_alias_err
+                .downcast_ref::<crate::ContractError>()
+                .is_some(),
+            "go_package ;alias collision on multi-file bundle should be ContractError: {go_alias_err:#}"
+        );
+
+        let java_outer = ConformanceOptions::new()
+            .with_proto(ProtoOptions::new().with_java_outer_classname("TypesIntegers"));
+        let java_outer_err = plan(&java_outer).unwrap_err();
+        assert!(
+            java_outer_err
+                .downcast_ref::<crate::ContractError>()
+                .is_some(),
+            "java_outer_classname collision with generated message should be ContractError: {java_outer_err:#}"
+        );
+
+        fs::remove_dir_all(&base).unwrap();
     }
 }

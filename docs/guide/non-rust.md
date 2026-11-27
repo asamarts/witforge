@@ -111,7 +111,7 @@ witforge conformance --out conformance-bundle --polyglot-proto-options
 witforge conformance --out conformance-bundle --polyglot-proto-options --check
 ```
 
-The command writes three directories under `--out`:
+The command writes two directories and a top-level manifest under `--out`:
 
 - `wit/v0.1/`: the canonical WIT conformance contract (`contract.wit`, `deps/conformance-dep/dep.wit`,
   and `wire.lock`) exercising all 13 decode-profile rows, foreign `deps/` types, and interface

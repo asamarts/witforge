@@ -6103,5 +6103,136 @@ fn conformance_command_generates_checks_diffs_and_supports_polyglot_options() {
         .unwrap();
     assert_eq!(bad.status.code(), Some(2), "{bad:?}");
 
+    // `--polyglot-proto-options --no-java-multiple-files` overrides `java_multiple_files`.
+    let no_mult_out = base.join("no-mult");
+    let no_mult = witforge()
+        .args([
+            "conformance",
+            "--out",
+            no_mult_out.to_str().unwrap(),
+            "--polyglot-proto-options",
+            "--no-java-multiple-files",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(no_mult.status.code(), Some(0), "{no_mult:?}");
+    let no_mult_proto = fs::read_to_string(no_mult_out.join("proto/v0.proto")).unwrap();
+    assert!(no_mult_proto.contains("option go_package = "));
+    assert!(no_mult_proto.contains("option java_package = "));
+    assert!(!no_mult_proto.contains("option java_multiple_files"));
+
+    // `--format sarif` reports WF2001 on drift and succeeds on matching bundle; `-q` suppresses
+    // human output on success.
+    let sarif_drift = witforge()
+        .args([
+            "--format",
+            "sarif",
+            "conformance",
+            "--out",
+            poly_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(sarif_drift.status.code(), Some(1), "{sarif_drift:?}");
+    let sarif_json: serde_json::Value = serde_json::from_slice(&sarif_drift.stdout).unwrap();
+    assert_eq!(sarif_json["version"], "2.1.0");
+    assert!(
+        String::from_utf8_lossy(&sarif_drift.stdout).contains("WF2001"),
+        "{sarif_json}"
+    );
+    let quiet_out = base.join("quiet");
+    let quiet = witforge()
+        .args(["-q", "conformance", "--out", quiet_out.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(quiet.status.code(), Some(0), "{quiet:?}");
+    assert!(quiet.stdout.is_empty(), "{quiet:?}");
+
+    // `--out` pointing at a regular file (or symlink on Unix) exits 2 with WF9004.
+    let blocker_file = base.join("blocker-file");
+    fs::write(&blocker_file, "not a directory\n").unwrap();
+    let file_err = witforge()
+        .args([
+            "--format",
+            "json",
+            "conformance",
+            "--out",
+            blocker_file.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(file_err.status.code(), Some(2), "{file_err:?}");
+    assert!(
+        String::from_utf8_lossy(&file_err.stdout).contains("WF9004"),
+        "{file_err:?}"
+    );
+
+    #[cfg(unix)]
+    {
+        let sym_out = base.join("sym-out");
+        std::os::unix::fs::symlink(&neutral_out, &sym_out).unwrap();
+        let sym_err = witforge()
+            .args([
+                "--format",
+                "json",
+                "conformance",
+                "--out",
+                sym_out.to_str().unwrap(),
+                "--check",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(sym_err.status.code(), Some(2), "{sym_err:?}");
+        assert!(
+            String::from_utf8_lossy(&sym_err.stdout).contains("WF9004"),
+            "{sym_err:?}"
+        );
+    }
+
+    // Multi-file and message collision errors (`--go-package ...;alias` and
+    // `--java-outer-classname TypesIntegers`) exit 1 with WF1003.
+    for (flag, val) in [
+        ("--go-package", "example.com/gen;alias"),
+        ("--java-outer-classname", "TypesIntegers"),
+    ] {
+        let collision = witforge()
+            .args([
+                "--format",
+                "json",
+                "conformance",
+                "--out",
+                base.join("collision").to_str().unwrap(),
+                flag,
+                val,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            collision.status.code(),
+            Some(1),
+            "{flag} {val}: {collision:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&collision.stdout).contains("WF1003"),
+            "{flag} {val}: {collision:?}"
+        );
+    }
+
+    // Shell completions include `conformance` and `--polyglot-proto-options`.
+    for shell in ["bash", "zsh", "fish"] {
+        let comp = witforge().args(["completions", shell]).output().unwrap();
+        assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");
+        let script = String::from_utf8(comp.stdout).unwrap();
+        assert!(
+            script.contains("conformance"),
+            "{shell} missing conformance"
+        );
+        assert!(
+            script.contains("polyglot-proto-options"),
+            "{shell} missing --polyglot-proto-options"
+        );
+    }
+
     fs::remove_dir_all(&base).unwrap();
 }
