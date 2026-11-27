@@ -70,6 +70,22 @@ All notable changes to this project are documented here. The format follows
   re-exports preserving class identity, PEP 257 docstrings, keyword/builtin/`self` escaping, and
   Windows reserved filename stem protection) verified offline and against live `python3` runtime
   and `typing.get_type_hints()` checks.
+- **Python checked protobuf glue emitter (`W13-005`):** Added additive
+  `witforge::emit::python_glue` (`#[non_exhaustive]` `PythonGlueOptions`, `validate_module_root`,
+  `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`,
+  and `check_with_options`), the `witforge py-glue` CLI subcommand, and
+  `[project.<name>.python-glue]` configuration in `witforge.toml` (wired into
+  `ensure_distinct_output_roots` and `witforge generate`). Emits deterministic PEP 561 Python
+  3.11+ packages targeting official `google.protobuf` (`protoc --python_out` and
+  `google.protobuf.json_format`) with `to_proto`/`from_proto`, per-function
+  `to_request`/`from_request`/`to_response`/`from_response`, `METHOD` constants, message class
+  references, `witforge_deps/` cross-major `DepLayout` glue (including `importlib.import_module`
+  fallback for Python-keyword proto packages), empty `py.typed` marker, `#` ownership headers, and
+  structured `WitforgeGlueError` (`ValueError` subclass) enforcing all 13 rows of the WIT decode
+  profile plus encode-side integer (rejecting `bool`), Unicode scalar `char`, closed-enum, exact
+  `list<T, N>` length, and `map<K, V>` key-before-value checks, verified offline and in a
+  SHA-pinned Python 3.11 `py-conformance` CI job against every `W11-034` binary, proto3-JSON, and
+  encode-bounds vector.
 - **Cross-language protobuf conformance profile and fixture bundle (`W11-034`):** Added additive
   `witforge::conformance` (`CONFORMANCE_VERSION = 1`, `#[non_exhaustive]` `ConformanceOptions` and
   `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, and

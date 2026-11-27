@@ -1402,7 +1402,7 @@ fn generators_ignore_a_binary_file_in_the_output_root() {
     let bytes = [
         0x00, 0x00, 0x00, 0x01, 0x42, 0x75, 0x64, 0x31, 0xff, 0xfe, 0x80,
     ];
-    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
+    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
         let out = base.join(format!("{command}-out"));
         fs::create_dir_all(&out).unwrap();
         fs::write(out.join(".DS_Store"), bytes).unwrap();
@@ -1418,6 +1418,8 @@ fn generators_ignore_a_binary_file_in_the_output_root() {
                 ]);
             } else if command == "ts-glue" {
                 witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+            } else if command == "py-glue" {
+                witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
             }
             if check {
                 witforge.arg("--check");
@@ -1442,7 +1444,7 @@ fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_com
         "existing/../wit/gen",
         "existing/../wit/v0.2",
     ] {
-        for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
+        for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
             let mut witforge = witforge();
             witforge
                 .current_dir(&base)
@@ -1456,6 +1458,8 @@ fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_com
                 ]);
             } else if command == "ts-glue" {
                 witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+            } else if command == "py-glue" {
+                witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
             }
             let output = witforge.output().unwrap();
             assert_eq!(output.status.code(), Some(2), "{command} {out}: {output:?}");
@@ -1714,6 +1718,8 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
             ]);
         } else if command == "ts-glue" {
             witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+        } else if command == "py-glue" {
+            witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
         }
         if check {
             witforge.arg("--check");
@@ -1742,7 +1748,9 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
     ] {
         assert_ne!(contract, original);
         fs::write(&source, &contract).unwrap();
-        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue", "py"] {
+        for command in [
+            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue",
+        ] {
             for check in [false, true] {
                 let output = run(command, check);
                 assert_eq!(
@@ -1858,13 +1866,15 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
             ]);
         } else if command == "ts-glue" {
             witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+        } else if command == "py-glue" {
+            witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
         }
         if check {
             witforge.arg("--check");
         }
         witforge.output().unwrap()
     };
-    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
+    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
         for check in [false, true] {
             let output = run(command, check);
             assert_eq!(
@@ -1896,7 +1906,7 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
         .output()
         .unwrap();
     assert!(lock.status.success(), "{lock:?}");
-    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
+    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
         for check in [false, true] {
             let output = run(command, check);
             assert!(output.status.success(), "{command} {check}: {output:?}");
@@ -2476,6 +2486,10 @@ fn generators_refuse_a_lockfile_of_another_package_even_without_members() {
         ("ts", &[][..]),
         ("py", &[][..]),
         (
+            "py-glue",
+            &["--plain-root", "plain", "--proto-root", "proto"][..],
+        ),
+        (
             "ts-glue",
             &["--plain-root", "../plain", "--proto-root", "../proto"][..],
         ),
@@ -2523,6 +2537,10 @@ fn generators_refuse_a_symlinked_version_directory_no_manifest_lists() {
         ("proto", &[][..]),
         ("ts", &[][..]),
         ("py", &[][..]),
+        (
+            "py-glue",
+            &["--plain-root", "plain", "--proto-root", "proto"][..],
+        ),
         (
             "ts-glue",
             &["--plain-root", "../plain", "--proto-root", "../proto"][..],
@@ -2966,7 +2984,9 @@ fn output_root_guard_closes_symlink_and_parent_component_bypasses() {
         ("wit", "."),
     ];
     for (root_arg, out_arg) in cases {
-        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue", "py"] {
+        for command in [
+            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue",
+        ] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
                 cmd.current_dir(&base)
@@ -2980,6 +3000,8 @@ fn output_root_guard_closes_symlink_and_parent_component_bypasses() {
                     ]);
                 } else if command == "ts-glue" {
                     cmd.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+                } else if command == "py-glue" {
+                    cmd.args(["--plain-root", "plain", "--proto-root", "proto"]);
                 }
                 if check_flag {
                     cmd.arg("--check");
@@ -3027,7 +3049,9 @@ fn output_root_guard_protects_released_directories() {
     }
 
     for out in &bad_outs {
-        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue", "py"] {
+        for command in [
+            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue",
+        ] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
                 cmd.args([
@@ -3047,6 +3071,8 @@ fn output_root_guard_protects_released_directories() {
                     ]);
                 } else if command == "ts-glue" {
                     cmd.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+                } else if command == "py-glue" {
+                    cmd.args(["--plain-root", "plain", "--proto-root", "proto"]);
                 }
                 if check_flag {
                     cmd.arg("--check");
@@ -3127,6 +3153,8 @@ fn generators_refuse_shared_roots_across_both_orders_of_generators_and_contracts
             ]);
         } else if command == "ts-glue" {
             cmd.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+        } else if command == "py-glue" {
+            cmd.args(["--plain-root", "plain", "--proto-root", "proto"]);
         }
         if check {
             cmd.arg("--check");
@@ -3149,6 +3177,8 @@ fn generators_refuse_shared_roots_across_both_orders_of_generators_and_contracts
         ("rust", "py", "mod.rs", "generator `rust`"),
         ("py", "rust", "__init__.py", "generator `py`"),
         ("py", "ts", "__init__.py", "generator `py`"),
+        ("py", "py-glue", "__init__.py", "generator `py`"),
+        ("py-glue", "py", "error.py", "generator `py-glue`"),
     ] {
         let out = base.join(format!("shared-{first}-{second}"));
         assert!(run_gen(first, &wit_a, &out, false).status.success());
@@ -4522,6 +4552,7 @@ fn build_identity_quiet_mode_completions_and_explain() {
         "ts",
         "ts-glue",
         "py",
+        "py-glue",
         "conformance",
         "generate",
         "init",
@@ -7014,6 +7045,343 @@ fn py_command_config_generate_overlap_and_completions() {
         assert!(
             script.contains(" py ") || script.contains("'py:") || script.contains("-a 'py'"),
             "{shell} completion missing `py`:\n{script}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn py_glue_command_config_generate_overlap_and_completions() {
+    let base = versions("py-glue-cli");
+    let wit = base.join("wit");
+    let glue_out = base.join("gen/py-glue");
+
+    // 1. Direct `witforge py-glue` generates nested PEP 561 tree and passes `--check`.
+    let gen_res = witforge()
+        .args([
+            "py-glue",
+            wit.to_str().unwrap(),
+            "--out",
+            glue_out.to_str().unwrap(),
+            "--plain-root",
+            "plain",
+            "--proto-root",
+            "proto",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(gen_res.status.code(), Some(0), "{gen_res:?}");
+    assert!(glue_out.join("py.typed").is_file());
+    assert!(glue_out.join("__init__.py").is_file());
+    assert!(glue_out.join("error.py").is_file());
+    assert!(glue_out.join("helpers.py").is_file());
+    assert!(glue_out.join("v0/__init__.py").is_file());
+
+    let chk_ok = witforge()
+        .args([
+            "py-glue",
+            wit.to_str().unwrap(),
+            "--out",
+            glue_out.to_str().unwrap(),
+            "--plain-root",
+            "plain",
+            "--proto-root",
+            "proto",
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(chk_ok.status.code(), Some(0), "{chk_ok:?}");
+
+    // Missing `--plain-root` / `--proto-root` without config exits 2 with WF9001.
+    let missing_roots = witforge()
+        .args([
+            "--format",
+            "json",
+            "py-glue",
+            wit.to_str().unwrap(),
+            "--out",
+            glue_out.to_str().unwrap(),
+            "--no-config",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(missing_roots.status.code(), Some(2), "{missing_roots:?}");
+    assert!(
+        String::from_utf8_lossy(&missing_roots.stdout).contains("WF9001"),
+        "{missing_roots:?}"
+    );
+
+    // Drift reports exit 1, unified diff, and WF2001 in SARIF mode.
+    let err_path = glue_out.join("error.py");
+    let orig = fs::read_to_string(&err_path).unwrap();
+    fs::write(&err_path, format!("{orig}# extra line\n")).unwrap();
+
+    let drift = witforge()
+        .args([
+            "py-glue",
+            wit.to_str().unwrap(),
+            "--out",
+            glue_out.to_str().unwrap(),
+            "--plain-root",
+            "plain",
+            "--proto-root",
+            "proto",
+            "--check",
+            "--diff",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift.status.code(), Some(1), "{drift:?}");
+    assert!(
+        String::from_utf8_lossy(&drift.stdout).contains("-# extra line"),
+        "{drift:?}"
+    );
+
+    let drift_sarif = witforge()
+        .args([
+            "--format",
+            "sarif",
+            "py-glue",
+            wit.to_str().unwrap(),
+            "--out",
+            glue_out.to_str().unwrap(),
+            "--plain-root",
+            "plain",
+            "--proto-root",
+            "proto",
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
+    let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
+    assert_eq!(sarif_val["version"], "2.1.0");
+    assert!(
+        !sarif_val["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{sarif_val:#}"
+    );
+
+    // 2. `[project.<name>.python-glue]` in `witforge.toml` integrates with `witforge generate`.
+    let cfg = base.join("witforge.toml");
+    fs::write(
+        &cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.python]\n\
+         out = \"gen/py-plain\"\n\
+         [project.demo.python-glue]\n\
+         out = \"gen/py-glue-cfg\"\n\
+         plain-root = \"..py_plain\"\n\
+         proto-root = \"..proto\"\n",
+    )
+    .unwrap();
+    let gen_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(gen_all.status.code(), Some(0), "{gen_all:?}");
+    assert!(base.join("gen/py-plain/__init__.py").is_file());
+    assert!(base.join("gen/py-glue-cfg/__init__.py").is_file());
+    assert!(base.join("gen/py-glue-cfg/error.py").is_file());
+    assert!(base.join("gen/py-glue-cfg/py.typed").is_file());
+
+    let chk_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap(), "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(chk_all.status.code(), Some(0), "{chk_all:?}");
+
+    // 3. Overlapping `[project.<name>.python-glue].out` with `python.out` is refused upfront (WF9004).
+    let overlap_cfg = base.join("overlap.toml");
+    fs::write(
+        &overlap_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.python]\n\
+         out = \"gen/py-shared\"\n\
+         [project.demo.python-glue]\n\
+         out = \"gen/py-shared/glue\"\n\
+         plain-root = \"..py_shared\"\n\
+         proto-root = \"..proto\"\n",
+    )
+    .unwrap();
+    let overlap_gen = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            overlap_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(overlap_gen.status.code(), Some(2), "{overlap_gen:?}");
+    let overlap_json: serde_json::Value = serde_json::from_slice(&overlap_gen.stdout).unwrap();
+    let overlap_diags = overlap_json["diagnostics"].as_array().unwrap();
+    assert_eq!(overlap_diags.len(), 1, "{overlap_json:#}");
+    assert_eq!(overlap_diags[0]["code"], "WF9004");
+
+    // 4. Invalid configured `python-glue.plain-root` is refused upfront with exit 2 and WF9001.
+    let bad_root_cfg = base.join("bad-root.toml");
+    fs::write(
+        &bad_root_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.python-glue]\n\
+         out = \"gen/py-bad\"\n\
+         plain-root = \"../not-python\"\n\
+         proto-root = \"proto\"\n",
+    )
+    .unwrap();
+    let bad_root = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            bad_root_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_root.status.code(), Some(2), "{bad_root:?}");
+    let bad_root_json: serde_json::Value = serde_json::from_slice(&bad_root.stdout).unwrap();
+    let bad_diags = bad_root_json["diagnostics"].as_array().unwrap();
+    assert_eq!(bad_diags.len(), 1, "{bad_root_json:#}");
+    assert_eq!(bad_diags[0]["code"], "WF9001");
+    assert!(
+        bad_diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("project.demo.python-glue.plain-root"),
+        "{bad_root_json:#}"
+    );
+    assert!(
+        bad_diags[0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("bad-root.toml"),
+        "{bad_root_json:#}"
+    );
+
+    // 5. Missing `proto-root` in `[project.<name>.python-glue]` aborts `witforge generate` upfront
+    //    before writing earlier emitters (`python`).
+    let incomplete_cfg = base.join("incomplete-py-glue.toml");
+    fs::write(
+        &incomplete_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.python]\n\
+         out = \"gen/never-written-py\"\n\
+         [project.demo.python-glue]\n\
+         out = \"gen/never-written-glue\"\n\
+         plain-root = \"plain\"\n",
+    )
+    .unwrap();
+    let incomplete = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            incomplete_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(incomplete.status.code(), Some(2), "{incomplete:?}");
+    assert!(
+        !base.join("gen/never-written-py").exists(),
+        "upfront root validation must prevent partial writes"
+    );
+
+    // 6. Rust `[project.<name>.glue]` and `[project.<name>.typescript-glue]` roots never leak into
+    //    `witforge py-glue`, and `--out` overlap, `--project`, `--released`, and `-q` work cleanly.
+    let other_glues_cfg = base.join("other-glues-only.toml");
+    fs::write(
+        &other_glues_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.glue]\n\
+         out = \"gen/rust-glue\"\n\
+         plain-root = \"crate::plain\"\n\
+         proto-root = \"crate::proto\"\n\
+         [project.demo.typescript-glue]\n\
+         out = \"gen/ts-glue\"\n\
+         plain-root = \"../plain\"\n\
+         proto-root = \"../proto\"\n",
+    )
+    .unwrap();
+    let no_leak = witforge()
+        .args([
+            "py-glue",
+            "--config",
+            other_glues_cfg.to_str().unwrap(),
+            "--out",
+            base.join("gen/py-glue-noleak").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(no_leak.status.code(), Some(2), "{no_leak:?}");
+    assert!(
+        String::from_utf8_lossy(&no_leak.stderr).contains("py-glue requires --plain-root"),
+        "{no_leak:?}"
+    );
+
+    let cli_overlap = witforge()
+        .args([
+            "--format",
+            "json",
+            "py-glue",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--out",
+            base.join("gen/py-plain").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(cli_overlap.status.code(), Some(2), "{cli_overlap:?}");
+    assert!(
+        String::from_utf8_lossy(&cli_overlap.stdout).contains("WF9004"),
+        "{cli_overlap:?}"
+    );
+
+    let rel_manifest = wit.join("released");
+    fs::write(&rel_manifest, "v0.1\n").unwrap();
+    let py_glue_quiet = witforge()
+        .args([
+            "-q",
+            "py-glue",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--project",
+            "demo",
+            "--released",
+            rel_manifest.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(py_glue_quiet.status.code(), Some(0), "{py_glue_quiet:?}");
+    assert!(py_glue_quiet.stdout.is_empty(), "{py_glue_quiet:?}");
+
+    // 7. Shell completions include `py-glue`.
+    for shell in ["bash", "zsh", "fish"] {
+        let comp = witforge().args(["completions", shell]).output().unwrap();
+        assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");
+        let script = String::from_utf8(comp.stdout).unwrap();
+        assert!(
+            script.contains("py-glue"),
+            "{shell} completion missing `py-glue`:\n{script}"
         );
     }
 

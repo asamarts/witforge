@@ -18,6 +18,7 @@ attribute #[non_exhaustive] witforge::emit::polyglot::TargetLanguage
 attribute #[non_exhaustive] witforge::emit::proto::ProtoOptions
 attribute #[non_exhaustive] witforge::emit::proto::ProtoPackageOptions
 attribute #[non_exhaustive] witforge::emit::python::PythonOptions
+attribute #[non_exhaustive] witforge::emit::python_glue::PythonGlueOptions
 attribute #[non_exhaustive] witforge::emit::rust::RustOptions
 attribute #[non_exhaustive] witforge::emit::typescript::TypeScriptOptions
 attribute #[non_exhaustive] witforge::emit::typescript_glue::TypeScriptGlueOptions
@@ -548,6 +549,15 @@ function witforge::emit::python::plan
 function witforge::emit::python::plan_with_options
 function witforge::emit::python::plan_with_released
 function witforge::emit::python::version_dir_name
+function witforge::emit::python_glue::PythonGlueOptions::new
+function witforge::emit::python_glue::check
+function witforge::emit::python_glue::check_with_options
+function witforge::emit::python_glue::generate
+function witforge::emit::python_glue::generate_with_options
+function witforge::emit::python_glue::plan
+function witforge::emit::python_glue::plan_with_options
+function witforge::emit::python_glue::plan_with_released
+function witforge::emit::python_glue::validate_module_root
 function witforge::emit::rust::RustOptions::new
 function witforge::emit::rust::RustOptions::with_eq_hash
 function witforge::emit::rust::RustOptions::with_no_std
@@ -716,6 +726,7 @@ impl Clone for witforge::emit::polyglot::TargetLanguage
 impl Clone for witforge::emit::proto::ProtoOptions
 impl Clone for witforge::emit::proto::ProtoPackageOptions
 impl Clone for witforge::emit::python::PythonOptions
+impl Clone for witforge::emit::python_glue::PythonGlueOptions
 impl Clone for witforge::emit::rust::RustOptions
 impl Clone for witforge::emit::typescript::TypeScriptOptions
 impl Clone for witforge::emit::typescript_glue::TypeScriptGlueOptions
@@ -808,6 +819,7 @@ impl Debug for witforge::emit::polyglot::TargetLanguage
 impl Debug for witforge::emit::proto::ProtoOptions
 impl Debug for witforge::emit::proto::ProtoPackageOptions
 impl Debug for witforge::emit::python::PythonOptions
+impl Debug for witforge::emit::python_glue::PythonGlueOptions
 impl Debug for witforge::emit::rust::RustOptions
 impl Debug for witforge::emit::typescript::TypeScriptOptions
 impl Debug for witforge::emit::typescript_glue::TypeScriptGlueOptions
@@ -859,6 +871,7 @@ impl Default for witforge::emit::json_schema::SchemaOptions
 impl Default for witforge::emit::proto::ProtoOptions
 impl Default for witforge::emit::proto::ProtoPackageOptions
 impl Default for witforge::emit::python::PythonOptions
+impl Default for witforge::emit::python_glue::PythonGlueOptions
 impl Default for witforge::emit::rust::RustOptions
 impl Default for witforge::emit::typescript::TypeScriptOptions
 impl Default for witforge::emit::typescript_glue::TypeScriptGlueOptions
@@ -915,6 +928,7 @@ impl Eq for witforge::emit::polyglot::TargetLanguage
 impl Eq for witforge::emit::proto::ProtoOptions
 impl Eq for witforge::emit::proto::ProtoPackageOptions
 impl Eq for witforge::emit::python::PythonOptions
+impl Eq for witforge::emit::python_glue::PythonGlueOptions
 impl Eq for witforge::emit::rust::RustOptions
 impl Eq for witforge::emit::typescript::TypeScriptOptions
 impl Eq for witforge::emit::typescript_glue::TypeScriptGlueOptions
@@ -1012,6 +1026,7 @@ impl PartialEq for witforge::emit::polyglot::TargetLanguage
 impl PartialEq for witforge::emit::proto::ProtoOptions
 impl PartialEq for witforge::emit::proto::ProtoPackageOptions
 impl PartialEq for witforge::emit::python::PythonOptions
+impl PartialEq for witforge::emit::python_glue::PythonGlueOptions
 impl PartialEq for witforge::emit::rust::RustOptions
 impl PartialEq for witforge::emit::typescript::TypeScriptOptions
 impl PartialEq for witforge::emit::typescript_glue::TypeScriptGlueOptions
@@ -1076,6 +1091,7 @@ module witforge::emit::output
 module witforge::emit::polyglot
 module witforge::emit::proto
 module witforge::emit::python
+module witforge::emit::python_glue
 module witforge::emit::rust
 module witforge::emit::typescript
 module witforge::emit::typescript_glue
@@ -1461,6 +1477,16 @@ signature witforge::emit::python::plan {"function":{"sig":{"inputs":[["wit_root"
 signature witforge::emit::python::plan_with_options {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"PythonOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::python::plan_with_released {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::python::version_dir_name {"function":{"sig":{"inputs":[["model",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"crate::model::Model","args":null}}}}]],"output":{"resolved_path":{"path":"String","args":null}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::PythonGlueOptions {"params":[],"where_predicates":[]}
+signature witforge::emit::python_glue::PythonGlueOptions::new {"function":{"sig":{"inputs":[],"output":{"generic":"Self"},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":true,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::check {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFileFinding","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::check_with_options {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"PythonGlueOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"Vec","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFileFinding","args":null}}}],"constraints":[]}}}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::generate {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::generate_with_options {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["out",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"PythonGlueOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::plan {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::plan_with_options {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}],["options",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"PythonGlueOptions","args":null}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::plan_with_released {"function":{"sig":{"inputs":[["wit_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}],["plain_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["proto_root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}],["released",{"resolved_path":{"path":"Option","args":{"angle_bracketed":{"args":[{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"resolved_path":{"path":"std::path::Path","args":null}}}}}],"constraints":[]}}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"resolved_path":{"path":"crate::emit::output::GeneratedFiles","args":null}}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
+signature witforge::emit::python_glue::validate_module_root {"function":{"sig":{"inputs":[["root",{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}}]],"output":{"resolved_path":{"path":"anyhow::Result","args":{"angle_bracketed":{"args":[{"type":{"tuple":[]}}],"constraints":[]}}}},"is_c_variadic":false},"generics":{"params":[],"where_predicates":[]},"header":{"is_const":false,"is_unsafe":false,"is_async":false,"abi":"Rust"},"has_body":true,"default_unstable":null}}
 signature witforge::emit::rust::HEADER {"constant":{"type":{"borrowed_ref":{"lifetime":null,"is_mutable":false,"type":{"primitive":"str"}}},"const":{"expr":"\"// @generated by witforge; do not edit.\"","value":null,"is_literal":true}}}
 signature witforge::emit::rust::RustOptions {"params":[],"where_predicates":[]}
 signature witforge::emit::rust::RustOptions.eq_hash {"struct_field":{"primitive":"bool"}}
@@ -1800,6 +1826,7 @@ struct witforge::emit::output::GeneratedFiles
 struct witforge::emit::proto::ProtoOptions
 struct witforge::emit::proto::ProtoPackageOptions
 struct witforge::emit::python::PythonOptions
+struct witforge::emit::python_glue::PythonGlueOptions
 struct witforge::emit::rust::RustOptions
 struct witforge::emit::typescript::TypeScriptOptions
 struct witforge::emit::typescript_glue::TypeScriptGlueOptions

@@ -23,6 +23,9 @@
 //!                  [--released PATH]
 //! witforge py    [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
+//! witforge py-glue [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
+//!                  [--config PATH | --no-config] [--project NAME] [--check] [--diff]
+//!                  [--released PATH]
 //! witforge conformance --out DIR [--polyglot-proto-options] [--go-package VALUE]
 //!                      [--java-package VALUE] [--java-multiple-files | --no-java-multiple-files]
 //!                      [--java-outer-classname NAME] [--csharp-namespace VALUE] [--check] [--diff]
@@ -126,6 +129,9 @@ enum Command {
     TsGlue(TsGlueOptions),
     /// Generate zero-dependency Python 3.11+ stdlib dataclasses and `Protocol` interfaces.
     Py(PyOptions),
+    /// Generate checked Python protobuf glue targeting official `google.protobuf`.
+    #[command(name = "py-glue")]
+    PyGlue(PyGlueOptions),
     /// Generate the versioned cross-language protobuf conformance fixture bundle.
     Conformance(ConformanceCliOptions),
     /// Run every generator configured in `witforge.toml`.
@@ -387,6 +393,34 @@ struct PyOptions {
     /// Output root for generated Python package files.
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct PyGlueOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Output root for generated Python protobuf glue files.
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
+    /// Python package root containing generated plain Python modules (dotted or relative path).
+    #[arg(long, value_name = "PATH")]
+    plain_root: Option<String>,
+    /// Python package root containing generated `protoc --python_out` `*_pb2.py` modules.
+    #[arg(long, value_name = "PATH")]
+    proto_root: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -751,11 +785,13 @@ struct ProjectConfig {
     #[serde(rename = "typescript-glue")]
     typescript_glue: Option<TsGlueConfig>,
     python: Option<OutConfig>,
+    #[serde(rename = "python-glue")]
+    python_glue: Option<PyGlueConfig>,
     policy: Option<PolicyConfig>,
 }
 
 impl ProjectConfig {
-    fn configured_outputs(&self) -> [(Emitter, &'static str, Option<&Path>); 8] {
+    fn configured_outputs(&self) -> [(Emitter, &'static str, Option<&Path>); 9] {
         [
             (
                 Emitter::Rust,
@@ -796,6 +832,11 @@ impl ProjectConfig {
                 Emitter::Python,
                 "python",
                 self.python.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::PythonGlue,
+                "python-glue",
+                self.python_glue.as_ref().map(|c| c.out.as_path()),
             ),
         ]
     }
@@ -909,6 +950,16 @@ struct TsGlueConfig {
     proto_root: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PyGlueConfig {
+    out: PathBuf,
+    #[serde(rename = "plain-root")]
+    plain_root: Option<String>,
+    #[serde(rename = "proto-root")]
+    proto_root: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Emitter {
     Rust,
@@ -919,6 +970,7 @@ enum Emitter {
     TypeScript,
     TypeScriptGlue,
     Python,
+    PythonGlue,
 }
 
 struct PathOverrides {
@@ -1059,7 +1111,10 @@ fn resolve_paths(
         schema_draft,
         proto_overrides,
     } = overrides;
-    let needs_roots = matches!(emitter, Emitter::Glue | Emitter::TypeScriptGlue);
+    let needs_roots = matches!(
+        emitter,
+        Emitter::Glue | Emitter::TypeScriptGlue | Emitter::PythonGlue
+    );
     let cli_complete = root.is_some()
         && out.is_some()
         && (!needs_roots || (plain_root.is_some() && proto_root.is_some()));
@@ -1089,6 +1144,7 @@ fn resolve_paths(
         if needs_roots && (plain_root.is_none() || proto_root.is_none()) {
             let cmd = match emitter {
                 Emitter::TypeScriptGlue => "ts-glue",
+                Emitter::PythonGlue => "py-glue",
                 _ => "glue",
             };
             return Err(op_error(
@@ -1172,6 +1228,10 @@ fn resolve_paths(
             .python
             .as_ref()
             .map(|config| from_config(&config.out)),
+        Emitter::PythonGlue => project
+            .python_glue
+            .as_ref()
+            .map(|config| from_config(&config.out)),
     });
     let Some(out) = out else {
         return Err(op_error(
@@ -1190,6 +1250,10 @@ fn resolve_paths(
             .typescript_glue
             .as_ref()
             .and_then(|config| config.plain_root.clone()),
+        Emitter::PythonGlue => project
+            .python_glue
+            .as_ref()
+            .and_then(|config| config.plain_root.clone()),
         Emitter::Rust
         | Emitter::Proto
         | Emitter::Schema
@@ -1206,6 +1270,10 @@ fn resolve_paths(
             .typescript_glue
             .as_ref()
             .and_then(|config| config.proto_root.clone()),
+        Emitter::PythonGlue => project
+            .python_glue
+            .as_ref()
+            .and_then(|config| config.proto_root.clone()),
         Emitter::Rust
         | Emitter::Proto
         | Emitter::Schema
@@ -1216,6 +1284,7 @@ fn resolve_paths(
     if needs_roots && (plain_root.is_none() || proto_root.is_none()) {
         let cmd = match emitter {
             Emitter::TypeScriptGlue => "ts-glue",
+            Emitter::PythonGlue => "py-glue",
             _ => "glue",
         };
         return Err(op_error(
@@ -1236,7 +1305,8 @@ fn resolve_paths(
             | Emitter::Doc
             | Emitter::TypeScript
             | Emitter::TypeScriptGlue
-            | Emitter::Python => None,
+            | Emitter::Python
+            | Emitter::PythonGlue => None,
         })
         .unwrap_or(false);
     let eq_hash = eq_hash
@@ -1393,6 +1463,13 @@ fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<
                 config_path,
             )?;
         }
+        if let Some(py_glue) = &proj.python_glue {
+            check_config_path(
+                &format!("project.{proj_name}.python-glue.out"),
+                &py_glue.out,
+                config_path,
+            )?;
+        }
         if let Some(policy) = &proj.policy
             && let Some(views) = &policy.diff_check
         {
@@ -1509,6 +1586,26 @@ fn validate_configured_module_roots(config: &ConfigFile, config_path: &Path) -> 
                 return Err(op_error(
                     codes::CLI_USAGE,
                     format!("invalid project.{proj_name}.typescript-glue.proto-root: {err:#}"),
+                    path_str,
+                ));
+            }
+        }
+        if let Some(py_glue) = &proj.python_glue {
+            if let Some(plain_root) = &py_glue.plain_root
+                && let Err(err) = emit::python_glue::validate_module_root(plain_root)
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!("invalid project.{proj_name}.python-glue.plain-root: {err:#}"),
+                    path_str,
+                ));
+            }
+            if let Some(proto_root) = &py_glue.proto_root
+                && let Err(err) = emit::python_glue::validate_module_root(proto_root)
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!("invalid project.{proj_name}.python-glue.proto-root: {err:#}"),
                     path_str,
                 ));
             }
@@ -1696,6 +1793,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Ts(options) => ts_command(&options, &mut reporter),
         Command::TsGlue(options) => ts_glue_command(&options, &mut reporter),
         Command::Py(options) => py_command(&options, &mut reporter),
+        Command::PyGlue(options) => py_glue_command(&options, &mut reporter),
         Command::Conformance(options) => conformance_command(&options, &mut reporter),
         Command::Generate(options) => generate_command(&options, &mut reporter),
         Command::Init(options) => init_command(&options, &mut reporter),
@@ -2544,6 +2642,64 @@ fn py_command(options: &PyOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         options.released.as_deref(),
         None,
         None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
+}
+
+fn py_glue_command(options: &PyGlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let paths = resolve_paths(
+        Emitter::PythonGlue,
+        &options.config,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: options.plain_root.clone(),
+            proto_root: options.proto_root.clone(),
+            serde: None,
+            no_std: None,
+            eq_hash: None,
+            try_from: None,
+            schema_draft: None,
+            proto_overrides: ProtoCliOverrides::default(),
+        },
+    )?;
+    let plain_root = paths
+        .plain_root
+        .as_deref()
+        .context("py-glue requires --plain-root or a config python-glue section")?;
+    let proto_root = paths
+        .proto_root
+        .as_deref()
+        .context("py-glue requires --proto-root or a config python-glue section")?;
+    guard_output_root(&paths)?;
+    let files = emit::python_glue::plan_with_released(
+        &paths.root,
+        plain_root,
+        proto_root,
+        paths.released.as_deref(),
+    )?;
+    let regen = regenerate_command(
+        "py-glue",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        options.plain_root.as_deref(),
+        options.proto_root.as_deref(),
         None,
         None,
         None,
@@ -3577,12 +3733,25 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         if proj.python.is_some() {
             emitters.push(Emitter::Python);
         }
+        if let Some(py_glue) = &proj.python_glue {
+            if py_glue.plain_root.is_none() || py_glue.proto_root.is_none() {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "project `{proj_name}` python-glue section requires both `plain-root` and \
+                         `proto-root`"
+                    ),
+                    Some(config_path.display().to_string()),
+                ));
+            }
+            emitters.push(Emitter::PythonGlue);
+        }
         if emitters.is_empty() {
             return Err(op_error(
                 codes::CLI_USAGE,
                 format!(
                     "project `{proj_name}` in {} configures no generators (rust, proto, schema, \
-                     glue, doc, typescript, typescript-glue, or python)",
+                     glue, doc, typescript, typescript-glue, python, or python-glue)",
                     config_path.display()
                 ),
                 Some(config_path.display().to_string()),
@@ -3739,6 +3908,23 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                     &PyOptions {
                         root: None,
                         out: None,
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::PythonGlue => py_glue_command(
+                    &PyGlueOptions {
+                        root: None,
+                        out: None,
+                        plain_root: None,
+                        proto_root: None,
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),
@@ -4930,6 +5116,10 @@ mod reference_doc_tests {
             "`project.<name>.typescript-glue.proto-root`",
             "`[project.<name>.python]`",
             "`project.<name>.python.out`",
+            "`[project.<name>.python-glue]`",
+            "`project.<name>.python-glue.out`",
+            "`project.<name>.python-glue.plain-root`",
+            "`project.<name>.python-glue.proto-root`",
             "`[project.<name>.policy]`",
             "`project.<name>.policy.diff-check`",
             "`project.<name>.policy.forbid-unstable-in-release`",

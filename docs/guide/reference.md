@@ -205,6 +205,29 @@ Generate or check zero-dependency Python 3.11+ stdlib packages (`@dataclass(froz
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Project name in `witforge.toml`. |
 
+### `witforge py-glue`
+
+Generate or check Python checked protobuf glue targeting official `google.protobuf`
+(`protoc --python_out` and `google.protobuf.json_format`): `to_proto` / `from_proto` conversions,
+per-function `to_request` / `from_request` / `to_response` / `from_response` helpers, `METHOD`
+constants, message class references (`proto_type`, `request_type`, `response_type`), and structured
+`WitforgeGlueError` (`ValueError` subclass) diagnostics enforcing all 13 rows of the WIT decode
+profile plus encode-side integer (rejecting `bool`), Unicode scalar `char`, closed-enum, exact
+fixed-length list, and map-key checks.
+
+| Option / Argument | Description |
+|---|---|
+| `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
+| `--out <DIR>` | Output directory for generated Python protobuf glue files. |
+| `--plain-root <PATH>` | Python package root containing generated plain Python modules (dotted absolute path such as `my_app.plain` or relative path such as `..plain`). |
+| `--proto-root <PATH>` | Python package root containing generated `protoc --python_out` `*_pb2.py` modules (dotted absolute path such as `my_app.proto` or relative path such as `..proto`). |
+| `--check` | Verify existing files match without writing; exits `1` on drift. |
+| `--diff` | Print a unified diff of output changes without changing the exit status. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Project name in `witforge.toml`. |
+
 ### `witforge conformance`
 
 Generate or check the versioned cross-language protobuf conformance fixture bundle
@@ -426,6 +449,10 @@ expansion.
 | `project.<name>.typescript-glue.proto-root` | yes (if section set) | string | ESM import root for generated `@bufbuild/protobuf` `*_pb.js` files (relative path or bare npm package specifier). |
 | `[project.<name>.python]` | no | table | Python 3.11+ stdlib plain types and `Protocol` interfaces generator configuration. |
 | `project.<name>.python.out` | yes (if section set) | path | Output directory for generated Python package files. |
+| `[project.<name>.python-glue]` | no | table | Checked Python protobuf glue (`google.protobuf`) generator configuration. |
+| `project.<name>.python-glue.out` | yes (if section set) | path | Output directory for generated Python protobuf glue files. |
+| `project.<name>.python-glue.plain-root` | yes (if section set) | string | Python package root for generated plain Python modules (dotted absolute path or relative package path). |
+| `project.<name>.python-glue.proto-root` | yes (if section set) | string | Python package root for generated `protoc --python_out` `*_pb2.py` modules (dotted absolute path or relative package path). |
 | `[project.<name>.policy]` | no | table | Project governance policy table. |
 | `project.<name>.policy.diff-check` | no | array of strings | Default compatibility views for bare `witforge diff --check` (non-empty subset of `"wire"`, `"source"`, `"api"`, `"decode"`). |
 | `project.<name>.policy.forbid-unstable-in-release` | no | boolean | Refuse `witforge release` when any `@unstable` declaration is present (default `false`). |

@@ -16,7 +16,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proptest::prelude::*;
-use witforge::emit::{glue, json_schema, proto, python, rust, typescript, typescript_glue};
+use witforge::emit::{
+    glue, json_schema, proto, python, python_glue, rust, typescript, typescript_glue,
+};
 use witforge::load;
 use witforge::lock::{LockMode, WireLock};
 use witforge::model;
@@ -132,6 +134,7 @@ fn unreachable_unsupported_dependency_chains_and_cross_dep_refs_are_pruned_clean
     let ts_files = typescript::plan(&wit_root).unwrap();
     let ts_glue_files = typescript_glue::plan(&wit_root, "../plain", "../proto").unwrap();
     let py_files = python::plan(&wit_root).unwrap();
+    let py_glue_files = python_glue::plan(&wit_root, "plain", "proto").unwrap();
     for forbidden in [
         "Hidden",
         "Wrap",
@@ -150,6 +153,7 @@ fn unreachable_unsupported_dependency_chains_and_cross_dep_refs_are_pruned_clean
             .iter()
             .chain(ts_glue_files.files())
             .chain(py_files.files())
+            .chain(py_glue_files.files())
         {
             assert!(
                 !content.contains(forbidden),
@@ -316,6 +320,7 @@ fn proto_keyword_package_segments_pass_check_and_compile_in_protox_and_prost() {
         typescript::plan(&root).unwrap();
         typescript_glue::plan(&root, "../plain", "../proto").unwrap();
         python::plan(&root).unwrap();
+        python_glue::plan(&root, "plain", "proto").unwrap();
 
         let proto_dir = base.join(format!("proto_{idx}"));
         proto_files.write(&proto_dir).unwrap();
@@ -481,6 +486,7 @@ fn every_known_generator_refusal_is_reported_by_check_with_a_code() {
         typescript::plan(&upper_dir).unwrap();
         typescript_glue::plan(&upper_dir, "../plain", "../proto").unwrap();
         python::plan(&upper_dir).unwrap();
+        python_glue::plan(&upper_dir, "plain", "proto").unwrap();
     } else {
         assert!(
             upper_diags.iter().all(|d| !d.code.is_empty()),
@@ -566,6 +572,12 @@ fn deterministic_property_sample_covers_passing_contracts_and_implies_generate()
                     contract.root_wit
                 )
             });
+            python_glue::plan(&wit_root, "plain", "proto").unwrap_or_else(|e| {
+                panic!(
+                    "sample {idx}: check passed but py-glue failed: {e:#}\n{}",
+                    contract.root_wit
+                )
+            });
         }
     }
 
@@ -634,6 +646,7 @@ proptest! {
                     typescript_glue::plan(&wit_root, "../plain", "../proto"),
                 ),
                 ("py", python::plan(&wit_root)),
+                ("py-glue", python_glue::plan(&wit_root, "plain", "proto")),
             ] {
                 if let Err(err) = res {
                     let kind = if witforge::is_contract_error(&err) {

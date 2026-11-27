@@ -632,14 +632,14 @@ fn plan_interface_names<'a>(
     Ok(planned)
 }
 
-struct InterfaceSymbolPlan {
-    service_protocol_name: Option<String>,
-    type_names: Vec<String>,
-    variant_case_names: BTreeMap<(usize, usize), String>,
-    local_type_names: BTreeMap<String, String>,
+pub(crate) struct InterfaceSymbolPlan {
+    pub(crate) service_protocol_name: Option<String>,
+    pub(crate) type_names: Vec<String>,
+    pub(crate) variant_case_names: BTreeMap<(usize, usize), String>,
+    pub(crate) local_type_names: BTreeMap<String, String>,
 }
 
-fn plan_interface_symbols(interface: &Interface) -> Result<InterfaceSymbolPlan> {
+pub(crate) fn plan_interface_symbols(interface: &Interface) -> Result<InterfaceSymbolPlan> {
     let mut local_type_names: BTreeMap<String, String> = BTreeMap::new();
     let service_protocol_name = if interface.functions.is_empty() {
         None
@@ -1885,7 +1885,7 @@ fn format_py_str_tuple(items: &[crate::model::WorldInterface]) -> String {
     }
 }
 
-fn write_all_tuple(out: &mut String, names: &[String]) -> Result<()> {
+pub(crate) fn write_all_tuple(out: &mut String, names: &[String]) -> Result<()> {
     if names.is_empty() {
         writeln!(out, "__all__ = ()")?;
         return Ok(());
@@ -1983,7 +1983,7 @@ fn is_python_type_builtin(ident: &str) -> bool {
     matches!(ident, "bool" | "int" | "float" | "str" | "bytes" | "tuple")
 }
 
-fn insert_name(
+pub(crate) fn insert_name(
     names: &mut BTreeMap<String, String>,
     ident: &str,
     source: &str,
@@ -2009,7 +2009,7 @@ fn append_stability_doc_lines(lines: &mut Vec<String>, stability: &Stability) {
     }
 }
 
-fn combined_doc_lines(
+pub(crate) fn combined_doc_lines(
     raw_docs: &str,
     stability: &Stability,
     fallback: Option<&str>,
@@ -2076,7 +2076,7 @@ fn escape_docstring_edges(mut text: String, escape_leading: bool, escape_trailin
     text
 }
 
-fn write_docstring(out: &mut String, indent: usize, lines: &[String]) -> Result<()> {
+pub(crate) fn write_docstring(out: &mut String, indent: usize, lines: &[String]) -> Result<()> {
     if lines.is_empty() {
         return Ok(());
     }

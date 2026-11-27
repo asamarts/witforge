@@ -589,6 +589,45 @@ jobs:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
         run: ci/check-ts-conformance.sh
 
+  py-conformance:
+    name: python protobuf glue conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install pinned protoc
+        shell: bash
+        env:
+          PROTOC_VERSION: "34.1"
+          PROTOC_SHA256: af27ea66cd26938fe48587804ca7d4817457a08350021a1c6e23a27ccc8c6904
+        run: |
+          archive="$RUNNER_TEMP/protoc.zip"
+          curl -sSfL -o "$archive" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          echo "${PROTOC_SHA256}  $archive" | sha256sum -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+      - name: Install hash-locked Python protobuf runtime
+        run: python -m pip install --require-hashes --no-deps -r ci/py-conformance/requirements.txt
+      - name: Build witforge CLI
+        run: cargo build --locked -p witforge-cli
+      - name: Run Python checked protobuf glue conformance harness
+        shell: bash
+        env:
+          WITFORGE: ${{ github.workspace }}/target/debug/witforge
+          PYTHON: python
+        run: ci/check-py-conformance.sh
+
   # The one check branch protection requires: every job above passed, or, for the optional/
   # scheduled jobs only (`buf`, `floating-stable`, `fuzz-smoke`), was skipped. Requiring this
   # instead of each job keeps the rule valid when a job is added or renamed (the MSRV job's name
@@ -596,7 +635,7 @@ jobs:
   ok:
     name: ci ok
     if: always()
-    needs: [lint, workflows, published-action, test, msrv, musl, package, semver, public-api, generated, plan, benchmark, security, ts-conformance, buf, floating-stable, fuzz-smoke]
+    needs: [lint, workflows, published-action, test, msrv, musl, package, semver, public-api, generated, plan, benchmark, security, ts-conformance, py-conformance, buf, floating-stable, fuzz-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
