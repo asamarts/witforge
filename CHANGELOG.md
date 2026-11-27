@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in protobuf file options for non-Rust generators (`W11-039`):** Added additive
+  `#[non_exhaustive]` `ProtoOptions` and `ProtoPackageOptions` plus `plan_with_options`,
+  `generate_with_options`, `check_with_options`, and `emit_major_with_options` in
+  `witforge::emit::proto`, matching kebab-case flags (`--go-package`, `--java-package`,
+  `--java-multiple-files` / `--no-java-multiple-files`, `--java-outer-classname`,
+  `--csharp-namespace`) on `witforge proto`, and `[project.<name>.proto]` /
+  `[project.<name>.proto.packages.<proto_package>]` support in `witforge.toml` (honored by
+  `witforge generate`). Default `.proto` output, `wire.lock`, `witforge-build`, and `witforge glue`
+  remain byte-for-byte unchanged when file options are not configured; multi-major and
+  disambiguated `deps/` files derive deterministic per-file options with full target-language
+  validation (`WF9001`) and cross-file/same-file collision refusal (`WF1003`).
+
 ## [0.9.0] - 2026-11-26
 
 All library API changes since 0.8.0 are strictly additive (`docs/design/public-api-inventory.txt`

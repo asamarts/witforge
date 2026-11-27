@@ -2067,5 +2067,131 @@ objc-class-prefix = "EX"
         .unwrap();
     assert!(diff_wire_ok.status.success(), "{diff_wire_ok:?}");
 
+    // 10. Additional CLI precedence & upfront validation checks:
+    //     a) `--java-multiple-files` overrides config `java-multiple-files = false`;
+    //     b) `--no-java-multiple-files --check` preserves `--no-java-multiple-files` in regen hint;
+    //     c) empty `--go-package ""` fails with exit 2 and WF9001;
+    //     d) invalid `[project.b.proto]` is rejected upfront by `witforge check --config`;
+    //     e) shell completions (`bash`, `zsh`, `fish`) emit all six `proto` flags cleanly.
+    let false_cfg = write_config(
+        &root,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.proto]
+out = "gen/false-cfg"
+java-multiple-files = false
+"#,
+    );
+    let enable_cli = witforge()
+        .current_dir(&root)
+        .args([
+            "proto",
+            "--config",
+            false_cfg.to_str().unwrap(),
+            "--java-multiple-files",
+            "--java-outer-classname",
+            "CliOuterProto",
+            "--out",
+            "gen/cli-true",
+        ])
+        .output()
+        .unwrap();
+    assert!(enable_cli.status.success(), "{enable_cli:?}");
+    let cli_true_proto = fs::read_to_string(root.join("gen/cli-true/v0.proto")).unwrap();
+    assert!(
+        cli_true_proto.contains("option java_multiple_files = true;\n")
+            && cli_true_proto.contains("option java_outer_classname = \"CliOuterProto\";\n"),
+        "{cli_true_proto}"
+    );
+
+    let no_multi_drift = root.join("gen/no-multi-drift");
+    fs::create_dir_all(&no_multi_drift).unwrap();
+    let no_multi_check = witforge()
+        .current_dir(&root)
+        .args([
+            "proto",
+            "--config",
+            false_cfg.to_str().unwrap(),
+            "--out",
+            "gen/no-multi-drift",
+            "--no-java-multiple-files",
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(no_multi_check.status.code(), Some(1), "{no_multi_check:?}");
+    assert!(
+        String::from_utf8_lossy(&no_multi_check.stderr).contains("--no-java-multiple-files"),
+        "{no_multi_check:?}"
+    );
+
+    let empty_go = witforge()
+        .current_dir(&root)
+        .args([
+            "--format",
+            "json",
+            "proto",
+            "wit",
+            "--out",
+            "gen/empty-go",
+            "--go-package",
+            "",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(empty_go.status.code(), Some(2), "{empty_go:?}");
+    let empty_go_json: serde_json::Value = serde_json::from_slice(&empty_go.stdout).unwrap();
+    assert_eq!(empty_go_json["diagnostics"][0]["code"], "WF9001");
+
+    let bad_other_cfg = write_config(
+        &root,
+        r#"
+version = 1
+[project.a]
+root = "wit"
+[project.b]
+root = "wit"
+[project.b.proto]
+out = "gen/b-proto"
+java-outer-classname = "record"
+"#,
+    );
+    let check_bad = witforge()
+        .current_dir(&root)
+        .args(["--format", "json", "check", "--config"])
+        .arg(&bad_other_cfg)
+        .args(["--project", "a"])
+        .output()
+        .unwrap();
+    assert_eq!(check_bad.status.code(), Some(2), "{check_bad:?}");
+    let check_bad_json: serde_json::Value = serde_json::from_slice(&check_bad.stdout).unwrap();
+    assert_eq!(check_bad_json["diagnostics"][0]["code"], "WF9001");
+    let check_bad_msg = check_bad_json["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        check_bad_msg.contains("project.b.proto:")
+            && !check_bad_msg.contains("invalid project.b.proto options: invalid"),
+        "{check_bad_msg}"
+    );
+
+    for shell in ["bash", "zsh", "fish"] {
+        let comp = witforge().args(["completions", shell]).output().unwrap();
+        assert!(comp.status.success(), "{shell}: {comp:?}");
+        let script = String::from_utf8(comp.stdout).unwrap();
+        for flag in [
+            "go-package",
+            "java-package",
+            "java-multiple-files",
+            "no-java-multiple-files",
+            "java-outer-classname",
+            "csharp-namespace",
+        ] {
+            assert!(script.contains(flag), "{shell} completion missing `{flag}`");
+        }
+    }
+
     fs::remove_dir_all(&root).unwrap();
 }

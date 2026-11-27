@@ -988,29 +988,43 @@ verdicts.
     `<prefix>/<proto_pkg with '.' -> '/'>;<proto_pkg with '.' -> '_'>` (for example
     `github.com/acme/contracts/gen/go/example/plugin/v0;example_plugin_v0`, and
     `.../shared/types/v0_m1;shared_types_v0_m1` for disambiguated cross-major dependencies).
-    An explicit `<import/path>;<alias>` value is accepted verbatim for single-file output and
-    refused (`WF1003`, exit `1`) on multi-file output unless every package overrides it.
+    An explicit `<import/path>;<alias>` value is accepted verbatim when at most one emitted
+    `.proto` file inherits it and refused (`WF1003`, exit `1`) when multiple emitted `.proto`
+    files would share it. Every verbatim `go_package` import path (explicit `path;alias` or any
+    per-package `packages.<proto_pkg>.go_package`) must contain at least one `/`.
   - `java_package`: derives `<prefix>.<java_safe_proto_pkg>`, appending `_` to any dot-separated
     segment that is a Java reserved keyword (`default` -> `default_`).
   - `java_multiple_files`: emits `option java_multiple_files = true;` or
     `option java_multiple_files = false;` when explicitly set, and omits the line when unset.
-  - `java_outer_classname`: emits `option java_outer_classname = "<Name>";` when set.
+  - `java_outer_classname`: emits `option java_outer_classname = "<Name>";` when set (validated as
+    a Java `TypeIdentifier`, rejecting both Java keywords and restricted type identifiers
+    `permits`, `record`, `sealed`, `var`, and `yield`).
   - `csharp_namespace`: derives `<prefix>.<PascalSegments>`, converting each dot-separated proto
     package segment from snake_case to PascalCase (for example `example.my_pkg.v0` ->
     `Example.MyPkg.V0`, and disambiguated `shared.types.v0_m1` -> `Shared.Types.V0M1`).
 - **Per-package overrides:** `ProtoOptions::packages` (TOML
   `[project.<name>.proto.packages."<proto_package>"]`) keys exact overrides by emitted proto
-  package name (such as `example.plugin.v0` or `shared.types.v0_m1`). Any override key that does
-  not match an emitted proto package is refused (`WF9001`, exit `2`) so typos never fail silently.
+  package name (such as `example.plugin.v0` or `shared.types.v0_m1`). Unused override keys are
+  checked upfront and refused (`WF9001`, exit `2`) before option collisions so typos never fail
+  silently.
 - **Validation and collision refusals:**
   - Empty values, whitespace, control characters, quotes (`"`), backslashes (`\`), invalid Go
-    import paths or Go keyword aliases, invalid Java or C# identifiers/keywords (including `;` in
-    Java/C# options), and invalid proto package override keys are refused (`WF9001`, exit `2`).
+    import paths (including missing `/` on verbatim values, leading `-`/`.` or trailing `.` or
+    `..` segments) or Go keyword/`_` aliases, invalid Java or C# identifiers/keywords (including
+    `;` in Java/C# options and restricted Java type identifiers in `java_outer_classname`), and
+    invalid proto package override keys are refused (`WF9001`, exit `2`).
   - Two emitted `.proto` files resolving to the same `go_package` import path are refused
     (`WF1003`, exit `1`).
-  - A `java_outer_classname` colliding with any generated top-level message, enum, or wrapper in
-    the same file, or shared by two emitted `.proto` files in the same effective Java package
-    (explicit `java_package` or default `package`), is refused (`WF1003`, exit `1`).
+  - Two emitted `.proto` files resolving to the same `csharp_namespace` (whether via explicit
+    overrides or non-injective PascalCase derivation) are refused (`WF1003`, exit `1`) because
+    every emitted `.proto` file defines `message Empty`.
+  - Within one `.proto` file, a `java_outer_classname` colliding with any generated top-level
+    message, enum, wrapper, `<Message>OrBuilder` interface, or (when `java_multiple_files` is not
+    `true`) nested `Builder`, `WitforgeValueCase`, or `ValueCase` is refused (`WF1003`, exit `1`).
+  - Across emitted `.proto` files sharing an effective Java package (explicit `java_package` or
+    default `package`), any case-insensitive collision among emitted top-level Java classes
+    (explicit or `protoc`-default outer classnames, plus all top-level messages, `<Message>OrBuilder`
+    interfaces, and enums when `java_multiple_files = true`) is refused (`WF1003`, exit `1`).
 
 ## 5. Output, `--check`, and CLI
 

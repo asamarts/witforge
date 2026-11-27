@@ -794,6 +794,7 @@ fn load_config_file(config_path: &Path) -> Result<(ConfigFile, PathBuf)> {
         ));
     }
     validate_configured_paths(&config, config_path)?;
+    validate_configured_proto_options(&config, config_path)?;
     let base = config_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -945,7 +946,6 @@ fn resolve_paths(
     let from_config = |path: &Path| resolve_config_path(&base, path);
     validate_configured_outputs(&config, &name, emitter, out.as_deref(), &from_config)?;
     validate_configured_module_roots(&config)?;
-    validate_configured_proto_options(&config, config_path)?;
     let root = root.unwrap_or_else(|| from_config(&project.root));
     let out = out.or_else(|| match emitter {
         Emitter::Rust => project.rust.as_ref().map(|config| from_config(&config.out)),
@@ -1322,7 +1322,7 @@ fn validate_configured_proto_options(config: &ConfigFile, config_path: &Path) ->
         if let Err(err) = opts.validate() {
             return Err(op_error(
                 codes::CLI_USAGE,
-                format!("invalid project.{proj_name}.proto options: {err:#}"),
+                format!("project.{proj_name}.proto: {err:#}"),
                 Some(config_path.display().to_string()),
             ));
         }
@@ -2999,7 +2999,6 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         .collect();
     emit::output::ensure_distinct_output_roots(&refs)?;
     validate_configured_module_roots(&config)?;
-    validate_configured_proto_options(&config, &config_path)?;
 
     let selected: Vec<(String, ProjectConfig)> = if let Some(name) = &options.config.project {
         let Some(project) = config.project.get(name) else {

@@ -1627,7 +1627,62 @@ fn opt_in_proto_file_options_validate_syntax_and_refuse_collisions_and_unused_ov
         ),
         (
             proto::ProtoOptions::new().with_go_package_prefix("example.com/../up"),
-            "empty or dot segment",
+            "invalid segment",
+        ),
+        (
+            proto::ProtoOptions::new().with_go_package_prefix("-foo/bar"),
+            "invalid segment",
+        ),
+        (
+            proto::ProtoOptions::new().with_go_package_prefix("example.com/-bad"),
+            "invalid segment",
+        ),
+        (
+            proto::ProtoOptions::new().with_go_package_prefix("example.com/.hidden"),
+            "invalid segment",
+        ),
+        (
+            proto::ProtoOptions::new().with_go_package_prefix("example.com/pkg."),
+            "invalid segment",
+        ),
+        (
+            proto::ProtoOptions::new().with_go_package_prefix("example.com/a..b"),
+            "invalid segment",
+        ),
+        (
+            proto::ProtoOptions::new().with_go_package_prefix("example.com/pkg;_"),
+            "valid Go package identifier",
+        ),
+        (
+            proto::ProtoOptions::new().with_go_package_prefix("mypkg;alias"),
+            "must contain at least one `/`",
+        ),
+        (
+            proto::ProtoOptions::new().with_package_options(
+                "example.plugin.v0",
+                proto::ProtoPackageOptions::new().with_go_package("mypkg"),
+            ),
+            "must contain at least one `/`",
+        ),
+        (
+            proto::ProtoOptions::new().with_java_outer_classname("record"),
+            "restricted Java type identifier",
+        ),
+        (
+            proto::ProtoOptions::new().with_java_outer_classname("var"),
+            "restricted Java type identifier",
+        ),
+        (
+            proto::ProtoOptions::new().with_java_outer_classname("yield"),
+            "restricted Java type identifier",
+        ),
+        (
+            proto::ProtoOptions::new().with_java_outer_classname("sealed"),
+            "restricted Java type identifier",
+        ),
+        (
+            proto::ProtoOptions::new().with_java_outer_classname("permits"),
+            "restricted Java type identifier",
         ),
         (
             proto::ProtoOptions::new().with_go_package_prefix("example.com/pkg;func"),
@@ -1767,7 +1822,7 @@ fn opt_in_proto_file_options_validate_syntax_and_refuse_collisions_and_unused_ov
         );
     assert_collision_err(
         proto::plan_with_options(&deps_root, None, &dup_java_outer).unwrap_err(),
-        "option java_outer_classname `SharedProto` collides in Java package `com.acme.same`",
+        "generated Java class `SharedProto` in Java package `com.acme.same`",
     );
 
     // Same `java_outer_classname` in DISTINCT effective Java packages succeeds cleanly.
@@ -1775,4 +1830,202 @@ fn opt_in_proto_file_options_validate_syntax_and_refuse_collisions_and_unused_ov
         .with_java_package_prefix("com.acme.distinct")
         .with_java_outer_classname("ContractProto");
     assert!(proto::plan_with_options(&deps_root, None, &distinct_java_outer).is_ok());
+
+    // 5. Same-file Java outer classname collisions: `<Message>OrBuilder`, enclosed `Builder` /
+    //    `WitforgeValueCase` / `ValueCase`, method enum, and request/response messages; restricted
+    //    type identifiers (`record`, `var`) remain valid in `java_package`.
+    assert!(
+        proto::ProtoOptions::new()
+            .with_java_package_prefix("com.acme.record.var")
+            .validate()
+            .is_ok()
+    );
+    for colliding in [
+        "EmptyOrBuilder",
+        "TypesSpanOrBuilder",
+        "AnalyzerMethod",
+        "AnalyzerAnalyzeRequest",
+        "Builder",
+        "WitforgeValueCase",
+        "ValueCase",
+    ] {
+        let opts = proto::ProtoOptions::new().with_java_outer_classname(colliding);
+        assert_collision_err(
+            proto::emit_major_with_options(&ok_model, &ok_lock, &opts).unwrap_err(),
+            colliding,
+        );
+    }
+    // With `java_multiple_files = true`, enclosed nested names (`Builder`, `WitforgeValueCase`,
+    // `ValueCase`) do NOT collide with the outer class, whereas `<Message>OrBuilder` still does.
+    assert!(
+        proto::emit_major_with_options(
+            &ok_model,
+            &ok_lock,
+            &proto::ProtoOptions::new()
+                .with_java_multiple_files(true)
+                .with_java_outer_classname("Builder"),
+        )
+        .is_ok()
+    );
+    assert_collision_err(
+        proto::emit_major_with_options(
+            &ok_model,
+            &ok_lock,
+            &proto::ProtoOptions::new()
+                .with_java_multiple_files(true)
+                .with_java_outer_classname("EmptyOrBuilder"),
+        )
+        .unwrap_err(),
+        "EmptyOrBuilder",
+    );
+
+    // 6. Cross-file Java collisions in the same `java_package`:
+    //    a) two files with `java_multiple_files = true` collide on `Empty`;
+    //    b) implicit default outer classname (`v0.proto` -> `V0`) vs explicit `V0`;
+    //    c) case-insensitive `.java` filename collision (`CustomProto` vs `customproto`).
+    let dup_java_multi = proto::ProtoOptions::new()
+        .with_java_multiple_files(true)
+        .with_package_options(
+            p0.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_java_package("com.acme.same")
+                .with_java_outer_classname("FirstProto"),
+        )
+        .with_package_options(
+            p1.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_java_package("com.acme.same")
+                .with_java_outer_classname("SecondProto"),
+        );
+    assert_collision_err(
+        proto::plan_with_options(&deps_root, None, &dup_java_multi).unwrap_err(),
+        "generated Java class `Empty` in Java package `com.acme.same`",
+    );
+
+    // `deps_plan.files()` sorts `"example.shared.v0.proto"` (`p0`) before `"v0.proto"` (`p1`), so
+    // setting `java_outer_classname = "V0"` on `p0` collides with `v0.proto`'s implicit `V0`.
+    let implicit_vs_explicit_outer = proto::ProtoOptions::new()
+        .with_package_options(
+            p0.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_java_package("com.acme.same")
+                .with_java_outer_classname("V0"),
+        )
+        .with_package_options(
+            p1.clone(),
+            proto::ProtoPackageOptions::new().with_java_package("com.acme.same"),
+        );
+    assert_collision_err(
+        proto::plan_with_options(&deps_root, None, &implicit_vs_explicit_outer).unwrap_err(),
+        "generated Java class `V0` in Java package `com.acme.same`",
+    );
+
+    // Cross-file `java_multiple_files = true` top-level type (`TypesItem` in `p0`) collides with
+    // `java_outer_classname = "TypesItem"` on `p1` in the same Java package.
+    let multi_type_vs_outer = proto::ProtoOptions::new()
+        .with_package_options(
+            p0.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_java_package("com.acme.same")
+                .with_java_multiple_files(true),
+        )
+        .with_package_options(
+            p1.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_java_package("com.acme.same")
+                .with_java_outer_classname("TypesItem"),
+        );
+    assert_collision_err(
+        proto::plan_with_options(&deps_root, None, &multi_type_vs_outer).unwrap_err(),
+        "generated Java class `TypesItem` in Java package `com.acme.same`",
+    );
+
+    let ci_java_outer = proto::ProtoOptions::new()
+        .with_package_options(
+            p0.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_java_package("com.acme.same")
+                .with_java_outer_classname("CustomProto"),
+        )
+        .with_package_options(
+            p1.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_java_package("com.acme.same")
+                .with_java_outer_classname("customproto"),
+        );
+    assert_collision_err(
+        proto::plan_with_options(&deps_root, None, &ci_java_outer).unwrap_err(),
+        "generated Java class `CustomProto` in Java package `com.acme.same`",
+    );
+
+    // 7. Cross-file `csharp_namespace` collisions: explicit override AND non-injective derivation
+    //    (`example:AB` + `example:a-b` both derive `Acme.Contracts.Example.AB.V0`).
+    let dup_csharp = proto::ProtoOptions::new()
+        .with_package_options(
+            p0.clone(),
+            proto::ProtoPackageOptions::new().with_csharp_namespace("Acme.Same"),
+        )
+        .with_package_options(
+            p1.clone(),
+            proto::ProtoPackageOptions::new().with_csharp_namespace("Acme.Same"),
+        );
+    assert_collision_err(
+        proto::plan_with_options(&deps_root, None, &dup_csharp).unwrap_err(),
+        "option csharp_namespace `Acme.Same` collides",
+    );
+
+    let csharp_base =
+        std::env::temp_dir().join(format!("witforge-proto-csharp-coll-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&csharp_base);
+    let csharp_v0 = csharp_base.join("v0.1");
+    fs::create_dir_all(csharp_v0.join("deps/ab")).unwrap();
+    fs::write(
+        csharp_v0.join("deps/ab/types.wit"),
+        "package example:a-b@0.1.0;\ninterface common { record tag { id: u32 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        csharp_v0.join("contract.wit"),
+        "package example:AB@0.1.0;\n\
+         interface api {\n\
+           use example:a-b/common@0.1.0.{tag};\n\
+           record item { tag: tag }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_version_dir_first(&csharp_v0);
+    assert_collision_err(
+        proto::plan_with_options(
+            &csharp_base,
+            None,
+            &proto::ProtoOptions::new().with_csharp_namespace_prefix("Acme.Contracts"),
+        )
+        .unwrap_err(),
+        "option csharp_namespace `Acme.Contracts.Example.AB.V0` collides",
+    );
+    fs::remove_dir_all(&csharp_base).unwrap();
+
+    // 8. Unused `packages` key surfaces `WF9001` BEFORE cross-file `WF1003` collisions in `plan`.
+    let typo_and_alias = proto::ProtoOptions::new()
+        .with_go_package_prefix("example.com/shared;shared")
+        .with_package_options(
+            "example.typo.v0",
+            proto::ProtoPackageOptions::new().with_go_package("example.com/custom;custom"),
+        );
+    assert_usage_err(
+        proto::plan_with_options(&deps_root, None, &typo_and_alias).unwrap_err(),
+        "does not match any emitted proto package",
+    );
+
+    // 9. Multi-file base `;alias` succeeds when overrides leave at most one file inheriting it.
+    let mut single_inheritor =
+        proto::ProtoOptions::new().with_go_package_prefix("example.com/root;rootv0");
+    for (idx, pkg) in dep_pkgs.iter().enumerate().skip(1) {
+        single_inheritor = single_inheritor.with_package_options(
+            pkg.clone(),
+            proto::ProtoPackageOptions::new()
+                .with_go_package(format!("example.com/dep{idx};dep{idx}")),
+        );
+    }
+    assert!(proto::plan_with_options(&deps_root, None, &single_inheritor).is_ok());
 }

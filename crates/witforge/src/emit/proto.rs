@@ -215,13 +215,13 @@ impl ProtoOptions {
     /// unsafe characters, or violates the target language's package/identifier rules.
     pub fn validate(&self) -> Result<()> {
         if let Some(go) = &self.go_package_prefix {
-            validate_go_package_value(go, "go_package")?;
+            validate_go_package_value(go, "go_package", go.contains(';'))?;
         }
         if let Some(java) = &self.java_package_prefix {
             validate_java_package(java, "java_package")?;
         }
         if let Some(outer) = &self.java_outer_classname {
-            validate_java_ident(outer, "java_outer_classname")?;
+            validate_java_type_ident(outer, "java_outer_classname")?;
         }
         if let Some(csharp) = &self.csharp_namespace_prefix {
             validate_csharp_namespace(csharp, "csharp_namespace")?;
@@ -229,13 +229,16 @@ impl ProtoOptions {
         for (pkg_key, pkg_opts) in &self.packages {
             validate_proto_package_key(pkg_key)?;
             if let Some(go) = &pkg_opts.go_package {
-                validate_go_package_value(go, &format!("packages.{pkg_key}.go_package"))?;
+                validate_go_package_value(go, &format!("packages.{pkg_key}.go_package"), true)?;
             }
             if let Some(java) = &pkg_opts.java_package {
                 validate_java_package(java, &format!("packages.{pkg_key}.java_package"))?;
             }
             if let Some(outer) = &pkg_opts.java_outer_classname {
-                validate_java_ident(outer, &format!("packages.{pkg_key}.java_outer_classname"))?;
+                validate_java_type_ident(
+                    outer,
+                    &format!("packages.{pkg_key}.java_outer_classname"),
+                )?;
             }
             if let Some(csharp) = &pkg_opts.csharp_namespace {
                 validate_csharp_namespace(csharp, &format!("packages.{pkg_key}.csharp_namespace"))?;
@@ -348,14 +351,52 @@ pub(crate) fn plan_versions_with_options(
         }
     }
 
-    let multi_file = highest.len() + dep_targets.len() > 1;
+    // Pre-compute every emitted proto package name so unused `options.packages` overrides are
+    // reported upfront (`WF9001`) before any cross-file collision (`WF1003`), and so we know
+    // exactly how many emitted files inherit the base `go_package_prefix`.
     let mut emitted_packages: BTreeSet<String> = BTreeSet::new();
-    let mut seen_go_paths: BTreeMap<String, String> = BTreeMap::new();
-    let mut seen_java_outers: BTreeMap<(String, String), String> = BTreeMap::new();
-    let mut files = GeneratedFiles::new(&header);
-
+    let mut major_packages: Vec<(u64, &Version, String, String)> =
+        Vec::with_capacity(highest.len());
     for (&major, version) in &highest {
         let filename = format!("v{major}.proto");
+        let probe = Emitter::new_with_layout(
+            &version.model,
+            &version.lock,
+            major,
+            Some(&dep_layout),
+            None,
+        )?;
+        emitted_packages.insert(probe.package.clone());
+        major_packages.push((major, version, filename, probe.package));
+    }
+    let mut dep_packages: Vec<(u64, String, Dependency, String)> =
+        Vec::with_capacity(dep_targets.len());
+    for (major, filename, dependency) in dep_targets {
+        let pkg_name = dep_layout.proto_package(major, &dependency);
+        emitted_packages.insert(pkg_name.clone());
+        dep_packages.push((major, filename, dependency, pkg_name));
+    }
+    check_unused_package_overrides(options, &emitted_packages)?;
+
+    let go_base_inheritors = emitted_packages
+        .iter()
+        .filter(|pkg| {
+            options
+                .packages
+                .get(*pkg)
+                .and_then(|o| o.go_package.as_ref())
+                .is_none()
+        })
+        .count();
+    let multi_go_base = go_base_inheritors > 1;
+    let check_java_classes = has_any_java_option(options);
+
+    let mut seen_go_paths: BTreeMap<String, String> = BTreeMap::new();
+    let mut seen_csharp_namespaces: BTreeMap<String, String> = BTreeMap::new();
+    let mut seen_java_classes: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
+    let mut files = GeneratedFiles::new(&header);
+
+    for (major, version, filename, proto_package) in major_packages {
         let emitter = Emitter::new_with_layout(
             &version.model,
             &version.lock,
@@ -363,23 +404,24 @@ pub(crate) fn plan_versions_with_options(
             Some(&dep_layout),
             None,
         )?;
-        let proto_package = emitter.package.clone();
-        let file_options = resolve_file_options(&proto_package, options, multi_file)?;
+        let file_options = resolve_file_options(&proto_package, options, multi_go_base)?;
+        let (generated, meta) = emitter
+            .emit_with_options_and_meta(&header, &file_options)
+            .with_context(|| version.directory.display().to_string())?;
         record_file_options(
             &filename,
             &proto_package,
             &file_options,
-            &mut emitted_packages,
+            &meta,
+            check_java_classes,
             &mut seen_go_paths,
-            &mut seen_java_outers,
+            &mut seen_csharp_namespaces,
+            &mut seen_java_classes,
         )?;
-        let generated = emitter
-            .emit_with_options(&header, &file_options)
-            .with_context(|| version.directory.display().to_string())?;
         files.insert(filename, generated)?;
     }
 
-    for (major, filename, dependency) in dep_targets {
+    for (major, filename, dependency, proto_package) in dep_packages {
         let deps = dep_layout
             .by_major
             .get(&major)
@@ -400,26 +442,30 @@ pub(crate) fn plan_versions_with_options(
         let members = model.members()?;
         let mut lock = WireLock::default();
         lock.reconcile(&members)?;
-        let pkg_override = dep_layout.proto_package(major, &dependency);
-        let emitter =
-            Emitter::new_with_layout(&model, &lock, major, Some(&dep_layout), Some(pkg_override))?;
-        let proto_package = emitter.package.clone();
-        let file_options = resolve_file_options(&proto_package, options, multi_file)?;
+        let emitter = Emitter::new_with_layout(
+            &model,
+            &lock,
+            major,
+            Some(&dep_layout),
+            Some(proto_package.clone()),
+        )?;
+        let file_options = resolve_file_options(&proto_package, options, multi_go_base)?;
+        let (generated, meta) = emitter
+            .emit_with_options_and_meta(&header, &file_options)
+            .with_context(|| format!("dependency {}", dependency.package.name))?;
         record_file_options(
             &filename,
             &proto_package,
             &file_options,
-            &mut emitted_packages,
+            &meta,
+            check_java_classes,
             &mut seen_go_paths,
-            &mut seen_java_outers,
+            &mut seen_csharp_namespaces,
+            &mut seen_java_classes,
         )?;
-        let generated = emitter
-            .emit_with_options(&header, &file_options)
-            .with_context(|| format!("dependency {}", dependency.package.name))?;
         files.insert(filename, generated)?;
     }
 
-    check_unused_package_overrides(options, &emitted_packages)?;
     Ok(files)
 }
 
@@ -544,7 +590,8 @@ pub fn emit_major_with_options(
     packages_seen.insert(proto_package.clone());
     check_unused_package_overrides(options, &packages_seen)?;
     let file_options = resolve_file_options(&proto_package, options, false)?;
-    emitter.emit_with_options(&header, &file_options)
+    let (generated, _) = emitter.emit_with_options_and_meta(&header, &file_options)?;
+    Ok(generated)
 }
 
 struct Emitter<'a> {
@@ -656,11 +703,11 @@ impl<'a> Emitter<'a> {
         )
     }
 
-    fn emit_with_options(
+    fn emit_with_options_and_meta(
         mut self,
         header: &str,
         file_options: &ResolvedFileOptions,
-    ) -> Result<String> {
+    ) -> Result<(String, EmittedProtoMeta)> {
         let mut body = String::new();
         writeln!(body, "message {EMPTY} {{}}")?;
 
@@ -703,17 +750,16 @@ impl<'a> Emitter<'a> {
             writeln!(body, "{wrapper}")?;
         }
 
-        if let Some(outer) = &file_options.java_outer_classname
-            && let Some(source) = self
-                .top_names
-                .get(outer)
-                .or_else(|| self.wrapper_sources.get(outer))
-        {
-            contract_bail!(
-                "option java_outer_classname `{outer}` in proto package `{}` collides with \
-                 generated type `{outer}` ({source})",
-                self.package
-            );
+        let meta = EmittedProtoMeta::from_body(&body);
+        if let Some(outer) = &file_options.java_outer_classname {
+            validate_same_file_java_outer_classname(
+                &self.package,
+                outer,
+                file_options.java_multiple_files,
+                &meta,
+                &self.top_names,
+                &self.wrapper_sources,
+            )?;
         }
 
         let mut out = String::new();
@@ -744,7 +790,7 @@ impl<'a> Emitter<'a> {
         if !out.ends_with('\n') {
             out.push('\n');
         }
-        Ok(out)
+        Ok((out, meta))
     }
 
     /// Collect the dependency `.proto` files actually referenced by non-comment lines in `body`.
@@ -3505,15 +3551,140 @@ fn resolve_file_options(
     })
 }
 
+#[derive(Debug, Default)]
+struct EmittedProtoMeta {
+    messages: Vec<String>,
+    enums: Vec<String>,
+    has_witforge_value_oneof: bool,
+    has_value_oneof: bool,
+}
+
+impl EmittedProtoMeta {
+    fn from_body(body: &str) -> Self {
+        let mut meta = Self::default();
+        for line in body.lines() {
+            if let Some(rest) = line.strip_prefix("message ") {
+                if let Some(name) = rest.split_whitespace().next() {
+                    meta.messages.push(name.to_string());
+                }
+            } else if let Some(rest) = line.strip_prefix("enum ") {
+                if let Some(name) = rest.split_whitespace().next() {
+                    meta.enums.push(name.to_string());
+                }
+            } else if line == "  oneof witforge_value {" {
+                meta.has_witforge_value_oneof = true;
+            } else if line == "  oneof value {" {
+                meta.has_value_oneof = true;
+            }
+        }
+        meta
+    }
+
+    fn contains_top_type(&self, name: &str) -> bool {
+        self.messages.iter().any(|m| m == name) || self.enums.iter().any(|e| e == name)
+    }
+}
+
+fn has_any_java_option(options: &ProtoOptions) -> bool {
+    options.java_package_prefix.is_some()
+        || options.java_multiple_files.is_some()
+        || options.java_outer_classname.is_some()
+        || options.packages.values().any(|pkg| {
+            pkg.java_package.is_some()
+                || pkg.java_multiple_files.is_some()
+                || pkg.java_outer_classname.is_some()
+        })
+}
+
+/// Derive `protoc --java_out`'s default outer class name from a `.proto` filename.
+fn default_java_outer_classname(filename: &str, meta: &EmittedProtoMeta) -> String {
+    let stem = filename.strip_suffix(".proto").unwrap_or(filename);
+    let mut name = String::with_capacity(stem.len());
+    let mut capitalize_next = true;
+    for ch in stem.chars() {
+        if ch.is_ascii_lowercase() {
+            if capitalize_next {
+                name.push(ch.to_ascii_uppercase());
+            } else {
+                name.push(ch);
+            }
+            capitalize_next = false;
+        } else if ch.is_ascii_uppercase() {
+            name.push(ch);
+            capitalize_next = false;
+        } else if ch.is_ascii_digit() {
+            name.push(ch);
+            capitalize_next = true;
+        } else {
+            capitalize_next = true;
+        }
+    }
+    if meta.contains_top_type(&name) {
+        name.push_str("OuterClass");
+    }
+    name
+}
+
+fn validate_same_file_java_outer_classname(
+    proto_package: &str,
+    outer: &str,
+    java_multiple_files: Option<bool>,
+    meta: &EmittedProtoMeta,
+    top_names: &BTreeMap<String, String>,
+    wrapper_sources: &BTreeMap<String, String>,
+) -> Result<()> {
+    if let Some(source) = top_names.get(outer).or_else(|| wrapper_sources.get(outer)) {
+        contract_bail!(
+            "option java_outer_classname `{outer}` in proto package `{proto_package}` collides \
+             with generated type `{outer}` ({source})"
+        );
+    }
+    for msg in &meta.messages {
+        let or_builder = format!("{msg}OrBuilder");
+        if outer == or_builder {
+            contract_bail!(
+                "option java_outer_classname `{outer}` in proto package `{proto_package}` \
+                 collides with generated protobuf Java interface `{or_builder}` for message `{msg}`"
+            );
+        }
+    }
+    if java_multiple_files != Some(true) {
+        if outer == "Builder" {
+            contract_bail!(
+                "option java_outer_classname `Builder` in proto package `{proto_package}` \
+                 collides with nested protobuf message `Builder` class when `java_multiple_files` \
+                 is not `true`"
+            );
+        }
+        if outer == "WitforgeValueCase" && meta.has_witforge_value_oneof {
+            contract_bail!(
+                "option java_outer_classname `WitforgeValueCase` in proto package \
+                 `{proto_package}` collides with nested variant oneof enum `WitforgeValueCase` \
+                 when `java_multiple_files` is not `true`"
+            );
+        }
+        if outer == "ValueCase" && meta.has_value_oneof {
+            contract_bail!(
+                "option java_outer_classname `ValueCase` in proto package `{proto_package}` \
+                 collides with nested result/wrapper oneof enum `ValueCase` when \
+                 `java_multiple_files` is not `true`"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_file_options(
     filename: &str,
     proto_package: &str,
     file_options: &ResolvedFileOptions,
-    emitted_packages: &mut BTreeSet<String>,
+    meta: &EmittedProtoMeta,
+    check_java_classes: bool,
     seen_go_paths: &mut BTreeMap<String, String>,
-    seen_java_outers: &mut BTreeMap<(String, String), String>,
+    seen_csharp_namespaces: &mut BTreeMap<String, String>,
+    seen_java_classes: &mut BTreeMap<(String, String), (String, String)>,
 ) -> Result<()> {
-    emitted_packages.insert(proto_package.to_string());
     if let Some(go_pkg) = &file_options.go_package {
         let import_path = go_pkg.split(';').next().unwrap_or(go_pkg).to_string();
         if let Some(previous) = seen_go_paths.insert(import_path.clone(), filename.to_string()) {
@@ -3523,19 +3694,47 @@ fn record_file_options(
             );
         }
     }
-    if let Some(outer) = &file_options.java_outer_classname {
+    if let Some(csharp_ns) = &file_options.csharp_namespace
+        && let Some(previous) =
+            seen_csharp_namespaces.insert(csharp_ns.clone(), filename.to_string())
+    {
+        contract_bail!(
+            "option csharp_namespace `{csharp_ns}` collides between `{previous}` and `{filename}` \
+             (every emitted `.proto` file defines `message Empty`); set distinct per-package \
+             overrides under `proto.packages`"
+        );
+    }
+    if check_java_classes {
         let effective_pkg = file_options
             .java_package
             .as_deref()
             .unwrap_or(proto_package)
             .to_string();
-        let key = (effective_pkg.clone(), outer.clone());
-        if let Some(previous) = seen_java_outers.insert(key, filename.to_string()) {
-            contract_bail!(
-                "option java_outer_classname `{outer}` collides in Java package `{effective_pkg}` \
-                 between `{previous}` and `{filename}`; set distinct per-package overrides under \
-                 `proto.packages`"
-            );
+        let effective_outer = file_options
+            .java_outer_classname
+            .clone()
+            .unwrap_or_else(|| default_java_outer_classname(filename, meta));
+        let mut emitted_classes = vec![effective_outer];
+        if file_options.java_multiple_files == Some(true) {
+            for msg in &meta.messages {
+                emitted_classes.push(msg.clone());
+                emitted_classes.push(format!("{msg}OrBuilder"));
+            }
+            for en in &meta.enums {
+                emitted_classes.push(en.clone());
+            }
+        }
+        for class_name in emitted_classes {
+            let key = (effective_pkg.clone(), class_name.to_ascii_lowercase());
+            if let Some((prev_class, prev_file)) =
+                seen_java_classes.insert(key, (class_name.clone(), filename.to_string()))
+            {
+                contract_bail!(
+                    "generated Java class `{class_name}` in Java package `{effective_pkg}` \
+                     (`{filename}`) collides with `{prev_class}` from `{prev_file}`; use distinct \
+                     `java_package` or `java_outer_classname` overrides under `proto.packages`"
+                );
+            }
         }
     }
     Ok(())
@@ -3596,7 +3795,7 @@ fn validate_proto_package_key(key: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_go_package_value(value: &str, label: &str) -> Result<()> {
+fn validate_go_package_value(value: &str, label: &str, require_slash: bool) -> Result<()> {
     ensure_safe_option_string(value, label)?;
     let mut parts = value.split(';');
     let import_path = parts.next().unwrap_or_default();
@@ -3606,24 +3805,36 @@ fn validate_go_package_value(value: &str, label: &str) -> Result<()> {
                 "invalid {label} `{value}`: at most one `;` package alias separator is allowed"
             )));
         }
-        validate_go_import_path(import_path, label)?;
+        validate_go_import_path(import_path, label, true)?;
         validate_go_ident(alias, label)?;
     } else {
-        validate_go_import_path(import_path, label)?;
+        validate_go_import_path(import_path, label, require_slash)?;
     }
     Ok(())
 }
 
-fn validate_go_import_path(path: &str, label: &str) -> Result<()> {
+fn validate_go_import_path(path: &str, label: &str, require_slash: bool) -> Result<()> {
     if path.is_empty() || path.starts_with('/') || path.ends_with('/') {
         return Err(proto_option_usage_error(format!(
             "invalid {label} `{path}`: Go import path must not be empty or start/end with `/`"
         )));
     }
+    if require_slash && !path.contains('/') {
+        return Err(proto_option_usage_error(format!(
+            "invalid {label} `{path}`: verbatim Go import path must contain at least one `/`"
+        )));
+    }
     for segment in path.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
+        if segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.starts_with('-')
+            || segment.starts_with('.')
+            || segment.ends_with('.')
+            || segment.contains("..")
+        {
             return Err(proto_option_usage_error(format!(
-                "invalid {label} `{path}`: Go import path contains empty or dot segment `{segment}`"
+                "invalid {label} `{path}`: Go import path contains invalid segment `{segment}`"
             )));
         }
         if !segment
@@ -3640,7 +3851,7 @@ fn validate_go_import_path(path: &str, label: &str) -> Result<()> {
 }
 
 fn validate_go_ident(ident_str: &str, label: &str) -> Result<()> {
-    if !is_ascii_ident(ident_str) || GO_KEYWORDS.contains(&ident_str) {
+    if !is_ascii_ident(ident_str) || ident_str == "_" || GO_KEYWORDS.contains(&ident_str) {
         return Err(proto_option_usage_error(format!(
             "invalid {label}: `{ident_str}` is not a valid Go package identifier"
         )));
@@ -3661,6 +3872,16 @@ fn validate_java_ident(ident_str: &str, label: &str) -> Result<()> {
     if !is_ascii_ident(ident_str) || JAVA_KEYWORDS.contains(&ident_str) {
         return Err(proto_option_usage_error(format!(
             "invalid {label}: `{ident_str}` is not a valid Java identifier"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_java_type_ident(ident_str: &str, label: &str) -> Result<()> {
+    validate_java_ident(ident_str, label)?;
+    if JAVA_RESTRICTED_TYPE_IDENTIFIERS.contains(&ident_str) {
+        return Err(proto_option_usage_error(format!(
+            "invalid {label}: `{ident_str}` is a restricted Java type identifier"
         )));
     }
     Ok(())
@@ -3758,6 +3979,8 @@ const GO_KEYWORDS: &[&str] = &[
     "type",
     "var",
 ];
+
+const JAVA_RESTRICTED_TYPE_IDENTIFIERS: &[&str] = &["permits", "record", "sealed", "var", "yield"];
 
 const JAVA_KEYWORDS: &[&str] = &[
     "_",
