@@ -801,6 +801,62 @@ impl Model {
         self.resolves_to_u8_inner(context, ty, &mut HashSet::new())
     }
 
+    /// Whether `ty` resolves to a WIT `option<T>` after following aliases, including aliases or
+    /// named `option` definitions declared in a dependency package.
+    ///
+    /// Target languages whose optional representation collapses `None` (Python `T | None`, Go
+    /// `*T`, C# `T?`) use this to wrap nested options (`option<option<T>>`, `option<alias-to-opt>`)
+    /// so `Some(None)` stays distinct from `None`.
+    #[must_use]
+    pub(crate) fn resolves_to_option_in(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+    ) -> bool {
+        self.resolves_to_option_inner(context, ty, &mut HashSet::new())
+    }
+
+    fn resolves_to_option_inner(
+        &self,
+        context: Option<&Dependency>,
+        ty: &TypeExpr,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        match ty {
+            TypeExpr::Option(_) => true,
+            TypeExpr::Named(name) => {
+                let Some((resolved, def)) = self.type_def_in(context, name) else {
+                    return false;
+                };
+                match &def.kind {
+                    TypeDefKind::Option(_) => true,
+                    TypeDefKind::Alias(target) => {
+                        let key = resolved.map_or_else(
+                            || format!("{}/{}", name.interface, name.name),
+                            |dependency| {
+                                format!(
+                                    "{}:{}/{}/{}",
+                                    dependency.package.namespace,
+                                    dependency.package.name,
+                                    name.interface_name(),
+                                    name.name
+                                )
+                            },
+                        );
+                        if !visiting.insert(key.clone()) {
+                            return false;
+                        }
+                        let answer = self.resolves_to_option_inner(resolved, target, visiting);
+                        visiting.remove(&key);
+                        answer
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn resolves_to_u8_inner(
         &self,
         context: Option<&Dependency>,

@@ -55,6 +55,21 @@ All notable changes to this project are documented here. The format follows
   Unicode scalar `char`, closed-enum, exact `list<T, N>` length, and `map<K, V>` key checks,
   verified offline and in a SHA-pinned `ts-conformance` CI job against every `W11-034` binary,
   proto3-JSON, and encode-bounds vector.
+- **Python plain types and `Protocol` interfaces emitter (`W13-004`):** Added additive
+  `witforge::emit::python` (`#[non_exhaustive]` `PythonOptions`, `plan`, `plan_with_released`,
+  `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options`,
+  `version_dir_name`, `emit_version`, and `emit_version_with_options`), the `witforge py` CLI
+  subcommand, and `[project.<name>.python]` configuration in `witforge.toml` (wired into
+  `ensure_distinct_output_roots` and `witforge generate`). Emits deterministic, LF-only,
+  zero-dependency Python 3.11+ stdlib packages (`@dataclass(frozen=True, slots=True)`, `StrEnum`,
+  `Protocol` interfaces, per-case variant dataclasses + `TypeAlias` unions, `witforge_types.py`
+  with nested `Option`/`Some`/`NONE` and `Ok`/`Err`/`Result` helpers, `bytes` for `list<u8>`,
+  `tuple[T, ...]` for `list<T>`/`list<T, N>`, `Mapping[K, V]` for `map<K, V>`, empty PEP 561
+  `py.typed` marker via `GeneratedFiles::insert_marker`, `#` ownership headers, `worlds.py` with
+  read-only `MappingProxyType`, `witforge_deps/` with cross-major `DepLayout` canonical-owner
+  re-exports preserving class identity, PEP 257 docstrings, keyword/builtin/`self` escaping, and
+  Windows reserved filename stem protection) verified offline and against live `python3` runtime
+  and `typing.get_type_hints()` checks.
 - **Cross-language protobuf conformance profile and fixture bundle (`W11-034`):** Added additive
   `witforge::conformance` (`CONFORMANCE_VERSION = 1`, `#[non_exhaustive]` `ConformanceOptions` and
   `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, and

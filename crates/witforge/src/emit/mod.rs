@@ -31,6 +31,7 @@ pub mod json_schema;
 pub mod output;
 pub mod polyglot;
 pub mod proto;
+pub mod python;
 pub mod rust;
 pub(crate) mod rustfmt;
 pub mod typescript;
@@ -203,7 +204,7 @@ mod tests {
     use std::path::Path;
 
     use super::versions::{Version, load_versions};
-    use super::{glue, proto, rust, typescript, typescript_glue};
+    use super::{glue, proto, python, rust, typescript, typescript_glue};
     use crate::is_contract_error;
     use crate::lock::WireLock;
     use crate::model::{QualifiedName, TypeDefKind, TypeExpr};
@@ -248,6 +249,11 @@ mod tests {
                 &typescript::TypeScriptOptions::new(),
             )
             .unwrap_err(),
+            "is not in the model",
+        );
+        assert_internal(
+            &python::plan_versions_with_options(&dangling, &python::PythonOptions::new())
+                .unwrap_err(),
             "is not in the model",
         );
         assert_internal(

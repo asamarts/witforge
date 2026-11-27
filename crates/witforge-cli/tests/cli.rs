@@ -1402,7 +1402,7 @@ fn generators_ignore_a_binary_file_in_the_output_root() {
     let bytes = [
         0x00, 0x00, 0x00, 0x01, 0x42, 0x75, 0x64, 0x31, 0xff, 0xfe, 0x80,
     ];
-    for command in ["rust", "proto", "glue", "ts", "ts-glue"] {
+    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
         let out = base.join(format!("{command}-out"));
         fs::create_dir_all(&out).unwrap();
         fs::write(out.join(".DS_Store"), bytes).unwrap();
@@ -1442,7 +1442,7 @@ fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_com
         "existing/../wit/gen",
         "existing/../wit/v0.2",
     ] {
-        for command in ["rust", "proto", "glue", "ts", "ts-glue"] {
+        for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
             let mut witforge = witforge();
             witforge
                 .current_dir(&base)
@@ -1742,7 +1742,7 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
     ] {
         assert_ne!(contract, original);
         fs::write(&source, &contract).unwrap();
-        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue"] {
+        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue", "py"] {
             for check in [false, true] {
                 let output = run(command, check);
                 assert_eq!(
@@ -1864,7 +1864,7 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
         }
         witforge.output().unwrap()
     };
-    for command in ["rust", "proto", "glue", "ts", "ts-glue"] {
+    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
         for check in [false, true] {
             let output = run(command, check);
             assert_eq!(
@@ -1896,7 +1896,7 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
         .output()
         .unwrap();
     assert!(lock.status.success(), "{lock:?}");
-    for command in ["rust", "proto", "glue", "ts", "ts-glue"] {
+    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py"] {
         for check in [false, true] {
             let output = run(command, check);
             assert!(output.status.success(), "{command} {check}: {output:?}");
@@ -2474,6 +2474,7 @@ fn generators_refuse_a_lockfile_of_another_package_even_without_members() {
         ("rust", &[][..]),
         ("proto", &[][..]),
         ("ts", &[][..]),
+        ("py", &[][..]),
         (
             "ts-glue",
             &["--plain-root", "../plain", "--proto-root", "../proto"][..],
@@ -2521,6 +2522,7 @@ fn generators_refuse_a_symlinked_version_directory_no_manifest_lists() {
         ("rust", &[][..]),
         ("proto", &[][..]),
         ("ts", &[][..]),
+        ("py", &[][..]),
         (
             "ts-glue",
             &["--plain-root", "../plain", "--proto-root", "../proto"][..],
@@ -2964,7 +2966,7 @@ fn output_root_guard_closes_symlink_and_parent_component_bypasses() {
         ("wit", "."),
     ];
     for (root_arg, out_arg) in cases {
-        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue"] {
+        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue", "py"] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
                 cmd.current_dir(&base)
@@ -3025,7 +3027,7 @@ fn output_root_guard_protects_released_directories() {
     }
 
     for out in &bad_outs {
-        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue"] {
+        for command in ["rust", "proto", "schema", "glue", "ts", "ts-glue", "py"] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
                 cmd.args([
@@ -3144,6 +3146,9 @@ fn generators_refuse_shared_roots_across_both_orders_of_generators_and_contracts
         ("ts", "rust", "index.ts", "generator `ts`"),
         ("ts", "ts-glue", "index.ts", "generator `ts`"),
         ("ts-glue", "ts", "error.ts", "generator `ts-glue`"),
+        ("rust", "py", "mod.rs", "generator `rust`"),
+        ("py", "rust", "__init__.py", "generator `py`"),
+        ("py", "ts", "__init__.py", "generator `py`"),
     ] {
         let out = base.join(format!("shared-{first}-{second}"));
         assert!(run_gen(first, &wit_a, &out, false).status.success());
@@ -4516,6 +4521,7 @@ fn build_identity_quiet_mode_completions_and_explain() {
         "doc",
         "ts",
         "ts-glue",
+        "py",
         "conformance",
         "generate",
         "init",
@@ -6817,6 +6823,197 @@ fn ts_glue_command_config_generate_overlap_and_completions() {
         assert!(
             script.contains("ts-glue"),
             "{shell} completion missing `ts-glue`:\n{script}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn py_command_config_generate_overlap_and_completions() {
+    let base = versions("py-cli");
+    let wit = base.join("wit");
+    let py_out = base.join("gen/py");
+
+    // 1. Direct `witforge py` generates nested package with `py.typed` and passes `--check`.
+    let gen_res = witforge()
+        .args([
+            "py",
+            wit.to_str().unwrap(),
+            "--out",
+            py_out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(gen_res.status.code(), Some(0), "{gen_res:?}");
+    assert!(py_out.join("py.typed").is_file());
+    assert_eq!(fs::read(py_out.join("py.typed")).unwrap(), b"");
+    assert!(py_out.join("__init__.py").is_file());
+    assert!(py_out.join("witforge_types.py").is_file());
+    assert!(py_out.join("v0_1/__init__.py").is_file());
+    assert!(py_out.join("v0_2/__init__.py").is_file());
+
+    let chk_ok = witforge()
+        .args([
+            "py",
+            wit.to_str().unwrap(),
+            "--out",
+            py_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(chk_ok.status.code(), Some(0), "{chk_ok:?}");
+
+    // Drift reports exit 1, unified diff, and WF2001 in JSON/SARIF modes.
+    let init_path = py_out.join("__init__.py");
+    let orig = fs::read_to_string(&init_path).unwrap();
+    fs::write(&init_path, format!("{orig}# extra drift line\n")).unwrap();
+
+    let drift = witforge()
+        .args([
+            "py",
+            wit.to_str().unwrap(),
+            "--out",
+            py_out.to_str().unwrap(),
+            "--check",
+            "--diff",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift.status.code(), Some(1), "{drift:?}");
+    assert!(
+        String::from_utf8_lossy(&drift.stdout).contains("-# extra drift line"),
+        "{drift:?}"
+    );
+
+    let drift_sarif = witforge()
+        .args([
+            "--format",
+            "sarif",
+            "py",
+            wit.to_str().unwrap(),
+            "--out",
+            py_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
+    let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
+    assert_eq!(sarif_val["version"], "2.1.0");
+    assert!(
+        !sarif_val["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{sarif_val:#}"
+    );
+
+    // 2. `[project.<name>.python]` in `witforge.toml` integrates with `witforge generate`.
+    let cfg = base.join("witforge.toml");
+    fs::write(
+        &cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/rust\"\n\
+         [project.demo.python]\n\
+         out = \"gen/py-cfg\"\n",
+    )
+    .unwrap();
+    let gen_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(gen_all.status.code(), Some(0), "{gen_all:?}");
+    assert!(base.join("gen/rust/mod.rs").is_file());
+    assert!(base.join("gen/py-cfg/__init__.py").is_file());
+    assert!(base.join("gen/py-cfg/py.typed").is_file());
+
+    let chk_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap(), "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(chk_all.status.code(), Some(0), "{chk_all:?}");
+
+    // 3. Overlapping `[project.<name>.python].out` with another generator is refused (WF9004).
+    let overlap_cfg = base.join("overlap.toml");
+    fs::write(
+        &overlap_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/shared\"\n\
+         [project.demo.python]\n\
+         out = \"gen/shared/py\"\n",
+    )
+    .unwrap();
+    let overlap_gen = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            overlap_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(overlap_gen.status.code(), Some(2), "{overlap_gen:?}");
+    let overlap_json: serde_json::Value = serde_json::from_slice(&overlap_gen.stdout).unwrap();
+    let overlap_diags = overlap_json["diagnostics"].as_array().unwrap();
+    assert_eq!(overlap_diags.len(), 1, "{overlap_json:#}");
+    assert_eq!(overlap_diags[0]["code"], "WF9004");
+
+    // 4. `--out` overlap, `--project`, `--released`, and `-q` work cleanly.
+    let cli_overlap = witforge()
+        .args([
+            "--format",
+            "json",
+            "py",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--out",
+            base.join("gen/rust").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(cli_overlap.status.code(), Some(2), "{cli_overlap:?}");
+    assert!(
+        String::from_utf8_lossy(&cli_overlap.stdout).contains("WF9004"),
+        "{cli_overlap:?}"
+    );
+
+    let rel_manifest = wit.join("released");
+    fs::write(&rel_manifest, "v0.1\n").unwrap();
+    let py_quiet = witforge()
+        .args([
+            "-q",
+            "py",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--project",
+            "demo",
+            "--released",
+            rel_manifest.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(py_quiet.status.code(), Some(0), "{py_quiet:?}");
+    assert!(py_quiet.stdout.is_empty(), "{py_quiet:?}");
+
+    // 5. Shell completions include `py`.
+    for shell in ["bash", "zsh", "fish"] {
+        let comp = witforge().args(["completions", shell]).output().unwrap();
+        assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");
+        let script = String::from_utf8(comp.stdout).unwrap();
+        assert!(
+            script.contains(" py ") || script.contains("'py:") || script.contains("-a 'py'"),
+            "{shell} completion missing `py`:\n{script}"
         );
     }
 

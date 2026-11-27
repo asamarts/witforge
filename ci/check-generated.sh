@@ -27,6 +27,7 @@ fi
 "${RUN[@]}" ts "${WIT_ROOT}" --out "${TMP}/ts"
 "${RUN[@]}" ts-glue "${WIT_ROOT}" --out "${TMP}/ts-glue" \
     --plain-root ../ts --proto-root ../proto
+"${RUN[@]}" py "${WIT_ROOT}" --out "${TMP}/py"
 "${RUN[@]}" conformance --out "${TMP}/conformance"
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options
 
@@ -39,6 +40,7 @@ fi
 "${RUN[@]}" ts "${WIT_ROOT}" --out "${TMP}/ts" --check
 "${RUN[@]}" ts-glue "${WIT_ROOT}" --out "${TMP}/ts-glue" \
     --plain-root ../ts --proto-root ../proto --check
+"${RUN[@]}" py "${WIT_ROOT}" --out "${TMP}/py" --check
 "${RUN[@]}" conformance --out "${TMP}/conformance" --check
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options --check
 

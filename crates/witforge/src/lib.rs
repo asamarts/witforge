@@ -17,10 +17,10 @@
 //!   [`ReleasedManifest`] reads the `released` manifest of frozen versions.
 //! - [`emit`] generates the [Rust](emit::rust) output (including version-to-version
 //!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema),
-//!   [glue](emit::glue), [Markdown documentation](emit::doc), [TypeScript](emit::typescript), and
-//!   [TypeScript protobuf glue](emit::typescript_glue) output for a WIT root, provides shared
-//!   [output ownership](emit::output) and [polyglot helpers](emit::polyglot), and checks committed
-//!   output for drift.
+//!   [glue](emit::glue), [Markdown documentation](emit::doc), [TypeScript](emit::typescript),
+//!   [TypeScript protobuf glue](emit::typescript_glue), and [Python](emit::python) output for a
+//!   WIT root, provides shared [output ownership](emit::output) and
+//!   [polyglot helpers](emit::polyglot), and checks committed output for drift.
 //! - [`conformance`] emits a deterministic, versioned cross-language protobuf decode/encode
 //!   conformance bundle (`conformance_version = 1`) for verifying non-Rust protobuf glue.
 //! - [`diff`] compares two contract versions (or a working-tree contract against a Git revision)
@@ -34,10 +34,10 @@
 //!   I/O, and parse errors.
 //!
 //! The `witforge` command-line interface (the `witforge-cli` crate) wraps these as the `check`,
-//! `lock`, `rust`, `proto`, `schema`, `glue`, `doc`, `ts`, `ts-glue`, `conformance`, `generate`,
-//! `init`, `new-version`, `deps sync`, `release`, `retire`, `diff`, `inspect`, `freeze`,
-//! `completions`, and `explain` commands. For Rust `build.rs` integration, see the companion
-//! `witforge-build` crate. The normative specifications are in
+//! `lock`, `rust`, `proto`, `schema`, `glue`, `doc`, `ts`, `ts-glue`, `py`, `conformance`,
+//! `generate`, `init`, `new-version`, `deps sync`, `release`, `retire`, `diff`, `inspect`,
+//! `freeze`, `completions`, and `explain` commands. For Rust `build.rs` integration, see the
+//! companion `witforge-build` crate. The normative specifications are in
 //! [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
 pub mod conformance;
@@ -66,8 +66,8 @@ use wit_parser::{
 /// internal error.
 ///
 /// The generators ([`emit::rust`], [`emit::proto`], [`emit::json_schema`], [`emit::glue`],
-/// [`emit::doc`], [`emit::typescript`], [`emit::typescript_glue`], and [`conformance`]) and
-/// [`diff`] report a contract or lockfile violation as
+/// [`emit::doc`], [`emit::typescript`], [`emit::typescript_glue`], [`emit::python`], and
+/// [`conformance`]) and [`diff`] report a contract or lockfile violation as
 /// this type inside the returned [`anyhow::Error`], so callers can tell the two classes apart with
 /// [`is_contract_error`]; the `witforge` CLI does the same for `check` and `lock`, and exits with
 /// `1` for a violation and `2` for any other error. The lower-level [`lock::WireLock`] methods

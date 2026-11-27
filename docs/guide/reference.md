@@ -187,6 +187,24 @@ encode-side range, scalar `char`, closed-enum, and exact fixed-length list bound
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Project name in `witforge.toml`. |
 
+### `witforge py`
+
+Generate or check zero-dependency Python 3.11+ stdlib packages (`@dataclass(frozen=True, slots=True)`,
+`StrEnum`, `Protocol` interfaces, union variants, shared `Option`/`Ok`/`Err` helpers in
+`witforge_types.py`, dependency packages under `witforge_deps/`, `worlds.py`, and the empty PEP 561
+`py.typed` marker).
+
+| Option / Argument | Description |
+|---|---|
+| `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
+| `--out <DIR>` | Output directory for generated Python package files. |
+| `--check` | Verify existing files match without writing; exits `1` on drift. |
+| `--diff` | Print a unified diff of output changes without changing the exit status. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Project name in `witforge.toml`. |
+
 ### `witforge conformance`
 
 Generate or check the versioned cross-language protobuf conformance fixture bundle
@@ -406,6 +424,8 @@ expansion.
 | `project.<name>.typescript-glue.out` | yes (if section set) | path | Output directory for generated TypeScript protobuf glue files. |
 | `project.<name>.typescript-glue.plain-root` | yes (if section set) | string | ESM import root for generated plain TypeScript files (relative path or bare npm package specifier). |
 | `project.<name>.typescript-glue.proto-root` | yes (if section set) | string | ESM import root for generated `@bufbuild/protobuf` `*_pb.js` files (relative path or bare npm package specifier). |
+| `[project.<name>.python]` | no | table | Python 3.11+ stdlib plain types and `Protocol` interfaces generator configuration. |
+| `project.<name>.python.out` | yes (if section set) | path | Output directory for generated Python package files. |
 | `[project.<name>.policy]` | no | table | Project governance policy table. |
 | `project.<name>.policy.diff-check` | no | array of strings | Default compatibility views for bare `witforge diff --check` (non-empty subset of `"wire"`, `"source"`, `"api"`, `"decode"`). |
 | `project.<name>.policy.forbid-unstable-in-release` | no | boolean | Refuse `witforge release` when any `@unstable` declaration is present (default `false`). |

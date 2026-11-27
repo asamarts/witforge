@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use witforge::emit::{glue, json_schema, proto, rust, typescript, typescript_glue};
+use witforge::emit::{glue, json_schema, proto, python, rust, typescript, typescript_glue};
 use witforge::load;
 use witforge::lock::WireLock;
 use witforge::model::{self, TypeDefKind, TypeExpr};
@@ -232,6 +232,12 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
         assert_ne!(source, "", "{file_name}");
         assert!(!source.contains('\r'), "{file_name}");
     }
+    let py_files = python::emit_version(&model).unwrap();
+    assert!(!py_files.is_empty());
+    for (file_name, source) in &py_files {
+        assert_ne!(source, "", "{file_name}");
+        assert!(!source.contains('\r'), "{file_name}");
+    }
 
     // Confirm `Stability::Deprecated` also round-trips through model, emitters, and inspect IR.
     let deprecated_contract = witforge::load_sources(vec![witforge::SourceFile::new(
@@ -327,6 +333,10 @@ fn dependency_and_serde_fixtures_cover_every_emitter() {
                 .files()
                 .is_empty(),
             "{name} ts-glue"
+        );
+        assert!(
+            !python::plan(&root).unwrap().files().is_empty(),
+            "{name} py"
         );
     }
 
