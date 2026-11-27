@@ -91,9 +91,10 @@ mutated by downstream code.
 `WorldInterface` carries the interface name plus an optional dependency `Package`, and
 `Model.dependencies` carries standard `deps/` packages. These fields are part of the 1.0 model
 surface. For a root with dependencies, `emit::rust::plan`, `emit::proto::plan`,
-`emit::json_schema::plan`, and `emit::glue::plan` are the complete entry points: they emit the
-shared dependency files. The lower-level `emit_version`, `emit_major`, and `emit_root` functions
-emit one local file and do not create the shared dependency files themselves.
+`emit::json_schema::plan`, `emit::glue::plan`, and `emit::typescript::plan` are the complete entry
+points: they emit the shared dependency and helper files (`witforge_types.ts`, `witforge_deps/`,
+and `worlds.ts`). The lower-level `emit_version`, `emit_major`, and `emit_root` functions emit one
+local unit and do not create the shared dependency or root helper files themselves.
 
 ## Companion crate: `witforge-build`
 

@@ -96,8 +96,11 @@ top-level type name so `Con_.java` declares `public record Con_`), ensuring vali
 contracts never trigger `validate_relative_path` (`WF9004`).
 
 - **TypeScript (`witforge ts`, `witforge ts-glue`):**
-  - `index.ts`, `v<major>_<minor>/<interface>.ts`, `v<major>_<minor>/index.ts`,
-    `witforge_deps/<ns>_<pkg>/<interface>.ts` (or `witforge_deps/v<m>/<ns>_<pkg>/<interface>.ts`),
+  - `index.ts`, `witforge_types.ts` (shared `Option<T>`, `NONE`, `some` helpers),
+    `v<major>_<minor>/<interface>.ts`, `v<major>_<minor>/index.ts`,
+    `witforge_deps/index.ts`, `witforge_deps/<ns>_<pkg>/index.ts`,
+    `witforge_deps/<ns>_<pkg>/<interface>.ts` (or `witforge_deps/v<m>/index.ts`,
+    `witforge_deps/v<m>/<ns>_<pkg>/index.ts`, `witforge_deps/v<m>/<ns>_<pkg>/<interface>.ts`),
     `worlds.ts`, `convert.ts`.
   - Relative ESM specifiers always carry explicit `.js` extensions (`./v0_1/index.js`) so code
     runs under NodeNext, bundler, Deno, and Bun without extension rewrites.

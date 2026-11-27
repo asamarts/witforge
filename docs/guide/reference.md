@@ -151,8 +151,9 @@ Generate or check deterministic Markdown contract reference pages (`index.md` an
 
 ### `witforge ts`
 
-Generate or check zero-dependency strict ESM TypeScript types, interfaces, dependency modules
-(`witforge_deps/`), and world metadata (`worlds.ts`).
+Generate or check zero-dependency strict ESM TypeScript types, shared `Option` helpers
+(`witforge_types.ts`), interfaces, dependency modules (`witforge_deps/`), and world metadata
+(`worlds.ts`).
 
 | Option / Argument | Description |
 |---|---|

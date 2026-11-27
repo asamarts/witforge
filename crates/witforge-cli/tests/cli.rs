@@ -1402,7 +1402,7 @@ fn generators_ignore_a_binary_file_in_the_output_root() {
     let bytes = [
         0x00, 0x00, 0x00, 0x01, 0x42, 0x75, 0x64, 0x31, 0xff, 0xfe, 0x80,
     ];
-    for command in ["rust", "proto", "glue"] {
+    for command in ["rust", "proto", "glue", "ts"] {
         let out = base.join(format!("{command}-out"));
         fs::create_dir_all(&out).unwrap();
         fs::write(out.join(".DS_Store"), bytes).unwrap();
@@ -1440,7 +1440,7 @@ fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_com
         "existing/../wit/gen",
         "existing/../wit/v0.2",
     ] {
-        for command in ["rust", "proto", "glue"] {
+        for command in ["rust", "proto", "glue", "ts"] {
             let mut witforge = witforge();
             witforge
                 .current_dir(&base)
@@ -1736,7 +1736,7 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
     ] {
         assert_ne!(contract, original);
         fs::write(&source, &contract).unwrap();
-        for command in ["rust", "proto", "schema", "glue"] {
+        for command in ["rust", "proto", "schema", "glue", "ts"] {
             for check in [false, true] {
                 let output = run(command, check);
                 assert_eq!(
@@ -1856,7 +1856,7 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
         }
         witforge.output().unwrap()
     };
-    for command in ["rust", "proto", "glue"] {
+    for command in ["rust", "proto", "glue", "ts"] {
         for check in [false, true] {
             let output = run(command, check);
             assert_eq!(
@@ -1888,7 +1888,7 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
         .output()
         .unwrap();
     assert!(lock.status.success(), "{lock:?}");
-    for command in ["rust", "proto", "glue"] {
+    for command in ["rust", "proto", "glue", "ts"] {
         for check in [false, true] {
             let output = run(command, check);
             assert!(output.status.success(), "{command} {check}: {output:?}");
@@ -2465,6 +2465,7 @@ fn generators_refuse_a_lockfile_of_another_package_even_without_members() {
     for (command, extra) in [
         ("rust", &[][..]),
         ("proto", &[][..]),
+        ("ts", &[][..]),
         (
             "glue",
             &[
@@ -2507,6 +2508,7 @@ fn generators_refuse_a_symlinked_version_directory_no_manifest_lists() {
     for (command, extra) in [
         ("rust", &[][..]),
         ("proto", &[][..]),
+        ("ts", &[][..]),
         (
             "glue",
             &[
@@ -2946,7 +2948,7 @@ fn output_root_guard_closes_symlink_and_parent_component_bypasses() {
         ("wit", "."),
     ];
     for (root_arg, out_arg) in cases {
-        for command in ["rust", "proto", "schema", "glue"] {
+        for command in ["rust", "proto", "schema", "glue", "ts"] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
                 cmd.current_dir(&base)
@@ -3005,7 +3007,7 @@ fn output_root_guard_protects_released_directories() {
     }
 
     for out in &bad_outs {
-        for command in ["rust", "proto", "schema", "glue"] {
+        for command in ["rust", "proto", "schema", "glue", "ts"] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
                 cmd.args([
@@ -3116,6 +3118,8 @@ fn generators_refuse_shared_roots_across_both_orders_of_generators_and_contracts
         ("rust", "proto", "mod.rs", "generator `rust`"),
         ("proto", "schema", "v0.proto", "generator `proto`"),
         ("schema", "rust", "v0_1.schema.json", "generator `schema`"),
+        ("rust", "ts", "mod.rs", "generator `rust`"),
+        ("ts", "rust", "index.ts", "generator `ts`"),
     ] {
         let out = base.join(format!("shared-{first}-{second}"));
         assert!(run_gen(first, &wit_a, &out, false).status.success());
@@ -4486,6 +4490,8 @@ fn build_identity_quiet_mode_completions_and_explain() {
         "schema",
         "glue",
         "doc",
+        "ts",
+        "conformance",
         "generate",
         "init",
         "new-version",
@@ -6339,7 +6345,8 @@ fn ts_command_config_generate_overlap_and_completions() {
         .unwrap();
     assert_eq!(chk_all.status.code(), Some(0), "{chk_all:?}");
 
-    // 3. Overlapping `[project.<name>.typescript].out` with another generator is refused (WF9004).
+    // 3. Overlapping `[project.<name>.typescript].out` with another generator is refused (WF9004)
+    //    both by `witforge ts` AND upfront (single diagnostic) by `witforge generate`.
     let overlap_cfg = base.join("overlap.toml");
     fs::write(
         &overlap_cfg,
@@ -6367,8 +6374,84 @@ fn ts_command_config_generate_overlap_and_completions() {
         String::from_utf8_lossy(&overlap.stdout).contains("WF9004"),
         "{overlap:?}"
     );
+    let overlap_gen = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            overlap_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(overlap_gen.status.code(), Some(2), "{overlap_gen:?}");
+    let overlap_gen_json: serde_json::Value = serde_json::from_slice(&overlap_gen.stdout).unwrap();
+    let overlap_diags = overlap_gen_json["diagnostics"].as_array().unwrap();
+    assert_eq!(
+        overlap_diags.len(),
+        1,
+        "witforge generate must abort upfront with exactly 1 WF9004 diagnostic: {overlap_gen_json:#}"
+    );
+    assert_eq!(overlap_diags[0]["code"], "WF9004");
 
-    // 4. Shell completions include `ts`.
+    // 4. `--released`, `--no-config`, `--project`, `--format sarif`, and `-q` on `witforge ts`.
+    let rel_manifest = wit.join("released");
+    fs::write(&rel_manifest, "v0.1\n").unwrap();
+    let ts_rel_out = base.join("ts-rel-out");
+    let ts_quiet = witforge()
+        .args([
+            "-q",
+            "ts",
+            wit.to_str().unwrap(),
+            "--out",
+            ts_rel_out.to_str().unwrap(),
+            "--released",
+            rel_manifest.to_str().unwrap(),
+            "--no-config",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(ts_quiet.status.code(), Some(0), "{ts_quiet:?}");
+    assert!(ts_quiet.stdout.is_empty(), "{ts_quiet:?}");
+    assert!(ts_rel_out.join("v0_1/index.ts").is_file());
+
+    let ts_proj = witforge()
+        .args([
+            "ts",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--project",
+            "demo",
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(ts_proj.status.code(), Some(0), "{ts_proj:?}");
+
+    let drift_sarif = witforge()
+        .args([
+            "--format",
+            "sarif",
+            "ts",
+            wit.to_str().unwrap(),
+            "--out",
+            ts_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
+    let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
+    assert_eq!(sarif_val["version"], "2.1.0");
+    assert!(
+        !sarif_val["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{sarif_val:#}"
+    );
+
+    // 5. Shell completions include `ts`.
     for shell in ["bash", "zsh", "fish"] {
         let comp = witforge().args(["completions", shell]).output().unwrap();
         assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");

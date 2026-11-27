@@ -137,7 +137,11 @@ pub fn check_with_options(
 
 /// Emit the per-interface TypeScript files and barrel `index.ts` for one single contract version.
 ///
-/// Keys are relative to the version directory (for example `types.ts` and `index.ts`).
+/// Keys are relative to the version directory (for example `types.ts` and `index.ts`). Emitted
+/// interface files import shared `Option` helpers from `../witforge_types.js` and pinned
+/// dependencies from `../witforge_deps/...`; use [`plan`] (or [`generate`]) for the complete
+/// self-contained TypeScript tree including `witforge_types.ts`, `witforge_deps/`, `worlds.ts`,
+/// and the root `index.ts`.
 ///
 /// # Errors
 ///
@@ -159,7 +163,7 @@ pub fn emit_version_with_options(
 ) -> Result<BTreeMap<String, String>> {
     let header = header_for(&model.package.namespace, &model.package.name);
     let resolver = |ns: &str, pkg: &str| -> Result<String> {
-        let seg = dep_package_segment(ns, pkg);
+        let seg = safe_pkg_segment(ns, pkg)?;
         Ok(format!("../witforge_deps/{seg}"))
     };
     emit_version_files(&header, model, options, &resolver)
@@ -197,6 +201,7 @@ pub(crate) fn plan_versions_with_options(
         }
         let major = version.major;
         let resolver = |ns: &str, pkg: &str| -> Result<String> {
+            let _ = safe_pkg_segment(ns, pkg)?;
             let root_major = dep_layout.is_scoped(ns, pkg).then_some(major);
             Ok(format!("../{}", dep_dir_path(root_major, ns, pkg)))
         };
@@ -388,7 +393,7 @@ fn emit_dependency_tree(
             if owner < major {
                 let owner_dir = polyglot::major_dir_name(owner);
                 let iface_plan = plan_interface_names(&dependency.interfaces, &full_pkg)?;
-                for (iface, stem, _) in &iface_plan {
+                for (_, stem, _) in &iface_plan {
                     let mut reexport = String::new();
                     writeln!(reexport, "{header}")?;
                     writeln!(
@@ -401,7 +406,6 @@ fn emit_dependency_tree(
                         reexport,
                         "export * from \"../../{owner_dir}/{seg}/{stem}.js\";"
                     )?;
-                    let _ = iface;
                     files.insert_relative(
                         format!("witforge_deps/{major_dir}/{seg}/{stem}.ts"),
                         reexport,
@@ -567,7 +571,7 @@ fn emit_package_interfaces(
     let mut barrel = String::new();
     writeln!(barrel, "{header}")?;
     writeln!(barrel, "// source: {pkg_label}")?;
-    if !model.package.docs.is_empty() {
+    if !polyglot::doc_lines(&model.package.docs).is_empty() {
         writeln!(barrel)?;
         write_jsdoc(
             &mut barrel,
@@ -867,8 +871,10 @@ fn emit_type_def(
                 writeln!(out, "export type {name} = never;")?;
                 return Ok(());
             }
+            let mut case_tags = BTreeMap::new();
             writeln!(out, "export type {name} =")?;
             for (idx, case) in cases.iter().enumerate() {
+                insert_name(&mut case_tags, &case.name, &case.name, &scope)?;
                 write_jsdoc(out, 2, &case.docs, &Stability::Unknown, None)?;
                 let tag = escape_ts_string(&case.name);
                 let semi = if idx + 1 == cases.len() { ";" } else { "" };
@@ -954,12 +960,12 @@ fn emit_type_def(
         }
         TypeDefKind::FixedLengthList(elem, len) => {
             let note = format!("Fixed-length list of exactly {len} elements.");
-            let extra = if def.docs.trim().is_empty() {
-                Some(note.as_str())
+            let combined_docs = if polyglot::doc_lines(&def.docs).is_empty() {
+                note
             } else {
-                None
+                format!("{}\n\n{note}", def.docs)
             };
-            write_jsdoc(out, 0, &def.docs, &def.stability, extra)?;
+            write_jsdoc(out, 0, &combined_docs, &def.stability, None)?;
             let ty = map_list_type(
                 model,
                 dep_context,
@@ -1253,8 +1259,8 @@ fn map_list_type(
     let needs_parens = matches!(
         elem,
         TypeExpr::Result(_) | TypeExpr::List(_) | TypeExpr::FixedLengthList(_, _)
-    ) && !inner.starts_with("Uint8Array")
-        && !inner.starts_with("_WitforgeBytes");
+    ) && inner != "Uint8Array"
+        && inner != "_WitforgeBytes";
     if needs_parens {
         Ok(format!("readonly ({inner})[]"))
     } else {
@@ -1333,13 +1339,13 @@ fn emit_worlds(header: &str, versions: &[Version]) -> Result<String> {
     writeln!(out, "export const WORLDS = {{")?;
     for version in versions {
         let dir_name = version_dir_name(&version.model);
+        write_version_worlds_jsdoc(&mut out, version)?;
         if version.model.worlds.is_empty() {
             writeln!(out, "  {dir_name}: [],")?;
             continue;
         }
         writeln!(out, "  {dir_name}: [")?;
         for world in &version.model.worlds {
-            write_jsdoc(&mut out, 4, &world.docs, &world.stability, None)?;
             writeln!(out, "    {{")?;
             writeln!(out, "      name: {},", escape_ts_string(&world.name))?;
             write_world_string_array(&mut out, "imports", &world.imports)?;
@@ -1353,6 +1359,70 @@ fn emit_worlds(header: &str, versions: &[Version]) -> Result<String> {
         "}} as const satisfies Readonly<Record<string, readonly WorldMeta[]>>;"
     )?;
     Ok(out)
+}
+
+fn write_version_worlds_jsdoc(out: &mut String, version: &Version) -> Result<()> {
+    let mut lines: Vec<String> = vec![format!(
+        "The worlds of {}.",
+        escape_jsdoc_line(&version.model.package.version.to_string())
+    )];
+    for world in &version.model.worlds {
+        let world_name = escape_jsdoc_line(&world.name);
+        let world_lines = polyglot::doc_lines(&world.docs);
+        if !world_lines.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("World `{world_name}`:"));
+            lines.push(String::new());
+            for line in world_lines {
+                lines.push(escape_jsdoc_line(&line));
+            }
+        }
+        if let Some(stability) = stability_doc(&world.stability) {
+            lines.push(String::new());
+            lines.push(format!(
+                "World `{world_name}` stability: {}",
+                escape_jsdoc_line(&stability)
+            ));
+        }
+        for (side, interfaces) in [("import", &world.imports), ("export", &world.exports)] {
+            for iface in interfaces {
+                let qname = escape_jsdoc_line(&iface.qualified_name());
+                let iface_docs = polyglot::doc_lines(&iface.docs);
+                if !iface_docs.is_empty() {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "World `{world_name}` {side} `{qname}`: {}",
+                        iface_docs
+                            .into_iter()
+                            .map(|l| escape_jsdoc_line(&l))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
+                if let Some(stability) = stability_doc(&iface.stability) {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "World `{world_name}` {side} `{qname}` stability: {}",
+                        escape_jsdoc_line(&stability)
+                    ));
+                }
+            }
+        }
+    }
+    if lines.len() == 1 {
+        writeln!(out, "  /** {} */", lines[0])?;
+        return Ok(());
+    }
+    writeln!(out, "  /**")?;
+    for line in &lines {
+        if line.is_empty() {
+            writeln!(out, "   *")?;
+        } else {
+            writeln!(out, "   * {line}")?;
+        }
+    }
+    writeln!(out, "   */")?;
+    Ok(())
 }
 
 fn write_world_string_array(
@@ -1384,8 +1454,16 @@ fn safe_interface_file_stem(wit_name: &str) -> Result<String> {
 }
 
 fn safe_pkg_segment(namespace: &str, name: &str) -> Result<String> {
+    let ns_snake = to_snake_case(namespace);
+    let name_snake = to_snake_case(name);
     let seg = dep_package_segment(namespace, name);
-    if seg.is_empty() || seg == "_" || is_windows_reserved_stem(&seg) {
+    if ns_snake.is_empty()
+        || name_snake.is_empty()
+        || seg.is_empty()
+        || seg == "_"
+        || seg.as_bytes()[0].is_ascii_digit()
+        || is_windows_reserved_stem(&seg)
+    {
         contract_bail!(
             "dependency package `{namespace}:{name}` produces invalid TypeScript directory `{seg}`"
         );
@@ -1453,7 +1531,10 @@ fn write_jsdoc(
         if let Some(since) = stability.since() {
             lines.push(format!("Stable since WIT version {since}."));
         } else if let Some(feature) = stability.unstable_feature() {
-            lines.push(format!("Unstable WIT feature `{feature}`."));
+            lines.push(format!(
+                "Unstable WIT feature `{}`.",
+                escape_jsdoc_line(feature)
+            ));
         }
         tags.push(format!("@deprecated {}", escape_jsdoc_line(note)));
     } else if let Some(stab) = stability_doc(stability) {

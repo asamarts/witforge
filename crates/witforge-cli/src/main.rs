@@ -691,6 +691,43 @@ struct ProjectConfig {
     policy: Option<PolicyConfig>,
 }
 
+impl ProjectConfig {
+    fn configured_outputs(&self) -> [(Emitter, &'static str, Option<&Path>); 6] {
+        [
+            (
+                Emitter::Rust,
+                "rust",
+                self.rust.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Proto,
+                "proto",
+                self.proto.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Schema,
+                "schema",
+                self.schema.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Glue,
+                "glue",
+                self.glue.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::Doc,
+                "doc",
+                self.doc.as_ref().map(|c| c.out.as_path()),
+            ),
+            (
+                Emitter::TypeScript,
+                "typescript",
+                self.typescript.as_ref().map(|c| c.out.as_path()),
+            ),
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PolicyConfig {
@@ -1128,38 +1165,7 @@ fn validate_configured_outputs(
     let mut configured: Vec<(String, PathBuf)> = Vec::new();
     let mut saw_selected = false;
     for (proj_name, proj) in &config.project {
-        for (kind, slot, path) in [
-            (
-                Emitter::Rust,
-                "rust",
-                proj.rust.as_ref().map(|c| c.out.as_path()),
-            ),
-            (
-                Emitter::Proto,
-                "proto",
-                proj.proto.as_ref().map(|c| c.out.as_path()),
-            ),
-            (
-                Emitter::Schema,
-                "schema",
-                proj.schema.as_ref().map(|c| c.out.as_path()),
-            ),
-            (
-                Emitter::Glue,
-                "glue",
-                proj.glue.as_ref().map(|c| c.out.as_path()),
-            ),
-            (
-                Emitter::Doc,
-                "doc",
-                proj.doc.as_ref().map(|c| c.out.as_path()),
-            ),
-            (
-                Emitter::TypeScript,
-                "typescript",
-                proj.typescript.as_ref().map(|c| c.out.as_path()),
-            ),
-        ] {
+        for (kind, slot, path) in proj.configured_outputs() {
             let is_selected = proj_name == selected_project
                 && std::mem::discriminant(&kind) == std::mem::discriminant(&selected_emitter);
             if is_selected && let Some(override_out) = out_override {
@@ -3174,35 +3180,13 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
     // Validate distinct output roots and glue module roots across the whole configuration up front.
     let mut all_outs: Vec<(String, PathBuf)> = Vec::new();
     for (proj_name, proj) in &config.project {
-        if let Some(rust) = &proj.rust {
-            all_outs.push((
-                format!("project.{proj_name}.rust.out"),
-                from_config(&rust.out),
-            ));
-        }
-        if let Some(proto) = &proj.proto {
-            all_outs.push((
-                format!("project.{proj_name}.proto.out"),
-                from_config(&proto.out),
-            ));
-        }
-        if let Some(schema) = &proj.schema {
-            all_outs.push((
-                format!("project.{proj_name}.schema.out"),
-                from_config(&schema.out),
-            ));
-        }
-        if let Some(glue) = &proj.glue {
-            all_outs.push((
-                format!("project.{proj_name}.glue.out"),
-                from_config(&glue.out),
-            ));
-        }
-        if let Some(doc) = &proj.doc {
-            all_outs.push((
-                format!("project.{proj_name}.doc.out"),
-                from_config(&doc.out),
-            ));
+        for (_, slot, path) in proj.configured_outputs() {
+            if let Some(out_path) = path {
+                all_outs.push((
+                    format!("project.{proj_name}.{slot}.out"),
+                    from_config(out_path),
+                ));
+            }
         }
     }
     let refs: Vec<(&str, &Path)> = all_outs
