@@ -1722,6 +1722,7 @@ variant witforge::emit::json_schema::JsonSchemaDraft::Draft7
 variant witforge::emit::output::GeneratedFileStatus::Changed
 variant witforge::emit::output::GeneratedFileStatus::Extra
 variant witforge::emit::output::GeneratedFileStatus::Missing
+variant witforge::emit::output::GeneratedFileStatus::NotDirectory
 variant witforge::emit::output::GeneratedFileStatus::NotRegular
 variant witforge::emit::output::GeneratedFileStatus::Symlink
 variant witforge::emit::output::GeneratedFileStatus::Unowned

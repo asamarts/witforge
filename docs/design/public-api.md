@@ -134,7 +134,9 @@ must not change the meaning of `is_contract_error` within 1.x.
 
 ## Generated output
 
-The Rust, protobuf, JSON Schema, and glue emitters are covered by [`emitters.md`](emitters.md);
+The Rust, protobuf, JSON Schema, glue, and Markdown documentation emitters are covered by
+[`emitters.md`](emitters.md), and shared polyglot emitter conventions are covered by
+[`polyglot-emitters.md`](polyglot-emitters.md);
 the lockfile and frozen-version rules are in [`lockfile.md`](lockfile.md). Generated output is
 part of the release contract: the conformance matrix and `--check` gates are in
 [`conformance.md`](conformance.md).

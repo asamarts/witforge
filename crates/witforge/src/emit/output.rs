@@ -53,6 +53,8 @@ pub enum HeaderStyle {
 impl HeaderStyle {
     /// Format the canonical ownership header line for `generator` and contract
     /// `<namespace>:<name>`.
+    ///
+    /// Callers must pass single-line identifier strings without newlines or `", "`.
     #[must_use]
     pub fn format_header(self, generator: &str, namespace: &str, name: &str) -> String {
         match self {
@@ -121,6 +123,8 @@ pub enum GeneratedFileStatus {
     NotRegular,
     /// An expected regular file does not carry witforge's ownership header.
     Unowned,
+    /// An ancestor directory of an expected nested output path exists but is not a directory.
+    NotDirectory,
 }
 
 impl GeneratedFileStatus {
@@ -131,7 +135,7 @@ impl GeneratedFileStatus {
             Self::Unowned => 0,
             Self::Changed { .. } => 1,
             Self::Extra => 2,
-            Self::Symlink | Self::NotRegular => 3,
+            Self::Symlink | Self::NotRegular | Self::NotDirectory => 3,
             Self::Missing => 4,
         }
     }
@@ -214,6 +218,12 @@ impl fmt::Display for GeneratedFileFinding {
                 "generated file `{}` is not a regular file; generation refuses to replace it",
                 self.path.display()
             ),
+            GeneratedFileStatus::NotDirectory => write!(
+                f,
+                "ancestor directory `{}` exists and is not a directory; generation refuses to \
+                 replace it",
+                self.path.display()
+            ),
             GeneratedFileStatus::Unowned => write!(
                 f,
                 "`{}` does not start with witforge's header, so generation refuses to overwrite it",
@@ -229,24 +239,61 @@ pub struct GeneratedFiles {
     header: String,
     files: BTreeMap<String, String>,
     markers: BTreeSet<String>,
+    /// Case-folded (`to_lowercase()`) relative file path -> exact registered file path.
+    /// Populated whenever `nested == true` so collision and rename checks stay O(depth * log N).
+    lower_files: BTreeMap<String, String>,
+    /// Case-folded (`to_lowercase()`) ancestor directory prefix -> exact registered directory path.
+    /// Populated whenever `nested == true` to reject file-vs-dir and directory-casing collisions.
+    lower_dirs: BTreeMap<String, String>,
     nested: bool,
 }
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const WINDOWS_RESERVED_NAMES: &[&str] = &[
-    "AUX", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "CON", "LPT1",
-    "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "NUL", "PRN",
+    "AUX", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "CON",
+    "CONIN$", "CONOUT$", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+    "LPT9", "NUL", "PRN",
 ];
+
+fn is_disallowed_path_char(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{061C}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
+fn normalize_windows_device_stem(segment: &str) -> String {
+    let stem = segment
+        .split('.')
+        .next()
+        .unwrap_or(segment)
+        .trim_end_matches(' ');
+    stem.chars()
+        .map(|ch| match ch {
+            '\u{00B9}' => '1',
+            '\u{00B2}' => '2',
+            '\u{00B3}' => '3',
+            other => other.to_ascii_uppercase(),
+        })
+        .collect()
+}
 
 /// Validate that `path` is a safe, canonical POSIX relative path suitable for nested generated
 /// output trees across Linux, macOS, and Windows.
 ///
 /// Refuses empty paths, leading/trailing `/`, empty segments (`//`), backslashes (`\`), `.` or
-/// `..` segments, NUL or ASCII control characters, witforge atomic-write temporary names
-/// (`.witforge.*.tmp`), segments ending with spaces or `.`, Windows-illegal filename characters
-/// (`< > : " | ? *`), and Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`..`9`,
-/// `LPT1`..`9`, with or without an extension).
+/// `..` segments, NUL / C0 / C1 control characters, Unicode bidirectional override/isolate
+/// characters, witforge atomic-write temporary names (`.witforge.*.tmp`), segments ending with
+/// spaces or `.`, Windows-illegal filename characters (`< > : " | ? *`), and Windows reserved
+/// device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`..`9`, `LPT0`..`9`,
+/// including trailing spaces before `.` and superscript `¹`/`²`/`³` variants, with or without an
+/// extension).
 ///
 /// # Errors
 ///
@@ -273,10 +320,13 @@ pub fn validate_relative_path(path: &str) -> Result<()> {
             Some(path.to_string()),
         ));
     }
-    if path.bytes().any(|b| b < 0x20 || b == 0x7F) {
+    if path.chars().any(is_disallowed_path_char) {
         return Err(crate::operational_error(
             crate::diagnostic::codes::GUARD_REFUSED,
-            format!("generated relative path `{path}` must not contain control characters"),
+            format!(
+                "generated relative path `{path}` must not contain control or bidirectional \
+                 formatting characters"
+            ),
             Some(path.to_string()),
         ));
     }
@@ -320,17 +370,16 @@ pub fn validate_relative_path(path: &str) -> Result<()> {
                 Some(path.to_string()),
             ));
         }
-        let stem = segment.split('.').next().unwrap_or(segment);
-        let upper = stem.to_ascii_uppercase();
+        let normalized_stem = normalize_windows_device_stem(segment);
         if WINDOWS_RESERVED_NAMES
-            .binary_search(&upper.as_str())
+            .binary_search(&normalized_stem.as_str())
             .is_ok()
         {
             return Err(crate::operational_error(
                 crate::diagnostic::codes::GUARD_REFUSED,
                 format!(
                     "generated relative path `{path}` segment `{segment}` uses Windows reserved \
-                     device name `{stem}`"
+                     device name `{normalized_stem}`"
                 ),
                 Some(path.to_string()),
             ));
@@ -347,6 +396,8 @@ impl GeneratedFiles {
             header: header.into(),
             files: BTreeMap::new(),
             markers: BTreeSet::new(),
+            lower_files: BTreeMap::new(),
+            lower_dirs: BTreeMap::new(),
             nested: false,
         }
     }
@@ -365,6 +416,8 @@ impl GeneratedFiles {
             header: header.into(),
             files: BTreeMap::new(),
             markers: BTreeSet::new(),
+            lower_files: BTreeMap::new(),
+            lower_dirs: BTreeMap::new(),
             nested: true,
         }
     }
@@ -377,9 +430,14 @@ impl GeneratedFiles {
 
     /// Add one expected root-relative simple file name.
     ///
+    /// If this file set is already in nested mode (created with [`Self::new_nested`] or promoted
+    /// via [`Self::insert_relative`] / [`Self::insert_marker`]), `name` is also checked with
+    /// [`validate_relative_path`] and cross-platform collision checks.
+    ///
     /// # Errors
     ///
-    /// Returns an error when `name` is not a simple file name.
+    /// Returns an error when `name` is not a simple file name, or when in nested mode and `name`
+    /// fails path safety or collision checks (`WF9004`).
     pub fn insert(&mut self, name: impl Into<String>, contents: impl Into<String>) -> Result<()> {
         let name = name.into();
         let path = Path::new(&name);
@@ -391,6 +449,10 @@ impl GeneratedFiles {
         {
             bail!("generated file name `{name}` must be a simple name");
         }
+        if self.nested {
+            validate_relative_path(&name)?;
+            Self::index_relative_path(&mut self.lower_files, &mut self.lower_dirs, &name)?;
+        }
         self.files.insert(name, contents.into());
         Ok(())
     }
@@ -398,81 +460,135 @@ impl GeneratedFiles {
     /// Add one expected POSIX relative path (which may contain `/` subdirectories) and enable
     /// nested-tree mode.
     ///
-    /// Enforces [`validate_relative_path`] plus duplicate, ASCII case-insensitive, and
-    /// file-vs-directory prefix collision checks against all previously inserted paths.
+    /// Enforces [`validate_relative_path`] plus duplicate, case-insensitive file, directory-casing,
+    /// and file-vs-directory prefix collision checks against all previously inserted paths. If this
+    /// file set was previously flat (with entries added via [`Self::insert`]), all existing entries
+    /// are retroactively validated and indexed before enabling nested mode.
     ///
     /// # Errors
     ///
-    /// Returns an operational error (`WF9004`) if `path` fails cross-platform path validation or
-    /// collides with an already-registered path.
+    /// Returns an operational error (`WF9004`) if `path` (or a previously inserted flat entry during
+    /// promotion) fails cross-platform path validation or collides with another registered path.
     pub fn insert_relative(
         &mut self,
         path: impl Into<String>,
         contents: impl Into<String>,
     ) -> Result<()> {
         let path = path.into();
-        validate_relative_path(&path)?;
-        self.check_relative_collisions(&path)?;
-        self.nested = true;
-        self.files.insert(path, contents.into());
-        Ok(())
+        self.insert_nested_entry(path, contents.into(), false)
     }
 
     /// Add one explicitly allowlisted marker file (such as an empty PEP 561 `py.typed` file)
     /// that cannot carry a witforge comment header, enabling nested-tree mode.
     ///
-    /// On disk, an existing file at `path` is treated as owned if it is empty or matches
-    /// `contents` verbatim, rejected as foreign (`WF9004`) if it carries another witforge header,
-    /// and treated as unowned if it contains non-matching hand-written content.
+    /// On disk, an existing file at `path` is treated as owned if it carries this output set's own
+    /// header, is empty, or matches `contents` (verbatim or with CRLF line endings), rejected as
+    /// foreign (`WF9004`) if it carries another witforge header, and treated as unowned if it
+    /// contains non-matching hand-written content.
     ///
     /// # Errors
     ///
-    /// Returns an operational error (`WF9004`) if `path` fails cross-platform path validation or
-    /// collides with an already-registered path.
+    /// Returns an operational error (`WF9004`) if `path` (or a previously inserted flat entry during
+    /// promotion) fails cross-platform path validation or collides with another registered path.
     pub fn insert_marker(
         &mut self,
         path: impl Into<String>,
         contents: impl Into<String>,
     ) -> Result<()> {
         let path = path.into();
+        self.insert_nested_entry(path, contents.into(), true)
+    }
+
+    fn insert_nested_entry(
+        &mut self,
+        path: String,
+        contents: String,
+        is_marker: bool,
+    ) -> Result<()> {
         validate_relative_path(&path)?;
-        self.check_relative_collisions(&path)?;
-        self.nested = true;
-        self.markers.insert(path.clone());
-        self.files.insert(path, contents.into());
+        if self.nested {
+            Self::index_relative_path(&mut self.lower_files, &mut self.lower_dirs, &path)?;
+        } else {
+            let mut lower_files = BTreeMap::new();
+            let mut lower_dirs = BTreeMap::new();
+            for existing in self.files.keys() {
+                validate_relative_path(existing)?;
+                Self::index_relative_path(&mut lower_files, &mut lower_dirs, existing)?;
+            }
+            Self::index_relative_path(&mut lower_files, &mut lower_dirs, &path)?;
+            self.lower_files = lower_files;
+            self.lower_dirs = lower_dirs;
+            self.nested = true;
+        }
+        if is_marker {
+            self.markers.insert(path.clone());
+        }
+        self.files.insert(path, contents);
         Ok(())
     }
 
-    fn check_relative_collisions(&self, candidate: &str) -> Result<()> {
-        let candidate_lower = candidate.to_ascii_lowercase();
-        for existing in self.files.keys() {
-            let existing_lower = existing.to_ascii_lowercase();
-            if candidate_lower == existing_lower {
-                return Err(crate::operational_error(
-                    crate::diagnostic::codes::GUARD_REFUSED,
-                    format!(
-                        "generated path `{candidate}` collides with `{existing}` (case-insensitive \
-                         path collision)"
-                    ),
-                    Some(candidate.to_string()),
-                ));
+    fn index_relative_path(
+        lower_files: &mut BTreeMap<String, String>,
+        lower_dirs: &mut BTreeMap<String, String>,
+        candidate: &str,
+    ) -> Result<()> {
+        let candidate_lower = candidate.to_lowercase();
+        if let Some(existing) = lower_files.get(&candidate_lower) {
+            return Err(crate::operational_error(
+                crate::diagnostic::codes::GUARD_REFUSED,
+                format!(
+                    "generated path `{candidate}` collides with `{existing}` (case-insensitive \
+                     path collision)"
+                ),
+                Some(candidate.to_string()),
+            ));
+        }
+        if let Some(existing_dir) = lower_dirs.get(&candidate_lower) {
+            return Err(crate::operational_error(
+                crate::diagnostic::codes::GUARD_REFUSED,
+                format!(
+                    "generated path `{candidate}` collides with file/directory prefix \
+                     `{existing_dir}`"
+                ),
+                Some(candidate.to_string()),
+            ));
+        }
+
+        let mut new_dirs = Vec::new();
+        for (idx, byte) in candidate.bytes().enumerate() {
+            if byte != b'/' {
+                continue;
             }
-            if candidate_lower
-                .strip_prefix(&existing_lower)
-                .is_some_and(|rest| rest.starts_with('/'))
-                || existing_lower
-                    .strip_prefix(&candidate_lower)
-                    .is_some_and(|rest| rest.starts_with('/'))
-            {
+            let dir_orig = &candidate[..idx];
+            let dir_lower = dir_orig.to_lowercase();
+            if let Some(existing_file) = lower_files.get(&dir_lower) {
                 return Err(crate::operational_error(
                     crate::diagnostic::codes::GUARD_REFUSED,
                     format!(
                         "generated path `{candidate}` collides with file/directory prefix \
-                         `{existing}`"
+                         `{existing_file}`"
                     ),
                     Some(candidate.to_string()),
                 ));
             }
+            if let Some(existing_dir) = lower_dirs.get(&dir_lower)
+                && existing_dir != dir_orig
+            {
+                return Err(crate::operational_error(
+                    crate::diagnostic::codes::GUARD_REFUSED,
+                    format!(
+                        "generated path `{candidate}` directory `{dir_orig}` collides with \
+                         `{existing_dir}` (case-insensitive directory collision)"
+                    ),
+                    Some(candidate.to_string()),
+                ));
+            }
+            new_dirs.push((dir_lower, dir_orig.to_string()));
+        }
+
+        lower_files.insert(candidate_lower, candidate.to_string());
+        for (dir_lower, dir_orig) in new_dirs {
+            lower_dirs.entry(dir_lower).or_insert(dir_orig);
         }
         Ok(())
     }
@@ -509,10 +625,15 @@ impl GeneratedFiles {
     /// (`.witforge.<name>.<pid>.<seq>.tmp`) from concurrent runs are ignored.
     ///
     /// Before anything is created, written, or removed:
-    /// - if `out` exists, no regular file in `out` may carry another generator's or another
-    ///   contract's witforge header;
-    /// - every expected path that already exists must be a regular file (not a symlink) owned by
-    ///   this generator (or carrying the legacy shared header).
+    /// - if `out` exists, no regular file in `out` (or in its subdirectories when
+    ///   [`Self::is_nested`] is `true`, without descending into symlinks) may carry another
+    ///   generator's or another contract's witforge header;
+    /// - every expected path (and every ancestor directory in nested mode) that already exists
+    ///   must not be a symlink, every ancestor must be a directory, and every existing leaf must
+    ///   be a regular file owned by this generator (or a matching allowlisted marker file).
+    ///
+    /// In nested mode, removing stale owned files also prunes any resulting empty subdirectories
+    /// strictly inside `out` without touching `out` itself or directories holding unowned files.
     ///
     /// # Errors
     ///
@@ -646,11 +767,13 @@ impl GeneratedFiles {
     /// Compare the expected files with `out`.
     ///
     /// Returns one structured finding per missing, changed, or extra generated file, and per
-    /// expected path that [`GeneratedFiles::write`] would refuse: a symlink, something other
-    /// than a regular file, or an unowned file. Only regular files are read, so a FIFO or a
-    /// device at an expected path cannot block the check. Files without a witforge header
-    /// (including unreadable unrelated files) and active `.witforge.*.tmp` temporaries at other
-    /// paths are ignored.
+    /// expected path (or blocking ancestor directory in nested mode) that [`GeneratedFiles::write`]
+    /// would refuse: a symlink, a non-regular leaf, a non-directory ancestor, or an unowned file.
+    /// Only regular files are read, so a FIFO or a device at an expected path cannot block the
+    /// check. Files without a witforge header (including unreadable unrelated files) and active
+    /// `.witforge.*.tmp` temporaries at other paths are ignored. In nested mode, subdirectories
+    /// are scanned recursively without following symlinks and allowlisted markers registered via
+    /// [`Self::insert_marker`] are validated by marker content.
     ///
     /// # Errors
     ///
@@ -814,7 +937,8 @@ impl GeneratedFiles {
     ///
     /// Returns an empty string when `out` already matches every expected file with no extra
     /// generated files. If `out` does not exist yet, every expected file is shown as added from
-    /// `/dev/null`.
+    /// `/dev/null`. In nested mode, subdirectories are scanned recursively without following
+    /// symlinks and allowlisted marker paths are diffed using marker ownership rules.
     ///
     /// # Errors
     ///
@@ -958,13 +1082,31 @@ impl GeneratedFiles {
     fn classify_expected(&self, rel_path: &str, abs_path: &Path) -> Result<HeaderKind> {
         if self.markers.contains(rel_path) {
             let header_kind = self.classify(abs_path)?;
-            if matches!(header_kind, HeaderKind::Foreign(_)) {
-                return Ok(header_kind);
+            match header_kind {
+                HeaderKind::Owned | HeaderKind::LegacyShared | HeaderKind::Foreign(_) => {
+                    return Ok(header_kind);
+                }
+                HeaderKind::Unowned => {}
             }
             let expected = self.files.get(rel_path).map_or("", String::as_str);
-            let actual = fs::read(abs_path)
+            // Bound the read so a large hand-written file at a marker path is never loaded into
+            // memory just to determine it is unowned. Account for CRLF expansion (at most 2x).
+            let max_expected_len = expected.len().saturating_mul(2).saturating_add(1);
+            let limit = u64::try_from(max_expected_len).unwrap_or(u64::MAX);
+            let mut actual = Vec::new();
+            File::open(abs_path)
+                .with_context(|| format!("failed to open {}", abs_path.display()))?
+                .take(limit)
+                .read_to_end(&mut actual)
                 .with_context(|| format!("failed to read {}", abs_path.display()))?;
-            if actual.is_empty() || actual == expected.as_bytes() {
+            if actual.len() == max_expected_len {
+                return Ok(HeaderKind::Unowned);
+            }
+            if actual.is_empty()
+                || actual == expected.as_bytes()
+                || std::str::from_utf8(&actual)
+                    .is_ok_and(|text| text.replace("\r\n", "\n") == expected)
+            {
                 return Ok(HeaderKind::Owned);
             }
             return Ok(HeaderKind::Unowned);
@@ -975,8 +1117,10 @@ impl GeneratedFiles {
     #[allow(clippy::too_many_lines)]
     fn write_nested(&self, out: &Path) -> Result<()> {
         let mut stale = Vec::new();
+        let mut case_renames = Vec::new();
+        let mut force_rewrite_lower = BTreeSet::new();
         if out.exists() {
-            let discovered = collect_nested_regular_files(out)?;
+            let discovered = collect_nested_regular_files(out, &self.lower_dirs)?;
             for (rel_path, abs_path) in discovered {
                 let kind = if self.files.contains_key(&rel_path) {
                     self.classify_expected(&rel_path, &abs_path)?
@@ -999,7 +1143,11 @@ impl GeneratedFiles {
                     HeaderKind::Owned | HeaderKind::LegacyShared
                         if !self.files.contains_key(&rel_path) =>
                     {
-                        stale.push(abs_path);
+                        if is_case_only_rename(&rel_path, &self.lower_files) {
+                            case_renames.push((rel_path, abs_path));
+                        } else {
+                            stale.push(abs_path);
+                        }
                     }
                     HeaderKind::Owned | HeaderKind::LegacyShared | HeaderKind::Unowned => {}
                 }
@@ -1063,14 +1211,23 @@ impl GeneratedFiles {
                             ));
                         }
                         HeaderKind::Unowned => {
-                            return Err(crate::operational_error(
-                                crate::diagnostic::codes::GUARD_REFUSED,
+                            let message = if self.markers.contains(rel_path) {
+                                format!(
+                                    "refusing to overwrite marker `{}`: it contains non-matching \
+                                     hand-written content; move it or choose another output root",
+                                    path.display()
+                                )
+                            } else {
                                 format!(
                                     "refusing to overwrite `{}`: it does not start with \
                                      witforge's header, so it is not generated output; move it or \
                                      choose another output root",
                                     path.display()
-                                ),
+                                )
+                            };
+                            return Err(crate::operational_error(
+                                crate::diagnostic::codes::GUARD_REFUSED,
+                                message,
                                 Some(path.display().to_string()),
                             ));
                         }
@@ -1085,6 +1242,23 @@ impl GeneratedFiles {
         }
         fs::create_dir_all(out)
             .with_context(|| format!("failed to create output root {}", out.display()))?;
+
+        // On case-insensitive platforms (macOS APFS, Windows NTFS), removing an old-cased file
+        // AFTER writing its new-cased replacement would delete the newly written file! Remove
+        // old-cased paths first (and prune now-empty old-cased directories) and force-rewrite the
+        // target path so the on-disk casing matches `self.files` exactly.
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            for (rel_path, abs_path) in case_renames {
+                force_rewrite_lower.insert(rel_path.to_lowercase());
+                remove_stale_file(&abs_path)?;
+                prune_empty_ancestors(abs_path.parent(), out);
+            }
+        } else {
+            for (_rel_path, abs_path) in case_renames {
+                stale.push(abs_path);
+            }
+        }
+
         for (rel_path, contents) in &self.files {
             let path = join_relative(out, rel_path);
             if let Some(parent) = path.parent() {
@@ -1092,7 +1266,9 @@ impl GeneratedFiles {
                     .with_context(|| format!("failed to create directory {}", parent.display()))?;
             }
             let bytes = contents.as_bytes();
-            if fs::read(&path).is_ok_and(|existing| existing == bytes) {
+            if !force_rewrite_lower.contains(&rel_path.to_lowercase())
+                && fs::read(&path).is_ok_and(|existing| existing == bytes)
+            {
                 continue;
             }
             write_atomic(&path, bytes)?;
@@ -1117,12 +1293,26 @@ impl GeneratedFiles {
                 Some(out.display().to_string()),
             ));
         }
+        let mut blocking_ancestors: BTreeMap<PathBuf, GeneratedFileStatus> = BTreeMap::new();
+        for rel_path in self.files.keys() {
+            if let Some((ancestor, status)) = inspect_ancestor_dirs(out, rel_path)? {
+                blocking_ancestors.entry(ancestor).or_insert(status);
+            }
+        }
+
+        let discovered = collect_nested_regular_files(out, &self.lower_dirs)?;
+        let discovered_exact: BTreeSet<&str> = discovered
+            .iter()
+            .map(|(rel_path, _)| rel_path.as_str())
+            .collect();
+        let mut case_renamed_expected: BTreeSet<String> = BTreeSet::new();
+
         let mut findings = Vec::new();
-        for (rel_path, abs_path) in collect_nested_regular_files(out)? {
-            let kind = if self.files.contains_key(&rel_path) {
-                self.classify_expected(&rel_path, &abs_path)?
+        for (rel_path, abs_path) in &discovered {
+            let kind = if self.files.contains_key(rel_path) {
+                self.classify_expected(rel_path, abs_path)?
             } else {
-                self.classify_unrelated(&abs_path)?
+                self.classify_unrelated(abs_path)?
             };
             match kind {
                 HeaderKind::Foreign(owner) => {
@@ -1138,31 +1328,47 @@ impl GeneratedFiles {
                     ));
                 }
                 HeaderKind::Owned | HeaderKind::LegacyShared
-                    if !self.files.contains_key(&rel_path) =>
+                    if !self.files.contains_key(rel_path) =>
                 {
-                    findings.push(GeneratedFileFinding::new(
-                        abs_path,
-                        GeneratedFileStatus::Extra,
-                        regenerate_command,
-                    ));
+                    if let Some(expected_rel) = self.lower_files.get(&rel_path.to_lowercase())
+                        && expected_rel != rel_path
+                        && !discovered_exact.contains(expected_rel.as_str())
+                    {
+                        case_renamed_expected.insert(expected_rel.clone());
+                    }
+                    if !blocking_ancestors.contains_key(abs_path) {
+                        findings.push(GeneratedFileFinding::new(
+                            abs_path.clone(),
+                            GeneratedFileStatus::Extra,
+                            regenerate_command,
+                        ));
+                    }
                 }
                 HeaderKind::Owned | HeaderKind::LegacyShared | HeaderKind::Unowned => {}
             }
         }
 
-        let mut reported_ancestors: BTreeSet<PathBuf> = BTreeSet::new();
+        for (ancestor, status) in &blocking_ancestors {
+            findings.push(GeneratedFileFinding::new(
+                ancestor.clone(),
+                status.clone(),
+                regenerate_command,
+            ));
+        }
+
         for (rel_path, expected) in &self.files {
-            if let Some((ancestor, status)) = inspect_ancestor_dirs(out, rel_path)? {
-                if reported_ancestors.insert(ancestor.clone()) {
-                    findings.push(GeneratedFileFinding::new(
-                        ancestor,
-                        status,
-                        regenerate_command,
-                    ));
-                }
+            if inspect_ancestor_dirs(out, rel_path)?.is_some() {
                 continue;
             }
             let path = join_relative(out, rel_path);
+            if case_renamed_expected.contains(rel_path) {
+                findings.push(GeneratedFileFinding::new(
+                    path,
+                    GeneratedFileStatus::Missing,
+                    regenerate_command,
+                ));
+                continue;
+            }
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -1237,12 +1443,18 @@ impl GeneratedFiles {
 
     fn unified_diff_nested(&self, out: &Path) -> Result<String> {
         let mut rendered = String::new();
+        let mut case_renamed_expected: BTreeSet<String> = BTreeSet::new();
         if out.is_dir() {
-            for (rel_path, abs_path) in collect_nested_regular_files(out)? {
-                if self.files.contains_key(&rel_path) {
+            let discovered = collect_nested_regular_files(out, &self.lower_dirs)?;
+            let discovered_exact: BTreeSet<&str> = discovered
+                .iter()
+                .map(|(rel_path, _)| rel_path.as_str())
+                .collect();
+            for (rel_path, abs_path) in &discovered {
+                if self.files.contains_key(rel_path) {
                     continue;
                 }
-                match self.classify_unrelated(&abs_path)? {
+                match self.classify_unrelated(abs_path)? {
                     HeaderKind::Foreign(owner) => {
                         return Err(crate::operational_error(
                             crate::diagnostic::codes::GUARD_REFUSED,
@@ -1256,7 +1468,13 @@ impl GeneratedFiles {
                         ));
                     }
                     HeaderKind::Owned | HeaderKind::LegacyShared => {
-                        let actual_bytes = fs::read(&abs_path)
+                        if let Some(expected_rel) = self.lower_files.get(&rel_path.to_lowercase())
+                            && expected_rel != rel_path
+                            && !discovered_exact.contains(expected_rel.as_str())
+                        {
+                            case_renamed_expected.insert(expected_rel.clone());
+                        }
+                        let actual_bytes = fs::read(abs_path)
                             .with_context(|| format!("failed to read {}", abs_path.display()))?;
                         let actual = String::from_utf8_lossy(&actual_bytes);
                         rendered.push_str(&render_unified_diff(
@@ -1275,6 +1493,10 @@ impl GeneratedFiles {
             }
             let path = join_relative(out, rel_path);
             let label = path.display().to_string();
+            if case_renamed_expected.contains(rel_path) {
+                rendered.push_str(&render_unified_diff(&label, None, Some(expected)));
+                continue;
+            }
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
                     match self.classify_expected(rel_path, &path)? {
@@ -1319,6 +1541,15 @@ impl GeneratedFiles {
     }
 }
 
+fn is_case_only_rename(
+    discovered_rel: &str,
+    expected_lower_files: &BTreeMap<String, String>,
+) -> bool {
+    expected_lower_files
+        .get(&discovered_rel.to_lowercase())
+        .is_some_and(|expected_rel| expected_rel != discovered_rel)
+}
+
 fn join_relative(out: &Path, rel_posix: &str) -> PathBuf {
     let mut path = out.to_path_buf();
     for segment in rel_posix.split('/') {
@@ -1343,7 +1574,7 @@ fn inspect_ancestor_dirs(
                 return Ok(Some((current, GeneratedFileStatus::Symlink)));
             }
             Ok(meta) if !meta.is_dir() => {
-                return Ok(Some((current, GeneratedFileStatus::NotRegular)));
+                return Ok(Some((current, GeneratedFileStatus::NotDirectory)));
             }
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1356,21 +1587,28 @@ fn inspect_ancestor_dirs(
     Ok(None)
 }
 
-fn collect_nested_regular_files(out: &Path) -> Result<Vec<(String, PathBuf)>> {
+fn collect_nested_regular_files(
+    out: &Path,
+    expected_lower_dirs: &BTreeMap<String, String>,
+) -> Result<Vec<(String, PathBuf)>> {
     let mut found = Vec::new();
-    collect_nested_dir(out, "", &mut found)?;
+    collect_nested_dir(out, "", expected_lower_dirs, &mut found)?;
     Ok(found)
 }
 
 fn collect_nested_dir(
     dir: &Path,
     rel_prefix: &str,
+    expected_lower_dirs: &BTreeMap<String, String>,
     found: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
-    let entries = match sorted_output_entries(dir) {
+    let is_expected_dir =
+        !rel_prefix.is_empty() && expected_lower_dirs.contains_key(&rel_prefix.to_lowercase());
+    let entries = match sorted_dir_entries(dir, rel_prefix.is_empty()) {
         Ok(entries) => entries,
         Err(err)
             if !rel_prefix.is_empty()
+                && !is_expected_dir
                 && err.chain().any(|cause| {
                     cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
                         matches!(
@@ -1394,18 +1632,18 @@ fn collect_nested_dir(
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if is_temp_file(&name) {
-            continue;
-        }
         let rel = if rel_prefix.is_empty() {
-            name
+            name.clone()
         } else {
             format!("{rel_prefix}/{name}")
         };
         let path = entry.path();
         if file_type.is_dir() {
-            collect_nested_dir(&path, &rel, found)?;
+            collect_nested_dir(&path, &rel, expected_lower_dirs, found)?;
         } else if file_type.is_file() {
+            if is_temp_file(&name) {
+                continue;
+            }
             found.push((rel, path));
         }
     }
@@ -1415,7 +1653,7 @@ fn collect_nested_dir(
 fn prune_empty_ancestors(start: Option<&Path>, stop_at: &Path) {
     let mut current = start;
     while let Some(dir) = current {
-        if dir == stop_at {
+        if dir == stop_at || !dir.starts_with(stop_at) {
             break;
         }
         if fs::remove_dir(dir).is_err() {
@@ -1683,9 +1921,14 @@ fn compute_diff_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
 }
 
 fn sorted_output_entries(out: &Path) -> Result<Vec<fs::DirEntry>> {
+    sorted_dir_entries(out, true)
+}
+
+fn sorted_dir_entries(dir: &Path, is_root: bool) -> Result<Vec<fs::DirEntry>> {
     let mut entries = Vec::new();
-    for entry in fs::read_dir(out)
-        .with_context(|| format!("failed to read output root {}", out.display()))?
+    let label = if is_root { "output root" } else { "directory" };
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("failed to read {label} {}", dir.display()))?
     {
         entries.push(entry?);
     }
@@ -1704,30 +1947,28 @@ fn classify_header_line(expected_header: &str, line: &[u8]) -> HeaderKind {
     let Ok(text) = std::str::from_utf8(line) else {
         return HeaderKind::Unowned;
     };
-    let expected_is_comment = expected_header.starts_with(COMMENT_HEADER_PREFIX)
-        && expected_header.ends_with(COMMENT_HEADER_SUFFIX);
-    let expected_is_go = expected_header.starts_with(GO_HEADER_PREFIX)
-        && expected_header.ends_with(GO_HEADER_SUFFIX);
-    let expected_is_hash = expected_header.starts_with(HASH_HEADER_PREFIX)
-        && expected_header.ends_with(HASH_HEADER_SUFFIX);
-    let expected_is_json = expected_header.starts_with(JSON_HEADER_PREFIX)
-        && expected_header.ends_with(JSON_HEADER_SUFFIX);
-    let expected_is_html = expected_header.starts_with(HTML_HEADER_PREFIX)
-        && expected_header.ends_with(HTML_HEADER_SUFFIX);
+    let expected_scoped = parse_scoped_header(expected_header);
+    let expected_is_legacy_comment_gen = expected_header.starts_with(COMMENT_HEADER_PREFIX)
+        && expected_header.ends_with(COMMENT_HEADER_SUFFIX)
+        && expected_scoped
+            .is_some_and(|(gen_name, _)| matches!(gen_name, "rust" | "proto" | "glue"));
+    let expected_is_legacy_json_gen = expected_header.starts_with(JSON_HEADER_PREFIX)
+        && expected_header.ends_with(JSON_HEADER_SUFFIX)
+        && expected_scoped.is_some_and(|(gen_name, _)| gen_name == "schema");
 
     if text == LEGACY_COMMENT_HEADER {
-        if expected_is_comment {
+        if expected_is_legacy_comment_gen {
             return HeaderKind::LegacyShared;
         }
-        if expected_is_go || expected_is_hash || expected_is_json || expected_is_html {
+        if expected_scoped.is_some() {
             return HeaderKind::Foreign("another witforge generator (legacy header)".to_string());
         }
     }
     if text == LEGACY_JSON_HEADER {
-        if expected_is_json {
+        if expected_is_legacy_json_gen {
             return HeaderKind::LegacyShared;
         }
-        if expected_is_comment || expected_is_go || expected_is_hash || expected_is_html {
+        if expected_scoped.is_some() {
             return HeaderKind::Foreign("generator `schema` (legacy header)".to_string());
         }
     }
@@ -2565,19 +2806,61 @@ mod tests {
                 }
             }
         }
-        // Go and Python headers treat legacy pre-0.6.0 `// @generated` as foreign, not adoptable.
+        // Legacy pre-0.6.0 `// @generated` is adopted ONLY by rust/proto/glue and rejected as
+        // foreign by new `//`-comment emitters (ts/java/csharp), Go, Python, and plugins.
+        for non_legacy in [
+            HeaderStyle::LineComment.format_header("ts", "ex", "app"),
+            HeaderStyle::LineComment.format_header("java", "ex", "app"),
+            HeaderStyle::LineComment.format_header("csharp", "ex", "app"),
+            HeaderStyle::LineComment.format_header("custom-plugin", "ex", "app"),
+            HeaderStyle::GoGenerated.format_header("go", "ex", "app"),
+            HeaderStyle::HashComment.format_header("py", "ex", "app"),
+            HeaderStyle::HtmlComment.format_header("doc", "ex", "app"),
+        ] {
+            assert!(
+                matches!(
+                    classify_header_line(&non_legacy, LEGACY_COMMENT_HEADER.as_bytes()),
+                    HeaderKind::Foreign(_)
+                ),
+                "expected legacy comment header to be Foreign for {non_legacy:?}"
+            );
+        }
+        for legacy_gen in ["rust", "proto", "glue"] {
+            let expected = HeaderStyle::LineComment.format_header(legacy_gen, "ex", "app");
+            assert_eq!(
+                classify_header_line(&expected, LEGACY_COMMENT_HEADER.as_bytes()),
+                HeaderKind::LegacyShared,
+                "expected legacy comment header adoption for {legacy_gen}"
+            );
+        }
+        assert_eq!(
+            classify_header_line(
+                &HeaderStyle::JsonComment.format_header("schema", "ex", "app"),
+                LEGACY_JSON_HEADER.as_bytes(),
+            ),
+            HeaderKind::LegacyShared
+        );
         assert!(matches!(
-            classify_header_line(&styles[1], LEGACY_COMMENT_HEADER.as_bytes()),
-            HeaderKind::Foreign(_)
-        ));
-        assert!(matches!(
-            classify_header_line(&styles[2], LEGACY_COMMENT_HEADER.as_bytes()),
+            classify_header_line(
+                &HeaderStyle::JsonComment.format_header("conformance", "ex", "app"),
+                LEGACY_JSON_HEADER.as_bytes(),
+            ),
             HeaderKind::Foreign(_)
         ));
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn nested_path_validation_collisions_and_symlink_guards() {
+        for pair in WINDOWS_RESERVED_NAMES.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "WINDOWS_RESERVED_NAMES not sorted at {:?} >= {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+
         // Invalid relative paths rejected with WF9004.
         for bad in [
             "",
@@ -2591,12 +2874,22 @@ mod tests {
             "a/./b.ts",
             "a/bad\0name.ts",
             "a/bad\nname.ts",
+            "a/bad\u{0085}c1.ts",
+            "a/bidi\u{202E}name.ts",
             "a/.witforge.foo.123.0.tmp",
             "a/trail ",
             "a/trail.",
             "a/bad:name.ts",
             "a/bad?name.ts",
             "CON",
+            "CON .txt",
+            "sub/NUL .py",
+            "sub/COM0.go",
+            "sub/CONIN$.txt",
+            "sub/CONOUT$.txt",
+            "sub/LPT0.ts",
+            "sub/COM\u{00B9}.ts",
+            "sub/lpt\u{00B3}.rs",
             "sub/nul.py",
             "sub/com1.go",
             "sub/LPT9/types.java",
@@ -2613,7 +2906,7 @@ mod tests {
         assert!(validate_relative_path("py.typed").is_ok());
         assert!(validate_relative_path("witforge_deps/v1/shared_types/mod.py").is_ok());
 
-        // Duplicate, case-insensitive, and file-vs-directory prefix collisions refused.
+        // Duplicate, case-insensitive file, directory-casing, and file-vs-dir prefix collisions.
         let header = HeaderStyle::LineComment.format_header("ts", "ex", "app");
         let mut files = GeneratedFiles::new_nested(header.clone());
         files
@@ -2631,6 +2924,11 @@ mod tests {
         );
         assert!(
             files
+                .insert_relative("V0_1/other.ts", format!("{header}\n"))
+                .is_err()
+        );
+        assert!(
+            files
                 .insert_relative("v0_1/Types.ts/nested.ts", format!("{header}\n"))
                 .is_err()
         );
@@ -2644,8 +2942,36 @@ mod tests {
                 .insert_relative("V0_1", format!("{header}\n"))
                 .is_err()
         );
+        // Mixed insert() on a nested set also enforces validation and collisions.
+        assert!(files.insert("v0_1", format!("{header}\n")).is_err());
+        assert!(files.insert("CON.ts", format!("{header}\n")).is_err());
+        files.insert("index.ts", format!("{header}\n")).unwrap();
+        assert!(files.insert("INDEX.ts", format!("{header}\n")).is_err());
 
-        // Non-directory ancestor and symlinked ancestor/leaf refusals.
+        // Mixed insert() followed by insert_relative() promotes atomically and catches collisions.
+        let mut flat = GeneratedFiles::new(header.clone());
+        flat.insert("v0_1", format!("{header}\n")).unwrap();
+        assert!(
+            flat.insert_relative("v0_1/types.ts", format!("{header}\n"))
+                .is_err()
+        );
+        assert!(
+            !flat.is_nested(),
+            "failed promotion must leave flat mode unchanged"
+        );
+        let mut flat_ok = GeneratedFiles::new(header.clone());
+        flat_ok.insert("index.ts", format!("{header}\n")).unwrap();
+        flat_ok
+            .insert_relative("v0_1/types.ts", format!("{header}\n"))
+            .unwrap();
+        assert!(flat_ok.is_nested());
+        assert!(
+            flat_ok
+                .insert_relative("INDEX.ts", format!("{header}\n"))
+                .is_err()
+        );
+
+        // Non-directory ancestor (both unowned and owned) reports NotDirectory without duplicate Extra.
         let out = std::env::temp_dir().join(format!(
             "witforge-output-nested-guards-{}",
             std::process::id()
@@ -2656,8 +2982,27 @@ mod tests {
         let err = files.write(&out).unwrap_err();
         assert!(format!("{err:#}").contains("not a directory"), "{err:#}");
         let findings = files.check(&out).unwrap();
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(findings[0].status, GeneratedFileStatus::NotRegular);
+        assert!(
+            findings.iter().any(|f| {
+                f.path == out.join("v0_1") && f.status == GeneratedFileStatus::NotDirectory
+            }),
+            "{findings:?}"
+        );
+        // Even if the blocking file carries our header, check must report NotDirectory, NOT Extra.
+        fs::write(out.join("v0_1"), format!("{header}\n")).unwrap();
+        let owned_block = files.check(&out).unwrap();
+        assert!(
+            owned_block.iter().any(|f| {
+                f.path == out.join("v0_1") && f.status == GeneratedFileStatus::NotDirectory
+            }),
+            "{owned_block:?}"
+        );
+        assert!(
+            !owned_block
+                .iter()
+                .any(|f| { f.path == out.join("v0_1") && f.status == GeneratedFileStatus::Extra }),
+            "must not emit contradictory Extra alongside NotDirectory: {owned_block:?}"
+        );
         fs::remove_file(out.join("v0_1")).unwrap();
 
         #[cfg(unix)]
@@ -2668,9 +3013,30 @@ mod tests {
             let err = files.write(&out).unwrap_err();
             assert!(format!("{err:#}").contains("symlink"), "{err:#}");
             let findings = files.check(&out).unwrap();
-            assert_eq!(findings.len(), 1, "{findings:?}");
-            assert_eq!(findings[0].status, GeneratedFileStatus::Symlink);
+            assert!(
+                findings.iter().any(|f| {
+                    f.path == out.join("v0_1") && f.status == GeneratedFileStatus::Symlink
+                }),
+                "{findings:?}"
+            );
             fs::remove_file(out.join("v0_1")).unwrap();
+
+            // Nested leaf symlink is refused in write and reported in check.
+            fs::create_dir_all(out.join("v0_1")).unwrap();
+            let target_file = outside.join("victim.ts");
+            fs::write(&target_file, format!("{header}\n")).unwrap();
+            std::os::unix::fs::symlink(&target_file, out.join("v0_1/Types.ts")).unwrap();
+            let leaf_err = files.write(&out).unwrap_err();
+            assert!(format!("{leaf_err:#}").contains("symlink"), "{leaf_err:#}");
+            let leaf_findings = files.check(&out).unwrap();
+            assert!(
+                leaf_findings.iter().any(|f| {
+                    f.path == out.join("v0_1/Types.ts") && f.status == GeneratedFileStatus::Symlink
+                }),
+                "{leaf_findings:?}"
+            );
+            assert!(!files.unified_diff(&out).unwrap().contains("Types.ts"));
+            fs::remove_file(out.join("v0_1/Types.ts")).unwrap();
             fs::remove_dir_all(&outside).unwrap();
         }
 
@@ -2695,7 +3061,7 @@ mod tests {
             .insert_relative("__init__.py", format!("{py_header}\n"))
             .unwrap();
         initial
-            .insert_relative("v0_1/types.py", format!("{py_header}\nX = 1\n"))
+            .insert_relative("a/b/c/stale.py", format!("{py_header}\nX = 1\n"))
             .unwrap();
         initial
             .insert_relative("v0_2/types.py", format!("{py_header}\nX = 2\n"))
@@ -2703,7 +3069,7 @@ mod tests {
 
         // Diff before first write shows all files added from /dev/null.
         let initial_diff = initial.unified_diff(&out).unwrap();
-        assert!(initial_diff.contains("v0_1"), "{initial_diff}");
+        assert!(initial_diff.contains("stale.py"), "{initial_diff}");
         assert!(initial_diff.contains("py.typed"), "{initial_diff}");
 
         initial.write(&out).unwrap();
@@ -2712,12 +3078,24 @@ mod tests {
         assert!(initial.check(&out).unwrap().is_empty());
         assert_eq!(initial.unified_diff(&out).unwrap(), "");
 
+        // Rewriting unchanged nested files preserves inode / mtime.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let before_ino = fs::metadata(out.join("v0_2/types.py")).unwrap().ino();
+            initial.write(&out).unwrap();
+            let after_ino = fs::metadata(out.join("v0_2/types.py")).unwrap().ino();
+            assert_eq!(
+                before_ino, after_ino,
+                "unchanged nested file must not be rewritten"
+            );
+        }
+
         // Keep an unowned user file in v0_2/ alongside owned files.
         fs::write(out.join("v0_2/README.local.txt"), "hand-written\n").unwrap();
         assert!(initial.check(&out).unwrap().is_empty());
 
-        // Retiring v0_1 removes stale v0_1/types.py and prunes the now-empty v0_1 directory,
-        // while leaving v0_2/README.local.txt untouched.
+        // Retiring a/b/c/stale.py prunes c, b, and a recursively without removing out.
         let mut shrunk = GeneratedFiles::new_nested(py_header.clone());
         shrunk.insert_marker("py.typed", "").unwrap();
         shrunk
@@ -2734,34 +3112,147 @@ mod tests {
         }));
         assert!(
             drift.iter().any(|f| {
-                f.path.ends_with("types.py") && f.status == GeneratedFileStatus::Extra
+                f.path.ends_with("stale.py") && f.status == GeneratedFileStatus::Extra
             })
         );
         let diff_text = shrunk.unified_diff(&out).unwrap();
         assert!(diff_text.contains("-X = 2\n+X = 20\n"), "{diff_text}");
         assert!(diff_text.contains("+++ /dev/null"), "{diff_text}");
 
+        // Read-only nested file is replaced cleanly when its parent dir is writable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(out.join("v0_2/types.py"), fs::Permissions::from_mode(0o444))
+                .unwrap();
+        }
         shrunk.write(&out).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(out.join("v0_2/types.py"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o444
+            );
+            fs::set_permissions(out.join("v0_2/types.py"), fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
         assert!(
-            !out.join("v0_1").exists(),
-            "empty stale dir should be pruned"
+            !out.join("a").exists(),
+            "multi-level empty stale dirs should be pruned"
         );
+        assert!(out.is_dir(), "output root itself must never be pruned");
         assert!(out.join("v0_2/README.local.txt").is_file());
         assert!(shrunk.check(&out).unwrap().is_empty());
 
-        // Hand-written bytes at marker path are refused as Unowned (never clobbered).
-        fs::write(out.join("py.typed"), "custom user text\n").unwrap();
-        let unowned_findings = shrunk.check(&out).unwrap();
+        // Case-only rename in nested tree (v0_2/types.py -> v0_2/Types.py) succeeds cleanly.
+        let mut renamed = GeneratedFiles::new_nested(py_header.clone());
+        renamed.insert_marker("py.typed", "").unwrap();
+        renamed
+            .insert_relative("__init__.py", format!("{py_header}\n"))
+            .unwrap();
+        renamed
+            .insert_relative("v0_2/Types.py", format!("{py_header}\nX = 20\n"))
+            .unwrap();
+        assert!(is_case_only_rename("v0_2/types.py", &renamed.lower_files));
+        assert!(!is_case_only_rename("v0_2/Types.py", &renamed.lower_files));
+        let rename_drift = renamed.check(&out).unwrap();
+        assert_eq!(rename_drift.len(), 2, "{rename_drift:?}");
+        assert!(
+            rename_drift
+                .iter()
+                .any(|f| f.status == GeneratedFileStatus::Missing)
+        );
+        assert!(
+            rename_drift
+                .iter()
+                .any(|f| f.status == GeneratedFileStatus::Extra)
+        );
+        renamed.write(&out).unwrap();
+        assert!(renamed.check(&out).unwrap().is_empty());
+
+        // Marker edge cases:
+        // (a) Non-empty marker with CRLF reports Changed with CRLF hint, not Unowned.
+        let mut with_text_marker = GeneratedFiles::new_nested(py_header.clone());
+        with_text_marker
+            .insert_marker("marker.txt", "line1\nline2\n")
+            .unwrap();
+        with_text_marker.write(&out).unwrap();
+        // Removed 0-byte marker (`py.typed`) has no header so stays untouched on disk.
+        assert!(out.join("py.typed").is_file());
+        fs::write(out.join("marker.txt"), "line1\r\nline2\r\n").unwrap();
+        let crlf_marker = with_text_marker.check(&out).unwrap();
+        assert_eq!(crlf_marker.len(), 1, "{crlf_marker:?}");
+        assert!(
+            matches!(
+                &crlf_marker[0].status,
+                GeneratedFileStatus::Changed { detail } if detail.contains("line endings differ")
+            ),
+            "{crlf_marker:?}"
+        );
+        // (b) Existing file carrying our own header can transition to a marker cleanly.
+        fs::write(out.join("marker.txt"), format!("{py_header}\nold = 1\n")).unwrap();
+        with_text_marker.write(&out).unwrap();
+        assert_eq!(
+            fs::read_to_string(out.join("marker.txt")).unwrap(),
+            "line1\nline2\n"
+        );
+        // (c) Hand-written bytes at marker path are refused as Unowned with marker message.
+        fs::write(out.join("marker.txt"), "custom user text\n").unwrap();
+        let unowned_findings = with_text_marker.check(&out).unwrap();
         assert_eq!(unowned_findings.len(), 1, "{unowned_findings:?}");
         assert_eq!(unowned_findings[0].status, GeneratedFileStatus::Unowned);
-        assert!(shrunk.write(&out).is_err());
+        let marker_err = with_text_marker.write(&out).unwrap_err();
+        assert!(
+            format!("{marker_err:#}").contains("marker"),
+            "{marker_err:#}"
+        );
+        fs::write(out.join("marker.txt"), "line1\nline2\n").unwrap();
 
-        // Foreign header in a nested subdir is refused with GUARD_REFUSED.
-        fs::write(out.join("py.typed"), "").unwrap();
+        // Directory named like a witforge temp file is NOT skipped during foreign-header scan.
+        let temp_like_dir = out.join(".witforge.decoy.123.0.tmp");
+        fs::create_dir_all(&temp_like_dir).unwrap();
         let go_header = HeaderStyle::GoGenerated.format_header("go", "ex", "app");
-        fs::write(out.join("v0_2/foreign.go"), format!("{go_header}\n")).unwrap();
-        assert!(shrunk.check(&out).is_err());
-        assert!(shrunk.write(&out).is_err());
+        fs::write(temp_like_dir.join("foreign.go"), format!("{go_header}\n")).unwrap();
+        assert!(with_text_marker.check(&out).is_err());
+        assert!(with_text_marker.write(&out).is_err());
+        fs::remove_dir_all(&temp_like_dir).unwrap();
+
+        // Unreadable nested directories: unrelated 0o000 dir skipped, expected ancestor fails.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut nested_perm = GeneratedFiles::new_nested(py_header.clone());
+            nested_perm
+                .insert_relative("expected_dir/mod.py", format!("{py_header}\n"))
+                .unwrap();
+            nested_perm.write(&out).unwrap();
+
+            let secret = out.join("user_secret");
+            fs::create_dir_all(&secret).unwrap();
+            fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+            // Skip test assertions only when running as root (UID 0 bypasses 0o000).
+            if fs::read_dir(&secret).is_err() {
+                assert!(
+                    nested_perm.check(&out).unwrap().is_empty(),
+                    "unrelated unreadable user directory must be skipped"
+                );
+                fs::set_permissions(out.join("expected_dir"), fs::Permissions::from_mode(0o111))
+                    .unwrap();
+                assert!(
+                    nested_perm.check(&out).is_err(),
+                    "unreadable expected ancestor directory must fail loudly"
+                );
+                fs::set_permissions(out.join("expected_dir"), fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+            fs::set_permissions(&secret, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::remove_dir_all(&secret).unwrap();
+        }
 
         fs::remove_dir_all(&out).unwrap();
     }

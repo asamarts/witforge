@@ -509,6 +509,7 @@ pub(crate) const CSHARP_OBJECT_MEMBERS: &[&str] = &[
     "GetType",
     "MemberwiseClone",
     "PrintMembers",
+    "ReferenceEquals",
     "ToString",
 ];
 
@@ -568,9 +569,18 @@ pub fn escape_go_ident(ident: &str) -> String {
 }
 
 /// Derive a valid Go package identifier from a WIT name (`my-pkg` -> `my_pkg`, `type` -> `type_`).
+///
+/// Prefixes `_` if `wit_name` normalizes to empty or begins with an ASCII digit. Note that
+/// package names ending in `_test` carry special external-test semantics in `go test`; callers
+/// naming Go packages from arbitrary WIT interfaces should use fixed package/file conventions
+/// per `docs/design/polyglot-emitters.md`.
 #[must_use]
 pub fn go_package_ident(wit_name: &str) -> String {
-    escape_go_ident(&to_snake_case(wit_name))
+    let snake = to_snake_case(wit_name);
+    if snake.is_empty() || snake.as_bytes()[0].is_ascii_digit() {
+        return format!("_{snake}");
+    }
+    escape_go_ident(&snake)
 }
 
 /// Whether `ident` is a Java reserved keyword, literal (`true`/`false`/`null`), or `_`.
@@ -595,8 +605,14 @@ pub fn is_java_object_method(ident: &str) -> bool {
     JAVA_OBJECT_METHODS.binary_search(&ident).is_ok()
 }
 
-/// Deterministically escape a Java variable, parameter, method, or package segment identifier by
+/// Deterministically escape a Java variable, parameter, or package segment identifier by
 /// appending `_` when reserved.
+///
+/// For Java type names (`class`, `record`, `interface`, `enum`), use [`escape_java_type_ident`]
+/// instead so JLS §3.8 restricted `TypeIdentifier`s (`permits`, `record`, `sealed`, `var`,
+/// `yield`) are also escaped. Note that JLS §3.8 also disallows unqualified `yield(...)` method
+/// invocations; Java interface/method emitters must qualify or escape `yield` in method position
+/// and check [`is_java_object_method`] on record components.
 #[must_use]
 pub fn escape_java_ident(ident: &str) -> String {
     if is_java_keyword(ident) {
@@ -640,6 +656,10 @@ pub fn escape_csharp_ident(ident: &str) -> String {
 }
 
 /// Deterministically escape `ident` for `language`.
+///
+/// For specialized positions, also apply [`escape_java_type_ident`] (Java type names),
+/// [`is_java_object_method`] (Java record components), and [`is_csharp_object_member`] (C#
+/// record properties).
 #[must_use]
 pub fn escape_ident(language: TargetLanguage, ident: &str) -> String {
     match language {
@@ -743,6 +763,11 @@ mod tests {
         assert_eq!(to_snake_case("HTTP-api"), "http_api");
         assert_eq!(to_snake_case("URL"), "url");
         assert_eq!(to_snake_case("foo2-bar"), "foo2_bar");
+        assert_eq!(to_snake_case(""), "");
+        assert_eq!(to_snake_case("---"), "");
+        assert_eq!(to_snake_case("XMLHttpRequest"), "xml_http_request");
+        assert_eq!(to_snake_case("HTTP2-server"), "http2_server");
+        assert_eq!(to_snake_case("_foo"), "foo");
 
         assert_eq!(to_upper_snake_case("start-byte"), "START_BYTE");
         assert_eq!(to_upper_snake_case("HTTP-api"), "HTTP_API");
@@ -750,11 +775,17 @@ mod tests {
         assert_eq!(to_pascal_case("start-byte"), "StartByte");
         assert_eq!(to_pascal_case("HTTP-api"), "HttpApi");
         assert_eq!(to_pascal_case("x-kind"), "XKind");
+        assert_eq!(to_pascal_case("XMLHttpRequest"), "XmlHttpRequest");
 
         assert_eq!(to_camel_case("start-byte"), "startByte");
         assert_eq!(to_camel_case("HTTP-api"), "httpApi");
         assert_eq!(to_camel_case("URL"), "url");
         assert_eq!(to_camel_case("x-kind"), "xKind");
+        assert_eq!(to_camel_case(""), "");
+        assert_eq!(to_camel_case("---"), "");
+        assert_eq!(to_camel_case("XMLHttpRequest"), "xmlHttpRequest");
+        assert_eq!(to_camel_case("HTTP2-server"), "http2Server");
+        assert_eq!(to_camel_case("_foo"), "foo");
     }
 
     #[test]
@@ -776,6 +807,8 @@ mod tests {
         assert_eq!(escape_go_ident("span"), "span");
         assert_eq!(go_package_ident("my-pkg"), "my_pkg");
         assert_eq!(go_package_ident("type"), "type_");
+        assert_eq!(go_package_ident(""), "_");
+        assert_eq!(go_package_ident("0-foo"), "_0_foo");
 
         assert_eq!(escape_java_ident("default"), "default_");
         assert_eq!(escape_java_ident("record"), "record");
@@ -788,6 +821,7 @@ mod tests {
         assert_eq!(escape_csharp_ident("string"), "@string");
         assert_eq!(escape_csharp_ident("Span"), "Span");
         assert!(is_csharp_object_member("EqualityContract"));
+        assert!(is_csharp_object_member("ReferenceEquals"));
         assert!(!is_csharp_object_member("StartByte"));
 
         assert_eq!(escape_ident(TargetLanguage::TypeScript, "class"), "class_");

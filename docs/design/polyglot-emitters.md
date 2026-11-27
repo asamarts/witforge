@@ -73,11 +73,14 @@ All five polyglot emitters emit deterministic, LF-only nested directory trees ma
 all live majors:
 
 1. **Shared (`root_major = None`):** Identical across every live major that uses it ->
-   `witforge_deps/<ns>_<pkg>/` (`polyglot::dep_dir_path(None, ns, name)`).
+   `witforge_deps/<ns>_<pkg>/` (`polyglot::dep_dir_path(None, ns, name)` for TS, Python, Go, and
+   Java; C# uses PascalCase `WitforgeDeps/<NsPkg>/` and `V<major>_<minor>/` matching .NET
+   namespace directory conventions).
 2. **Per-major scoped (`root_major = Some(m)`):** Upgraded or changed across live majors ->
-   `witforge_deps/v<m>/<ns>_<pkg>/` (`polyglot::dep_dir_path(Some(m), ns, name)`). When
-   `canonical_owner < m`, emitters re-export or alias the canonical owner's types so adjacent
-   majors with identical pinned dependencies share one type identity.
+   `witforge_deps/v<m>/<ns>_<pkg>/` (`polyglot::dep_dir_path(Some(m), ns, name)`; C# uses
+   `WitforgeDeps/V<m>/<NsPkg>/`). When `canonical_owner < m`, emitters re-export or alias the
+   canonical owner's types so adjacent majors with identical pinned dependencies share one type
+   identity.
 3. **Disambiguated protobuf packages (`DepLayout::is_disambiguated`):** When two live majors
    pin different definitions of the same dependency major, protobuf packages use
    `<ns>.<pkg>.v<dep_major>_m<owner>` (`polyglot::disambiguated_major_tag(dep_major, Some(owner))`).
@@ -85,6 +88,12 @@ all live majors:
    they align with `witforge proto` (`W11-039`).
 
 ### 4.2 Per-language directory layouts
+
+Whenever a WIT interface or type name would map directly to a Windows reserved device filename
+stem (`CON`, `PRN`, `AUX`, `NUL`, `COM0`..`9`, `LPT0`..`9`, `CONIN$`, `CONOUT$`), emitters append
+a deterministic trailing `_` to the filename stem (and in Java, also to the matching public
+top-level type name so `Con_.java` declares `public record Con_`), ensuring valid `0.9.0` WIT
+contracts never trigger `validate_relative_path` (`WF9004`).
 
 - **TypeScript (`witforge ts`, `witforge ts-glue`):**
   - `index.ts`, `v<major>_<minor>/<interface>.ts`, `v<major>_<minor>/index.ts`,
@@ -98,10 +107,12 @@ all live majors:
     `witforge_deps/__init__.py`, `witforge_deps/<ns>_<pkg>/__init__.py`, `worlds.py`,
     `convert.py`.
 - **Go (`witforge go`, `witforge go-glue`):**
-  - One Go package per directory: `v<major>_<minor>/<interface>/<interface>.go` (or per-version
-    package `v<major>_<minor>/<interface>.go` with interface-prefixed exported types when sharing
-    one Go package per version), `witforge_deps/<ns>_<pkg>/...`, `worlds/worlds.go`,
-    `convert/convert.go`. Exact import path prefix is configured via `--go-module` / `go-module`.
+  - One Go package directory per versioned interface using fixed Go source filenames
+    (`v<major>_<minor>/<iface_dir>/types.go`, `witforge_deps/<ns>_<pkg>/<iface_dir>/types.go`,
+    `worlds/worlds.go`, `convert/convert.go`), never naming files `<interface>.go`, so WIT
+    interface names ending in `-test`, `-linux`, `-windows`, or `-amd64` never trigger Go's
+    implicit `_test.go` or `_<GOOS>.go` / `_<GOARCH>.go` build-tag exclusions. Exact import path
+    prefix is configured via `--go-module` / `go-module`.
 - **Java (`witforge java`, `witforge java-glue`):**
   - Standard nested package directory matching `--java-package` / `java-package`, e.g.
     `<pkg_path>/v<major>_<minor>/<interface>/<Type>.java`, one public top-level type per `.java`
@@ -186,40 +197,42 @@ collide with another WIT identifier. All doc strings are normalized first throug
 | WIT | TypeScript | Python 3.11+ | Go 1.22+ | Java 21+ | C# 12+ / .NET 8+ |
 |---|---|---|---|---|---|
 | `bool` | `boolean` | `bool` | `bool` | `boolean` / `Boolean` | `bool` |
-| `u8` | `number` | `int` | `uint8` | `int` (unsigned 0..255) | `byte` |
-| `u16` | `number` | `int` | `uint16` | `int` (unsigned 0..65535) | `ushort` |
-| `u32` | `number` | `int` | `uint32` | `int` (unsigned 32-bit) | `uint` |
-| `u64` | `bigint` | `int` | `uint64` | `long` (unsigned 64-bit) | `ulong` |
-| `s8` | `number` | `int` | `int8` | `byte` | `sbyte` |
-| `s16` | `number` | `int` | `int16` | `short` | `short` |
-| `s32` | `number` | `int` | `int32` | `int` | `int` |
-| `s64` | `bigint` | `int` | `int64` | `long` | `long` |
+| `u8` | `number` | `int` | `uint8` | `int` / `Integer` (unsigned 0..255) | `byte` |
+| `u16` | `number` | `int` | `uint16` | `int` / `Integer` (unsigned 0..65535) | `ushort` |
+| `u32` | `number` | `int` | `uint32` | `int` / `Integer` (unsigned 32-bit) | `uint` |
+| `u64` | `bigint` | `int` | `uint64` | `long` / `Long` (unsigned 64-bit) | `ulong` |
+| `s8` | `number` | `int` | `int8` | `byte` / `Byte` | `sbyte` |
+| `s16` | `number` | `int` | `int16` | `short` / `Short` | `short` |
+| `s32` | `number` | `int` | `int32` | `int` / `Integer` | `int` |
+| `s64` | `bigint` | `int` | `int64` | `long` / `Long` | `long` |
 | `f32` | `number` | `float` | `float32` | `float` / `Float` | `float` |
 | `f64` | `number` | `float` | `float64` | `double` / `Double` | `double` |
-| `char` | `string` (1 Unicode scalar) | `str` (1 Unicode scalar) | `rune` | `int` (Unicode code point) | `global::System.Text.Rune` |
+| `char` | `string` (1 Unicode scalar) | `str` (1 Unicode scalar) | `rune` | `int` / `Integer` (Unicode code point) | `global::System.Text.Rune` |
 | `string` | `string` | `str` | `string` | `String` | `string` |
-| `list<u8>` | `Uint8Array` | `bytes` | `[]byte` | `byte[]` (defensively copied) | `global::System.ReadOnlyMemory<byte>` / `byte[]` |
-| `list<T>` | `readonly T[]` | `tuple[T, ...]` | `[]T` | `List<T>` (`List.copyOf`) | `IReadOnlyList<T>` |
+| `list<u8>` | `Uint8Array` | `bytes` | `[]byte` | `byte[]` (defensively copied; `Arrays.equals`/`hashCode` override on records) | `global::System.ReadOnlyMemory<byte>` / `byte[]` (value-equality override on records) |
+| `list<T>` | `readonly T[]` | `tuple[T, ...]` | `[]T` | `List<T>` (`List.copyOf`) | `IReadOnlyList<T>` (value-equality override on records) |
 | `list<u8, N>` | `Uint8Array` (length `N` checked) | `bytes` (length `N` checked) | `[N]byte` | `byte[]` (length `N` checked) | `byte[]` / `ReadOnlyMemory<byte>` (length `N` checked) |
 | `list<T, N>` | `readonly T[]` (tuple for small `N` or length-checked array) | `tuple[T, ...]` (length `N` checked) | `[N]T` | `List<T>` (length `N` checked) | `IReadOnlyList<T>` (length `N` checked) |
-| `map<K, V>` | `ReadonlyMap<K, V>` | `Mapping[K, V]` / `dict[K, V]` | `map[K]V` | `Map<K, V>` (`Map.copyOf`) | `IReadOnlyDictionary<K, V>` |
-| `option<T>` | `Option<T>` (`{ readonly tag: "none" } \| { readonly tag: "some"; readonly value: T }`) | `T \| None` (or `Option[T]` wrapper when nested `option<option<T>>`) | `*T` (or generic `Option[T]` struct for unambiguous nesting) | `Optional<T>` | `T?` (or `WitforgeOption<T>` struct for unambiguous nesting) |
+| `map<K, V>` | `ReadonlyMap<K, V>` | `Mapping[K, V]` / `dict[K, V]` | `map[K]V` | `Map<K, V>` (`Map.copyOf`) | `IReadOnlyDictionary<K, V>` (value-equality override on records) |
+| `option<T>` | `Option<T>` (`{ readonly tag: "none" } \| { readonly tag: "some"; readonly value: T }`) | `T \| None` (or `Option[T]` wrapper when nested `option<option<T>>`) | `*T` (or generic `Option[T]` struct when nested `option<option<T>>`) | `Optional<T>` (`Optional<Optional<T>>` nests directly without collapsing) | `T?` (or `WitforgeOption<T>` struct when nested, since C# `Nullable<Nullable<T>>` / `string??` is invalid) |
 | `result<T, E>` | `{ readonly tag: "ok"; readonly value: T } \| { readonly tag: "err"; readonly error: E }` | `Ok[T] \| Err[E]` frozen dataclasses | `Result[T, E]` struct / sealed interface | `sealed interface Result<T, E> permits Ok, Err` | `abstract record Result<T, E>` + `sealed record Ok` / `Err` |
+| `result<T>` / `result<_, E>` / bare `result` | Omit payload property on unit side (`{ readonly tag: "ok" }` / `{ readonly tag: "err" }`) | `Ok[T]` / `Err[None]` (or unit `Ok[None]` / `Err[None]`) | `Result[T, struct{}]` / `Result[struct{}, E]` / `Result[struct{}, struct{}]` | `Result<T, WitforgeUnit>` / `Result<WitforgeUnit, E>` / `Result<WitforgeUnit, WitforgeUnit>` (`enum WitforgeUnit { INSTANCE }`) | `Result<T, WitforgeUnit>` / `Result<WitforgeUnit, E>` / `Result<WitforgeUnit, WitforgeUnit>` (`readonly record struct WitforgeUnit`) |
 
-Note on `option<option<T>>`: because `null`/`undefined` in TS, `None` in Python, `nil` in Go,
-`Optional` in Java, and `T?` in C# collapse nested absence unless wrapped, every language emitter
-preserves `Some(None)` distinct from `None` whenever `option<option<T>>` occurs (either using an
-explicit tagged `Option<T>` uniformly or wrapping nested options deterministically).
+Note on `option<option<T>>`: TypeScript uses uniform tagged `Option<T>` and Java's
+`Optional<Optional<T>>` already distinguishes `Optional.empty()` (`None`) from
+`Optional.of(Optional.empty())` (`Some(None)`). Python (`None`), Go (`*T`), and C# (`T?`, where
+`Nullable<Nullable<T>>` is compile error `CS0453` and `string??` is invalid) wrap nested options
+explicitly so `Some(None)` never collapses into `None`.
 
 ### 7.2 Nominal declarations, interfaces, and worlds
 
 | WIT | TypeScript | Python 3.11+ | Go 1.22+ | Java 21+ | C# 12+ / .NET 8+ |
 |---|---|---|---|---|---|
 | `record` | `export interface` with `readonly` properties | `@dataclass(frozen=True, slots=True)` | `type Name struct { ... }` | `public record Name(...)` | `public sealed record Name(...)` |
-| `variant` | Discriminated union on `readonly tag: "..."` | `Union` of `@dataclass(frozen=True, slots=True)` case classes | Sealed interface with unexported marker method + case structs | `public sealed interface Name permits ...` + case `record`s | `public abstract record Name` (private ctor) + nested `public sealed record` cases |
-| `enum` | String union type + `const` object of values | `class Name(str, Enum)` | `type Name uint32` + `const` values + `Valid() bool` | `public enum Name` | `public enum Name` |
+| `variant` (payload & payload-less cases) | Discriminated union on `readonly tag: "..."` (unit cases omit `value`) | `Union` of `@dataclass(frozen=True, slots=True)` case classes (unit cases have zero fields) | Sealed interface with unexported marker method + case structs (unit cases are empty `struct{}`) | `public sealed interface Name permits ...` + case `record`s (unit cases are zero-component `record Case()`) | `public abstract record Name` (private ctor) + nested `public sealed record` cases (unit cases are `sealed record Case()`) |
+| `enum` | String union type + `const` object of values | `class Name(StrEnum)` (Python 3.11+ `enum.StrEnum`) | `type Name uint32` + `const` values + `Valid() bool` | `public enum Name` | `public enum Name` |
 | `flags` | `export interface` of `readonly <flag>: boolean` | `@dataclass(frozen=True, slots=True)` of `bool` fields | `type Name struct` of `bool` fields | `public record Name(...)` of `boolean` fields | `public sealed record Name(...)` of `bool` properties |
-| `type a = b` / `use ... as` | `export type A = B;` | `type A = B` / `TypeAlias` | `type A = B` | Typed wrapper / import alias (Java has no type aliases; inlines to resolved target type matching protobuf/Javadoc) | `global using` or resolved target type |
+| `type a = b` / `use ... as` | `export type A = B;` | `A: TypeAlias = B` (`from typing import TypeAlias`, Python 3.11 compatible) | `type A = B` | Resolved target type (Java has no type aliases; Javadoc notes alias origin) | `global using` or resolved target type |
 | `interface` (with functions) | `export interface Name { ... }` | `class Name(Protocol): ...` | `type Name interface { ... }` | `public interface Name { ... }` | `public interface I<Name> { ... }` |
 | `world` metadata | `export const WORLDS = ... as const;` | Frozen `WorldMeta` constants | `Worlds` metadata structs/slices | `public final class Worlds` constants | `public static class Worlds` constants |
 
@@ -239,8 +252,8 @@ All five languages expose the exact same seven error kinds matching Rust's `Glue
 | `IntegerOutOfRange` | `field`, `value` | `u8`/`u16`/`s8`/`s16` (or encode-side `u32`/`u64`/`s32`/`s64`) outside WIT range |
 | `MissingField` | `field` | Absent required `optional` scalar/string/bytes/enum or message field |
 | `UnknownEnumValue` | `enumeration`, `value` | Zero (`*_UNSPECIFIED`) or unknown enum tag |
-| `UnknownCase` | `message` | Unset or unknown `oneof` case on a variant or result |
-| `InvalidState` | `message` | Synthesized wrapper (`WitforgeOptionOf*`, `WitforgeResultOf*`) with unset `oneof` |
+| `UnknownCase` | `message` | Unset or unknown `oneof` case on a variant, named result, or synthesized `WitforgeResultOf*` wrapper |
+| `InvalidState` | `message` | Synthesized `WitforgeOptionOf*` option wrapper with unset `oneof` |
 | `InvalidChar` | `field`, `value` | Non-Unicode-scalar code point (UTF-16 surrogate or `> 0x10FFFF`) |
 | `InvalidLength` | `field`, `expected`, `actual` | `list<T, N>` shorter or longer than exact length `N` |
 
