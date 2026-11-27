@@ -196,6 +196,24 @@ changelog's 0.9.0 section is the full list.
       (`W11-046`), and four rounds of post-0.8.0 audit hardening (`W10-127`, `W10-128`, `W10-130`–`W10-133`).
 - [x] Release 0.9.0 (2026-11-26, `W10-129`).
 
+## Polyglot foundation and native emitters (post-0.9.0, additive `0.x`)
+
+Task-level sequencing and evidence live in [`aplan/`](aplan/README.md) (`W11-039`, `W11-034`,
+`W11-001`, and milestone `M-p13`). All additions stay strictly additive over `0.9.0` default outputs
+and preserve the independent-adoption gate for `1.0.0`.
+
+- [ ] **Stage 1 polyglot foundation (`M-p11`):** opt-in protobuf file options (`go_package`,
+      `java_package`, `csharp_namespace`, `W11-039`), deterministic cross-language binary and
+      proto3-JSON conformance fixtures (`W11-034`), and a versioned process-based emitter plugin
+      protocol over `witforge inspect --json` IR v1 (`W11-001`).
+- [ ] **Stage 2 built-in Wave 1 emitters (`M-p13`):** plain zero-dep types, interfaces, and checked
+      protobuf glue for TypeScript (`@bufbuild/protobuf`), Python 3.11+ (`google.protobuf`), and
+      Go 1.22+ (`google.golang.org/protobuf`), verified with cross-language round-trip tests.
+- [ ] **Stage 3 built-in Wave 2 emitters and version adapters (`M-p13`):** Java 21+ (`record`,
+      `sealed interface`, `com.google.protobuf`) and C# 12+ / .NET 8+ (`sealed record`,
+      `Google.Protobuf`), cross-version `convert` adapters across all five languages, GitHub Action
+      and multi-language CI integration, and updated guides/site examples.
+
 ## 1.0 and beyond
 
 - [ ] External consumer validation and the 1.0.0 release are deferred while proactive outreach is
@@ -203,6 +221,6 @@ changelog's 0.9.0 section is the full list.
       gates) live in [release-1.0.md](docs/design/release-1.0.md) (`W10-001`, `W10-002`,
       `W10-098`, `W10-100`).
 - [ ] Record one real consumer evolution across two witforge releases (`W10-100`) after 0.7.0.
-- [ ] Continue bounded implementation work that does not speculate about consumer demand.
-- [ ] Keep plugin ABI, LSP, registry/playground, adopter-guide, cross-language profile, and aligned
-      JSON work behind their existing evidence or 1.0 triggers.
+- [ ] Keep LSP (`W11-002`), registry/playground (`W11-003`), adopter-guide (`W11-029`), aligned
+      JSON naming (`W11-035`), trait version adapters (`W11-038`), and `wit-bindgen`/Wasmtime
+      bridge conversions (`W11-041`) behind their existing evidence or 1.0 triggers.
