@@ -26,6 +26,7 @@ pub(crate) mod defaults;
 pub mod doc;
 pub(crate) mod docs;
 pub mod glue;
+pub mod go;
 pub(crate) mod ident;
 pub mod json_schema;
 pub mod output;
@@ -205,7 +206,7 @@ mod tests {
     use std::path::Path;
 
     use super::versions::{Version, load_versions};
-    use super::{glue, proto, python, python_glue, rust, typescript, typescript_glue};
+    use super::{glue, go, proto, python, python_glue, rust, typescript, typescript_glue};
     use crate::is_contract_error;
     use crate::lock::WireLock;
     use crate::model::{QualifiedName, TypeDefKind, TypeExpr};
@@ -224,6 +225,7 @@ mod tests {
     /// Validated input never makes an emitter fail internally, so the versions are edited after
     /// validation; each plan must pass the emitter's plain error on rather than call it a
     /// contract violation, which the CLI would report with exit `1` instead of `2`.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn plans_pass_on_an_internal_emitter_error_as_internal() {
         // A record field naming a type the model does not have.
@@ -255,6 +257,15 @@ mod tests {
         assert_internal(
             &python::plan_versions_with_options(&dangling, &python::PythonOptions::new())
                 .unwrap_err(),
+            "is not in the model",
+        );
+        assert_internal(
+            &go::plan_versions_with_options(
+                &dangling,
+                "example.com/witforge/test",
+                &go::GoOptions::new(),
+            )
+            .unwrap_err(),
             "is not in the model",
         );
         assert_internal(

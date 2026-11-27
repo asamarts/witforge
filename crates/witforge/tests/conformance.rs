@@ -240,6 +240,12 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
         assert_ne!(source, "", "{file_name}");
         assert!(!source.contains('\r'), "{file_name}");
     }
+    let go_files = witforge::emit::go::emit_version(&model, "example.com/witforge/conf").unwrap();
+    assert!(!go_files.is_empty());
+    for (file_name, source) in &go_files {
+        assert_ne!(source, "", "{file_name}");
+        assert!(!source.contains('\r'), "{file_name}");
+    }
 
     // Confirm `Stability::Deprecated` also round-trips through model, emitters, and inspect IR.
     let deprecated_contract = witforge::load_sources(vec![witforge::SourceFile::new(
@@ -346,6 +352,13 @@ fn dependency_and_serde_fixtures_cover_every_emitter() {
                 .files()
                 .is_empty(),
             "{name} py-glue"
+        );
+        assert!(
+            !witforge::emit::go::plan(&root, "example.com/witforge/deps")
+                .unwrap()
+                .files()
+                .is_empty(),
+            "{name} go"
         );
     }
 

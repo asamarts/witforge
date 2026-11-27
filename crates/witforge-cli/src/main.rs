@@ -26,6 +26,8 @@
 //! witforge py-glue [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
 //!                  [--config PATH | --no-config] [--project NAME] [--check] [--diff]
 //!                  [--released PATH]
+//! witforge go    [<wit-root>] [--out DIR] [--go-module PATH] [--config PATH | --no-config]
+//!                [--project NAME] [--check] [--diff] [--released PATH]
 //! witforge conformance --out DIR [--polyglot-proto-options] [--go-package VALUE]
 //!                      [--java-package VALUE] [--java-multiple-files | --no-java-multiple-files]
 //!                      [--java-outer-classname NAME] [--csharp-namespace VALUE] [--check] [--diff]
@@ -132,6 +134,8 @@ enum Command {
     /// Generate checked Python protobuf glue targeting official `google.protobuf`.
     #[command(name = "py-glue")]
     PyGlue(PyGlueOptions),
+    /// Generate zero-dependency Go 1.22+ stdlib types and interfaces.
+    Go(GoOptions),
     /// Generate the versioned cross-language protobuf conformance fixture bundle.
     Conformance(ConformanceCliOptions),
     /// Run every generator configured in `witforge.toml`.
@@ -421,6 +425,31 @@ struct PyGlueOptions {
     /// Python package root containing generated `protoc --python_out` `*_pb2.py` modules.
     #[arg(long, value_name = "PATH")]
     proto_root: Option<String>,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct GoOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Output root for generated Go package files.
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
+    /// Go module import path prefix for emitted packages (for example `example.com/acme/gen/go`).
+    #[arg(long = "go-module", value_name = "PATH")]
+    go_module: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -787,11 +816,12 @@ struct ProjectConfig {
     python: Option<OutConfig>,
     #[serde(rename = "python-glue")]
     python_glue: Option<PyGlueConfig>,
+    go: Option<GoConfig>,
     policy: Option<PolicyConfig>,
 }
 
 impl ProjectConfig {
-    fn configured_outputs(&self) -> [(Emitter, &'static str, Option<&Path>); 9] {
+    fn configured_outputs(&self) -> [(Emitter, &'static str, Option<&Path>); 10] {
         [
             (
                 Emitter::Rust,
@@ -838,6 +868,7 @@ impl ProjectConfig {
                 "python-glue",
                 self.python_glue.as_ref().map(|c| c.out.as_path()),
             ),
+            (Emitter::Go, "go", self.go.as_ref().map(|c| c.out.as_path())),
         ]
     }
 }
@@ -960,6 +991,14 @@ struct PyGlueConfig {
     proto_root: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GoConfig {
+    out: PathBuf,
+    #[serde(rename = "go-module")]
+    go_module: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Emitter {
     Rust,
@@ -971,14 +1010,17 @@ enum Emitter {
     TypeScriptGlue,
     Python,
     PythonGlue,
+    Go,
 }
 
+#[derive(Default)]
 struct PathOverrides {
     root: Option<PathBuf>,
     out: Option<PathBuf>,
     released: Option<PathBuf>,
     plain_root: Option<String>,
     proto_root: Option<String>,
+    go_module: Option<String>,
     serde: Option<bool>,
     no_std: Option<bool>,
     eq_hash: Option<bool>,
@@ -994,6 +1036,7 @@ struct ResolvedPaths {
     released: Option<PathBuf>,
     plain_root: Option<String>,
     proto_root: Option<String>,
+    go_module: Option<String>,
     serde: bool,
     no_std: bool,
     eq_hash: bool,
@@ -1104,6 +1147,7 @@ fn resolve_paths(
         released,
         plain_root,
         proto_root,
+        go_module,
         serde,
         no_std,
         eq_hash,
@@ -1115,9 +1159,11 @@ fn resolve_paths(
         emitter,
         Emitter::Glue | Emitter::TypeScriptGlue | Emitter::PythonGlue
     );
+    let needs_go_module = matches!(emitter, Emitter::Go);
     let cli_complete = root.is_some()
         && out.is_some()
-        && (!needs_roots || (plain_root.is_some() && proto_root.is_some()));
+        && (!needs_roots || (plain_root.is_some() && proto_root.is_some()))
+        && (!needs_go_module || go_module.is_some());
     let effective_config = resolve_config_path_opt(config_args, !cli_complete)?;
     let Some(config_path) = effective_config.as_deref() else {
         if config_args.project.is_some() {
@@ -1153,6 +1199,13 @@ fn resolve_paths(
                 None,
             ));
         }
+        if needs_go_module && go_module.is_none() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "go requires --go-module (or use --config)",
+                None,
+            ));
+        }
         let proto_options =
             apply_proto_overrides(emit::proto::ProtoOptions::new(), &proto_overrides);
         if let Err(err) = proto_options.validate() {
@@ -1164,6 +1217,7 @@ fn resolve_paths(
             released,
             plain_root,
             proto_root,
+            go_module,
             serde: serde.unwrap_or(false),
             no_std: no_std.unwrap_or(false),
             eq_hash: eq_hash.unwrap_or(false),
@@ -1232,6 +1286,7 @@ fn resolve_paths(
             .python_glue
             .as_ref()
             .map(|config| from_config(&config.out)),
+        Emitter::Go => project.go.as_ref().map(|config| from_config(&config.out)),
     });
     let Some(out) = out else {
         return Err(op_error(
@@ -1259,7 +1314,8 @@ fn resolve_paths(
         | Emitter::Schema
         | Emitter::Doc
         | Emitter::TypeScript
-        | Emitter::Python => None,
+        | Emitter::Python
+        | Emitter::Go => None,
     });
     let proto_root = proto_root.or_else(|| match emitter {
         Emitter::Glue => project
@@ -1279,7 +1335,23 @@ fn resolve_paths(
         | Emitter::Schema
         | Emitter::Doc
         | Emitter::TypeScript
-        | Emitter::Python => None,
+        | Emitter::Python
+        | Emitter::Go => None,
+    });
+    let go_module = go_module.or_else(|| match emitter {
+        Emitter::Go => project
+            .go
+            .as_ref()
+            .and_then(|config| config.go_module.clone()),
+        Emitter::Rust
+        | Emitter::Proto
+        | Emitter::Schema
+        | Emitter::Glue
+        | Emitter::Doc
+        | Emitter::TypeScript
+        | Emitter::TypeScriptGlue
+        | Emitter::Python
+        | Emitter::PythonGlue => None,
     });
     if needs_roots && (plain_root.is_none() || proto_root.is_none()) {
         let cmd = match emitter {
@@ -1290,6 +1362,13 @@ fn resolve_paths(
         return Err(op_error(
             codes::CLI_USAGE,
             format!("{cmd} requires --plain-root and --proto-root (or a configuration section)"),
+            Some(config_path.display().to_string()),
+        ));
+    }
+    if needs_go_module && go_module.is_none() {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "go requires --go-module (or a configuration section)",
             Some(config_path.display().to_string()),
         ));
     }
@@ -1306,7 +1385,8 @@ fn resolve_paths(
             | Emitter::TypeScript
             | Emitter::TypeScriptGlue
             | Emitter::Python
-            | Emitter::PythonGlue => None,
+            | Emitter::PythonGlue
+            | Emitter::Go => None,
         })
         .unwrap_or(false);
     let eq_hash = eq_hash
@@ -1343,6 +1423,7 @@ fn resolve_paths(
         released,
         plain_root,
         proto_root,
+        go_module,
         serde,
         no_std,
         eq_hash,
@@ -1469,6 +1550,9 @@ fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<
                 &py_glue.out,
                 config_path,
             )?;
+        }
+        if let Some(go) = &proj.go {
+            check_config_path(&format!("project.{proj_name}.go.out"), &go.out, config_path)?;
         }
         if let Some(policy) = &proj.policy
             && let Some(views) = &policy.diff_check
@@ -1609,6 +1693,16 @@ fn validate_configured_module_roots(config: &ConfigFile, config_path: &Path) -> 
                     path_str,
                 ));
             }
+        }
+        if let Some(go) = &proj.go
+            && let Some(go_module) = &go.go_module
+            && let Err(err) = emit::go::validate_module_path(go_module)
+        {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("invalid project.{proj_name}.go.go-module: {err:#}"),
+                path_str,
+            ));
         }
     }
     Ok(())
@@ -1794,6 +1888,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::TsGlue(options) => ts_glue_command(&options, &mut reporter),
         Command::Py(options) => py_command(&options, &mut reporter),
         Command::PyGlue(options) => py_glue_command(&options, &mut reporter),
+        Command::Go(options) => go_command(&options, &mut reporter),
         Command::Conformance(options) => conformance_command(&options, &mut reporter),
         Command::Generate(options) => generate_command(&options, &mut reporter),
         Command::Init(options) => init_command(&options, &mut reporter),
@@ -2238,6 +2333,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             released: options.released.clone(),
             plain_root: None,
             proto_root: None,
+            go_module: None,
             serde: serde_override,
             no_std: no_std_override,
             eq_hash: eq_hash_override,
@@ -2302,6 +2398,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             released: options.released.clone(),
             plain_root: None,
             proto_root: None,
+            go_module: None,
             serde: None,
             no_std: None,
             eq_hash: None,
@@ -2356,6 +2453,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             released: options.released.clone(),
             plain_root: None,
             proto_root: None,
+            go_module: None,
             serde: None,
             no_std: None,
             eq_hash: None,
@@ -2413,6 +2511,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             released: options.released.clone(),
             plain_root: options.plain_root.clone(),
             proto_root: options.proto_root.clone(),
+            go_module: None,
             serde: None,
             no_std: no_std_override,
             eq_hash: None,
@@ -2476,6 +2575,7 @@ fn doc_command(options: &DocOptions, reporter: &mut Reporter) -> Result<ExitCode
             released: options.released.clone(),
             plain_root: None,
             proto_root: None,
+            go_module: None,
             serde: None,
             no_std: None,
             eq_hash: None,
@@ -2521,6 +2621,7 @@ fn ts_command(options: &TsOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             released: options.released.clone(),
             plain_root: None,
             proto_root: None,
+            go_module: None,
             serde: None,
             no_std: None,
             eq_hash: None,
@@ -2566,6 +2667,7 @@ fn ts_glue_command(options: &TsGlueOptions, reporter: &mut Reporter) -> Result<E
             released: options.released.clone(),
             plain_root: options.plain_root.clone(),
             proto_root: options.proto_root.clone(),
+            go_module: None,
             serde: None,
             no_std: None,
             eq_hash: None,
@@ -2624,6 +2726,7 @@ fn py_command(options: &PyOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             released: options.released.clone(),
             plain_root: None,
             proto_root: None,
+            go_module: None,
             serde: None,
             no_std: None,
             eq_hash: None,
@@ -2669,6 +2772,7 @@ fn py_glue_command(options: &PyGlueOptions, reporter: &mut Reporter) -> Result<E
             released: options.released.clone(),
             plain_root: options.plain_root.clone(),
             proto_root: options.proto_root.clone(),
+            go_module: None,
             serde: None,
             no_std: None,
             eq_hash: None,
@@ -2707,6 +2811,53 @@ fn py_glue_command(options: &PyGlueOptions, reporter: &mut Reporter) -> Result<E
         None,
         None,
     );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
+}
+
+fn go_command(options: &GoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let paths = resolve_paths(
+        Emitter::Go,
+        &options.config,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            go_module: options.go_module.clone(),
+            ..PathOverrides::default()
+        },
+    )?;
+    let go_module = paths
+        .go_module
+        .as_deref()
+        .context("go requires --go-module or a config go section")?;
+    emit::go::validate_module_path(go_module)?;
+    guard_output_root(&paths)?;
+    let files = emit::go::plan_with_released(&paths.root, go_module, paths.released.as_deref())?;
+    let mut regen = regenerate_command(
+        "go",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    if let Some(go_module) = options.go_module.as_deref() {
+        push_cli_option(&mut regen, "--go-module", go_module);
+    }
     run_generator(
         &files,
         &paths.out,
@@ -3746,12 +3897,22 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
             }
             emitters.push(Emitter::PythonGlue);
         }
+        if let Some(go) = &proj.go {
+            if go.go_module.is_none() {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!("project `{proj_name}` go section requires `go-module`"),
+                    Some(config_path.display().to_string()),
+                ));
+            }
+            emitters.push(Emitter::Go);
+        }
         if emitters.is_empty() {
             return Err(op_error(
                 codes::CLI_USAGE,
                 format!(
                     "project `{proj_name}` in {} configures no generators (rust, proto, schema, \
-                     glue, doc, typescript, typescript-glue, python, or python-glue)",
+                     glue, doc, typescript, typescript-glue, python, python-glue, or go)",
                     config_path.display()
                 ),
                 Some(config_path.display().to_string()),
@@ -3925,6 +4086,22 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                         out: None,
                         plain_root: None,
                         proto_root: None,
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::Go => go_command(
+                    &GoOptions {
+                        root: None,
+                        out: None,
+                        go_module: None,
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),
@@ -5120,6 +5297,9 @@ mod reference_doc_tests {
             "`project.<name>.python-glue.out`",
             "`project.<name>.python-glue.plain-root`",
             "`project.<name>.python-glue.proto-root`",
+            "`[project.<name>.go]`",
+            "`project.<name>.go.out`",
+            "`project.<name>.go.go-module`",
             "`[project.<name>.policy]`",
             "`project.<name>.policy.diff-check`",
             "`project.<name>.policy.forbid-unstable-in-release`",

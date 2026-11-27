@@ -1402,7 +1402,9 @@ fn generators_ignore_a_binary_file_in_the_output_root() {
     let bytes = [
         0x00, 0x00, 0x00, 0x01, 0x42, 0x75, 0x64, 0x31, 0xff, 0xfe, 0x80,
     ];
-    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
+    for command in [
+        "rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue", "go",
+    ] {
         let out = base.join(format!("{command}-out"));
         fs::create_dir_all(&out).unwrap();
         fs::write(out.join(".DS_Store"), bytes).unwrap();
@@ -1420,6 +1422,8 @@ fn generators_ignore_a_binary_file_in_the_output_root() {
                 witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
             } else if command == "py-glue" {
                 witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
+            } else if command == "go" {
+                witforge.args(["--go-module", "example.com/witforge/cli"]);
             }
             if check {
                 witforge.arg("--check");
@@ -1444,7 +1448,9 @@ fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_com
         "existing/../wit/gen",
         "existing/../wit/v0.2",
     ] {
-        for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
+        for command in [
+            "rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue", "go",
+        ] {
             let mut witforge = witforge();
             witforge
                 .current_dir(&base)
@@ -1460,6 +1466,8 @@ fn generators_refuse_an_output_root_that_reaches_the_wit_root_through_parent_com
                 witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
             } else if command == "py-glue" {
                 witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
+            } else if command == "go" {
+                witforge.args(["--go-module", "example.com/witforge/cli"]);
             }
             let output = witforge.output().unwrap();
             assert_eq!(output.status.code(), Some(2), "{command} {out}: {output:?}");
@@ -1720,6 +1728,8 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
             witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
         } else if command == "py-glue" {
             witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
+        } else if command == "go" {
+            witforge.args(["--go-module", "example.com/witforge/cli"]);
         }
         if check {
             witforge.arg("--check");
@@ -1749,7 +1759,7 @@ fn generators_exit_1_for_contract_violations_and_2_for_parse_errors() {
         assert_ne!(contract, original);
         fs::write(&source, &contract).unwrap();
         for command in [
-            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue",
+            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue", "go",
         ] {
             for check in [false, true] {
                 let output = run(command, check);
@@ -1868,13 +1878,17 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
             witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
         } else if command == "py-glue" {
             witforge.args(["--plain-root", "plain", "--proto-root", "proto"]);
+        } else if command == "go" {
+            witforge.args(["--go-module", "example.com/witforge/cli"]);
         }
         if check {
             witforge.arg("--check");
         }
         witforge.output().unwrap()
     };
-    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
+    for command in [
+        "rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue", "go",
+    ] {
         for check in [false, true] {
             let output = run(command, check);
             assert_eq!(
@@ -1906,7 +1920,9 @@ fn generators_refuse_a_new_minor_that_does_not_continue_the_previous_lockfile() 
         .output()
         .unwrap();
     assert!(lock.status.success(), "{lock:?}");
-    for command in ["rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue"] {
+    for command in [
+        "rust", "proto", "glue", "ts", "ts-glue", "py", "py-glue", "go",
+    ] {
         for check in [false, true] {
             let output = run(command, check);
             assert!(output.status.success(), "{command} {check}: {output:?}");
@@ -2489,6 +2505,7 @@ fn generators_refuse_a_lockfile_of_another_package_even_without_members() {
             "py-glue",
             &["--plain-root", "plain", "--proto-root", "proto"][..],
         ),
+        ("go", &["--go-module", "example.com/witforge/cli"][..]),
         (
             "ts-glue",
             &["--plain-root", "../plain", "--proto-root", "../proto"][..],
@@ -2541,6 +2558,7 @@ fn generators_refuse_a_symlinked_version_directory_no_manifest_lists() {
             "py-glue",
             &["--plain-root", "plain", "--proto-root", "proto"][..],
         ),
+        ("go", &["--go-module", "example.com/witforge/cli"][..]),
         (
             "ts-glue",
             &["--plain-root", "../plain", "--proto-root", "../proto"][..],
@@ -2985,7 +3003,7 @@ fn output_root_guard_closes_symlink_and_parent_component_bypasses() {
     ];
     for (root_arg, out_arg) in cases {
         for command in [
-            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue",
+            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue", "go",
         ] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
@@ -3002,6 +3020,8 @@ fn output_root_guard_closes_symlink_and_parent_component_bypasses() {
                     cmd.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
                 } else if command == "py-glue" {
                     cmd.args(["--plain-root", "plain", "--proto-root", "proto"]);
+                } else if command == "go" {
+                    cmd.args(["--go-module", "example.com/witforge/cli"]);
                 }
                 if check_flag {
                     cmd.arg("--check");
@@ -3050,7 +3070,7 @@ fn output_root_guard_protects_released_directories() {
 
     for out in &bad_outs {
         for command in [
-            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue",
+            "rust", "proto", "schema", "glue", "ts", "ts-glue", "py", "py-glue", "go",
         ] {
             for check_flag in [false, true] {
                 let mut cmd = witforge();
@@ -3073,6 +3093,8 @@ fn output_root_guard_protects_released_directories() {
                     cmd.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
                 } else if command == "py-glue" {
                     cmd.args(["--plain-root", "plain", "--proto-root", "proto"]);
+                } else if command == "go" {
+                    cmd.args(["--go-module", "example.com/witforge/cli"]);
                 }
                 if check_flag {
                     cmd.arg("--check");
@@ -3115,6 +3137,7 @@ fn output_root_guard_protects_released_directories() {
     fs::remove_dir_all(&base).unwrap();
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn generators_refuse_shared_roots_across_both_orders_of_generators_and_contracts() {
     let base = versions("distinct-headers-shared");
@@ -3155,6 +3178,8 @@ fn generators_refuse_shared_roots_across_both_orders_of_generators_and_contracts
             cmd.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
         } else if command == "py-glue" {
             cmd.args(["--plain-root", "plain", "--proto-root", "proto"]);
+        } else if command == "go" {
+            cmd.args(["--go-module", "example.com/witforge/cli"]);
         }
         if check {
             cmd.arg("--check");
@@ -3179,12 +3204,15 @@ fn generators_refuse_shared_roots_across_both_orders_of_generators_and_contracts
         ("py", "ts", "__init__.py", "generator `py`"),
         ("py", "py-glue", "__init__.py", "generator `py`"),
         ("py-glue", "py", "error.py", "generator `py-glue`"),
+        ("rust", "go", "mod.rs", "generator `rust`"),
+        ("go", "rust", "doc.go", "generator `go`"),
+        ("go", "py", "doc.go", "generator `go`"),
     ] {
         let out = base.join(format!("shared-{first}-{second}"));
         assert!(run_gen(first, &wit_a, &out, false).status.success());
         let before = fs::read_to_string(out.join(probe_file)).unwrap();
         assert!(
-            before.contains(&format!("@generated by witforge ({first}, ")),
+            before.contains(&format!("by witforge ({first}, ")),
             "{first}: {before}"
         );
 
@@ -4553,6 +4581,7 @@ fn build_identity_quiet_mode_completions_and_explain() {
         "ts-glue",
         "py",
         "py-glue",
+        "go",
         "conformance",
         "generate",
         "init",
@@ -7448,6 +7477,270 @@ fn py_glue_command_config_generate_overlap_and_completions() {
         assert!(
             script.contains("py-glue"),
             "{shell} completion missing `py-glue`:\n{script}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn go_command_config_generate_overlap_and_completions() {
+    let base = versions("go-cli");
+    let wit = base.join("wit");
+    let go_out = base.join("go-out");
+    let module = "example.com/witforge/demo";
+
+    // 1. Direct CLI generate, clean `--check`, drift (`--diff`, SARIF WF2001).
+    let gen_out = witforge()
+        .args([
+            "go",
+            wit.to_str().unwrap(),
+            "--out",
+            go_out.to_str().unwrap(),
+            "--go-module",
+            module,
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(gen_out.status.code(), Some(0), "{gen_out:?}");
+    assert!(go_out.join("witforge_types/types.go").is_file());
+    assert!(go_out.join("v0_1/types/types.go").is_file());
+    assert!(go_out.join("v0_2/types/types.go").is_file());
+
+    let chk = witforge()
+        .args([
+            "go",
+            wit.to_str().unwrap(),
+            "--out",
+            go_out.to_str().unwrap(),
+            "--go-module",
+            module,
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(chk.status.code(), Some(0), "{chk:?}");
+
+    let shared_path = go_out.join("witforge_types/types.go");
+    let orig = fs::read_to_string(&shared_path).unwrap();
+    fs::write(&shared_path, format!("{orig}// extra line\n")).unwrap();
+
+    let drift = witforge()
+        .args([
+            "go",
+            wit.to_str().unwrap(),
+            "--out",
+            go_out.to_str().unwrap(),
+            "--go-module",
+            module,
+            "--check",
+            "--diff",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift.status.code(), Some(1), "{drift:?}");
+    assert!(
+        String::from_utf8_lossy(&drift.stdout).contains("-// extra line"),
+        "{drift:?}"
+    );
+
+    let drift_sarif = witforge()
+        .args([
+            "--format",
+            "sarif",
+            "go",
+            wit.to_str().unwrap(),
+            "--out",
+            go_out.to_str().unwrap(),
+            "--go-module",
+            module,
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
+    let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
+    assert_eq!(sarif_val["version"], "2.1.0");
+    let sarif_results = sarif_val["runs"][0]["results"].as_array().unwrap();
+    assert!(!sarif_results.is_empty(), "{sarif_val:#}");
+    assert_eq!(sarif_results[0]["ruleId"], "WF2001", "{sarif_val:#}");
+
+    // 2. `[project.<name>.go]` in `witforge.toml` integrates with `witforge generate`.
+    let cfg = base.join("witforge.toml");
+    fs::write(
+        &cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/rust\"\n\
+         [project.demo.go]\n\
+         out = \"gen/go-cfg\"\n\
+         go-module = \"example.com/witforge/cfg\"\n",
+    )
+    .unwrap();
+    let gen_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(gen_all.status.code(), Some(0), "{gen_all:?}");
+    assert!(base.join("gen/rust/mod.rs").is_file());
+    assert!(base.join("gen/go-cfg/witforge_types/types.go").is_file());
+    assert!(base.join("gen/go-cfg/v0_2/types/types.go").is_file());
+
+    let chk_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap(), "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(chk_all.status.code(), Some(0), "{chk_all:?}");
+
+    // 3. Overlapping `[project.<name>.go].out` with `rust.out` is refused upfront (WF9004).
+    let overlap_cfg = base.join("overlap.toml");
+    fs::write(
+        &overlap_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/shared\"\n\
+         [project.demo.go]\n\
+         out = \"gen/shared/go\"\n\
+         go-module = \"example.com/witforge/shared\"\n",
+    )
+    .unwrap();
+    let overlap_gen = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            overlap_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(overlap_gen.status.code(), Some(2), "{overlap_gen:?}");
+    let overlap_json: serde_json::Value = serde_json::from_slice(&overlap_gen.stdout).unwrap();
+    assert_eq!(overlap_json["diagnostics"][0]["code"], "WF9004");
+
+    // 4. Invalid configured `go.go-module`, missing `go-module`, invalid CLI `--go-module`,
+    //    and shell-expansion tokens in `go.out` are refused upfront before writing anything.
+    let bad_mod_cfg = base.join("bad-go-mod.toml");
+    fs::write(
+        &bad_mod_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/never-rust\"\n\
+         [project.demo.go]\n\
+         out = \"gen/never-go\"\n\
+         go-module = \"example.com/bad;alias\"\n",
+    )
+    .unwrap();
+    let bad_mod = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            bad_mod_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_mod.status.code(), Some(2), "{bad_mod:?}");
+    let bad_mod_json: serde_json::Value = serde_json::from_slice(&bad_mod.stdout).unwrap();
+    assert_eq!(bad_mod_json["diagnostics"][0]["code"], "WF9001");
+    assert!(
+        bad_mod_json["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("project.demo.go.go-module"),
+        "{bad_mod_json:#}"
+    );
+    assert!(!base.join("gen/never-rust").exists());
+
+    let missing_mod_cfg = base.join("missing-go-mod.toml");
+    fs::write(
+        &missing_mod_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/never-rust-2\"\n\
+         [project.demo.go]\n\
+         out = \"gen/never-go-2\"\n",
+    )
+    .unwrap();
+    let missing_mod = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            missing_mod_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(missing_mod.status.code(), Some(2), "{missing_mod:?}");
+    assert!(!base.join("gen/never-rust-2").exists());
+
+    let bad_cli_mod = witforge()
+        .args([
+            "--format",
+            "json",
+            "go",
+            wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            base.join("never-cli-go").to_str().unwrap(),
+            "--go-module",
+            "../relative",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_cli_mod.status.code(), Some(2), "{bad_cli_mod:?}");
+    let bad_cli_json: serde_json::Value = serde_json::from_slice(&bad_cli_mod.stdout).unwrap();
+    assert_eq!(bad_cli_json["diagnostics"][0]["code"], "WF9001");
+    assert!(!base.join("never-cli-go").exists());
+
+    let shell_out_cfg = base.join("shell-go-out.toml");
+    fs::write(
+        &shell_out_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.go]\n\
+         out = \"$HOME/gen-go\"\n\
+         go-module = \"example.com/witforge/shell\"\n",
+    )
+    .unwrap();
+    let shell_out = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            shell_out_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(shell_out.status.code(), Some(2), "{shell_out:?}");
+    let shell_out_json: serde_json::Value = serde_json::from_slice(&shell_out.stdout).unwrap();
+    assert_eq!(shell_out_json["diagnostics"][0]["code"], "WF9004");
+
+    // 5. Shell completions include `go` and `--go-module`.
+    for (shell, flag) in [
+        ("bash", "--go-module"),
+        ("zsh", "--go-module"),
+        ("fish", "-l go-module"),
+    ] {
+        let comp = witforge().args(["completions", shell]).output().unwrap();
+        assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");
+        let script = String::from_utf8(comp.stdout).unwrap();
+        assert!(
+            script.contains(flag),
+            "{shell} completion missing `{flag}`:\n{script}"
         );
     }
 

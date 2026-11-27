@@ -30,6 +30,8 @@ fi
 "${RUN[@]}" py "${WIT_ROOT}" --out "${TMP}/py"
 "${RUN[@]}" py-glue "${WIT_ROOT}" --out "${TMP}/py-glue" \
     --plain-root ..py --proto-root ..proto
+"${RUN[@]}" go "${WIT_ROOT}" --out "${TMP}/go" \
+    --go-module example.com/witforge/generated
 "${RUN[@]}" conformance --out "${TMP}/conformance"
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options
 
@@ -45,6 +47,8 @@ fi
 "${RUN[@]}" py "${WIT_ROOT}" --out "${TMP}/py" --check
 "${RUN[@]}" py-glue "${WIT_ROOT}" --out "${TMP}/py-glue" \
     --plain-root ..py --proto-root ..proto --check
+"${RUN[@]}" go "${WIT_ROOT}" --out "${TMP}/go" \
+    --go-module example.com/witforge/generated --check
 "${RUN[@]}" conformance --out "${TMP}/conformance" --check
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options --check
 

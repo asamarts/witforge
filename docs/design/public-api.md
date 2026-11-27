@@ -98,10 +98,11 @@ mutated by downstream code.
 `Model.dependencies` carries standard `deps/` packages. These fields are part of the 1.0 model
 surface. For a root with dependencies, `emit::rust::plan`, `emit::proto::plan`,
 `emit::json_schema::plan`, `emit::glue::plan`, `emit::typescript::plan`,
-`emit::typescript_glue::plan`, `emit::python::plan`, and `emit::python_glue::plan` are the complete
-entry points: they emit the shared dependency and helper files (`witforge_types.ts`, `error.ts`,
-`helpers.ts`, `witforge_types.py`, `error.py`, `helpers.py`, `py.typed`, `witforge_deps/`,
-`worlds.ts`, and `worlds.py`). The lower-level `emit_version`, `emit_major`, and `emit_root`
+`emit::typescript_glue::plan`, `emit::python::plan`, `emit::python_glue::plan`, and
+`emit::go::plan` are the complete entry points: they emit the shared dependency and helper files
+(`witforge_types.ts`, `error.ts`, `helpers.ts`, `witforge_types.py`, `error.py`, `helpers.py`,
+`py.typed`, `witforge_types/types.go`, `witforge_deps/`, `worlds.ts`, `worlds.py`, and
+`worlds/worlds.go`). The lower-level `emit_version`, `emit_major`, and `emit_root`
 functions emit one local unit and do not create the shared dependency or root helper files
 themselves.
 
@@ -177,6 +178,7 @@ short Git commit and `-dirty` suffix on development builds):
 | `witforge ts-glue [<WIT_ROOT>]` | Emit or check TypeScript protobuf glue targeting `@bufbuild/protobuf` | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge py [<WIT_ROOT>]` | Emit or check zero-dependency Python 3.11+ stdlib dataclasses and `Protocol` interfaces | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge py-glue [<WIT_ROOT>]` | Emit or check Python protobuf glue targeting official `google.protobuf` | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge go [<WIT_ROOT>]` | Emit or check zero-dependency Go 1.22+ stdlib types and interfaces | `--out`, `--go-module`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge conformance` | Emit or check the versioned cross-language protobuf conformance fixture bundle | `--out`, `--polyglot-proto-options`, `--go-package`, `--java-package`, `--java-multiple-files`, `--no-java-multiple-files`, `--java-outer-classname`, `--csharp-namespace`, `--check`, `--diff` |
 | `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--eq-hash`, `--no-eq-hash`, `--try-from`, `--no-try-from`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge init [DIR]` | Scaffold a new contract workspace (`wit/v0.1/`, `wire.lock`, `witforge.toml`) | `--package`, `--serde` |
