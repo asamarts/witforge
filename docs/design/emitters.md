@@ -2082,3 +2082,11 @@ Markdown reference pages designed to be checked into a repository and verified w
   reference integrated with `--check`, `--diff`, and `witforge generate` (`[project.<name>.doc]`),
   while teams needing custom HTML portals or bespoke templates continue to consume
   `witforge inspect --json` (section 12).
+
+## 14. Polyglot Emitters and Nested Output Trees
+
+Shared conventions for built-in polyglot emitters (TypeScript, Python, Go, Java, and C# plain
+models, checked protobuf glue, and cross-version adapters), additive nested-tree ownership and
+multi-language header rules in `witforge::emit::output`, shared language helpers in
+`witforge::emit::polyglot`, and the two-tier verification contract are specified in
+[`polyglot-emitters.md`](polyglot-emitters.md).

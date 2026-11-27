@@ -19,6 +19,16 @@ All notable changes to this project are documented here. The format follows
   remain byte-for-byte unchanged when file options are not configured; multi-major and
   disambiguated `deps/` files derive deterministic per-file options with full target-language
   validation (`WF9001`) and cross-file/same-file collision refusal (`WF1003`).
+- **Shared polyglot foundations, additive nested output trees, and language helper core
+  (`W13-001`):** Published the normative `docs/design/polyglot-emitters.md` specification (linked
+  from `docs/design/emitters.md`), extended `witforge::emit::output` additively with
+  `HeaderStyle` (all five ownership comment syntaxes including Go `// Code generated ... DO NOT
+  EDIT.` and Python `# @generated ...`), `GeneratedFiles::new_nested`, `insert_relative`,
+  `insert_marker` (for PEP 561 `py.typed`), `validate_relative_path` (cross-platform path,
+  case-insensitive/prefix collision, and Windows reserved-name guards), symlink-safe recursive
+  walks, and empty-directory pruning on stale removal, and added the zero-dependency
+  `witforge::emit::polyglot` module (`TargetLanguage`, case converters, per-language keyword
+  escaping, `DepLayout` path helpers, and doc normalization).
 
 ## [0.9.0] - 2026-11-26
 

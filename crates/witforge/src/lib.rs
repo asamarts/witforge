@@ -17,7 +17,8 @@
 //!   [`ReleasedManifest`] reads the `released` manifest of frozen versions.
 //! - [`emit`] generates the [Rust](emit::rust) output (including version-to-version
 //!   `convert.rs`), [protobuf](emit::proto), [JSON Schema](emit::json_schema),
-//!   [glue](emit::glue), and [Markdown documentation](emit::doc) output for a WIT root and checks
+//!   [glue](emit::glue), and [Markdown documentation](emit::doc) output for a WIT root, provides
+//!   shared [output ownership](emit::output) and [polyglot helpers](emit::polyglot), and checks
 //!   committed output for drift.
 //! - [`diff`] compares two contract versions (or a working-tree contract against a Git revision)
 //!   across wire, source, generated-API, and protobuf binary decode compatibility views.

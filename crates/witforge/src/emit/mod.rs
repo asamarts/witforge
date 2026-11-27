@@ -29,6 +29,7 @@ pub mod glue;
 pub(crate) mod ident;
 pub mod json_schema;
 pub mod output;
+pub mod polyglot;
 pub mod proto;
 pub mod rust;
 pub(crate) mod rustfmt;

@@ -25,7 +25,8 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::json_schema` | `HEADER`, `JsonSchemaDraft`, `SchemaOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `emit_version`, `emit_version_with_options` |
 | `emit::glue` | `HEADER`, `GlueOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_root_with_options`, `emit_version`, `emit_version_with_options` |
 | `emit::doc` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_version`, `emit_index` |
-| `emit::output` | `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
+| `emit::output` | `HeaderStyle`, `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods (including additive nested-tree `new_nested`, `insert_relative`, `insert_marker`, `is_nested`, `markers`), `validate_relative_path`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
+| `emit::polyglot` | `TargetLanguage`, case converters (`to_snake_case`, `to_upper_snake_case`, `to_pascal_case`, `to_camel_case`), keyword/escaping helpers for TypeScript/Python/Go/Java/C#, version/dependency path helpers, and `doc_lines` |
 | `diff` | `Endpoint`, `Change`, `ChangeElement`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `ConversionOmission`, `DecodeVerdict`, `DecodeSummary`, `DiffAnalysis`, `FullDiff`, `compare`, `compare_with_impacts`, `compare_omissions`, `compare_with_locations`, `compare_with_omissions`, `compare_full`, `compare_git_base` |
 | `diagnostic` | `codes` and its constants, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity`, and their documented constructors and builders |
 | `freeze` | `FreezeOptions`, `FreezeReport`, `check_root`, `check_root_with_manifest` |
@@ -55,7 +56,8 @@ model values, lockfile inputs, and diagnostic locations through the documented `
 and mutable. Adding a field or variant is compatible within 1.x; changing or removing an existing
 field or variant remains breaking.
 
-The new `ChangeElement`, generated-file finding, `workflow`, and emitter-option types
+The new `ChangeElement`, generated-file finding, `HeaderStyle`, `TargetLanguage`, `workflow`, and
+emitter-option types
 (`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`, `ProtoOptions`,
 `ProtoPackageOptions`) are also `#[non_exhaustive]`;
 their constructors and builders are the downstream construction boundary. `RustOptions`,
