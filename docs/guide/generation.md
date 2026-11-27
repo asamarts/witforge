@@ -31,6 +31,14 @@ serde = true
 
 [project.example.proto]
 out = "generated/proto"
+# go-package = "github.com/acme/contracts/gen/go"
+# java-package = "com.acme.contracts"
+# java-multiple-files = true
+# java-outer-classname = "ContractProto"
+# csharp-namespace = "Acme.Contracts"
+#
+# [project.example.proto.packages."example.plugin.v0"]
+# go-package = "github.com/acme/contracts/custom/v0;customv0"
 
 [project.example.schema]
 out = "generated/schema"

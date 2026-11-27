@@ -181,6 +181,7 @@ struct RustOptions {
     config: ConfigArgs,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 struct ProtoOptions {
     /// WIT root containing version directories.
@@ -189,6 +190,30 @@ struct ProtoOptions {
     /// Output root for generated proto files.
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    /// Base `go_package` import path prefix (or explicit `path;alias` for single-file output).
+    #[arg(long = "go-package", value_name = "VALUE")]
+    go_package: Option<String>,
+    /// Base `java_package` prefix for emitted `.proto` files.
+    #[arg(long = "java-package", value_name = "VALUE")]
+    java_package: Option<String>,
+    /// Emit `option java_multiple_files = true;`, overriding config.
+    #[arg(
+        long = "java-multiple-files",
+        conflicts_with = "no_java_multiple_files"
+    )]
+    java_multiple_files: bool,
+    /// Omit `option java_multiple_files`, overriding config.
+    #[arg(
+        long = "no-java-multiple-files",
+        conflicts_with = "java_multiple_files"
+    )]
+    no_java_multiple_files: bool,
+    /// Emit `option java_outer_classname = "<NAME>";`, overriding config.
+    #[arg(long = "java-outer-classname", value_name = "NAME")]
+    java_outer_classname: Option<String>,
+    /// Base `csharp_namespace` prefix for emitted `.proto` files.
+    #[arg(long = "csharp-namespace", value_name = "VALUE")]
+    csharp_namespace: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
     check: bool,
@@ -586,7 +611,7 @@ struct ProjectConfig {
     /// Released-version manifest, relative to the configuration file.
     released: Option<PathBuf>,
     rust: Option<RustConfig>,
-    proto: Option<OutConfig>,
+    proto: Option<ProtoConfig>,
     schema: Option<SchemaConfig>,
     glue: Option<GlueConfig>,
     doc: Option<OutConfig>,
@@ -609,6 +634,48 @@ struct PolicyConfig {
 #[serde(deny_unknown_fields)]
 struct OutConfig {
     out: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProtoPackageConfig {
+    #[serde(rename = "go-package")]
+    go_package: Option<String>,
+    #[serde(rename = "java-package")]
+    java_package: Option<String>,
+    #[serde(rename = "java-multiple-files")]
+    java_multiple_files: Option<bool>,
+    #[serde(rename = "java-outer-classname")]
+    java_outer_classname: Option<String>,
+    #[serde(rename = "csharp-namespace")]
+    csharp_namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProtoConfig {
+    out: PathBuf,
+    #[serde(rename = "go-package")]
+    go_package: Option<String>,
+    #[serde(rename = "java-package")]
+    java_package: Option<String>,
+    #[serde(rename = "java-multiple-files")]
+    java_multiple_files: Option<bool>,
+    #[serde(rename = "java-outer-classname")]
+    java_outer_classname: Option<String>,
+    #[serde(rename = "csharp-namespace")]
+    csharp_namespace: Option<String>,
+    #[serde(default)]
+    packages: BTreeMap<String, ProtoPackageConfig>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProtoCliOverrides {
+    go_package: Option<String>,
+    java_package: Option<String>,
+    java_multiple_files: Option<bool>,
+    java_outer_classname: Option<String>,
+    csharp_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -669,6 +736,7 @@ struct PathOverrides {
     eq_hash: Option<bool>,
     try_from: Option<bool>,
     schema_draft: Option<emit::json_schema::JsonSchemaDraft>,
+    proto_overrides: ProtoCliOverrides,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -683,6 +751,7 @@ struct ResolvedPaths {
     eq_hash: bool,
     try_from: bool,
     schema_draft: emit::json_schema::JsonSchemaDraft,
+    proto_options: emit::proto::ProtoOptions,
 }
 
 fn load_config_file(config_path: &Path) -> Result<(ConfigFile, PathBuf)> {
@@ -791,6 +860,7 @@ fn resolve_paths(
         eq_hash,
         try_from,
         schema_draft,
+        proto_overrides,
     } = overrides;
     let cli_complete = root.is_some()
         && out.is_some()
@@ -825,6 +895,11 @@ fn resolve_paths(
                 None,
             ));
         }
+        let proto_options =
+            apply_proto_overrides(emit::proto::ProtoOptions::new(), &proto_overrides);
+        if let Err(err) = proto_options.validate() {
+            return Err(op_error(codes::CLI_USAGE, format!("{err:#}"), None));
+        }
         return Ok(ResolvedPaths {
             root,
             out,
@@ -836,6 +911,7 @@ fn resolve_paths(
             eq_hash: eq_hash.unwrap_or(false),
             try_from: try_from.unwrap_or(false),
             schema_draft: schema_draft.unwrap_or_default(),
+            proto_options,
         });
     };
 
@@ -869,10 +945,14 @@ fn resolve_paths(
     let from_config = |path: &Path| resolve_config_path(&base, path);
     validate_configured_outputs(&config, &name, emitter, out.as_deref(), &from_config)?;
     validate_configured_module_roots(&config)?;
+    validate_configured_proto_options(&config, config_path)?;
     let root = root.unwrap_or_else(|| from_config(&project.root));
     let out = out.or_else(|| match emitter {
         Emitter::Rust => project.rust.as_ref().map(|config| from_config(&config.out)),
-        Emitter::Proto => project.proto.map(|config| from_config(&config.out)),
+        Emitter::Proto => project
+            .proto
+            .as_ref()
+            .map(|config| from_config(&config.out)),
         Emitter::Schema => project
             .schema
             .as_ref()
@@ -936,6 +1016,15 @@ fn resolve_paths(
         None => None,
     };
     let schema_draft = schema_draft.or(config_schema_draft).unwrap_or_default();
+    let base_proto_options = project
+        .proto
+        .as_ref()
+        .map(proto_config_to_options)
+        .unwrap_or_default();
+    let proto_options = apply_proto_overrides(base_proto_options, &proto_overrides);
+    if let Err(err) = proto_options.validate() {
+        return Err(op_error(codes::CLI_USAGE, format!("{err:#}"), None));
+    }
     Ok(ResolvedPaths {
         root,
         out,
@@ -947,6 +1036,7 @@ fn resolve_paths(
         eq_hash,
         try_from,
         schema_draft,
+        proto_options,
     })
 }
 
@@ -1155,6 +1245,86 @@ fn validate_configured_module_roots(config: &ConfigFile) -> Result<()> {
         if let Some(proto_root) = &glue.proto_root {
             emit::glue::validate_module_root(proto_root)
                 .with_context(|| format!("invalid project.{proj_name}.glue.proto-root"))?;
+        }
+    }
+    Ok(())
+}
+
+fn proto_config_to_options(cfg: &ProtoConfig) -> emit::proto::ProtoOptions {
+    let mut opts = emit::proto::ProtoOptions::new();
+    if let Some(go) = &cfg.go_package {
+        opts = opts.with_go_package_prefix(go.clone());
+    }
+    if let Some(java) = &cfg.java_package {
+        opts = opts.with_java_package_prefix(java.clone());
+    }
+    if let Some(multi) = cfg.java_multiple_files {
+        opts = opts.with_java_multiple_files(multi);
+    }
+    if let Some(outer) = &cfg.java_outer_classname {
+        opts = opts.with_java_outer_classname(outer.clone());
+    }
+    if let Some(csharp) = &cfg.csharp_namespace {
+        opts = opts.with_csharp_namespace_prefix(csharp.clone());
+    }
+    for (pkg, pkg_cfg) in &cfg.packages {
+        let mut pkg_opts = emit::proto::ProtoPackageOptions::new();
+        if let Some(go) = &pkg_cfg.go_package {
+            pkg_opts = pkg_opts.with_go_package(go.clone());
+        }
+        if let Some(java) = &pkg_cfg.java_package {
+            pkg_opts = pkg_opts.with_java_package(java.clone());
+        }
+        if let Some(multi) = pkg_cfg.java_multiple_files {
+            pkg_opts = pkg_opts.with_java_multiple_files(multi);
+        }
+        if let Some(outer) = &pkg_cfg.java_outer_classname {
+            pkg_opts = pkg_opts.with_java_outer_classname(outer.clone());
+        }
+        if let Some(csharp) = &pkg_cfg.csharp_namespace {
+            pkg_opts = pkg_opts.with_csharp_namespace(csharp.clone());
+        }
+        opts = opts.with_package_options(pkg.clone(), pkg_opts);
+    }
+    opts
+}
+
+fn apply_proto_overrides(
+    mut opts: emit::proto::ProtoOptions,
+    overrides: &ProtoCliOverrides,
+) -> emit::proto::ProtoOptions {
+    if let Some(go) = &overrides.go_package {
+        opts.go_package_prefix = Some(go.clone());
+    }
+    if let Some(java) = &overrides.java_package {
+        opts.java_package_prefix = Some(java.clone());
+    }
+    match overrides.java_multiple_files {
+        Some(true) => opts.java_multiple_files = Some(true),
+        Some(false) => opts.java_multiple_files = None,
+        None => {}
+    }
+    if let Some(outer) = &overrides.java_outer_classname {
+        opts.java_outer_classname = Some(outer.clone());
+    }
+    if let Some(csharp) = &overrides.csharp_namespace {
+        opts.csharp_namespace_prefix = Some(csharp.clone());
+    }
+    opts
+}
+
+fn validate_configured_proto_options(config: &ConfigFile, config_path: &Path) -> Result<()> {
+    for (proj_name, proj) in &config.project {
+        let Some(proto) = &proj.proto else {
+            continue;
+        };
+        let opts = proto_config_to_options(proto);
+        if let Err(err) = opts.validate() {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                format!("invalid project.{proj_name}.proto options: {err:#}"),
+                Some(config_path.display().to_string()),
+            ));
         }
     }
     Ok(())
@@ -1584,6 +1754,7 @@ fn regenerate_command(
     eq_hash_flag: Option<bool>,
     try_from_flag: Option<bool>,
     schema_draft: Option<&str>,
+    proto_overrides: Option<&ProtoCliOverrides>,
 ) -> String {
     let mut command = format!("witforge {verb}");
     if let Some(root) = root {
@@ -1628,6 +1799,25 @@ fn regenerate_command(
     }
     if let Some(draft) = schema_draft {
         push_cli_option(&mut command, "--draft", draft);
+    }
+    if let Some(proto_opts) = proto_overrides {
+        if let Some(go) = proto_opts.go_package.as_deref() {
+            push_cli_option(&mut command, "--go-package", go);
+        }
+        if let Some(java) = proto_opts.java_package.as_deref() {
+            push_cli_option(&mut command, "--java-package", java);
+        }
+        match proto_opts.java_multiple_files {
+            Some(true) => command.push_str(" --java-multiple-files"),
+            Some(false) => command.push_str(" --no-java-multiple-files"),
+            None => {}
+        }
+        if let Some(outer) = proto_opts.java_outer_classname.as_deref() {
+            push_cli_option(&mut command, "--java-outer-classname", outer);
+        }
+        if let Some(csharp) = proto_opts.csharp_namespace.as_deref() {
+            push_cli_option(&mut command, "--csharp-namespace", csharp);
+        }
     }
     if let Some(released) = released {
         let _ = write!(command, " --released {}", shell_quote(released));
@@ -1684,6 +1874,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             eq_hash: eq_hash_override,
             try_from: try_from_override,
             schema_draft: None,
+            proto_overrides: ProtoCliOverrides::default(),
         },
     )?;
     guard_output_root(&paths)?;
@@ -1706,6 +1897,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         eq_hash_override,
         try_from_override,
         None,
+        None,
     );
     run_generator(
         &files,
@@ -1718,6 +1910,20 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
 }
 
 fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let java_multiple_files_override = if options.java_multiple_files {
+        Some(true)
+    } else if options.no_java_multiple_files {
+        Some(false)
+    } else {
+        None
+    };
+    let proto_overrides = ProtoCliOverrides {
+        go_package: options.go_package.clone(),
+        java_package: options.java_package.clone(),
+        java_multiple_files: java_multiple_files_override,
+        java_outer_classname: options.java_outer_classname.clone(),
+        csharp_namespace: options.csharp_namespace.clone(),
+    };
     let paths = resolve_paths(
         Emitter::Proto,
         &options.config,
@@ -1732,10 +1938,15 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             eq_hash: None,
             try_from: None,
             schema_draft: None,
+            proto_overrides: proto_overrides.clone(),
         },
     )?;
     guard_output_root(&paths)?;
-    let files = emit::proto::plan_with_released(&paths.root, paths.released.as_deref())?;
+    let files = emit::proto::plan_with_options(
+        &paths.root,
+        paths.released.as_deref(),
+        &paths.proto_options,
+    )?;
     let regen = regenerate_command(
         "proto",
         &options.config,
@@ -1749,6 +1960,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         None,
         None,
         None,
+        Some(&proto_overrides),
     );
     run_generator(
         &files,
@@ -1780,6 +1992,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
             eq_hash: None,
             try_from: None,
             schema_draft: draft_override,
+            proto_overrides: ProtoCliOverrides::default(),
         },
     )?;
     guard_output_root(&paths)?;
@@ -1802,6 +2015,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         None,
         None,
         options.draft.as_deref(),
+        None,
     );
     run_generator(
         &files,
@@ -1835,6 +2049,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
             eq_hash: None,
             try_from: None,
             schema_draft: None,
+            proto_overrides: ProtoCliOverrides::default(),
         },
     )?;
     let plain_root = paths
@@ -1870,6 +2085,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         None,
         None,
         None,
+        None,
     );
     run_generator(
         &files,
@@ -1896,6 +2112,7 @@ fn doc_command(options: &DocOptions, reporter: &mut Reporter) -> Result<ExitCode
             eq_hash: None,
             try_from: None,
             schema_draft: None,
+            proto_overrides: ProtoCliOverrides::default(),
         },
     )?;
     guard_output_root(&paths)?;
@@ -1906,6 +2123,7 @@ fn doc_command(options: &DocOptions, reporter: &mut Reporter) -> Result<ExitCode
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         None,
         None,
         None,
@@ -2781,6 +2999,7 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         .collect();
     emit::output::ensure_distinct_output_roots(&refs)?;
     validate_configured_module_roots(&config)?;
+    validate_configured_proto_options(&config, &config_path)?;
 
     let selected: Vec<(String, ProjectConfig)> = if let Some(name) = &options.config.project {
         let Some(project) = config.project.get(name) else {
@@ -2917,6 +3136,12 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                     &ProtoOptions {
                         root: None,
                         out: None,
+                        go_package: None,
+                        java_package: None,
+                        java_multiple_files: false,
+                        no_java_multiple_files: false,
+                        java_outer_classname: None,
+                        csharp_namespace: None,
                         check: options.check,
                         diff: options.diff,
                         released: options.released.clone(),
@@ -4134,6 +4359,12 @@ mod reference_doc_tests {
             "`project.<name>.rust.try-from`",
             "`[project.<name>.proto]`",
             "`project.<name>.proto.out`",
+            "`project.<name>.proto.go-package`",
+            "`project.<name>.proto.java-package`",
+            "`project.<name>.proto.java-multiple-files`",
+            "`project.<name>.proto.java-outer-classname`",
+            "`project.<name>.proto.csharp-namespace`",
+            "`[project.<name>.proto.packages.<proto_package>]`",
             "`[project.<name>.schema]`",
             "`project.<name>.schema.out`",
             "`project.<name>.schema.draft`",

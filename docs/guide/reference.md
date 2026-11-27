@@ -84,6 +84,12 @@ Generate or check per-major protobuf schemas (`v<major>.proto` and dependency `.
 |---|---|
 | `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
 | `--out <DIR>` | Output directory for generated `.proto` files. |
+| `--go-package <VALUE>` | Base `go_package` import path prefix (or explicit `path;alias` for single-file output), overriding `project.<name>.proto.go-package`. |
+| `--java-package <VALUE>` | Base `java_package` prefix for emitted `.proto` files, overriding `project.<name>.proto.java-package`. |
+| `--java-multiple-files` | Emit `option java_multiple_files = true;`, overriding config (conflicts with `--no-java-multiple-files`). |
+| `--no-java-multiple-files` | Omit `option java_multiple_files`, overriding `project.<name>.proto.java-multiple-files` (conflicts with `--java-multiple-files`). |
+| `--java-outer-classname <NAME>` | Emit `option java_outer_classname = "<NAME>";`, overriding `project.<name>.proto.java-outer-classname`. |
+| `--csharp-namespace <VALUE>` | Base `csharp_namespace` prefix for emitted `.proto` files, overriding `project.<name>.proto.csharp-namespace`. |
 | `--check` | Verify existing files match without writing; exits `1` on drift. |
 | `--diff` | Print a unified diff of output changes without changing the exit status. |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
@@ -322,6 +328,12 @@ expansion.
 | `project.<name>.rust.try-from` | no | boolean | Emit `TryFrom` impls in `convert.rs` for converted nominal types (default `false`). |
 | `[project.<name>.proto]` | no | table | Protobuf generator configuration. |
 | `project.<name>.proto.out` | yes (if section set) | path | Output directory for generated `.proto` files. |
+| `project.<name>.proto.go-package` | no | string | Base `go_package` import path prefix (or explicit `path;alias` for single-file output). |
+| `project.<name>.proto.java-package` | no | string | Base `java_package` prefix derived per emitted proto package. |
+| `project.<name>.proto.java-multiple-files` | no | boolean | Emit `option java_multiple_files = true;` (or `false;`) on emitted `.proto` files. |
+| `project.<name>.proto.java-outer-classname` | no | string | Emit `option java_outer_classname = "<NAME>";` (collision-checked per Java package and file). |
+| `project.<name>.proto.csharp-namespace` | no | string | Base `csharp_namespace` prefix derived as PascalCase segments per emitted proto package. |
+| `[project.<name>.proto.packages.<proto_package>]` | no | table | Exact per-package overrides (`go-package`, `java-package`, `java-multiple-files`, `java-outer-classname`, `csharp-namespace`) keyed by emitted proto package name. |
 | `[project.<name>.schema]` | no | table | JSON Schema generator configuration. |
 | `project.<name>.schema.out` | yes (if section set) | path | Output directory for generated JSON Schema files. |
 | `project.<name>.schema.draft` | no | string | JSON Schema dialect: `"7"` (default) or `"2020-12"`. |

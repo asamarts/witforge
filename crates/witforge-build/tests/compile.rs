@@ -769,3 +769,110 @@ fn fourth_wave_audit_custom_default_filename_and_duplicate_major_guards() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn proto_file_options_compile_cleanly_without_changing_rust_modules() {
+    let base = scratch("proto-file-options");
+
+    // 1. Standalone contract with all five file options enabled.
+    let standalone_wit = workspace_root().join("examples/evolved/wit");
+    let default_proto = base.join("standalone-default-proto");
+    let opted_proto = base.join("standalone-opted-proto");
+    proto::plan(&standalone_wit)
+        .unwrap()
+        .write(&default_proto)
+        .unwrap();
+    let opts = proto::ProtoOptions::new()
+        .with_go_package_prefix("github.com/acme/contracts/gen/go")
+        .with_java_package_prefix("com.acme.contracts")
+        .with_java_multiple_files(true)
+        .with_java_outer_classname("TasksV0Proto")
+        .with_csharp_namespace_prefix("Acme.Contracts");
+    proto::generate_with_options(&standalone_wit, &opted_proto, &opts).unwrap();
+    let v0_text = fs::read_to_string(opted_proto.join("v0.proto")).unwrap();
+    assert!(
+        v0_text.contains(
+            "option csharp_namespace = \"Acme.Contracts.Example.Tasks.V0\";\n\
+             option go_package = \"github.com/acme/contracts/gen/go/example/tasks/v0;example_tasks_v0\";\n\
+             option java_multiple_files = true;\n\
+             option java_outer_classname = \"TasksV0Proto\";\n\
+             option java_package = \"com.acme.contracts.example.tasks.v0\";\n"
+        ),
+        "{v0_text}"
+    );
+
+    let default_out = base.join("standalone-default-out");
+    let opted_out = base.join("standalone-opted-out");
+    let default_build = maybe_enable_pbjson(
+        witforge_build::Config::new()
+            .out_dir(&default_out)
+            .emit_rerun_if_changed(false),
+    )
+    .compile_protos(&default_proto)
+    .unwrap();
+    let opted_build = maybe_enable_pbjson(
+        witforge_build::Config::new()
+            .out_dir(&opted_out)
+            .emit_rerun_if_changed(false),
+    )
+    .compile_protos(&opted_proto)
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(opted_build.include_file.as_ref().unwrap()).unwrap(),
+        fs::read_to_string(default_build.include_file.as_ref().unwrap()).unwrap(),
+        "proto file options must not alter witforge-build include file"
+    );
+    assert_eq!(
+        fs::read_to_string(opted_out.join("example.tasks.v0.rs")).unwrap(),
+        fs::read_to_string(default_out.join("example.tasks.v0.rs")).unwrap(),
+        "proto file options must not alter prost-generated Rust types"
+    );
+    #[cfg(feature = "pbjson")]
+    assert_eq!(
+        fs::read_to_string(opted_out.join("example.tasks.v0.serde.rs")).unwrap(),
+        fs::read_to_string(default_out.join("example.tasks.v0.serde.rs")).unwrap(),
+        "proto file options must not alter pbjson-generated serde impls"
+    );
+
+    // 2. Contract with `deps/` and all five file options enabled.
+    let deps_wit = fixture("deps/wit");
+    let deps_default_proto = base.join("deps-default-proto");
+    let deps_opted_proto = base.join("deps-opted-proto");
+    proto::plan(&deps_wit)
+        .unwrap()
+        .write(&deps_default_proto)
+        .unwrap();
+    let deps_opts = proto::ProtoOptions::new()
+        .with_go_package_prefix("github.com/acme/contracts/gen/go")
+        .with_java_package_prefix("com.acme.contracts")
+        .with_java_multiple_files(true)
+        .with_java_outer_classname("ContractProto")
+        .with_csharp_namespace_prefix("Acme.Contracts");
+    proto::generate_with_options(&deps_wit, &deps_opted_proto, &deps_opts).unwrap();
+
+    let deps_default_out = base.join("deps-default-out");
+    let deps_opted_out = base.join("deps-opted-out");
+    let deps_default_build = maybe_enable_pbjson(
+        witforge_build::Config::new()
+            .out_dir(&deps_default_out)
+            .emit_rerun_if_changed(false),
+    )
+    .compile_protos(&deps_default_proto)
+    .unwrap();
+    let deps_opted_build = maybe_enable_pbjson(
+        witforge_build::Config::new()
+            .out_dir(&deps_opted_out)
+            .emit_rerun_if_changed(false),
+    )
+    .compile_protos(&deps_opted_proto)
+    .unwrap();
+    assert!(deps_opted_build.has_dependencies);
+    assert_eq!(
+        fs::read_to_string(deps_opted_build.include_file.as_ref().unwrap()).unwrap(),
+        fs::read_to_string(deps_default_build.include_file.as_ref().unwrap()).unwrap(),
+        "proto file options must not alter deps witforge-build include file"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}

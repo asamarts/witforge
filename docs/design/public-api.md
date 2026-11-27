@@ -21,7 +21,7 @@ The public surface is the modules and items below. Within 1.x:
 | `model` | `Version`, `Stability`, `QualifiedName`, `TypeExpr`, `ResultExpr`, `Field`, `Case`, `Flag`, `TypeDef`, `TypeDefKind`, `Param`, `Function`, `Interface`, `WorldInterface`, `World`, `Package`, `Dependency`, `Model`, `MemberKind`, `Member`, `build`, `members`, and their documented constructors, lookups, canonicalization, and member extraction methods |
 | `lock` | `HEADER`, `ORDER_HEADER`, `PackageName`, `MemberKey`, `Entry`, `WireLock`, `LockMode`, `Changes`, `Discrepancy`, `Reconciliation`, and their documented constructors, parsing, reconciliation, validation, inspection, rendering, and writing methods |
 | `emit::rust` | `HEADER`, `RustOptions`, `plan`, `plan_with_serde`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_serde`, `check`, `check_with_serde`, `version_module_name`, `emit_version`, `emit_version_with_serde`, `emit_version_with_options` |
-| `emit::proto` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_major` |
+| `emit::proto` | `HEADER`, `ProtoOptions`, `ProtoPackageOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options`, `emit_major`, `emit_major_with_options` |
 | `emit::json_schema` | `HEADER`, `JsonSchemaDraft`, `SchemaOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `emit_version`, `emit_version_with_options` |
 | `emit::glue` | `HEADER`, `GlueOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_root_with_options`, `emit_version`, `emit_version_with_options` |
 | `emit::doc` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_version`, `emit_index` |
@@ -55,11 +55,12 @@ model values, lockfile inputs, and diagnostic locations through the documented `
 and mutable. Adding a field or variant is compatible within 1.x; changing or removing an existing
 field or variant remains breaking.
 
-The new `ChangeElement`, generated-file finding, `workflow`, and `0.8.0` emitter-option types
-(`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`) are also `#[non_exhaustive]`;
+The new `ChangeElement`, generated-file finding, `workflow`, and emitter-option types
+(`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`, `ProtoOptions`,
+`ProtoPackageOptions`) are also `#[non_exhaustive]`;
 their constructors and builders are the downstream construction boundary. `RustOptions`,
-`GlueOptions`, and `SchemaOptions` deliberately omit `Copy` so future additive options may carry
-non-`Copy` values without breaking SemVer.
+`GlueOptions`, `SchemaOptions`, `ProtoOptions`, and `ProtoPackageOptions` deliberately omit `Copy`
+so future additive options may carry non-`Copy` values without breaking SemVer.
 
 The explicit trait implementations in the checked inventory are promised API, including derived
 `Debug`, `Clone`, `Copy`, equality, ordering, hashing, and `Default` implementations. Adding a
@@ -151,7 +152,7 @@ short Git commit and `-dirty` suffix on development builds):
 | `witforge check [<PATH>]` | Validate one version directory or an entire WIT root (or configured projects) | `--lock`, `--first`, `--against`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge lock <WIT_DIR>` | Reconcile `wire.lock` for one version directory | `--lock`, `--first`, `--against`, `--released` |
 | `witforge rust [<WIT_ROOT>]` | Emit or check plain Rust types, traits, `convert.rs`, and `worlds.rs` | `--out`, `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--eq-hash`, `--no-eq-hash`, `--try-from`, `--no-try-from`, `--released`, `--config`, `--no-config`, `--project` |
-| `witforge proto [<WIT_ROOT>]` | Emit or check protobuf schemas | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge proto [<WIT_ROOT>]` | Emit or check protobuf schemas | `--out`, `--go-package`, `--java-package`, `--java-multiple-files`, `--no-java-multiple-files`, `--java-outer-classname`, `--csharp-namespace`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge schema [<WIT_ROOT>]` | Emit or check JSON Schema files (Draft 7 default, opt-in Draft 2020-12) | `--out`, `--check`, `--diff`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge glue [<WIT_ROOT>]` | Emit or check Rust/prost glue | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--no-std`, `--std`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge doc [<WIT_ROOT>]` | Emit or check deterministic Markdown contract reference docs | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |

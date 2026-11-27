@@ -1812,3 +1812,260 @@ fn ninth_wave_audit_discovered_policy_relative_root_and_dash_project_hint() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn proto_file_options_config_cli_precedence_generate_and_diagnostics() {
+    let root = project("proto-file-options");
+    let lock_before = fs::read_to_string(root.join("wit/v0.2/wire.lock")).unwrap();
+    let diff_before = witforge()
+        .current_dir(&root)
+        .args(["diff", "wit/v0.1", "wit/v0.2", "--json"])
+        .output()
+        .unwrap();
+    assert!(diff_before.status.success(), "{diff_before:?}");
+
+    // 1. Default `witforge proto` emits zero file options.
+    let default_out = root.join("gen/default");
+    let default_run = witforge()
+        .current_dir(&root)
+        .args(["proto", "wit", "--out"])
+        .arg(&default_out)
+        .output()
+        .unwrap();
+    assert!(default_run.status.success(), "{default_run:?}");
+    let default_proto = fs::read_to_string(default_out.join("v0.proto")).unwrap();
+    assert!(
+        !default_proto.contains("option go_package"),
+        "{default_proto}"
+    );
+    assert!(
+        !default_proto.contains("option java_package"),
+        "{default_proto}"
+    );
+    assert!(
+        !default_proto.contains("option csharp_namespace"),
+        "{default_proto}"
+    );
+
+    // 2. `[project.demo.proto]` + `[project.demo.proto.packages."..."]` honored by `witforge proto`
+    //    and `witforge generate` (plus `--check`).
+    let config = write_config(
+        &root,
+        r#"
+version = 1
+
+[project.demo]
+root = "wit"
+
+[project.demo.proto]
+out = "gen/configured"
+go-package = "github.com/acme/contracts/gen/go"
+java-package = "com.acme.contracts"
+java-multiple-files = true
+java-outer-classname = "BaseProto"
+csharp-namespace = "Acme.Contracts"
+
+[project.demo.proto.packages."example.evolve.v0"]
+java-outer-classname = "VersionsV0Proto"
+"#,
+    );
+    let gen_run = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(gen_run.status.success(), "{gen_run:?}");
+    let configured_proto = fs::read_to_string(root.join("gen/configured/v0.proto")).unwrap();
+    assert!(
+        configured_proto.contains(
+            "package example.evolve.v0;\n\n\
+             option csharp_namespace = \"Acme.Contracts.Example.Evolve.V0\";\n\
+             option go_package = \"github.com/acme/contracts/gen/go/example/evolve/v0;example_evolve_v0\";\n\
+             option java_multiple_files = true;\n\
+             option java_outer_classname = \"VersionsV0Proto\";\n\
+             option java_package = \"com.acme.contracts.example.evolve.v0\";\n"
+        ),
+        "{configured_proto}"
+    );
+    let gen_check = witforge()
+        .current_dir(&root)
+        .args(["generate", "--config"])
+        .arg(&config)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(gen_check.status.success(), "{gen_check:?}");
+
+    // 3. CLI flags override top-level config (`--go-package`, `--java-package`,
+    //    `--no-java-multiple-files`, `--csharp-namespace`), while per-package override stays intact.
+    let cli_override_out = root.join("gen/cli-override");
+    let override_run = witforge()
+        .current_dir(&root)
+        .args(["proto", "--config"])
+        .arg(&config)
+        .args([
+            "--out",
+            "gen/cli-override",
+            "--go-package",
+            "example.org/override;customv0",
+            "--java-package",
+            "org.override",
+            "--no-java-multiple-files",
+            "--csharp-namespace",
+            "Override.Ns",
+        ])
+        .output()
+        .unwrap();
+    assert!(override_run.status.success(), "{override_run:?}");
+    let overridden = fs::read_to_string(cli_override_out.join("v0.proto")).unwrap();
+    assert!(
+        overridden.contains(
+            "option csharp_namespace = \"Override.Ns.Example.Evolve.V0\";\n\
+             option go_package = \"example.org/override;customv0\";\n\
+             option java_outer_classname = \"VersionsV0Proto\";\n\
+             option java_package = \"org.override.example.evolve.v0\";\n"
+        ),
+        "{overridden}"
+    );
+    assert!(
+        !overridden.contains("java_multiple_files"),
+        "--no-java-multiple-files should omit java_multiple_files:\n{overridden}"
+    );
+
+    // 4. `--check` drift regeneration command preserves CLI proto flags (quoting `;alias`).
+    let drift_out = root.join("gen/drift");
+    fs::create_dir_all(&drift_out).unwrap();
+    let drift_check = witforge()
+        .current_dir(&root)
+        .args([
+            "proto",
+            "wit",
+            "--out",
+            "gen/drift",
+            "--go-package",
+            "example.org/override;customv0",
+            "--java-multiple-files",
+            "--csharp-namespace",
+            "Override.Ns",
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift_check.status.code(), Some(1), "{drift_check:?}");
+    let drift_stderr = String::from_utf8_lossy(&drift_check.stderr);
+    assert!(
+        drift_stderr.contains("--go-package 'example.org/override;customv0'")
+            && drift_stderr.contains("--java-multiple-files")
+            && drift_stderr.contains("--csharp-namespace Override.Ns"),
+        "missing proto flags in regen command:\n{drift_stderr}"
+    );
+
+    // 5. Invalid CLI option syntax -> exit 2 with WF9001 in `--format json`.
+    let bad_cli = witforge()
+        .current_dir(&root)
+        .args([
+            "--format",
+            "json",
+            "proto",
+            "wit",
+            "--out",
+            "gen/bad-cli",
+            "--java-package",
+            "com.acme;bad",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_cli.status.code(), Some(2), "{bad_cli:?}");
+    let bad_cli_json: serde_json::Value = serde_json::from_slice(&bad_cli.stdout).unwrap();
+    assert_eq!(bad_cli_json["diagnostics"][0]["code"], "WF9001");
+
+    // 6. Unused `proto.packages` override key -> exit 2 with WF9001 in `--format json`.
+    let unused_cfg = write_config(
+        &root,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.proto]
+out = "gen/unused"
+[project.demo.proto.packages."example.typo.v0"]
+java-multiple-files = true
+"#,
+    );
+    let unused_run = witforge()
+        .current_dir(&root)
+        .args(["--format", "json", "proto", "--config"])
+        .arg(&unused_cfg)
+        .output()
+        .unwrap();
+    assert_eq!(unused_run.status.code(), Some(2), "{unused_run:?}");
+    let unused_json: serde_json::Value = serde_json::from_slice(&unused_run.stdout).unwrap();
+    assert_eq!(unused_json["diagnostics"][0]["code"], "WF9001");
+
+    // 7. Unknown key inside `[project.demo.proto.packages."..."]` refused (`deny_unknown_fields`).
+    let unknown_pkg_cfg = write_config(
+        &root,
+        r#"
+version = 1
+[project.demo]
+root = "wit"
+[project.demo.proto]
+out = "gen/unknown-pkg"
+[project.demo.proto.packages."example.evolve.v0"]
+objc-class-prefix = "EX"
+"#,
+    );
+    let unknown_pkg = witforge()
+        .current_dir(&root)
+        .args(["proto", "--config"])
+        .arg(&unknown_pkg_cfg)
+        .output()
+        .unwrap();
+    assert_eq!(unknown_pkg.status.code(), Some(2), "{unknown_pkg:?}");
+    assert!(
+        String::from_utf8_lossy(&unknown_pkg.stderr).contains("unknown field"),
+        "{unknown_pkg:?}"
+    );
+
+    // 8. `java_outer_classname` collision with generated message `Empty` -> exit 1 with WF1003.
+    let collide_run = witforge()
+        .current_dir(&root)
+        .args([
+            "--format",
+            "json",
+            "proto",
+            "wit",
+            "--out",
+            "gen/collide",
+            "--java-outer-classname",
+            "Empty",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(collide_run.status.code(), Some(1), "{collide_run:?}");
+    let collide_json: serde_json::Value = serde_json::from_slice(&collide_run.stdout).unwrap();
+    assert_eq!(collide_json["diagnostics"][0]["code"], "WF1003");
+
+    // 9. `wire.lock` and `diff` wire/decode verdicts are unaffected by proto file options.
+    assert_eq!(
+        fs::read_to_string(root.join("wit/v0.2/wire.lock")).unwrap(),
+        lock_before
+    );
+    let diff_after = witforge()
+        .current_dir(&root)
+        .args(["diff", "wit/v0.1", "wit/v0.2", "--json"])
+        .output()
+        .unwrap();
+    assert!(diff_after.status.success(), "{diff_after:?}");
+    assert_eq!(diff_after.stdout, diff_before.stdout);
+    let diff_wire_ok = witforge()
+        .current_dir(&root)
+        .args(["diff", "wit/v0.1", "wit/v0.2", "--check=wire"])
+        .output()
+        .unwrap();
+    assert!(diff_wire_ok.status.success(), "{diff_wire_ok:?}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
