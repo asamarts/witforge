@@ -27,6 +27,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::doc` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_version`, `emit_index` |
 | `emit::output` | `HeaderStyle`, `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods (including additive nested-tree `new_nested`, `insert_relative`, `insert_marker`, `is_nested`, `markers`), `validate_relative_path`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
 | `emit::polyglot` | `TargetLanguage`, case converters (`to_snake_case`, `to_upper_snake_case`, `to_pascal_case`, `to_camel_case`), keyword/escaping helpers for TypeScript/Python/Go/Java/C#, version/dependency path helpers, and `doc_lines` |
+| `conformance` | `CONFORMANCE_VERSION`, `ConformanceOptions`, `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, `vectors_json` |
 | `diff` | `Endpoint`, `Change`, `ChangeElement`, `ChangeKind`, `Summary`, `DiffReport`, `ConversionImpact`, `ConversionOmission`, `DecodeVerdict`, `DecodeSummary`, `DiffAnalysis`, `FullDiff`, `compare`, `compare_with_impacts`, `compare_omissions`, `compare_with_locations`, `compare_with_omissions`, `compare_full`, `compare_git_base` |
 | `diagnostic` | `codes` and its constants, `CodeInfo`, `CATALOG`, `lookup`, `explanation`, `HELP_BASE_URL`, `help_uri`, `Diagnostic`, `LocatedDiagnostic`, `RelatedLocation`, `Position`, `Severity`, and their documented constructors and builders |
 | `freeze` | `FreezeOptions`, `FreezeReport`, `check_root`, `check_root_with_manifest` |
@@ -56,13 +57,14 @@ model values, lockfile inputs, and diagnostic locations through the documented `
 and mutable. Adding a field or variant is compatible within 1.x; changing or removing an existing
 field or variant remains breaking.
 
-The new `ChangeElement`, generated-file finding, `HeaderStyle`, `TargetLanguage`, `workflow`, and
-emitter-option types
+The new `ChangeElement`, generated-file finding, `HeaderStyle`, `TargetLanguage`, `workflow`,
+`ConformanceOptions`, `ConformanceBundle`, and emitter-option types
 (`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`, `ProtoOptions`,
 `ProtoPackageOptions`) are also `#[non_exhaustive]`;
 their constructors and builders are the downstream construction boundary. `RustOptions`,
-`GlueOptions`, `SchemaOptions`, `ProtoOptions`, and `ProtoPackageOptions` deliberately omit `Copy`
-so future additive options may carry non-`Copy` values without breaking SemVer.
+`GlueOptions`, `SchemaOptions`, `ProtoOptions`, `ProtoPackageOptions`, and `ConformanceOptions`
+deliberately omit `Copy` so future additive options may carry non-`Copy` values without breaking
+SemVer.
 
 The explicit trait implementations in the checked inventory are promised API, including derived
 `Debug`, `Clone`, `Copy`, equality, ordering, hashing, and `Default` implementations. Adding a
@@ -160,6 +162,7 @@ short Git commit and `-dirty` suffix on development builds):
 | `witforge schema [<WIT_ROOT>]` | Emit or check JSON Schema files (Draft 7 default, opt-in Draft 2020-12) | `--out`, `--check`, `--diff`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge glue [<WIT_ROOT>]` | Emit or check Rust/prost glue | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--no-std`, `--std`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge doc [<WIT_ROOT>]` | Emit or check deterministic Markdown contract reference docs | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge conformance` | Emit or check the versioned cross-language protobuf conformance fixture bundle | `--out`, `--polyglot-proto-options`, `--go-package`, `--java-package`, `--java-multiple-files`, `--no-java-multiple-files`, `--java-outer-classname`, `--csharp-namespace`, `--check`, `--diff` |
 | `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--eq-hash`, `--no-eq-hash`, `--try-from`, `--no-try-from`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge init [DIR]` | Scaffold a new contract workspace (`wit/v0.1/`, `wire.lock`, `witforge.toml`) | `--package`, `--serde` |
 | `witforge new-version [<WIT_ROOT>]` | Create the next minor (or `--major`) version directory from the latest or `--from` version | `--major`, `--from`, `--released`, `--config`, `--no-config`, `--project` |

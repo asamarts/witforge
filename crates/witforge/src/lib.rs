@@ -20,6 +20,8 @@
 //!   [glue](emit::glue), and [Markdown documentation](emit::doc) output for a WIT root, provides
 //!   shared [output ownership](emit::output) and [polyglot helpers](emit::polyglot), and checks
 //!   committed output for drift.
+//! - [`conformance`] emits a deterministic, versioned cross-language protobuf decode/encode
+//!   conformance bundle (`conformance_version = 1`) for verifying non-Rust protobuf glue.
 //! - [`diff`] compares two contract versions (or a working-tree contract against a Git revision)
 //!   across wire, source, generated-API, and protobuf binary decode compatibility views.
 //! - [`inspect`] exports a versioned machine-readable JSON contract IR and human summaries.
@@ -31,12 +33,13 @@
 //!   I/O, and parse errors.
 //!
 //! The `witforge` command-line interface (the `witforge-cli` crate) wraps these as the `check`,
-//! `lock`, `rust`, `proto`, `schema`, `glue`, `doc`, `generate`, `init`, `new-version`,
-//! `deps sync`, `release`, `retire`, `diff`, `inspect`, `freeze`, `completions`, and `explain`
-//! commands. For Rust `build.rs` integration, see the companion `witforge-build` crate. The
-//! normative specifications are in
+//! `lock`, `rust`, `proto`, `schema`, `glue`, `doc`, `conformance`, `generate`, `init`,
+//! `new-version`, `deps sync`, `release`, `retire`, `diff`, `inspect`, `freeze`, `completions`,
+//! and `explain` commands. For Rust `build.rs` integration, see the companion `witforge-build`
+//! crate. The normative specifications are in
 //! [`docs/design`](https://github.com/asamarts/witforge/tree/main/docs/design).
 
+pub mod conformance;
 pub mod diagnostic;
 pub mod diff;
 pub mod emit;

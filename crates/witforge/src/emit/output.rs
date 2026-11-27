@@ -128,7 +128,7 @@ pub enum GeneratedFileStatus {
 }
 
 impl GeneratedFileStatus {
-    const fn sort_rank(&self) -> u8 {
+    pub(crate) const fn sort_rank(&self) -> u8 {
         match self {
             // Preserve the previous lexicographic message order without rendering temporary
             // strings: backtick, changed, extra, generated, missing.
@@ -154,7 +154,11 @@ pub struct GeneratedFileFinding {
 }
 
 impl GeneratedFileFinding {
-    fn new(path: PathBuf, status: GeneratedFileStatus, regenerate_command: Option<&str>) -> Self {
+    pub(crate) fn new(
+        path: PathBuf,
+        status: GeneratedFileStatus,
+        regenerate_command: Option<&str>,
+    ) -> Self {
         Self {
             path,
             status,

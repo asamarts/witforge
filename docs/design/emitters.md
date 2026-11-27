@@ -912,8 +912,10 @@ particular:
 - field names use lowerCamelCase JSON names;
 - `u64`/`s64` are decimal strings;
 - `list<u8>` is base64;
-- non-finite floats are `"NaN"` / `"Infinity"` strings (note: `pbjson-build` 0.9 serializes
-  non-finite floats inside `map<K, f32|f64>` as `null`; keep finite floats in proto3-JSON maps);
+- non-finite floats are `"NaN"` / `"Infinity"` / `"-Infinity"` strings (note: `pbjson-build` 0.9
+  deserializes those strings cleanly, but serializes non-finite floats in `optional float`/`double`
+  and `map<K, f32|f64>` as `null`; use binary protobuf or keep finite floats when serializing with
+  `pbjson-build` 0.9);
 - enums are name strings;
 - `result` is `{"ok": ...}` or `{"err": ...}`;
 - option presence is absence or `null` for message fields, and absence for proto3 `optional`;
@@ -1051,6 +1053,10 @@ witforge glue   [<wit-root>] [--out <dir>] [--plain-root <path>] [--proto-root <
                              [--check] [--diff] [--released <path>]
 witforge doc    [<wit-root>] [--out <dir>] [--config <file> | --no-config] [--project <name>]
                              [--check] [--diff] [--released <path>]
+witforge conformance --out <dir> [--polyglot-proto-options] [--go-package <value>]
+                     [--java-package <value>] [--java-multiple-files | --no-java-multiple-files]
+                     [--java-outer-classname <name>] [--csharp-namespace <value>]
+                     [--check] [--diff]
 witforge generate [--config <file> | --no-config] [--project <name>] [--check] [--diff]
                   [--serde | --no-serde] [--no-std | --std] [--eq-hash | --no-eq-hash]
                   [--try-from | --no-try-from] [--draft 7|2020-12] [--released <path>]
@@ -2090,3 +2096,24 @@ models, checked protobuf glue, and cross-version adapters), additive nested-tree
 multi-language header rules in `witforge::emit::output`, shared language helpers in
 `witforge::emit::polyglot`, and the two-tier verification contract are specified in
 [`polyglot-emitters.md`](polyglot-emitters.md).
+
+## 15. Cross-Language Protobuf Conformance Bundle (`witforge conformance`)
+
+`witforge conformance --out <dir> [--polyglot-proto-options] [--go-package <value>] [--java-package <value>] [--java-multiple-files | --no-java-multiple-files] [--java-outer-classname <name>] [--csharp-namespace <value>] [--check] [--diff]`
+(backed by `witforge::conformance`, `CONFORMANCE_VERSION = 1`) emits a deterministic,
+zero-extra-dependency cross-language conformance bundle containing:
+
+- `<out>/vectors.json`: owned by `HeaderStyle::JsonComment` (`conformance`, `witforge:conformance`),
+  carrying binary protobuf payloads (RFC 4648 base64), proto3-JSON payloads, expected accept/reject
+  verdicts, `GlueError` categories, and encode-side boundary rejection vectors.
+- `<out>/proto/v0.proto` and `<out>/proto/witforge.conformance_dep.v0.proto`: owned by standard
+  `emit::proto` (`proto`, `witforge:conformance`), neutral by default unless file options are
+  enabled.
+- `<out>/wit/v0.1/contract.wit`, `<out>/wit/v0.1/deps/conformance-dep/dep.wit`, and
+  `<out>/wit/v0.1/wire.lock`: the built-in canonical WIT conformance contract (verified to pass
+  `witforge check`).
+
+All three directories are validated before any file is written (refusing symlinks, non-directory
+blockers, foreign witforge headers, and unowned collisions with `WF9004`). The full manifest
+schema, vector requirements, and Rust `prost` + `pbjson` + glue oracle proof are specified in
+[`conformance.md`](conformance.md).

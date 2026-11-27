@@ -149,6 +149,24 @@ Generate or check deterministic Markdown contract reference pages (`index.md` an
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Project name in `witforge.toml`. |
 
+### `witforge conformance`
+
+Generate or check the versioned cross-language protobuf conformance fixture bundle
+(`conformance_version = 1`: `vectors.json`, `proto/`, and `wit/`).
+
+| Option | Description |
+|---|---|
+| `--out <DIR>` | Output directory for the conformance bundle (`vectors.json`, `proto/`, `wit/`). |
+| `--polyglot-proto-options` | Populate canonical Go, Java, and C# protobuf file options on emitted `.proto` files. |
+| `--go-package <VALUE>` | Base `go_package` import path prefix for emitted `.proto` files. |
+| `--java-package <VALUE>` | Base `java_package` prefix for emitted `.proto` files. |
+| `--java-multiple-files` | Emit `option java_multiple_files = true;` on emitted `.proto` files (conflicts with `--no-java-multiple-files`). |
+| `--no-java-multiple-files` | Omit `option java_multiple_files`, overriding `--polyglot-proto-options` (conflicts with `--java-multiple-files`). |
+| `--java-outer-classname <NAME>` | Emit `option java_outer_classname = "<NAME>";` on emitted `.proto` files. |
+| `--csharp-namespace <VALUE>` | Base `csharp_namespace` prefix for emitted `.proto` files. |
+| `--check` | Verify existing bundle files match without writing; exits `1` on drift. |
+| `--diff` | Print a unified diff of bundle changes without changing the exit status. |
+
 ### `witforge generate`
 
 Run every generator configured in `witforge.toml` across all projects or `--project`.

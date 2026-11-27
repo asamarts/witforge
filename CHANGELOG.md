@@ -30,6 +30,17 @@ All notable changes to this project are documented here. The format follows
   pruning on stale removal, and added the zero-dependency `witforge::emit::polyglot` module
   (`TargetLanguage`, case converters, per-language keyword escaping, `DepLayout` path helpers, and
   doc normalization).
+- **Cross-language protobuf conformance profile and fixture bundle (`W11-034`):** Added additive
+  `witforge::conformance` (`CONFORMANCE_VERSION = 1`, `#[non_exhaustive]` `ConformanceOptions` and
+  `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, and
+  `vectors_json`) and `witforge conformance --out <DIR> [--polyglot-proto-options] [--check]
+  [--diff]` with zero new runtime dependencies in `crates/witforge`. Emits a canonical built-in
+  WIT conformance contract (`wit/`), matching `.proto` schemas (`proto/`, neutral by default or
+  with opt-in Go/Java/C# file options), and `vectors.json` covering all 13 decode-profile rows,
+  foreign `deps/` types and functions, 64-bit integer precision beyond `2^53 - 1`,
+  supplementary-plane `char`, `f32`/`f64` non-finite and `-0.0` values, nested wrapper rules, and
+  encode-side (`toProto`) boundary rejection vectors, proven end-to-end against compiled Rust
+  `prost` + `pbjson` + `witforge` glue in both binary protobuf and proto3-JSON forms.
 
 ## [0.9.0] - 2026-11-26
 

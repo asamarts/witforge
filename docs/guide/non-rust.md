@@ -100,24 +100,56 @@ A Rust endpoint using generated glue returns `GlueError` for these cases. Other 
 should expose errors appropriate to their application while preserving the same accept/reject
 boundary.
 
-## Conformance tests
+## Conformance fixture bundle
 
-For every independently implemented contract, keep fixtures that cover:
+Use `witforge conformance` to export witforge's built-in, deterministic cross-language conformance
+bundle (`conformance_version = 1`) and verify your non-Rust protobuf glue against the exact same
+decode and encode rules proved against witforge's Rust glue:
 
-- each narrow integer's minimum, maximum, and one out-of-range value;
-- `char` valid Unicode scalars, UTF-16 surrogates (`0xD800..=0xDFFF`), and values above `0x10FFFF`;
-- every required optional/message field both present and absent;
-- `option<T>` absent and present;
-- enum zero, every known case, and an unknown number;
-- every variant/result case, an unset `oneof`, and a present option wrapper whose `oneof` is unset;
-- empty and non-empty lists, including nested wrappers;
-- fixed-length `list<T, N>` with exact length `N`, length `N - 1`, and length `N + 1`;
-- `map<K, V>` empty and non-empty, including narrow integer or `char` keys and invalid entry values;
-- protobuf binary and proto3-JSON when both transports are supported.
+```sh
+witforge conformance --out conformance-bundle --polyglot-proto-options
+witforge conformance --out conformance-bundle --polyglot-proto-options --check
+```
 
-Run the fixtures through every language implementation and through a Rust implementation using
-witforge glue. Generated-file `--check` proves schema reproducibility; it does not replace these
-behavioral tests.
+The command writes three directories under `--out`:
+
+- `wit/v0.1/`: the canonical WIT conformance contract (`contract.wit`, `deps/conformance-dep/dep.wit`,
+  and `wire.lock`) exercising all 13 decode-profile rows, foreign `deps/` types, and interface
+  functions.
+- `proto/`: the emitted `.proto` files (`v0.proto` and `witforge.conformance_dep.v0.proto`). Files
+  are neutral by default; pass `--polyglot-proto-options` (or explicit `--go-package`,
+  `--java-package`, `--java-multiple-files`, `--java-outer-classname`, `--csharp-namespace`) to
+  embed Go, Java, and C# placement options.
+- `vectors.json`: deterministic test vectors carrying RFC 4648 base64 binary protobuf payloads,
+  canonical proto3-JSON payloads, expected `accept`/`reject` outcomes, canonical error kinds
+  (`IntegerOutOfRange`, `MissingField`, `UnknownEnumValue`, `UnknownCase`, `InvalidState`,
+  `InvalidChar`, `InvalidLength`), and `encode`-direction boundary rejection vectors for languages
+  without native narrow/unsigned/scalar-char/fixed-array types.
+
+The built-in vectors cover:
+
+- every narrow integer's minimum, maximum, and out-of-range values plus 64-bit integers beyond
+  `2^53 - 1` (`u64::MAX`, `i64::MIN`, `i64::MAX`, `9007199254740993`, `-9007199254740993`);
+- `char` boundary scalars (`U+0000`, `U+D7FF`, `U+E000`, `U+1F680`, `U+10FFFF`), multi-byte UTF-8
+  strings with embedded NUL, UTF-16 surrogates (`0xD800..=0xDFFF`), and values above `0x10FFFF`;
+- `f32`/`f64` finite boundaries, `-0.0`, `NaN`, `Infinity`, and `-Infinity`;
+- required optional/message fields present (including explicit zero/empty defaults) and absent;
+- `option<T>` absent and present, including `option<option<T>>`, `option<list<T>>`, and
+  `option<map<K, V>>`;
+- closed enums (`0`, known cases, and unknown numbers) in both root and `deps/` packages;
+- every variant case, all four `result` forms (`result<T, E>`, `result<T>`, `result<_, E>`,
+  `result`), unset variant/result oneofs (`UnknownCase`), and unset `WitforgeOptionOf*` wrappers
+  (`InvalidState`);
+- empty and populated lists, fixed-length `list<u8, N>` and `list<T, N>` with exact length `N`,
+  `N - 1`, and `N + 1`, and nested list/option/result wrappers;
+- `map<K, V>` across string, narrow integer, `char`, `bool`, and 64-bit keys plus nested maps;
+- interface function request and response wrappers (including foreign `deps/` parameters and
+  no-result functions), in both protobuf binary and proto3-JSON forms;
+- encode-side (`toProto`) boundary rejection vectors for TypeScript, Python, Go, Java, and C#.
+
+Run the vectors through your target language's protobuf implementation and keep `--check` in CI to
+detect drift. Generated-file `--check` proves schema reproducibility; running `vectors.json` proves
+runtime wire-contract parity with Rust glue.
 
 ## JSON is a separate choice
 
@@ -126,6 +158,6 @@ witforge's JSON Schema (Draft 7 default, opt-in Draft 2020-12) and it is not nec
 produced by Serde on generated plain Rust types. See [JSON projections](json-projections.md) before
 choosing a JSON boundary.
 
-Protovalidate annotations and generated cross-language fixture bundles are not emitted today.
-Adding either would expand the generated contract and runtime/tooling requirements, so they should
-be introduced only behind an explicit option and with a real adopter validating the result.
+Protovalidate annotations are not emitted today; they would expand the generated `.proto` schema
+and consumer runtime/tooling requirements and remain deferred behind an explicit future option if
+an adopter demonstrates a need beyond checked glue and conformance fixtures.

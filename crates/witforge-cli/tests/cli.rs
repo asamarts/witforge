@@ -5972,3 +5972,136 @@ fn ninth_wave_audit_shell_completions_bash_zsh_fish_and_draft_values() {
         "fish completion must include --draft values:\n{fish}"
     );
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn conformance_command_generates_checks_diffs_and_supports_polyglot_options() {
+    let base =
+        std::env::temp_dir().join(format!("witforge-cli-conformance-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+    let neutral_out = base.join("neutral");
+    let poly_out = base.join("poly");
+
+    // 1. Generate neutral bundle and verify zero language file options.
+    let gen_out = witforge()
+        .args(["conformance", "--out", neutral_out.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(gen_out.status.code(), Some(0), "{gen_out:?}");
+    assert!(neutral_out.join("vectors.json").is_file());
+    assert!(neutral_out.join("proto/v0.proto").is_file());
+    assert!(
+        neutral_out
+            .join("proto/witforge.conformance_dep.v0.proto")
+            .is_file()
+    );
+    assert!(neutral_out.join("wit/v0.1/contract.wit").is_file());
+    assert!(neutral_out.join("wit/v0.1/wire.lock").is_file());
+    assert!(
+        neutral_out
+            .join("wit/v0.1/deps/conformance-dep/dep.wit")
+            .is_file()
+    );
+    let neutral_proto = fs::read_to_string(neutral_out.join("proto/v0.proto")).unwrap();
+    assert!(!neutral_proto.contains("option go_package"));
+
+    // Generated `wit/` passes `witforge check` cleanly.
+    let wit_check = witforge()
+        .args(["check", neutral_out.join("wit").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(wit_check.status.code(), Some(0), "{wit_check:?}");
+
+    // `--check` succeeds with exit 0 on up-to-date bundle.
+    let chk_ok = witforge()
+        .args([
+            "conformance",
+            "--out",
+            neutral_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(chk_ok.status.code(), Some(0), "{chk_ok:?}");
+
+    // 2. Generate polyglot bundle with `--polyglot-proto-options` and verify `--check` + drift.
+    let poly_gen = witforge()
+        .args([
+            "conformance",
+            "--out",
+            poly_out.to_str().unwrap(),
+            "--polyglot-proto-options",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(poly_gen.status.code(), Some(0), "{poly_gen:?}");
+    let poly_proto = fs::read_to_string(poly_out.join("proto/v0.proto")).unwrap();
+    assert!(poly_proto.contains("option go_package = "));
+    assert!(poly_proto.contains("option java_package = "));
+    assert!(poly_proto.contains("option java_multiple_files = true;"));
+    assert!(poly_proto.contains("option csharp_namespace = "));
+
+    // Checking the polyglot bundle WITHOUT `--polyglot-proto-options` reports drift (exit 1) and
+    // `--diff` renders the unified diff.
+    let drift = witforge()
+        .args([
+            "conformance",
+            "--out",
+            poly_out.to_str().unwrap(),
+            "--check",
+            "--diff",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift.status.code(), Some(1), "{drift:?}");
+    let drift_stdout = String::from_utf8_lossy(&drift.stdout);
+    assert!(
+        drift_stdout.contains("-option go_package"),
+        "{drift_stdout}"
+    );
+
+    // Checking with `--polyglot-proto-options --check` passes (exit 0).
+    let poly_chk = witforge()
+        .args([
+            "conformance",
+            "--out",
+            poly_out.to_str().unwrap(),
+            "--polyglot-proto-options",
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(poly_chk.status.code(), Some(0), "{poly_chk:?}");
+
+    // JSON diagnostics mode emits WF2001 (GENERATED_DRIFT) on drift.
+    let json_drift = witforge()
+        .args([
+            "--format",
+            "json",
+            "conformance",
+            "--out",
+            poly_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(json_drift.status.code(), Some(1), "{json_drift:?}");
+    let json_stdout = String::from_utf8_lossy(&json_drift.stdout);
+    assert!(json_stdout.contains("WF2001"), "{json_stdout}");
+
+    // Invalid option (e.g. bad `--java-package`) exits 2.
+    let bad = witforge()
+        .args([
+            "conformance",
+            "--out",
+            base.join("bad").to_str().unwrap(),
+            "--java-package",
+            "123bad",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+
+    fs::remove_dir_all(&base).unwrap();
+}

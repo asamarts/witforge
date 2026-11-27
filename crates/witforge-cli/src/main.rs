@@ -16,6 +16,9 @@
 //!                [--diff] [--released PATH]
 //! witforge doc   [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
+//! witforge conformance --out DIR [--polyglot-proto-options] [--go-package VALUE]
+//!                      [--java-package VALUE] [--java-multiple-files | --no-java-multiple-files]
+//!                      [--java-outer-classname NAME] [--csharp-namespace VALUE] [--check] [--diff]
 //! witforge generate [--config PATH | --no-config] [--project NAME] [--check] [--diff]
 //!                   [--serde | --no-serde] [--no-std | --std] [--eq-hash | --no-eq-hash]
 //!                   [--try-from | --no-try-from] [--draft 7|2020-12] [--released PATH]
@@ -109,6 +112,8 @@ enum Command {
     Glue(GlueOptions),
     /// Generate deterministic Markdown contract reference documentation.
     Doc(DocOptions),
+    /// Generate the versioned cross-language protobuf conformance fixture bundle.
+    Conformance(ConformanceCliOptions),
     /// Run every generator configured in `witforge.toml`.
     Generate(GenerateOptions),
     /// Scaffold a starter `wit/v0.1/contract.wit`, initial `wire.lock`, and `witforge.toml`.
@@ -308,6 +313,47 @@ struct DocOptions {
     /// Configuration file with a project root and emitter outputs.
     #[command(flatten)]
     config: ConfigArgs,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Args)]
+struct ConformanceCliOptions {
+    /// Output directory for the conformance bundle (`vectors.json`, `proto/`, `wit/`).
+    #[arg(long, value_name = "DIR")]
+    out: PathBuf,
+    /// Embed canonical Go, Java, and C# protobuf file options on emitted `.proto` files.
+    #[arg(long = "polyglot-proto-options")]
+    polyglot_proto_options: bool,
+    /// Base `go_package` import path prefix for emitted `.proto` files.
+    #[arg(long = "go-package", value_name = "VALUE")]
+    go_package: Option<String>,
+    /// Base `java_package` prefix for emitted `.proto` files.
+    #[arg(long = "java-package", value_name = "VALUE")]
+    java_package: Option<String>,
+    /// Emit `option java_multiple_files = true;` on emitted `.proto` files.
+    #[arg(
+        long = "java-multiple-files",
+        conflicts_with = "no_java_multiple_files"
+    )]
+    java_multiple_files: bool,
+    /// Omit `option java_multiple_files`, overriding `--polyglot-proto-options`.
+    #[arg(
+        long = "no-java-multiple-files",
+        conflicts_with = "java_multiple_files"
+    )]
+    no_java_multiple_files: bool,
+    /// Emit `option java_outer_classname = "<NAME>";` on emitted `.proto` files.
+    #[arg(long = "java-outer-classname", value_name = "NAME")]
+    java_outer_classname: Option<String>,
+    /// Base `csharp_namespace` prefix for emitted `.proto` files.
+    #[arg(long = "csharp-namespace", value_name = "VALUE")]
+    csharp_namespace: Option<String>,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
 }
 
 /// Internal sentinel used only as `clap`'s `default_missing_value` for bare `--check`.
@@ -1426,6 +1472,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Schema(options) => schema(&options, &mut reporter),
         Command::Glue(options) => glue(&options, &mut reporter),
         Command::Doc(options) => doc_command(&options, &mut reporter),
+        Command::Conformance(options) => conformance_command(&options, &mut reporter),
         Command::Generate(options) => generate_command(&options, &mut reporter),
         Command::Init(options) => init_command(&options, &mut reporter),
         Command::NewVersion(options) => new_version_command(&options, &mut reporter),
@@ -2140,6 +2187,81 @@ fn doc_command(options: &DocOptions, reporter: &mut Reporter) -> Result<ExitCode
         &regen,
         reporter,
     )
+}
+
+fn conformance_command(
+    options: &ConformanceCliOptions,
+    reporter: &mut Reporter,
+) -> Result<ExitCode> {
+    let mut proto_options = if options.polyglot_proto_options {
+        witforge::conformance::ConformanceOptions::polyglot_proto_options()
+    } else {
+        emit::proto::ProtoOptions::new()
+    };
+    if let Some(go) = &options.go_package {
+        proto_options.go_package_prefix = Some(go.clone());
+    }
+    if let Some(java) = &options.java_package {
+        proto_options.java_package_prefix = Some(java.clone());
+    }
+    if options.java_multiple_files {
+        proto_options.java_multiple_files = Some(true);
+    } else if options.no_java_multiple_files {
+        proto_options.java_multiple_files = None;
+    }
+    if let Some(outer) = &options.java_outer_classname {
+        proto_options.java_outer_classname = Some(outer.clone());
+    }
+    if let Some(csharp) = &options.csharp_namespace {
+        proto_options.csharp_namespace_prefix = Some(csharp.clone());
+    }
+    let conf_options = witforge::conformance::ConformanceOptions::new().with_proto(proto_options);
+    let bundle = witforge::conformance::plan(&conf_options)?;
+
+    let mut regen = format!("witforge conformance --out {}", shell_quote(&options.out));
+    if options.polyglot_proto_options {
+        regen.push_str(" --polyglot-proto-options");
+    }
+    if let Some(go) = options.go_package.as_deref() {
+        push_cli_option(&mut regen, "--go-package", go);
+    }
+    if let Some(java) = options.java_package.as_deref() {
+        push_cli_option(&mut regen, "--java-package", java);
+    }
+    if options.java_multiple_files {
+        regen.push_str(" --java-multiple-files");
+    } else if options.no_java_multiple_files {
+        regen.push_str(" --no-java-multiple-files");
+    }
+    if let Some(outer) = options.java_outer_classname.as_deref() {
+        push_cli_option(&mut regen, "--java-outer-classname", outer);
+    }
+    if let Some(csharp) = options.csharp_namespace.as_deref() {
+        push_cli_option(&mut regen, "--csharp-namespace", csharp);
+    }
+
+    if options.check {
+        let findings = bundle.check_with_command(&options.out, &regen)?;
+        if options.diff && reporter.human() && !findings.is_empty() {
+            let diff_text = bundle.unified_diff(&options.out)?;
+            if !diff_text.is_empty() {
+                reporter.write_stdout_line(diff_text.trim_end_matches('\n'));
+            }
+        }
+        return Ok(check_findings(&findings, reporter));
+    }
+    let diff_text = if options.diff && reporter.human() {
+        Some(bundle.unified_diff(&options.out)?)
+    } else {
+        None
+    };
+    bundle.write(&options.out)?;
+    if let Some(text) = diff_text
+        && !text.is_empty()
+    {
+        reporter.write_stdout_line(text.trim_end_matches('\n'));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
