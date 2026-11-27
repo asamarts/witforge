@@ -24,6 +24,7 @@ fi
 "${RUN[@]}" glue "${WIT_ROOT}" --out "${TMP}/glue" \
     --plain-root crate::plain --proto-root crate::proto
 "${RUN[@]}" doc "${WIT_ROOT}" --out "${TMP}/doc"
+"${RUN[@]}" ts "${WIT_ROOT}" --out "${TMP}/ts"
 "${RUN[@]}" conformance --out "${TMP}/conformance"
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options
 
@@ -33,6 +34,7 @@ fi
 "${RUN[@]}" glue "${WIT_ROOT}" --out "${TMP}/glue" \
     --plain-root crate::plain --proto-root crate::proto --check
 "${RUN[@]}" doc "${WIT_ROOT}" --out "${TMP}/doc" --check
+"${RUN[@]}" ts "${WIT_ROOT}" --out "${TMP}/ts" --check
 "${RUN[@]}" conformance --out "${TMP}/conformance" --check
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options --check
 

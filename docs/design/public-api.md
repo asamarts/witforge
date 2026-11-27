@@ -25,6 +25,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::json_schema` | `HEADER`, `JsonSchemaDraft`, `SchemaOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `emit_version`, `emit_version_with_options` |
 | `emit::glue` | `HEADER`, `GlueOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `check`, `validate_module_root`, `emit_root`, `emit_root_with_options`, `emit_version`, `emit_version_with_options` |
 | `emit::doc` | `HEADER`, `plan`, `plan_with_released`, `generate`, `check`, `emit_version`, `emit_index` |
+| `emit::typescript` | `TypeScriptOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options`, `version_dir_name`, `emit_version`, `emit_version_with_options` |
 | `emit::output` | `HeaderStyle`, `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods (including additive nested-tree `new_nested`, `insert_relative`, `insert_marker`, `is_nested`, `markers`), `validate_relative_path`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
 | `emit::polyglot` | `TargetLanguage`, case converters (`to_snake_case`, `to_upper_snake_case`, `to_pascal_case`, `to_camel_case`), keyword/escaping helpers for TypeScript/Python/Go/Java/C#, version/dependency path helpers, and `doc_lines` |
 | `conformance` | `CONFORMANCE_VERSION`, `ConformanceOptions`, `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, `vectors_json` |
@@ -60,11 +61,11 @@ field or variant remains breaking.
 The new `ChangeElement`, generated-file finding, `HeaderStyle`, `TargetLanguage`, `workflow`,
 `ConformanceOptions`, `ConformanceBundle`, and emitter-option types
 (`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`, `ProtoOptions`,
-`ProtoPackageOptions`) are also `#[non_exhaustive]`;
+`ProtoPackageOptions`, `TypeScriptOptions`) are also `#[non_exhaustive]`;
 their constructors and builders are the downstream construction boundary. `RustOptions`,
-`GlueOptions`, `SchemaOptions`, `ProtoOptions`, `ProtoPackageOptions`, and `ConformanceOptions`
-deliberately omit `Copy` so future additive options may carry non-`Copy` values without breaking
-SemVer.
+`GlueOptions`, `SchemaOptions`, `ProtoOptions`, `ProtoPackageOptions`, `TypeScriptOptions`, and
+`ConformanceOptions` deliberately omit `Copy` so future additive options may carry non-`Copy`
+values without breaking SemVer.
 
 The explicit trait implementations in the checked inventory are promised API, including derived
 `Debug`, `Clone`, `Copy`, equality, ordering, hashing, and `Default` implementations. Adding a
@@ -162,6 +163,7 @@ short Git commit and `-dirty` suffix on development builds):
 | `witforge schema [<WIT_ROOT>]` | Emit or check JSON Schema files (Draft 7 default, opt-in Draft 2020-12) | `--out`, `--check`, `--diff`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge glue [<WIT_ROOT>]` | Emit or check Rust/prost glue | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--no-std`, `--std`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge doc [<WIT_ROOT>]` | Emit or check deterministic Markdown contract reference docs | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge ts [<WIT_ROOT>]` | Emit or check zero-dependency strict ESM TypeScript types and interfaces | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge conformance` | Emit or check the versioned cross-language protobuf conformance fixture bundle | `--out`, `--polyglot-proto-options`, `--go-package`, `--java-package`, `--java-multiple-files`, `--no-java-multiple-files`, `--java-outer-classname`, `--csharp-namespace`, `--check`, `--diff` |
 | `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--eq-hash`, `--no-eq-hash`, `--try-from`, `--no-try-from`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge init [DIR]` | Scaffold a new contract workspace (`wit/v0.1/`, `wire.lock`, `witforge.toml`) | `--package`, `--serde` |

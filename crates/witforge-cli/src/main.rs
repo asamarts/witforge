@@ -16,6 +16,8 @@
 //!                [--diff] [--released PATH]
 //! witforge doc   [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
 //!                [--check] [--diff] [--released PATH]
+//! witforge ts    [<wit-root>] [--out DIR] [--config PATH | --no-config] [--project NAME]
+//!                [--check] [--diff] [--released PATH]
 //! witforge conformance --out DIR [--polyglot-proto-options] [--go-package VALUE]
 //!                      [--java-package VALUE] [--java-multiple-files | --no-java-multiple-files]
 //!                      [--java-outer-classname NAME] [--csharp-namespace VALUE] [--check] [--diff]
@@ -112,6 +114,8 @@ enum Command {
     Glue(GlueOptions),
     /// Generate deterministic Markdown contract reference documentation.
     Doc(DocOptions),
+    /// Generate zero-dependency strict ESM TypeScript types and interfaces.
+    Ts(TsOptions),
     /// Generate the versioned cross-language protobuf conformance fixture bundle.
     Conformance(ConformanceCliOptions),
     /// Run every generator configured in `witforge.toml`.
@@ -299,6 +303,28 @@ struct DocOptions {
     #[arg(value_name = "WIT_ROOT")]
     root: Option<PathBuf>,
     /// Output root for generated Markdown reference files.
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
+    /// Check generated output without writing.
+    #[arg(long)]
+    check: bool,
+    /// Print a unified diff of generated output changes without changing the exit status.
+    #[arg(long)]
+    diff: bool,
+    /// Released-version manifest to validate; defaults to `<WIT_ROOT>/released`.
+    #[arg(long, value_name = "PATH")]
+    released: Option<PathBuf>,
+    /// Configuration file with a project root and emitter outputs.
+    #[command(flatten)]
+    config: ConfigArgs,
+}
+
+#[derive(Debug, Args)]
+struct TsOptions {
+    /// WIT root containing version directories.
+    #[arg(value_name = "WIT_ROOT")]
+    root: Option<PathBuf>,
+    /// Output root for generated TypeScript files.
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
     /// Check generated output without writing.
@@ -661,6 +687,7 @@ struct ProjectConfig {
     schema: Option<SchemaConfig>,
     glue: Option<GlueConfig>,
     doc: Option<OutConfig>,
+    typescript: Option<OutConfig>,
     policy: Option<PolicyConfig>,
 }
 
@@ -769,6 +796,7 @@ enum Emitter {
     Schema,
     Glue,
     Doc,
+    TypeScript,
 }
 
 struct PathOverrides {
@@ -1005,6 +1033,10 @@ fn resolve_paths(
             .map(|config| from_config(&config.out)),
         Emitter::Glue => project.glue.as_ref().map(|config| from_config(&config.out)),
         Emitter::Doc => project.doc.as_ref().map(|config| from_config(&config.out)),
+        Emitter::TypeScript => project
+            .typescript
+            .as_ref()
+            .map(|config| from_config(&config.out)),
     });
     let Some(out) = out else {
         return Err(op_error(
@@ -1040,7 +1072,7 @@ fn resolve_paths(
         .or_else(|| match emitter {
             Emitter::Rust => project.rust.as_ref().and_then(|config| config.no_std),
             Emitter::Glue => project.glue.as_ref().and_then(|config| config.no_std),
-            Emitter::Proto | Emitter::Schema | Emitter::Doc => None,
+            Emitter::Proto | Emitter::Schema | Emitter::Doc | Emitter::TypeScript => None,
         })
         .unwrap_or(false);
     let eq_hash = eq_hash
@@ -1122,6 +1154,11 @@ fn validate_configured_outputs(
                 "doc",
                 proj.doc.as_ref().map(|c| c.out.as_path()),
             ),
+            (
+                Emitter::TypeScript,
+                "typescript",
+                proj.typescript.as_ref().map(|c| c.out.as_path()),
+            ),
         ] {
             let is_selected = proj_name == selected_project
                 && std::mem::discriminant(&kind) == std::mem::discriminant(&selected_emitter);
@@ -1199,6 +1236,13 @@ fn validate_configured_paths(config: &ConfigFile, config_path: &Path) -> Result<
             check_config_path(
                 &format!("project.{proj_name}.doc.out"),
                 &doc.out,
+                config_path,
+            )?;
+        }
+        if let Some(typescript) = &proj.typescript {
+            check_config_path(
+                &format!("project.{proj_name}.typescript.out"),
+                &typescript.out,
                 config_path,
             )?;
         }
@@ -1472,6 +1516,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Schema(options) => schema(&options, &mut reporter),
         Command::Glue(options) => glue(&options, &mut reporter),
         Command::Doc(options) => doc_command(&options, &mut reporter),
+        Command::Ts(options) => ts_command(&options, &mut reporter),
         Command::Conformance(options) => conformance_command(&options, &mut reporter),
         Command::Generate(options) => generate_command(&options, &mut reporter),
         Command::Init(options) => init_command(&options, &mut reporter),
@@ -2166,6 +2211,51 @@ fn doc_command(options: &DocOptions, reporter: &mut Reporter) -> Result<ExitCode
     let files = emit::doc::plan_with_released(&paths.root, paths.released.as_deref())?;
     let regen = regenerate_command(
         "doc",
+        &options.config,
+        options.root.as_deref(),
+        options.out.as_deref(),
+        options.released.as_deref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    run_generator(
+        &files,
+        &paths.out,
+        options.check,
+        options.diff,
+        &regen,
+        reporter,
+    )
+}
+
+fn ts_command(options: &TsOptions, reporter: &mut Reporter) -> Result<ExitCode> {
+    let paths = resolve_paths(
+        Emitter::TypeScript,
+        &options.config,
+        PathOverrides {
+            root: options.root.clone(),
+            out: options.out.clone(),
+            released: options.released.clone(),
+            plain_root: None,
+            proto_root: None,
+            serde: None,
+            no_std: None,
+            eq_hash: None,
+            try_from: None,
+            schema_draft: None,
+            proto_overrides: ProtoCliOverrides::default(),
+        },
+    )?;
+    guard_output_root(&paths)?;
+    let files = emit::typescript::plan_with_released(&paths.root, paths.released.as_deref())?;
+    let regen = regenerate_command(
+        "ts",
         &options.config,
         options.root.as_deref(),
         options.out.as_deref(),
@@ -3198,12 +3288,15 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
         if proj.doc.is_some() {
             emitters.push(Emitter::Doc);
         }
+        if proj.typescript.is_some() {
+            emitters.push(Emitter::TypeScript);
+        }
         if emitters.is_empty() {
             return Err(op_error(
                 codes::CLI_USAGE,
                 format!(
                     "project `{proj_name}` in {} configures no generators (rust, proto, schema, \
-                     glue, or doc)",
+                     glue, doc, or typescript)",
                     config_path.display()
                 ),
                 Some(config_path.display().to_string()),
@@ -3311,6 +3404,21 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
                 ),
                 Emitter::Doc => doc_command(
                     &DocOptions {
+                        root: None,
+                        out: None,
+                        check: options.check,
+                        diff: options.diff,
+                        released: options.released.clone(),
+                        config: ConfigArgs {
+                            config: cfg_args.config.clone(),
+                            no_config: false,
+                            project: cfg_args.project.clone(),
+                        },
+                    },
+                    reporter,
+                ),
+                Emitter::TypeScript => ts_command(
+                    &TsOptions {
                         root: None,
                         out: None,
                         check: options.check,
@@ -4496,6 +4604,8 @@ mod reference_doc_tests {
             "`project.<name>.glue.no-std`",
             "`[project.<name>.doc]`",
             "`project.<name>.doc.out`",
+            "`[project.<name>.typescript]`",
+            "`project.<name>.typescript.out`",
             "`[project.<name>.policy]`",
             "`project.<name>.policy.diff-check`",
             "`project.<name>.policy.forbid-unstable-in-release`",

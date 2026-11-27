@@ -292,6 +292,14 @@ fn normalize_windows_device_stem(segment: &str) -> String {
         .collect()
 }
 
+/// Whether `segment` (or its stem before `.`) matches a Windows reserved device filename
+/// (`CON`, `PRN`, `AUX`, `NUL`, `COM0`..`9`, `LPT0`..`9`, `CONIN$`, `CONOUT$`, including
+/// superscript digit variants).
+pub(crate) fn is_windows_reserved_stem(segment: &str) -> bool {
+    let stem = normalize_windows_device_stem(segment);
+    WINDOWS_RESERVED_NAMES.binary_search(&stem.as_str()).is_ok()
+}
+
 /// Validate that `path` is a safe, canonical POSIX relative path suitable for nested generated
 /// output trees across Linux, macOS, and Windows.
 ///

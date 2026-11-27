@@ -33,6 +33,7 @@ pub mod polyglot;
 pub mod proto;
 pub mod rust;
 pub(crate) mod rustfmt;
+pub mod typescript;
 pub(crate) mod versions;
 
 use crate::model::{Model, Stability, TypeDefKind, TypeExpr};
@@ -201,7 +202,7 @@ mod tests {
     use std::path::Path;
 
     use super::versions::{Version, load_versions};
-    use super::{glue, proto, rust};
+    use super::{glue, proto, rust, typescript};
     use crate::is_contract_error;
     use crate::lock::WireLock;
     use crate::model::{QualifiedName, TypeDefKind, TypeExpr};
@@ -238,6 +239,14 @@ mod tests {
         }
         assert_internal(
             &rust::plan_versions_with_serde(&dangling, false).unwrap_err(),
+            "is not in the model",
+        );
+        assert_internal(
+            &typescript::plan_versions_with_options(
+                &dangling,
+                &typescript::TypeScriptOptions::new(),
+            )
+            .unwrap_err(),
             "is not in the model",
         );
         assert_internal(

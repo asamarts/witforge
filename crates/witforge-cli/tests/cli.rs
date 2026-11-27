@@ -6236,3 +6236,148 @@ fn conformance_command_generates_checks_diffs_and_supports_polyglot_options() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn ts_command_config_generate_overlap_and_completions() {
+    let base = versions("ts-cli");
+    let wit = base.join("wit");
+    let ts_out = base.join("gen/ts");
+
+    // 1. Direct `witforge ts` generates nested ESM tree and passes `--check`.
+    let gen_res = witforge()
+        .args([
+            "ts",
+            wit.to_str().unwrap(),
+            "--out",
+            ts_out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(gen_res.status.code(), Some(0), "{gen_res:?}");
+    assert!(ts_out.join("index.ts").is_file());
+    assert!(ts_out.join("witforge_types.ts").is_file());
+    assert!(ts_out.join("v0_1/index.ts").is_file());
+    assert!(ts_out.join("v0_2/index.ts").is_file());
+
+    let chk_ok = witforge()
+        .args([
+            "ts",
+            wit.to_str().unwrap(),
+            "--out",
+            ts_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(chk_ok.status.code(), Some(0), "{chk_ok:?}");
+
+    // Drift reports exit 1, unified diff, and WF2001 in JSON/SARIF modes.
+    let idx_path = ts_out.join("index.ts");
+    let orig = fs::read_to_string(&idx_path).unwrap();
+    fs::write(&idx_path, format!("{orig}// extra line\n")).unwrap();
+
+    let drift = witforge()
+        .args([
+            "ts",
+            wit.to_str().unwrap(),
+            "--out",
+            ts_out.to_str().unwrap(),
+            "--check",
+            "--diff",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift.status.code(), Some(1), "{drift:?}");
+    assert!(
+        String::from_utf8_lossy(&drift.stdout).contains("-// extra line"),
+        "{drift:?}"
+    );
+
+    let drift_json = witforge()
+        .args([
+            "--format",
+            "json",
+            "ts",
+            wit.to_str().unwrap(),
+            "--out",
+            ts_out.to_str().unwrap(),
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(drift_json.status.code(), Some(1), "{drift_json:?}");
+    assert!(
+        String::from_utf8_lossy(&drift_json.stdout).contains("WF2001"),
+        "{drift_json:?}"
+    );
+
+    // 2. `[project.<name>.typescript]` in `witforge.toml` integrates with `witforge generate`.
+    let cfg = base.join("witforge.toml");
+    fs::write(
+        &cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/rust\"\n\
+         [project.demo.typescript]\n\
+         out = \"gen/ts-cfg\"\n",
+    )
+    .unwrap();
+    let gen_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(gen_all.status.code(), Some(0), "{gen_all:?}");
+    assert!(base.join("gen/rust/mod.rs").is_file());
+    assert!(base.join("gen/ts-cfg/index.ts").is_file());
+
+    let chk_all = witforge()
+        .args(["generate", "--config", cfg.to_str().unwrap(), "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(chk_all.status.code(), Some(0), "{chk_all:?}");
+
+    // 3. Overlapping `[project.<name>.typescript].out` with another generator is refused (WF9004).
+    let overlap_cfg = base.join("overlap.toml");
+    fs::write(
+        &overlap_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/shared\"\n\
+         [project.demo.typescript]\n\
+         out = \"gen/shared/ts\"\n",
+    )
+    .unwrap();
+    let overlap = witforge()
+        .args([
+            "--format",
+            "json",
+            "ts",
+            "--config",
+            overlap_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(overlap.status.code(), Some(2), "{overlap:?}");
+    assert!(
+        String::from_utf8_lossy(&overlap.stdout).contains("WF9004"),
+        "{overlap:?}"
+    );
+
+    // 4. Shell completions include `ts`.
+    for shell in ["bash", "zsh", "fish"] {
+        let comp = witforge().args(["completions", shell]).output().unwrap();
+        assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");
+        let script = String::from_utf8(comp.stdout).unwrap();
+        assert!(
+            script.contains(" ts ") || script.contains("'ts:") || script.contains("-a 'ts'"),
+            "{shell} completion missing `ts`:\n{script}"
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}

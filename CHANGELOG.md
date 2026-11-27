@@ -30,6 +30,18 @@ All notable changes to this project are documented here. The format follows
   pruning on stale removal, and added the zero-dependency `witforge::emit::polyglot` module
   (`TargetLanguage`, case converters, per-language keyword escaping, `DepLayout` path helpers, and
   doc normalization).
+- **TypeScript plain types and interfaces emitter (`W13-002`):** Added additive
+  `witforge::emit::typescript` (`#[non_exhaustive]` `TypeScriptOptions`, `plan`,
+  `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`,
+  `check_with_options`, `version_dir_name`, `emit_version`, and `emit_version_with_options`),
+  the `witforge ts` CLI subcommand, and `[project.<name>.typescript]` configuration in
+  `witforge.toml` (wired into `ensure_distinct_output_roots` and `witforge generate`). Emits
+  deterministic, LF-only, zero-dependency strict ESM TypeScript (`5.0+` / `6.0+`, erasable syntax,
+  explicit `.js` relative specifiers, `Option<T>` tagged optional helper, discriminated unions for
+  `variant` and `result`, `as const` string-union enums, `Uint8Array`, `ReadonlyMap`, `bigint` for
+  `u64`/`s64`, `worlds.ts`, `witforge_deps/` with cross-major `DepLayout` canonical-owner
+  re-exports, JSDoc with `*/` escaping and `@deprecated` tags, keyword escaping, and Windows
+  reserved filename stem protection) verified offline and against `tsc --noEmit --strict`.
 - **Cross-language protobuf conformance profile and fixture bundle (`W11-034`):** Added additive
   `witforge::conformance` (`CONFORMANCE_VERSION = 1`, `#[non_exhaustive]` `ConformanceOptions` and
   `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, and

@@ -149,6 +149,22 @@ Generate or check deterministic Markdown contract reference pages (`index.md` an
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Project name in `witforge.toml`. |
 
+### `witforge ts`
+
+Generate or check zero-dependency strict ESM TypeScript types, interfaces, dependency modules
+(`witforge_deps/`), and world metadata (`worlds.ts`).
+
+| Option / Argument | Description |
+|---|---|
+| `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
+| `--out <DIR>` | Output directory for generated TypeScript files. |
+| `--check` | Verify existing files match without writing; exits `1` on drift. |
+| `--diff` | Print a unified diff of output changes without changing the exit status. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Project name in `witforge.toml`. |
+
 ### `witforge conformance`
 
 Generate or check the versioned cross-language protobuf conformance fixture bundle
@@ -362,6 +378,8 @@ expansion.
 | `project.<name>.glue.no-std` | no | boolean | Emit `#![no_std]` + `alloc` compatible paths (`::alloc::*`, `::core::*`) (default `false`). |
 | `[project.<name>.doc]` | no | table | Markdown contract reference documentation generator configuration. |
 | `project.<name>.doc.out` | yes (if section set) | path | Output directory for generated Markdown reference files. |
+| `[project.<name>.typescript]` | no | table | Strict ESM TypeScript plain types and interfaces generator configuration. |
+| `project.<name>.typescript.out` | yes (if section set) | path | Output directory for generated TypeScript files. |
 | `[project.<name>.policy]` | no | table | Project governance policy table. |
 | `project.<name>.policy.diff-check` | no | array of strings | Default compatibility views for bare `witforge diff --check` (non-empty subset of `"wire"`, `"source"`, `"api"`, `"decode"`). |
 | `project.<name>.policy.forbid-unstable-in-release` | no | boolean | Refuse `witforge release` when any `@unstable` declaration is present (default `false`). |
