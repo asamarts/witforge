@@ -114,7 +114,9 @@ interface types {
   type err-only = result<_, color>;
   type byte = u8;
   type id-list = list<u64>;
-  /// Fixed 4-byte token header.
+  /**
+   * Fixed 4-byte token header.
+   */
   type fixed-bytes = list<byte, 4>;
   type fixed-nums = list<u16, 3>;
   type maybe-u16 = option<u16>;
@@ -158,10 +160,22 @@ interface types {
     %class,
     %from,
     self,
+    mro,
+  }
+
+  /// Record with `mro` first (must escape to `mro_` so `@dataclass` never sees `type.mro`).
+  record mro-first {
+    mro: u32,
+    name: string,
+  }
+
+  /// Record with `mro` as the sole field.
+  record mro-only {
+    mro: u32,
   }
 
   /// Record exercising builtin-named fields (`bool`, `int`, `float`, `str`, `bytes`, `tuple`),
-  /// `self`, and Python keywords.
+  /// `self`, `mro`, and Python keywords.
   record builtin-fields {
     %bool: bool,
     int: u32,
@@ -170,6 +184,7 @@ interface types {
     bytes: list<u8>,
     %tuple: list<u16>,
     self: u8,
+    mro: u8,
     %class: string,
     %from: bool,
     %match: u16,
@@ -267,6 +282,7 @@ interface api {
   /// Keyword-escaped and builtin-named methods referencing escaped sibling interfaces.
   %from: func(a: entry, b: conn) -> origin;
   %type: func(k: kind-item) -> bool;
+  mro: func() -> u32;
   str: func(self: string, other: string) -> string;
 }
 
@@ -305,7 +321,7 @@ interface nul {
 }
 
 /// Interface declaring types that shadow `Option`, `Ok`, `Err`, `Mapping`, `StrEnum`,
-/// `Protocol`, `TypeAlias`, `None`, `True`, `False`, plus a variant case named `Ok`.
+/// `Protocol`, `TypeAlias`, `None`, `True`, and `False`.
 interface shadow {
   record %option {
     chosen: bool,
@@ -632,6 +648,14 @@ fn all_constructs_golden_determinism_pep561_and_live_python3_runtime() {
     assert!(types_py.contains("class_: _wf_builtins.str"), "{types_py}");
     assert!(types_py.contains("read: bool = False"), "{types_py}");
     assert!(types_py.contains("self_: bool = False"), "{types_py}");
+    assert!(types_py.contains("mro_: bool = False"), "{types_py}");
+    assert!(types_py.contains("mro_: int"), "{types_py}");
+    // Block-comment doc on `FixedLengthList` strips ` * ` gutters cleanly.
+    assert!(
+        types_py.contains("# Fixed 4-byte token header.\n#\n# Fixed-length list of exactly 4 elements.\nFixedBytes: TypeAlias = bytes"),
+        "{types_py}"
+    );
+    assert!(!types_py.contains("#  * Fixed 4-byte"), "{types_py}");
     // Topological alias order: Color class -> AliasChainMid -> AliasChainTop.
     let color_pos = types_py.find("class Color(StrEnum):").unwrap();
     let mid_pos = types_py.find("AliasChainMid: TypeAlias =").unwrap();
@@ -773,16 +797,30 @@ except dataclasses.FrozenInstanceError:
 
 # Flags defaults and keyword overrides.
 p_default = t.Perms()
-assert p_default.read is False and p_default.self_ is False
-p_custom = t.Perms(read=True, class_=True, self_=True)
-assert p_custom.read is True and p_custom.write is False and p_custom.class_ is True
+assert p_default.read is False and p_default.self_ is False and p_default.mro_ is False
+assert isinstance(t.Perms.mro(), list)
+p_custom = t.Perms(read=True, class_=True, self_=True, mro_=True)
+assert p_custom.read is True and p_custom.write is False and p_custom.class_ is True and p_custom.mro_ is True
+
+# `mro` escaped cleanly on records (first and sole field) and Protocol without breaking `.mro()`.
+mf = t.MroFirst(mro_=1, name="ok")
+assert mf.mro_ == 1 and mf.name == "ok" and isinstance(t.MroFirst.mro(), list)
+mo = t.MroOnly(mro_=2)
+assert mo.mro_ == 2 and isinstance(t.MroOnly.mro(), list)
+try:
+    t.MroOnly()  # must require `mro_`, never default to `type.mro`
+    raise AssertionError("MroOnly() must require mro_")
+except TypeError:
+    pass
+assert isinstance(pkg.v0_1.api.Api.mro(), list)
+assert hasattr(pkg.v0_1.api.Api, "mro_")
 
 # Builtin-named & keyword fields record.
 bf = t.BuiltinFields(
     bool=True, int=1, float=1.5, str="hi", bytes=b"ab", tuple=(1, 2),
-    self_=7, class_="c", from_=False, match_=3, type_=4,
+    self_=7, mro_=8, class_="c", from_=False, match_=3, type_=4,
 )
-assert bf.self_ == 7 and bf.bytes == b"ab" and bf.tuple == (1, 2)
+assert bf.self_ == 7 and bf.mro_ == 8 and bf.bytes == b"ab" and bf.tuple == (1, 2)
 
 # Variant disambiguation + structural pattern matching.
 v_collided = t.Foo_BarBaz(9)
@@ -1086,6 +1124,251 @@ for mod_info in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         assert!(
             output.status.success(),
             "live python3 conformance check failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn programmatic_edge_cases_never_multiline_stability_collisions_and_canonical_reexport_stems() {
+    use witforge::model::{
+        Case, Field, Function, Interface, Model, Package, Stability, TypeDef, TypeDefKind,
+        TypeExpr, Version,
+    };
+
+    // 1. Programmatic `Model` with empty `Variant` (emitting `Never` + `_WfNever` shadowing),
+    //    empty `Record`/`Enum`/`Flags`, and multiline/`\r` `Stability` notes -> LF-only valid Python.
+    let multiline_stability = Stability::Deprecated {
+        since: Some(Version::new(0, 1, 0)),
+        feature: None,
+        deprecated: Version::new(0, 2, 0),
+        note: "Deprecated in WIT version 0.2.0.\r\nUse replacement instead.".to_string(),
+    };
+    let prog_model = Model::new(
+        Package::new(
+            "acme".into(),
+            "prog".into(),
+            Version::new(0, 2, 0),
+            String::new(),
+        ),
+        vec![Interface::new(
+            "edge".into(),
+            String::new(),
+            Stability::Unknown,
+            vec![
+                TypeDef::new(
+                    "never".into(),
+                    String::new(),
+                    Stability::Unknown,
+                    TypeDefKind::Record(Vec::new()),
+                ),
+                TypeDef::new(
+                    "void-variant".into(),
+                    String::new(),
+                    multiline_stability.clone(),
+                    TypeDefKind::Variant(Vec::new()),
+                ),
+                TypeDef::new(
+                    "empty-enum".into(),
+                    String::new(),
+                    Stability::Unknown,
+                    TypeDefKind::Enum(Vec::new()),
+                ),
+                TypeDef::new(
+                    "empty-flags".into(),
+                    String::new(),
+                    Stability::Unknown,
+                    TypeDefKind::Flags(Vec::new()),
+                ),
+                TypeDef::new(
+                    "multiline-alias".into(),
+                    "\r\n * Block doc.\r\n ".into(),
+                    multiline_stability,
+                    TypeDefKind::FixedLengthList(TypeExpr::U16, 2),
+                ),
+            ],
+            Vec::new(),
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let files = python::emit_version(&prog_model).unwrap();
+    let edge_py = &files["edge.py"];
+    assert!(!edge_py.contains('\r'), "must be LF-only:\n{edge_py}");
+    assert!(edge_py.contains("Never as _WfNever"), "{edge_py}");
+    assert!(
+        edge_py.contains("VoidVariant: TypeAlias = _WfNever"),
+        "{edge_py}"
+    );
+    assert!(
+        edge_py.contains("# Use replacement instead.\n"),
+        "{edge_py}"
+    );
+    assert!(
+        edge_py.contains("# Block doc.\n#\n# Fixed-length list of exactly 2 elements."),
+        "{edge_py}"
+    );
+    assert!(!edge_py.contains("#  * Block doc."), "{edge_py}");
+
+    let base = scratch("prog-edge");
+    if let Some(py) = find_python311() {
+        let pkg = base.join("prog_pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+        fs::write(pkg.join("edge.py"), edge_py).unwrap();
+        let output = Command::new(&py)
+            .args([
+                "-c",
+                "import compileall, importlib, sys; sys.path.insert(0, sys.argv[1]); \
+                 assert compileall.compile_dir(sys.argv[2], quiet=1, force=True); \
+                 m = importlib.import_module('prog_pkg.edge'); \
+                 assert m.Never() == m.Never()",
+            ])
+            .arg(&base)
+            .arg(&pkg)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "live python3 programmatic check failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // 2. ContractError refusals for interface-vs-type name collision and duplicate enum/variant cases.
+    let colliding = Model::new(
+        Package::new(
+            "acme".into(),
+            "bad".into(),
+            Version::new(0, 1, 0),
+            String::new(),
+        ),
+        vec![Interface::new(
+            "service".into(),
+            String::new(),
+            Stability::Unknown,
+            vec![TypeDef::new(
+                "service".into(),
+                String::new(),
+                Stability::Unknown,
+                TypeDefKind::Record(vec![Field::new("id".into(), String::new(), TypeExpr::U32)]),
+            )],
+            vec![Function::new(
+                "ping".into(),
+                String::new(),
+                Stability::Unknown,
+                Vec::new(),
+                None,
+            )],
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+    let err = python::emit_version(&colliding).unwrap_err();
+    assert!(is_contract_error(&err), "{err:#}");
+
+    let dup_variant = Model::new(
+        Package::new(
+            "acme".into(),
+            "bad".into(),
+            Version::new(0, 1, 0),
+            String::new(),
+        ),
+        vec![Interface::new(
+            "types".into(),
+            String::new(),
+            Stability::Unknown,
+            vec![TypeDef::new(
+                "v".into(),
+                String::new(),
+                Stability::Unknown,
+                TypeDefKind::Variant(vec![
+                    Case::new("a-b".into(), String::new(), None),
+                    Case::new("A-B".into(), String::new(), None),
+                ]),
+            )],
+            Vec::new(),
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+    let dup_err = python::emit_version(&dup_variant).unwrap_err();
+    assert!(is_contract_error(&dup_err), "{dup_err:#}");
+
+    // 3. Canonical-owner re-export of keyword-stem (`class_`), Windows-reserved (`con_`),
+    //    Protocol-bearing, and empty dependency interfaces across majors.
+    let wit_root = base.join("canon_wit");
+    let dep_v0 = r"package acme:tricky@0.1.0;
+interface %class {
+  record item { id: u32 }
+  ping: func(x: item) -> item;
+}
+interface con {
+  record link { ok: bool }
+}
+interface empty {}
+";
+    let dep_v2 = r"package acme:tricky@0.2.0;
+interface %class {
+  record item { id: u64 }
+  ping: func(x: item) -> item;
+}
+interface con {
+  record link { ok: bool, code: u8 }
+}
+interface empty {}
+";
+    for (ver_dir, pkg_ver, dep_src, dep_ver) in [
+        ("v0.1", "0.1.0", dep_v0, "0.1.0"),
+        ("v1.0", "1.0.0", dep_v0, "0.1.0"),
+        ("v2.0", "2.0.0", dep_v2, "0.2.0"),
+    ] {
+        let dir = wit_root.join(ver_dir);
+        fs::create_dir_all(dir.join("deps/tricky")).unwrap();
+        fs::write(dir.join("deps/tricky/tricky.wit"), dep_src).unwrap();
+        fs::write(
+            dir.join("contract.wit"),
+            format!(
+                "package acme:app@{pkg_ver};\n\
+                 interface api {{\n\
+                   use acme:tricky/%class@{dep_ver}.{{item}};\n\
+                   use acme:tricky/con@{dep_ver}.{{link}};\n\
+                   record box {{ i: item, l: link }}\n\
+                 }}\n"
+            ),
+        )
+        .unwrap();
+        lock_version_dir(&dir, None);
+    }
+
+    let canon_pkg = base.join("canon_pkg");
+    python::generate(&wit_root, &canon_pkg).unwrap();
+    assert!(python::check(&wit_root, &canon_pkg).unwrap().is_empty());
+
+    if let Some(py) = find_python311() {
+        let output = Command::new(&py)
+            .args([
+                "-c",
+                "import compileall, importlib, sys; sys.path.insert(0, sys.argv[1]); \
+                 assert compileall.compile_dir(sys.argv[2], quiet=1, force=True); \
+                 p = importlib.import_module('canon_pkg'); \
+                 assert p.witforge_deps.v1.acme_tricky.class_.Item is p.witforge_deps.v0.acme_tricky.class_.Item; \
+                 assert p.witforge_deps.v1.acme_tricky.class_.Class is p.witforge_deps.v0.acme_tricky.class_.Class; \
+                 assert p.witforge_deps.v1.acme_tricky.con_.Link is p.witforge_deps.v0.acme_tricky.con_.Link; \
+                 assert p.witforge_deps.v1.acme_tricky.empty.__all__ == (); \
+                 assert p.witforge_deps.v2.acme_tricky.class_.Item is not p.witforge_deps.v0.acme_tricky.class_.Item",
+            ])
+            .arg(&base)
+            .arg(&canon_pkg)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "live python3 canonical tricky dep check failed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
     }

@@ -960,10 +960,11 @@ fn emit_type_def(
         }
         TypeDefKind::FixedLengthList(elem, len) => {
             let note = format!("Fixed-length list of exactly {len} elements.");
-            let combined_docs = if polyglot::doc_lines(&def.docs).is_empty() {
+            let normalized_docs = polyglot::doc_lines(&def.docs);
+            let combined_docs = if normalized_docs.is_empty() {
                 note
             } else {
-                format!("{}\n\n{note}", def.docs)
+                format!("{}\n\n{note}", normalized_docs.join("\n"))
             };
             write_jsdoc(out, 0, &combined_docs, &def.stability, None)?;
             let ty = map_list_type(

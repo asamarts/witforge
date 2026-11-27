@@ -4,7 +4,7 @@
 //! `StrEnum`, `Protocol`, union variants, PEP 561 `py.typed` marker) directly from the owned
 //! [`Model`] per `docs/design/polyglot-emitters.md`.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -1098,21 +1098,17 @@ fn order_alias_defs(interface: &Interface, alias_indices: &[usize]) -> Vec<usize
         .collect();
     let mut ordered = Vec::with_capacity(alias_indices.len());
     let mut visited = BTreeSet::new();
-    let mut queue = VecDeque::new();
-    while let Some(next) = ready.pop_first() {
-        queue.push_back(next);
-        while let Some(cur) = queue.pop_front() {
-            if !visited.insert(cur) {
-                continue;
-            }
-            ordered.push(cur);
-            if let Some(children) = dependents.get(&cur) {
-                for &child in children {
-                    if let Some(deg) = indegree.get_mut(&child) {
-                        *deg = deg.saturating_sub(1);
-                        if *deg == 0 {
-                            ready.insert(child);
-                        }
+    while let Some(cur) = ready.pop_first() {
+        if !visited.insert(cur) {
+            continue;
+        }
+        ordered.push(cur);
+        if let Some(children) = dependents.get(&cur) {
+            for &child in children {
+                if let Some(deg) = indegree.get_mut(&child) {
+                    *deg = deg.saturating_sub(1);
+                    if *deg == 0 {
+                        ready.insert(child);
                     }
                 }
             }
@@ -1340,12 +1336,12 @@ fn emit_type_def(
         }
         TypeDefKind::FixedLengthList(elem, len) => {
             let note = format!("Fixed-length list of exactly {len} elements.");
-            let combined_raw = if polyglot::doc_lines(&def.docs).is_empty() {
-                note
-            } else {
-                format!("{}\n\n{note}", def.docs)
-            };
-            let docs = combined_doc_lines(&combined_raw, &def.stability, None);
+            let mut docs = polyglot::doc_lines(&def.docs);
+            if !docs.is_empty() {
+                docs.push(String::new());
+            }
+            docs.push(note);
+            append_stability_doc_lines(&mut docs, &def.stability);
             write_hash_comments(out, &docs)?;
             let alias_kw = imports.type_alias.use_name("TypeAlias", "_WfTypeAlias");
             let ty = map_list_type(
@@ -1838,11 +1834,14 @@ fn write_version_worlds_comments(out: &mut String, version: &Version) -> Result<
             }
         }
         if let Some(stability) = stability_doc(&world.stability) {
-            writeln!(
-                out,
-                "        # World `{}` stability: {stability}",
-                world.name
-            )?;
+            let normalized = polyglot::doc_lines(&stability).join(" ");
+            if !normalized.is_empty() {
+                writeln!(
+                    out,
+                    "        # World `{}` stability: {normalized}",
+                    world.name
+                )?;
+            }
         }
         for (side, interfaces) in [("import", &world.imports), ("export", &world.exports)] {
             for iface in interfaces {
@@ -1857,11 +1856,14 @@ fn write_version_worlds_comments(out: &mut String, version: &Version) -> Result<
                     )?;
                 }
                 if let Some(stability) = stability_doc(&iface.stability) {
-                    writeln!(
-                        out,
-                        "        # World `{}` {side} `{qname}` stability: {stability}",
-                        world.name
-                    )?;
+                    let normalized = polyglot::doc_lines(&stability).join(" ");
+                    if !normalized.is_empty() {
+                        writeln!(
+                            out,
+                            "        # World `{}` {side} `{qname}` stability: {normalized}",
+                            world.name
+                        )?;
+                    }
                 }
             }
         }
@@ -1948,6 +1950,9 @@ pub(crate) fn py_field_ident(wit_name: &str, what: &str) -> Result<String> {
     if snake == "self" {
         return Ok("self_".to_string());
     }
+    if snake == "mro" {
+        return Ok("mro_".to_string());
+    }
     Ok(escape_python_ident(&snake))
 }
 
@@ -1957,6 +1962,9 @@ pub(crate) fn py_method_ident(wit_name: &str) -> Result<String> {
         contract_bail!(
             "WIT function `{wit_name}` cannot be represented as a Python identifier (`{snake}`)"
         );
+    }
+    if snake == "mro" {
+        return Ok("mro_".to_string());
     }
     Ok(escape_python_ident(&snake))
 }
@@ -1989,6 +1997,18 @@ fn insert_name(
     Ok(())
 }
 
+fn append_stability_doc_lines(lines: &mut Vec<String>, stability: &Stability) {
+    if let Some(stab) = stability_doc(stability) {
+        let stab_lines = polyglot::doc_lines(&stab);
+        if !stab_lines.is_empty() {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.extend(stab_lines);
+        }
+    }
+}
+
 fn combined_doc_lines(
     raw_docs: &str,
     stability: &Stability,
@@ -2000,12 +2020,7 @@ fn combined_doc_lines(
     {
         lines.push(fb.to_string());
     }
-    if let Some(stab) = stability_doc(stability) {
-        if !lines.is_empty() {
-            lines.push(String::new());
-        }
-        lines.push(stab);
-    }
+    append_stability_doc_lines(&mut lines, stability);
     lines
 }
 
@@ -2134,12 +2149,122 @@ mod tests {
             "KitchenSink"
         );
         assert_eq!(py_field_ident("self", "record field").unwrap(), "self_");
+        assert_eq!(py_field_ident("mro", "record field").unwrap(), "mro_");
         assert_eq!(py_field_ident("class", "record field").unwrap(), "class_");
         assert_eq!(py_field_ident("match", "record field").unwrap(), "match_");
         assert_eq!(py_field_ident("type", "record field").unwrap(), "type_");
         assert_eq!(py_method_ident("from").unwrap(), "from_");
+        assert_eq!(py_method_ident("mro").unwrap(), "mro_");
         assert_eq!(py_method_ident("self").unwrap(), "self");
         assert_eq!(py_enum_member_ident("in-progress").unwrap(), "IN_PROGRESS");
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn resolves_to_option_in_handles_cycles_and_transitive_dep_aliases() {
+        use crate::model::{Package, Version};
+
+        let dep_a = Dependency::new(
+            Package::new(
+                "acme".into(),
+                "a".into(),
+                Version::new(0, 1, 0),
+                String::new(),
+            ),
+            vec![Interface::new(
+                "t".into(),
+                String::new(),
+                Stability::Unknown,
+                vec![TypeDef::new(
+                    "opt".into(),
+                    String::new(),
+                    Stability::Unknown,
+                    TypeDefKind::Option(TypeExpr::U8),
+                )],
+                Vec::new(),
+            )],
+        );
+        let dep_b = Dependency::new(
+            Package::new(
+                "acme".into(),
+                "b".into(),
+                Version::new(0, 1, 0),
+                String::new(),
+            ),
+            vec![Interface::new(
+                "t".into(),
+                String::new(),
+                Stability::Unknown,
+                vec![TypeDef::new(
+                    "reopt".into(),
+                    String::new(),
+                    Stability::Unknown,
+                    TypeDefKind::Alias(TypeExpr::Named(QualifiedName::new(
+                        "acme:a/t".into(),
+                        "opt".into(),
+                    ))),
+                )],
+                Vec::new(),
+            )],
+        );
+        let model = Model::new(
+            Package::new(
+                "acme".into(),
+                "root".into(),
+                Version::new(0, 1, 0),
+                String::new(),
+            ),
+            vec![Interface::new(
+                "api".into(),
+                String::new(),
+                Stability::Unknown,
+                vec![
+                    TypeDef::new(
+                        "cyc-a".into(),
+                        String::new(),
+                        Stability::Unknown,
+                        TypeDefKind::Alias(TypeExpr::Named(QualifiedName::new(
+                            "api".into(),
+                            "cyc-b".into(),
+                        ))),
+                    ),
+                    TypeDef::new(
+                        "cyc-b".into(),
+                        String::new(),
+                        Stability::Unknown,
+                        TypeDefKind::Alias(TypeExpr::Named(QualifiedName::new(
+                            "api".into(),
+                            "cyc-a".into(),
+                        ))),
+                    ),
+                    TypeDef::new(
+                        "via-dep".into(),
+                        String::new(),
+                        Stability::Unknown,
+                        TypeDefKind::Alias(TypeExpr::Named(QualifiedName::new(
+                            "acme:b/t".into(),
+                            "reopt".into(),
+                        ))),
+                    ),
+                ],
+                Vec::new(),
+            )],
+            Vec::new(),
+            vec![dep_a, dep_b],
+        );
+
+        assert!(model.resolves_to_option_in(
+            None,
+            &TypeExpr::Named(QualifiedName::new("api".into(), "via-dep".into())),
+        ));
+        assert!(model.resolves_to_option_in(
+            Some(&model.dependencies[1]),
+            &TypeExpr::Named(QualifiedName::new("t".into(), "reopt".into())),
+        ));
+        assert!(!model.resolves_to_option_in(
+            None,
+            &TypeExpr::Named(QualifiedName::new("api".into(), "cyc-a".into())),
+        ));
     }
 
     #[test]
