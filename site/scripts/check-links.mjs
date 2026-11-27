@@ -63,11 +63,11 @@ export const BANNED_CLICHES = [
  */
 export function decodeHtmlEntities(text) {
   return String(text)
-    .replace(/&#x([0-9a-f]+);/gi, (raw, hex) => {
+    .replace(/&#x([0-9a-f]+);/gi, (/** @type {string} */ raw, /** @type {string} */ hex) => {
       const cp = Number.parseInt(hex, 16);
       return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : raw;
     })
-    .replace(/&#(\d+);/g, (raw, dec) => {
+    .replace(/&#(\d+);/g, (/** @type {string} */ raw, /** @type {string} */ dec) => {
       const cp = Number.parseInt(dec, 10);
       return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : raw;
     })
@@ -1738,12 +1738,22 @@ export function checkSite({
       const entryPath = join(pagefindDir, 'pagefind-entry.json');
       if (existsSync(entryPath) && statSync(entryPath).isFile()) {
         try {
+          /** @type {unknown} */
           const parsed = JSON.parse(readFileSync(entryPath, 'utf8'));
-          const languages = parsed && typeof parsed === 'object' ? parsed.languages : null;
+          const languages =
+            parsed && typeof parsed === 'object' && 'languages' in parsed
+              ? /** @type {{ languages?: unknown }} */ (parsed).languages
+              : null;
           const totalPages =
             languages && typeof languages === 'object'
-              ? Object.values(languages).reduce(
-                  (sum, lang) => sum + (typeof lang?.page_count === 'number' ? lang.page_count : 0),
+              ? Object.values(/** @type {Record<string, unknown>} */ (languages)).reduce(
+                  (/** @type {number} */ sum, lang) => {
+                    const count =
+                      lang && typeof lang === 'object' && 'page_count' in lang
+                        ? /** @type {{ page_count?: unknown }} */ (lang).page_count
+                        : undefined;
+                    return sum + (typeof count === 'number' ? count : 0);
+                  },
                   0,
                 )
               : 0;

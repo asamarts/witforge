@@ -263,7 +263,7 @@ export function stripInlineMarkdown(text, { collapseWhitespace = true } = {}) {
     .replace(/(^|[^\p{L}\p{N}_])_([^_]+)_(?=[^\p{L}\p{N}_]|$)/gu, '$1$2')
     .replace(REAL_HTML_TAG_RE, '');
 
-  out = out.replace(/\uE000(\d+)\uE001/g, (_, idx) => codeSpans[Number(idx)] ?? '');
+  out = out.replace(/\uE000(\d+)\uE001/g, (_, /** @type {string} */ idx) => codeSpans[Number(idx)] ?? '');
 
   if (collapseWhitespace) {
     out = out.replace(/\s+/g, ' ').trim();
@@ -735,6 +735,7 @@ export function findEmDashesInText(text) {
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx];
     EM_DASH_TEXT_RE.lastIndex = 0;
+    /** @type {RegExpExecArray | null} */
     let m;
     while ((m = EM_DASH_TEXT_RE.exec(line)) !== null) {
       findings.push({
@@ -802,6 +803,7 @@ export function findEmDashesInHtml(html) {
 
   // Inspect meta description and title tags (`name="..."` and OpenGraph `property="..."`) on comment-free HTML.
   const metaRe = new RegExp(`<meta\\b(${TAG_ATTRS_PATTERN})>`, 'gi');
+  /** @type {RegExpExecArray | null} */
   let metaMatch;
   while ((metaMatch = metaRe.exec(src)) !== null) {
     const attrs = metaMatch[1];

@@ -210,7 +210,8 @@ export function loadRedirects(
   const normalizedBase = normalizeBasePath(basePath);
   /** @type {Set<string>} */
   const seen = new Set();
-  const entries = parsed.map((raw, index) => {
+  const rawEntries = /** @type {unknown[]} */ (parsed);
+  const entries = rawEntries.map((raw, index) => {
     const entry = validateRedirectEntry(raw, index, { basePath: normalizedBase });
     const key = entry.from.toLowerCase();
     if (seen.has(key)) {
@@ -468,6 +469,9 @@ export function emitRedirects({
   };
 }
 
+/**
+ * @returns {boolean}
+ */
 function isDirectEntrypoint() {
   if (!process.argv[1]) {
     return false;

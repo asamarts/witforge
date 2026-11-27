@@ -73,7 +73,7 @@ are validated with `aplan check` and `aplan verify`. This document is the narrat
       while keeping message-backed and `use` aliases. Declined for 1.0: no consumer requested the
       reduced surface, and the complete conversion surface is already tested and stable.
 - [x] Conditional `Eq`/`Hash` and a narrow `Default` policy: declined for default 0.x/1.0 output;
-      opt-in `--eq-hash` (`rust.eq-hash = true`) was later added in 0.9.0 (`W11-042`) while keeping
+      opt-in `--eq-hash` (`rust.eq-hash = true`) was later added in 0.9.0 (`W11-045`) while keeping
       default derives unchanged and `Default` declined.
 - [x] Generated world metadata (`W6-004`): additive shared `worlds.rs` with explicit per-version
       imports and exports.
@@ -178,7 +178,7 @@ changelog's 0.8.0 section is the full list.
       `alloc` Rust/convert/glue output, optional `witforge-build` helper crate, JSON Schema
       Draft 2020-12 and member descriptions, static `musl` Linux archives alongside `gnu`,
       Action `check: true` / `generators: all` / default `github-token`, and five rounds of
-      adversarial audit hardening (`W10-102`–`W10-122`, `W10-124`–`W10-126`).
+      adversarial audit hardening (`W10-102` to `W10-122`, `W10-124` to `W10-126`).
 - [x] Release 0.8.0 (2026-11-25, `W10-123`) with `witforge-build` crates.io bootstrap and Trusted
       Publishing, static Linux `musl` archives, and 5-runner tagged Action verification.
 
@@ -193,7 +193,7 @@ changelog's 0.9.0 section is the full list.
       (`W11-045`), Git-ref diffing (`witforge diff --git-base`, `W11-043`), `[project.<name>.policy]`
       governance (`diff-check` and `forbid-unstable-in-release`, `W11-042`), unreleased `deps/`
       synchronization (`witforge deps sync`, `W11-047`), Protobuf Editions 2023 readiness evaluation
-      (`W11-046`), and four rounds of post-0.8.0 audit hardening (`W10-127`, `W10-128`, `W10-130`–`W10-133`).
+      (`W11-046`), and four rounds of post-0.8.0 audit hardening (`W10-127`, `W10-128`, `W10-130` to `W10-133`).
 - [x] Release 0.9.0 (2026-11-26, `W10-129`).
 
 ## Polyglot foundation and native emitters (post-0.9.0, additive `0.x`)

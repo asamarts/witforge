@@ -166,6 +166,7 @@ test('githubSlug matches github-slugger on snake_case, operators, and all docume
   const diagnosticsMd = readFileSync(join(DOCS_ROOT, 'guide', 'diagnostics.md'), 'utf8');
   const codes = [...diagnosticsMd.matchAll(/^###\s+(WF\d{4})\s*$/gm)].map((m) => m[1]);
   assert.ok(codes.length >= 50, `Expected >= 50 diagnostic headings, found ${codes.length}`);
+  /** @type {Map<string, number>} */
   const counts = new Map();
   for (const code of codes) {
     assert.equal(githubSlug(code, counts), code.toLowerCase());
@@ -253,6 +254,7 @@ test('syncDocs writes deterministic content and sidebar into a temporary site ro
 
     const sidebarPath = join(scratchSite, 'src', 'data', 'sidebar.json');
     assert.ok(existsSync(sidebarPath));
+    /** @type {import('./sync-docs.mjs').SidebarGroup[]} */
     const sidebar = JSON.parse(readFileSync(sidebarPath, 'utf8'));
     assert.equal(sidebar.length, 5);
     assert.equal(sidebar[0].items[0].slug, 'docs');
@@ -852,9 +854,9 @@ test('checkSite enforces all 8 gates across positive and comprehensive negative 
   }
 });
 
-test('every site/scripts/*.mjs module opts into TypeScript // @ts-check', () => {
+test('every site/scripts/ JS module and site/astro.config.mjs opts into TypeScript // @ts-check', () => {
   const scripts = readdirSync(SCRIPTS_DIR)
-    .filter((name) => name.endsWith('.mjs'))
+    .filter((name) => /\.(?:mjs|js|cjs)$/i.test(name))
     .sort();
   assert.ok(scripts.length >= 5, `Expected at least 5 scripts in ${SCRIPTS_DIR}`);
   for (const name of scripts) {
@@ -865,4 +867,12 @@ test('every site/scripts/*.mjs module opts into TypeScript // @ts-check', () => 
       `site/scripts/${name} must start with "// @ts-check" for end-to-end TypeScript checking`,
     );
   }
+  const astroConfigFirstLine = readFileSync(join(SITE_ROOT, 'astro.config.mjs'), 'utf8')
+    .split('\n')[0]
+    .trim();
+  assert.equal(
+    astroConfigFirstLine,
+    '// @ts-check',
+    'site/astro.config.mjs must start with "// @ts-check" for end-to-end TypeScript checking',
+  );
 });

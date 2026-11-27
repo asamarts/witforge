@@ -7,6 +7,7 @@ import starlight from '@astrojs/starlight';
 
 const SITE_ROOT = dirname(fileURLToPath(import.meta.url));
 const SIDEBAR_PATH = join(SITE_ROOT, 'src', 'data', 'sidebar.json');
+/** @type {import('./scripts/sync-docs.mjs').SidebarGroup[]} */
 const sidebar = existsSync(SIDEBAR_PATH)
   ? JSON.parse(readFileSync(SIDEBAR_PATH, 'utf8'))
   : [];
