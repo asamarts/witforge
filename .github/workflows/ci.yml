@@ -605,6 +605,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ci/py-conformance/requirements.txt
       - name: Install pinned protoc
         shell: bash
         env:
@@ -618,7 +620,7 @@ jobs:
           unzip -q "$archive" -d "$RUNNER_TEMP/protoc"
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
       - name: Install hash-locked Python protobuf runtime
-        run: python -m pip install --require-hashes --no-deps -r ci/py-conformance/requirements.txt
+        run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r ci/py-conformance/requirements.txt
       - name: Build witforge CLI
         run: cargo build --locked -p witforge-cli
       - name: Run Python checked protobuf glue conformance harness

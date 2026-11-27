@@ -220,7 +220,7 @@ fixed-length list, and map-key checks.
 | `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
 | `--out <DIR>` | Output directory for generated Python protobuf glue files. |
 | `--plain-root <PATH>` | Python package root containing generated plain Python modules (dotted absolute path such as `my_app.plain` or relative path such as `..plain`). |
-| `--proto-root <PATH>` | Python package root containing generated `protoc --python_out` `*_pb2.py` modules (dotted absolute path such as `my_app.proto` or relative path such as `..proto`). |
+| `--proto-root <PATH>` | Python package root containing generated `protoc --python_out` `*_pb2.py` modules (dotted absolute path such as `my_app.proto` or relative path such as `..proto`). When a contract uses `deps/`, add the `--proto-root` directory itself to `PYTHONPATH` / `sys.path` because `protoc --python_out` emits root-relative cross-file `*_pb2` imports. |
 | `--check` | Verify existing files match without writing; exits `1` on drift. |
 | `--diff` | Print a unified diff of output changes without changing the exit status. |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |

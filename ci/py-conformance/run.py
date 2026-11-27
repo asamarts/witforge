@@ -8,6 +8,7 @@ conformance bundle against the generated Python plain types, `protoc --python_ou
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import math
 import struct
@@ -16,10 +17,15 @@ import typing
 from pathlib import Path
 from typing import Any, Callable
 
+if not __debug__:
+    raise RuntimeError("conformance runner must not run under -O / PYTHONOPTIMIZE")
+
 from google.protobuf import json_format
 
 import glue as g
+from glue import error as g_error
 from glue import helpers as g_helpers
+from plain.v0_1 import api as p_api
 from plain.v0_1 import types as p_types
 from plain.witforge_deps.witforge_conformance_dep import shared as p_dep_shared
 from plain.witforge_types import NONE, Err, NoneValue, Ok, Some
@@ -31,6 +37,8 @@ def _f32_round(value: float) -> float:
 
 
 def _float_exact_eq(a: float, b: float, *, strict_zero_sign: bool, is_f32: bool) -> bool:
+    assert isinstance(a, float) and not isinstance(a, bool), f"expected float, got {a!r}"
+    assert isinstance(b, float) and not isinstance(b, bool), f"expected float, got {b!r}"
     if is_f32:
         a = _f32_round(a)
         b = _f32_round(b)
@@ -48,11 +56,14 @@ def _float_exact_eq(a: float, b: float, *, strict_zero_sign: bool, is_f32: bool)
 def _assert_float_matches(
     vec_id: str,
     field_name: str,
-    got: float,
+    got: Any,
     want: Any,
     *,
     is_f32: bool,
 ) -> None:
+    assert isinstance(got, float) and not isinstance(got, bool), (
+        f"{vec_id}.{field_name}: expected Python float, got {type(got).__name__}({got!r})"
+    )
     if math.isnan(got):
         assert want == "NaN", f"{vec_id}.{field_name}: expected NaN, got {want!r}"
         return
@@ -69,13 +80,73 @@ def _assert_float_matches(
     )
 
 
-# Upstream `google.protobuf.json_format` rejects shortest-decimal IEEE-754 `f32::MAX` /
-# `f32::MIN` (`3.4028235e38` / `-3.4028235e38`) because `_FLOAT_MAX` is
-# `3.4028234663852886e+38`. Normalize only those two exact conformance vectors if
-# `json_format.Parse` rejects the shortest decimal representation.
-_UPSTREAM_F32_BOUNDARY_JSON_VECTORS = {
-    "scalars-valid-char-e000": ("3.4028235e38", "3.4028234663852886e+38"),
-    "scalars-valid-min-and-subnormals": ("-3.4028235e38", "-3.4028234663852886e+38"),
+def _assert_strict_json_eq(ctx: str, got: Any, want: Any) -> None:
+    """Assert exact structural AND runtime-type equality (rejecting Python bool==int and int==float)."""
+    assert type(got) is type(want), (
+        f"{ctx}: type mismatch (got {type(got).__name__}({got!r}), "
+        f"want {type(want).__name__}({want!r}))"
+    )
+    if isinstance(want, dict):
+        assert set(got.keys()) == set(want.keys()), (
+            f"{ctx}: key mismatch (got {sorted(got.keys())!r}, want {sorted(want.keys())!r})"
+        )
+        for k in want:
+            _assert_strict_json_eq(f"{ctx}.{k}", got[k], want[k])
+    elif isinstance(want, list):
+        assert len(got) == len(want), (
+            f"{ctx}: length mismatch (got {len(got)}, want {len(want)})"
+        )
+        for idx, (g_item, w_item) in enumerate(zip(got, want)):
+            _assert_strict_json_eq(f"{ctx}[{idx}]", g_item, w_item)
+    else:
+        assert got == want, f"{ctx}: value mismatch (got {got!r}, want {want!r})"
+
+
+def _assert_glue_error_details(ctx: str, err: g.WitforgeGlueError, want_kind: str, want_target: str) -> None:
+    assert isinstance(err, g.WitforgeGlueError), f"{ctx}: expected WitforgeGlueError, got {err!r}"
+    assert isinstance(err, ValueError)
+    assert err.kind == want_kind, f"{ctx}: error kind mismatch (got {err.kind!r}, want {want_kind!r})"
+    assert err.target == want_target, f"{ctx}: error target mismatch (got {err.target!r}, want {want_target!r})"
+    if want_kind == "MissingField":
+        assert err.field == want_target and err.enumeration is None and err.message is None
+    elif want_kind == "IntegerOutOfRange":
+        assert err.field == want_target and err.value is not None
+    elif want_kind == "UnknownEnumValue":
+        assert err.enumeration == want_target and err.value is not None
+    elif want_kind in ("UnknownCase", "InvalidState"):
+        assert err.message == want_target and err.field is None and err.enumeration is None
+    elif want_kind == "InvalidChar":
+        assert err.field == want_target and err.value is not None
+    elif want_kind == "InvalidLength":
+        assert (
+            err.field == want_target
+            and isinstance(err.expected, int)
+            and not isinstance(err.expected, bool)
+            and isinstance(err.actual, int)
+            and not isinstance(err.actual, bool)
+            and err.expected != err.actual
+        )
+    else:
+        raise AssertionError(f"{ctx}: unexpected error kind {want_kind!r}")
+
+
+# Upstream `google.protobuf.internal.type_checkers._FLOAT_MAX` is `3.4028234663852886e+38`,
+# which is strictly smaller than shortest-decimal IEEE-754 `f32::MAX` (`3.4028235e38`) and
+# `MessageToJson`'s own `3.4028235e+38`. Normalize ONLY these two exact conformance vectors
+# with their exact expected ParseError substring if `json_format.Parse` rejects them.
+_UPSTREAM_F32_BOUNDARY_JSON_VECTORS: dict[str, tuple[str, str, str, str]] = {
+    "scalars-valid-char-e000": (
+        '"aF32":3.4028235e38',
+        '"aF32": 3.4028235e+38',
+        '"aF32": 3.4028234663852886e+38',
+        "Float value too large",
+    ),
+    "scalars-valid-min-and-subnormals": (
+        '"aF32":-3.4028235e38',
+        '"aF32": -3.4028235e+38',
+        '"aF32": -3.4028234663852886e+38',
+        "Float value too small",
+    ),
 }
 
 
@@ -84,10 +155,10 @@ def _parse_proto3_json_accept(vec_id: str, raw_json: str, msg_cls: type[Any]) ->
         return json_format.Parse(raw_json, msg_cls())
     except json_format.ParseError as exc:
         if vec_id in _UPSTREAM_F32_BOUNDARY_JSON_VECTORS:
-            old, exact = _UPSTREAM_F32_BOUNDARY_JSON_VECTORS[vec_id]
-            assert "Float value too" in str(exc), f"{vec_id}: unexpected ParseError: {exc}"
-            patched = raw_json.replace(old, exact, 1)
-            assert patched != raw_json, f"{vec_id}: expected `{old}` in proto3_json"
+            input_lit, _rt_lit, exact_lit, err_substr = _UPSTREAM_F32_BOUNDARY_JSON_VECTORS[vec_id]
+            assert err_substr in str(exc), f"{vec_id}: unexpected ParseError: {exc}"
+            patched = raw_json.replace(input_lit, exact_lit, 1)
+            assert patched != raw_json, f"{vec_id}: expected `{input_lit}` in proto3_json"
             return json_format.Parse(patched, msg_cls())
         raise
 
@@ -97,38 +168,74 @@ def _reparse_proto3_json_roundtrip(vec_id: str, re_json: str, msg_cls: type[Any]
         return json_format.Parse(re_json, msg_cls())
     except json_format.ParseError as exc:
         if vec_id in _UPSTREAM_F32_BOUNDARY_JSON_VECTORS:
-            assert "Float value too" in str(exc), f"{vec_id}: unexpected roundtrip ParseError: {exc}"
-            patched = re_json.replace("3.4028235e+38", "3.4028234663852886e+38")
-            patched = patched.replace("-3.4028235e+38", "-3.4028234663852886e+38")
+            _input_lit, rt_lit, exact_lit, err_substr = _UPSTREAM_F32_BOUNDARY_JSON_VECTORS[vec_id]
+            assert err_substr in str(exc), f"{vec_id}: unexpected roundtrip ParseError: {exc}"
+            patched = re_json.replace(rt_lit, exact_lit, 1)
+            assert patched != re_json, f"{vec_id}: expected `{rt_lit}` in roundtrip proto3_json"
             return json_format.Parse(patched, msg_cls())
         raise
 
 
-# --- Plain Python -> canonical `plain_json` serializers ---
+# --- Plain Python -> canonical `plain_json` serializers (with strict runtime type assertions) ---
+
+
+def _require_bytes(ctx: str, val: Any) -> list[int]:
+    assert type(val) is bytes, f"{ctx}: expected bytes, got {type(val).__name__}({val!r})"
+    return list(val)
+
+
+def _require_tuple(ctx: str, val: Any) -> tuple[Any, ...]:
+    assert type(val) is tuple, f"{ctx}: expected tuple, got {type(val).__name__}({val!r})"
+    return val
+
+
+def _require_color(ctx: str, val: Any) -> str:
+    assert isinstance(val, p_types.Color), f"{ctx}: expected Color, got {type(val).__name__}({val!r})"
+    return str(val.value)
+
+
+def _require_status(ctx: str, val: Any) -> str:
+    assert isinstance(val, p_dep_shared.SharedStatus), (
+        f"{ctx}: expected SharedStatus, got {type(val).__name__}({val!r})"
+    )
+    return str(val.value)
+
+
+def _require_int_str(ctx: str, val: Any) -> str:
+    assert type(val) is int, f"{ctx}: expected int, got {type(val).__name__}({val!r})"
+    return str(val)
 
 
 def point_to_json(v: p_types.Point) -> dict[str, Any]:
+    assert isinstance(v, p_types.Point)
     return {"x": v.x, "y": v.y}
 
 
 def shared_meta_to_json(v: p_dep_shared.SharedMeta) -> dict[str, Any]:
-    return {"id": str(v.id), "tag": v.tag, "status": v.status.value}
+    assert isinstance(v, p_dep_shared.SharedMeta)
+    return {
+        "id": _require_int_str("SharedMeta.id", v.id),
+        "tag": v.tag,
+        "status": _require_status("SharedMeta.status", v.status),
+    }
 
 
 def integers_to_json(v: p_types.Integers) -> dict[str, Any]:
+    assert isinstance(v, p_types.Integers)
     return {
         "a-u8": v.a_u8,
         "a-u16": v.a_u16,
         "a-u32": v.a_u32,
-        "a-u64": str(v.a_u64),
+        "a-u64": _require_int_str("Integers.a-u64", v.a_u64),
         "a-s8": v.a_s8,
         "a-s16": v.a_s16,
         "a-s32": v.a_s32,
-        "a-s64": str(v.a_s64),
+        "a-s64": _require_int_str("Integers.a-s64", v.a_s64),
     }
 
 
 def optionals_to_json(v: p_types.Optionals) -> dict[str, Any]:
+    assert isinstance(v, p_types.Optionals)
     if isinstance(v.nested_opt, NoneValue):
         nested_opt: Any = None
     elif isinstance(v.nested_opt, Some):
@@ -144,52 +251,86 @@ def optionals_to_json(v: p_types.Optionals) -> dict[str, Any]:
         "opt-s8": v.opt_s8,
         "opt-char": v.opt_char,
         "opt-string": v.opt_string,
-        "opt-bytes": None if v.opt_bytes is None else list(v.opt_bytes),
-        "opt-fixed-bytes": None if v.opt_fixed_bytes is None else list(v.opt_fixed_bytes),
-        "opt-list": None if v.opt_list is None else list(v.opt_list),
-        "opt-enum": None if v.opt_enum is None else v.opt_enum.value,
+        "opt-bytes": None if v.opt_bytes is None else _require_bytes("Optionals.opt-bytes", v.opt_bytes),
+        "opt-fixed-bytes": (
+            None
+            if v.opt_fixed_bytes is None
+            else _require_bytes("Optionals.opt-fixed-bytes", v.opt_fixed_bytes)
+        ),
+        "opt-list": (
+            None
+            if v.opt_list is None
+            else list(_require_tuple("Optionals.opt-list", v.opt_list))
+        ),
+        "opt-enum": None if v.opt_enum is None else _require_color("Optionals.opt-enum", v.opt_enum),
         "opt-point": None if v.opt_point is None else point_to_json(v.opt_point),
         "nested-opt": nested_opt,
         "opt-map": (
             None
             if v.opt_map is None
-            else {str(k): val for k, val in v.opt_map.items()}
+            else {_require_int_str("Optionals.opt-map.key", k): val for k, val in v.opt_map.items()}
         ),
     }
 
 
 def collections_to_json(v: p_types.Collections) -> dict[str, Any]:
+    assert isinstance(v, p_types.Collections)
+    result_items: list[dict[str, Any]] = []
+    for item in _require_tuple("Collections.result-items", v.result_items):
+        if isinstance(item, Ok):
+            result_items.append({"ok": item.value})
+        elif isinstance(item, Err):
+            result_items.append({"err": _require_color("Collections.result-items.err", item.error)})
+        else:
+            raise AssertionError(f"unexpected result item: {item!r}")
+
     return {
-        "raw-bytes": list(v.raw_bytes),
-        "fixed-bytes": list(v.fixed_bytes),
-        "u16-items": list(v.u16_items),
-        "fixed-u16s": list(v.fixed_u16s),
-        "fixed-chars": list(v.fixed_chars),
-        "point-items": [point_to_json(pt) for pt in v.point_items],
-        "nested-lists": [list(inner) for inner in v.nested_lists],
-        "nested-fixed": [list(inner) for inner in v.nested_fixed],
-        "opt-items": list(v.opt_items),
-        "result-items": [
-            {"ok": item.value} if isinstance(item, Ok) else {"err": item.error.value}
-            for item in v.result_items
+        "raw-bytes": _require_bytes("Collections.raw-bytes", v.raw_bytes),
+        "fixed-bytes": _require_bytes("Collections.fixed-bytes", v.fixed_bytes),
+        "u16-items": list(_require_tuple("Collections.u16-items", v.u16_items)),
+        "fixed-u16s": list(_require_tuple("Collections.fixed-u16s", v.fixed_u16s)),
+        "fixed-chars": list(_require_tuple("Collections.fixed-chars", v.fixed_chars)),
+        "point-items": [
+            point_to_json(pt) for pt in _require_tuple("Collections.point-items", v.point_items)
         ],
+        "nested-lists": [
+            list(_require_tuple("Collections.nested-lists[]", inner))
+            for inner in _require_tuple("Collections.nested-lists", v.nested_lists)
+        ],
+        "nested-fixed": [
+            list(_require_tuple("Collections.nested-fixed[]", inner))
+            for inner in _require_tuple("Collections.nested-fixed", v.nested_fixed)
+        ],
+        "opt-items": list(_require_tuple("Collections.opt-items", v.opt_items)),
+        "result-items": result_items,
     }
 
 
-def _bool_key_str(k: bool) -> str:
+def _bool_key_str(k: Any) -> str:
+    assert type(k) is bool, f"expected bool map key, got {type(k).__name__}({k!r})"
     return "true" if k else "false"
 
 
 def maps_to_json(v: p_types.Maps) -> dict[str, Any]:
+    assert isinstance(v, p_types.Maps)
     return {
         "str-to-u8": {k: val for k, val in v.str_to_u8.items()},
-        "u8-to-str": {str(k): val for k, val in v.u8_to_str.items()},
-        "s8-to-point": {str(k): point_to_json(val) for k, val in v.s8_to_point.items()},
-        "char-to-color": {k: val.value for k, val in v.char_to_color.items()},
+        "u8-to-str": {_require_int_str("Maps.u8-to-str.key", k): val for k, val in v.u8_to_str.items()},
+        "s8-to-point": {
+            _require_int_str("Maps.s8-to-point.key", k): point_to_json(val)
+            for k, val in v.s8_to_point.items()
+        },
+        "char-to-color": {
+            k: _require_color("Maps.char-to-color.val", val) for k, val in v.char_to_color.items()
+        },
         "bool-to-s16": {_bool_key_str(k): val for k, val in v.bool_to_s16.items()},
-        "u64-to-s64": {str(k): str(val) for k, val in v.u64_to_s64.items()},
+        "u64-to-s64": {
+            _require_int_str("Maps.u64-to-s64.key", k): _require_int_str("Maps.u64-to-s64.val", val)
+            for k, val in v.u64_to_s64.items()
+        },
         "nested-maps": [
-            {str(k): val for k, val in m.items()} for m in v.nested_maps
+            {_require_int_str("Maps.nested-maps.key", k): val for k, val in m.items()}
+            for m in _require_tuple("Maps.nested-maps", v.nested_maps)
         ],
     }
 
@@ -204,39 +345,90 @@ def choice_to_json(v: p_types.Choice) -> dict[str, Any]:
     if isinstance(v, p_types.ChoiceNested):
         return {"case": "nested", "value": point_to_json(v.value)}
     if isinstance(v, p_types.ChoiceFixed):
-        return {"case": "fixed", "value": list(v.value)}
+        return {"case": "fixed", "value": list(_require_tuple("Choice.fixed", v.value))}
     raise AssertionError(f"unexpected choice: {v!r}")
 
 
 def outcome_to_json(v: p_types.Outcome) -> dict[str, Any]:
     if isinstance(v, Ok):
         return {"ok": v.value}
-    return {"err": v.error}
+    if isinstance(v, Err):
+        return {"err": v.error}
+    raise AssertionError(f"unexpected outcome: {v!r}")
+
+
+def _only_ok_to_json(v: p_types.OkOnly) -> dict[str, Any]:
+    if isinstance(v, Ok):
+        return {"ok": v.value}
+    if isinstance(v, Err):
+        assert v.error is None, f"expected unit Err(None), got Err({v.error!r})"
+        return {"err": None}
+    raise AssertionError(f"unexpected ok-only result: {v!r}")
+
+
+def _only_err_to_json(v: p_types.ErrOnly) -> dict[str, Any]:
+    if isinstance(v, Ok):
+        assert v.value is None, f"expected unit Ok(None), got Ok({v.value!r})"
+        return {"ok": None}
+    if isinstance(v, Err):
+        return {"err": _require_color("Results.only-err.err", v.error)}
+    raise AssertionError(f"unexpected err-only result: {v!r}")
+
+
+def _bare_result_to_json(v: p_types.BareResult) -> dict[str, Any]:
+    if isinstance(v, Ok):
+        assert v.value is None, f"expected unit Ok(None), got Ok({v.value!r})"
+        return {"ok": None}
+    if isinstance(v, Err):
+        assert v.error is None, f"expected unit Err(None), got Err({v.error!r})"
+        return {"err": None}
+    raise AssertionError(f"unexpected bare result: {v!r}")
 
 
 def results_to_json(v: p_types.Results) -> dict[str, Any]:
+    assert isinstance(v, p_types.Results)
     return {
         "both": outcome_to_json(v.both),
-        "only-ok": {"ok": v.only_ok.value} if isinstance(v.only_ok, Ok) else {"err": None},
-        "only-err": {"ok": None} if isinstance(v.only_err, Ok) else {"err": v.only_err.error},
-        "bare": {"ok": None} if isinstance(v.bare, Ok) else {"err": None},
+        "only-ok": _only_ok_to_json(v.only_ok),
+        "only-err": _only_err_to_json(v.only_err),
+        "bare": _bare_result_to_json(v.bare),
     }
 
 
 def permissions_to_json(v: p_types.Permissions) -> dict[str, Any]:
+    assert isinstance(v, p_types.Permissions)
     return {"read": v.read, "write": v.write, "execute": v.execute}
 
 
 def composites_to_json(v: p_types.Composites) -> dict[str, Any]:
+    assert isinstance(v, p_types.Composites)
     return {
         "origin": point_to_json(v.origin),
-        "color": v.color.value,
+        "color": _require_color("Composites.color", v.color),
         "perms": permissions_to_json(v.perms),
         "choice": choice_to_json(v.choice),
         "outcome": outcome_to_json(v.outcome),
         "foreign": shared_meta_to_json(v.foreign),
-        "foreign-status": v.foreign_status.value,
+        "foreign-status": _require_status("Composites.foreign-status", v.foreign_status),
     }
+
+
+def _process_foreign_response_to_json(res: Any) -> dict[str, Any]:
+    if isinstance(res, Ok):
+        return {"result": {"ok": point_to_json(res.value)}}
+    if isinstance(res, Err):
+        return {"result": {"err": _require_color("ApiProcessForeignResponse.err", res.error)}}
+    raise AssertionError(f"unexpected process-foreign response: {res!r}")
+
+
+def _notify_response_to_json(res: Any) -> dict[str, Any]:
+    assert res is None, f"expected None from notify.from_response, got {res!r}"
+    return {}
+
+
+def _notify_to_response(arg: Any) -> Any:
+    assert arg is None, f"expected None for notify.to_response, got {arg!r}"
+    return g.v0.api.functions.notify.to_response()
 
 
 def assert_scalars_eq(
@@ -246,27 +438,43 @@ def assert_scalars_eq(
     *,
     strict_zero_sign: bool,
 ) -> None:
+    assert isinstance(a, p_types.Scalars) and isinstance(b, p_types.Scalars)
     assert _float_exact_eq(a.a_f32, b.a_f32, strict_zero_sign=strict_zero_sign, is_f32=True), (
         f"{vec_id}: f32 mismatch ({a.a_f32!r} vs {b.a_f32!r})"
     )
     assert _float_exact_eq(a.a_f64, b.a_f64, strict_zero_sign=strict_zero_sign, is_f32=False), (
         f"{vec_id}: f64 mismatch ({a.a_f64!r} vs {b.a_f64!r})"
     )
-    assert a.a_bool is b.a_bool, f"{vec_id}: bool mismatch"
-    assert a.a_char == b.a_char, f"{vec_id}: char mismatch"
-    assert a.a_string == b.a_string, f"{vec_id}: string mismatch"
+    assert type(a.a_bool) is bool and a.a_bool is b.a_bool, f"{vec_id}: bool mismatch"
+    assert type(a.a_char) is str and a.a_char == b.a_char, f"{vec_id}: char mismatch"
+    assert type(a.a_string) is str and a.a_string == b.a_string, f"{vec_id}: string mismatch"
 
 
 def assert_scalars_plain_json(vec_id: str, val: p_types.Scalars, want: Any) -> None:
+    assert isinstance(val, p_types.Scalars)
     assert isinstance(want, dict) and len(want) == 5, f"{vec_id}: expected 5 scalar keys"
     _assert_float_matches(vec_id, "a-f32", val.a_f32, want["a-f32"], is_f32=True)
     _assert_float_matches(vec_id, "a-f64", val.a_f64, want["a-f64"], is_f32=False)
-    assert val.a_bool is want["a-bool"], f"{vec_id}.a-bool"
-    assert val.a_char == want["a-char"], f"{vec_id}.a-char"
-    assert val.a_string == want["a-string"], f"{vec_id}.a-string"
+    assert type(val.a_bool) is bool and val.a_bool is want["a-bool"], f"{vec_id}.a-bool"
+    assert type(val.a_char) is str and val.a_char == want["a-char"], f"{vec_id}.a-char"
+    assert type(val.a_string) is str and val.a_string == want["a-string"], f"{vec_id}.a-string"
 
 
 # --- Encode-vector `plain_json` -> plain Python builders (preserving invalid inputs) ---
+
+
+def _color_or_raw(val: Any) -> Any:
+    try:
+        return p_types.Color(val)
+    except ValueError:
+        return val
+
+
+def _status_or_raw(val: Any) -> Any:
+    try:
+        return p_dep_shared.SharedStatus(val)
+    except ValueError:
+        return val
 
 
 def integers_from_json(raw: dict[str, Any]) -> p_types.Integers:
@@ -298,7 +506,7 @@ def collections_from_json(raw: dict[str, Any]) -> p_types.Collections:
         nested_fixed=tuple(tuple(inner) for inner in raw["nested-fixed"]),
         opt_items=tuple(raw["opt-items"]),
         result_items=tuple(
-            Ok(item["ok"]) if "ok" in item else Err(p_types.Color(item["err"]))
+            Ok(item["ok"]) if "ok" in item else Err(_color_or_raw(item["err"]))
             for item in raw["result-items"]
         ),
     )
@@ -309,27 +517,13 @@ def maps_from_json(raw: dict[str, Any]) -> p_types.Maps:
         str_to_u8=dict(raw["str-to-u8"]),
         u8_to_str={int(k): val for k, val in raw["u8-to-str"].items()},
         s8_to_point={int(k): point_from_json(val) for k, val in raw["s8-to-point"].items()},
-        char_to_color={k: p_types.Color(val) for k, val in raw["char-to-color"].items()},
+        char_to_color={k: _color_or_raw(val) for k, val in raw["char-to-color"].items()},
         bool_to_s16={k == "true": val for k, val in raw["bool-to-s16"].items()},
         u64_to_s64={int(k): int(val) for k, val in raw["u64-to-s64"].items()},
         nested_maps=tuple(
             {int(k): val for k, val in m.items()} for m in raw["nested-maps"]
         ),
     )
-
-
-def _color_or_raw(val: Any) -> Any:
-    try:
-        return p_types.Color(val)
-    except ValueError:
-        return val
-
-
-def _status_or_raw(val: Any) -> Any:
-    try:
-        return p_dep_shared.SharedStatus(val)
-    except ValueError:
-        return val
 
 
 def composites_from_json(raw: dict[str, Any]) -> p_types.Composites:
@@ -372,6 +566,42 @@ def composites_from_json(raw: dict[str, Any]) -> p_types.Composites:
     )
 
 
+# --- Exhaustive runtime `typing.get_type_hints()` verifier ---
+
+
+def verify_all_type_hints(modules: list[Any]) -> int:
+    checked = 0
+    for mod in modules:
+        exported = getattr(mod, "__all__", None)
+        assert isinstance(exported, tuple), f"{mod.__name__}: missing __all__ tuple"
+        for name in exported:
+            obj = getattr(mod, name)
+            if inspect.isclass(obj):
+                typing.get_type_hints(obj)
+                checked += 1
+                for attr_name, raw_attr in obj.__dict__.items():
+                    if attr_name.startswith("__") and attr_name != "__init__":
+                        continue
+                    if isinstance(raw_attr, staticmethod):
+                        typing.get_type_hints(raw_attr.__func__)
+                        checked += 1
+                    elif inspect.isfunction(raw_attr):
+                        typing.get_type_hints(raw_attr)
+                        checked += 1
+                    elif inspect.isclass(raw_attr):
+                        typing.get_type_hints(raw_attr)
+                        checked += 1
+                        for fn_attr in raw_attr.__dict__.values():
+                            if isinstance(fn_attr, staticmethod):
+                                typing.get_type_hints(fn_attr.__func__)
+                                checked += 1
+            elif inspect.isfunction(obj):
+                typing.get_type_hints(obj)
+                checked += 1
+    assert checked > 0
+    return checked
+
+
 # --- Generic decode + round-trip runner ---
 
 
@@ -398,6 +628,9 @@ class DecodeRunner:
         json_errors: set[str],
     ) -> None:
         vec_id = vec["id"]
+        assert vec["expected"] in ("accept", "reject"), (
+            f"{vec_id}: unexpected expected={vec['expected']!r}"
+        )
         raw_b64 = vec["proto_binary_base64"]
         raw_json = vec["proto3_json"]
         assert raw_b64 is not None, f"{vec_id}: missing proto_binary_base64"
@@ -426,16 +659,18 @@ class DecodeRunner:
             roundtrip_json = self.from_proto(
                 _reparse_proto3_json_roundtrip(vec_id, re_json, self.msg_cls)
             )
-            self.assert_equal(vec_id, plain_from_json, roundtrip_json, False)
+            self.assert_equal(vec_id, plain_from_json, roundtrip_json, True)
             return
 
         # Reject path
         assert vec["plain_json"] is None, f"{vec_id}: reject vector must have null plain_json"
         want_kind = vec["error_kind"]
         want_target = vec["error_target"]
-        assert want_kind is not None and want_target is not None, f"{vec_id}: missing error expectations"
+        assert want_kind is not None and want_target is not None, (
+            f"{vec_id}: missing error expectations"
+        )
 
-        # 1. Binary decode must raise WitforgeGlueError (a ValueError subclass) with exact kind & target
+        # 1. Binary decode must raise WitforgeGlueError (ValueError subclass) with exact kind/target/details
         bin_err: BaseException | None = None
         try:
             self.from_proto(wire_from_bin)
@@ -444,16 +679,10 @@ class DecodeRunner:
         assert isinstance(bin_err, g.WitforgeGlueError), (
             f"{vec_id}: expected binary WitforgeGlueError, got {bin_err!r}"
         )
-        assert isinstance(bin_err, ValueError)
-        assert bin_err.kind == want_kind, (
-            f"{vec_id}: binary error kind mismatch (got {bin_err.kind!r}, want {want_kind!r})"
-        )
-        assert bin_err.target == want_target, (
-            f"{vec_id}: binary error target mismatch (got {bin_err.target!r}, want {want_target!r})"
-        )
+        _assert_glue_error_details(f"{vec_id} (binary)", bin_err, want_kind, want_target)
         bin_errors.add(bin_err.kind)
 
-        # 2. Proto3-JSON decode must parse cleanly and reject in `from_proto` with exact kind & target
+        # 2. Proto3-JSON decode must parse cleanly and reject in `from_proto` with exact kind/target/details
         parsed_from_json = json_format.Parse(raw_json, self.msg_cls())
         json_err: BaseException | None = None
         try:
@@ -463,12 +692,7 @@ class DecodeRunner:
         assert isinstance(json_err, g.WitforgeGlueError), (
             f"{vec_id}: expected proto3-JSON WitforgeGlueError, got {json_err!r}"
         )
-        assert json_err.kind == want_kind, (
-            f"{vec_id}: JSON error kind mismatch (got {json_err.kind!r}, want {want_kind!r})"
-        )
-        assert json_err.target == want_target, (
-            f"{vec_id}: JSON error target mismatch (got {json_err.target!r}, want {want_target!r})"
-        )
+        _assert_glue_error_details(f"{vec_id} (json)", json_err, want_kind, want_target)
         json_errors.add(json_err.kind)
 
 
@@ -480,12 +704,13 @@ def make_json_runner(
 ) -> DecodeRunner:
     def check(vec_id: str, val: Any, want: Any) -> None:
         got = to_json(val)
-        assert got == want, f"{vec_id}: plain_json mismatch\n  got:  {got!r}\n  want: {want!r}"
+        _assert_strict_json_eq(f"{vec_id} (plain_json)", got, want)
 
     def eq(vec_id: str, a: Any, b: Any, _strict_zero: bool) -> None:
+        assert a == b, f"{vec_id}: plain value round-trip mismatch\n  a: {a!r}\n  b: {b!r}"
         ja = to_json(a)
         jb = to_json(b)
-        assert ja == jb, f"{vec_id}: round-trip mismatch\n  a: {ja!r}\n  b: {jb!r}"
+        _assert_strict_json_eq(f"{vec_id} (round-trip)", ja, jb)
 
     return DecodeRunner(
         msg_cls=msg_cls,
@@ -551,12 +776,7 @@ def run_encode_reject(vec: dict[str, Any], encode_errors: set[str]) -> None:
     assert isinstance(caught, g.WitforgeGlueError), (
         f"{vec_id}: expected encode WitforgeGlueError, got {caught!r}"
     )
-    assert caught.kind == want_kind, (
-        f"{vec_id}: encode error kind mismatch (got {caught.kind!r}, want {want_kind!r})"
-    )
-    assert caught.target == want_target, (
-        f"{vec_id}: encode error target mismatch (got {caught.target!r}, want {want_target!r})"
-    )
+    _assert_glue_error_details(f"{vec_id} (encode)", caught, want_kind, want_target)
     encode_errors.add(caught.kind)
 
 
@@ -565,30 +785,20 @@ def main() -> None:
         raise SystemExit("usage: python3 run.py <bundle-dir>")
     bundle_dir = Path(sys.argv[1])
 
-    # Verify PEP 561 type hints resolve cleanly across emitted glue classes at runtime.
-    for cls in (
-        g.v0.types.integers,
-        g.v0.types.scalars,
-        g.v0.types.optionals,
-        g.v0.types.collections,
-        g.v0.types.maps,
-        g.v0.types.choice,
-        g.v0.types.results,
-        g.v0.types.permissions,
-        g.v0.types.composites,
-        g.witforge_deps.witforge_conformance_dep.shared.shared_meta,
-    ):
-        assert typing.get_type_hints(cls.to_proto)
-        assert typing.get_type_hints(cls.from_proto)
-    for fn_cls in (
-        g.v0.api.functions.echo_integers,
-        g.v0.api.functions.process_foreign,
-        g.v0.api.functions.notify,
-    ):
-        assert typing.get_type_hints(fn_cls.to_request)
-        assert typing.get_type_hints(fn_cls.from_request)
-        assert typing.get_type_hints(fn_cls.to_response)
-        assert typing.get_type_hints(fn_cls.from_response)
+    # Exhaustively verify PEP 561 type hints resolve cleanly across EVERY emitted module & symbol.
+    checked_hints = verify_all_type_hints(
+        [
+            g_error,
+            g_helpers,
+            g.v0.types,
+            g.v0.api,
+            g.witforge_deps.witforge_conformance_dep.shared,
+            p_types,
+            p_api,
+            p_dep_shared,
+        ]
+    )
+    assert checked_hints >= 80, f"expected >=80 resolved type-hint targets, got {checked_hints}"
 
     # Verify METHOD constants match generated `v0_pb2` enum values.
     assert g.v0.api.functions.echo_integers.METHOD == proto_root.API_METHOD_ECHO_INTEGERS
@@ -680,7 +890,7 @@ def main() -> None:
             lambda args: g.v0.api.functions.process_foreign.to_request(*args),
             lambda args: {
                 "meta": shared_meta_to_json(args[0]),
-                "status": args[1].value,
+                "status": _require_status("ApiProcessForeignRequest.status", args[1]),
                 "code": args[2],
             },
         ),
@@ -688,13 +898,7 @@ def main() -> None:
             g.v0.api.functions.process_foreign.response_type,
             g.v0.api.functions.process_foreign.from_response,
             g.v0.api.functions.process_foreign.to_response,
-            lambda res: {
-                "result": (
-                    {"ok": point_to_json(res.value)}
-                    if isinstance(res, Ok)
-                    else {"err": res.error}
-                )
-            },
+            _process_foreign_response_to_json,
         ),
         ".witforge.conformance.v0.ApiNotifyRequest": make_json_runner(
             g.v0.api.functions.notify.request_type,
@@ -705,8 +909,8 @@ def main() -> None:
         ".witforge.conformance.v0.ApiNotifyResponse": make_json_runner(
             g.v0.api.functions.notify.response_type,
             g.v0.api.functions.notify.from_response,
-            lambda _: g.v0.api.functions.notify.to_response(),
-            lambda _: {},
+            _notify_to_response,
+            _notify_response_to_json,
         ),
     }
 
@@ -718,7 +922,9 @@ def main() -> None:
     encode_errors: set[str] = set()
 
     for vec in manifest["vectors"]:
-        if vec["direction"] == "encode":
+        direction = vec["direction"]
+        assert direction in ("decode", "encode"), f"{vec['id']}: unexpected direction={direction!r}"
+        if direction == "encode":
             run_encode_reject(vec, encode_errors)
             encode_reject_count += 1
             continue
@@ -742,7 +948,8 @@ def main() -> None:
     print(
         f"Python conformance passed: {total} vectors "
         f"({decode_accept_count} decode accept, {decode_reject_count} decode reject, "
-        f"{encode_reject_count} encode reject; all {len(bin_errors)} GlueError kinds verified)"
+        f"{encode_reject_count} encode reject; all {len(bin_errors)} GlueError kinds and "
+        f"{checked_hints} type-hint targets verified)"
     )
 
 

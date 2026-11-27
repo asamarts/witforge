@@ -125,10 +125,13 @@ fn python_glue_conformance_contract_emits_deterministic_lf_only_glue() {
         "def check_s32(",
         "def check_s64(",
         "def check_bool(",
+        "def check_float(",
+        "def check_str(",
         "def check_bytes(",
         "def decode_char(",
         "def encode_char(",
         "def check_length(",
+        "__all__ = (",
     ] {
         assert!(helpers_py.contains(helper), "helpers.py missing `{helper}`");
     }
@@ -315,17 +318,37 @@ fn python_glue_fixtures_generate_check_markers_prune_and_guards() {
         assert!(planned.files().contains_key("helpers.py"), "{rel}");
         assert!(planned.markers().contains("py.typed"), "{rel}");
     }
+    // Multi-minor major (`versions/wit` has `v0.1` + `v0.2`): `v0` glue targets highest minor `v0_2`.
+    let versions_plan = python_glue::plan(&fixture("versions/wit"), "plain", "proto").unwrap();
+    let v0_types = &versions_plan.files()["v0/types.py"];
+    assert!(
+        v0_types.contains("from plain.v0_2 import types as _wf_plain"),
+        "v0 glue must target highest minor v0_2:\n{v0_types}"
+    );
+    // Dot-only relative roots (`.` and `..`) resolve cleanly.
+    let dot_plan = python_glue::plan(&fixture("versions/wit"), ".", "..").unwrap();
+    assert!(
+        dot_plan.files()["v0/types.py"].contains("from ..v0_2 import types as _wf_plain"),
+        "{}",
+        dot_plan.files()["v0/types.py"]
+    );
+    assert!(
+        dot_plan.files()["v0/types.py"].contains("from ... import v0_pb2 as _wf_proto"),
+        "{}",
+        dot_plan.files()["v0/types.py"]
+    );
 
     let base = scratch_dir("guards");
     let wit = fixture("versions/wit");
     let out = base.join("py-glue-out");
 
-    // 1. generate + check + empty py.typed marker + stale owned subdir pruning.
-    python_glue::generate(&wit, &out, "plain", "proto").unwrap();
+    // 1. generate/check (default and `_with_options`) + empty py.typed marker + stale owned subdir pruning.
+    python_glue::generate_with_options(&wit, &out, "plain", "proto", &PythonGlueOptions::new())
+        .unwrap();
     assert!(out.join("py.typed").is_file());
     assert_eq!(fs::read_to_string(out.join("py.typed")).unwrap(), "");
     assert!(
-        python_glue::check(&wit, &out, "plain", "proto")
+        python_glue::check_with_options(&wit, &out, "plain", "proto", &PythonGlueOptions::new(),)
             .unwrap()
             .is_empty()
     );
@@ -387,7 +410,7 @@ fn python_glue_fixtures_generate_check_markers_prune_and_guards() {
         );
     }
 
-    // 5. Reserved `functions` type export collision is refused as a ContractError.
+    // 5. Reserved `functions` type export collision is refused as a ContractError naming `functions`.
     let bad_wit = base.join("reserved-wit");
     let v01 = bad_wit.join("v0.1");
     fs::create_dir_all(&v01).unwrap();
@@ -401,9 +424,14 @@ fn python_glue_fixtures_generate_check_markers_prune_and_guards() {
         is_contract_error(&clash_err),
         "reserved `functions` clash must be ContractError: {clash_err:#}"
     );
+    assert!(
+        format!("{clash_err:#}").contains("functions"),
+        "reserved `functions` clash error must name `functions`: {clash_err:#}"
+    );
 
-    // 6. Windows-reserved (`con`), Python-keyword (`class`), and shadowing-safe internal classes
-    //    plus keyword dependency proto `importlib.import_module` fallback.
+    // 6. Windows-reserved (`con`), Python-keyword (`class`), module-level builtin shadowing
+    //    (`int`, `bool`, `tuple`, `list`, `dict`, `float`, `len`, `isinstance`, `repr`), and
+    //    keyword dependency proto `importlib.import_module` fallback.
     let stems_wit = base.join("safe-stems");
     let stems_v01 = stems_wit.join("v0.1");
     fs::create_dir_all(stems_v01.join("deps/kw")).unwrap();
@@ -421,7 +449,18 @@ fn python_glue_fixtures_generate_check_markers_prune_and_guards() {
            use %from:cls/items@0.1.0.{entry};\n\
            record value { n: u8 }\n\
            record request { item: a, e: entry, v: value, mro: u8, %from: u16, %import: option<u16> }\n\
-           send: func(request: request, len: list<u8, 2>) -> request;\n\
+           send: func(request: request, len: list<u8, 2>, %list: list<u16>, dict: map<string, u8>) -> request;\n\
+         }\n\
+         interface builtins {\n\
+           record int { x: u32 }\n\
+           record %bool { b: bool }\n\
+           record %tuple { xs: list<u32> }\n\
+           record %list { xs: list<u16, 2> }\n\
+           record dict { m: map<string, u8> }\n\
+           record isinstance { ok: bool }\n\
+           record repr { s: string }\n\
+           enum shade { light, dark }\n\
+           flags bits { active }\n\
          }\n",
     )
     .unwrap();
@@ -445,6 +484,8 @@ fn python_glue_fixtures_generate_check_markers_prune_and_guards() {
         "{class_py}"
     );
     assert!(class_py.contains("_wf_builtins.len("), "{class_py}");
+    assert!(class_py.contains("_wf_builtins.list["), "{class_py}");
+    assert!(class_py.contains("_wf_builtins.dict["), "{class_py}");
     assert!(
         class_py.contains("setattr(_wf_out, \"from\","),
         "{class_py}"
@@ -457,6 +498,23 @@ fn python_glue_fixtures_generate_check_markers_prune_and_guards() {
         class_py.contains("getattr(value, \"import\")"),
         "{class_py}"
     );
+    let builtins_py = &stems_files.files()["v0/builtins.py"];
+    for needle in [
+        "import builtins as _wf_builtins",
+        "-> _wf_builtins.int:",
+        "_wf_builtins.isinstance(value, _wf_builtins.bool)",
+        "_wf_builtins.repr(value)",
+        "_wf_builtins.bool(value.active)",
+        "_wf_h.check_bool(value.active, \"builtins/bits.active\")",
+        "_wf_builtins.tuple(",
+        "_wf_builtins.list[",
+        "_wf_builtins.dict[",
+    ] {
+        assert!(
+            builtins_py.contains(needle),
+            "v0/builtins.py missing `{needle}`:\n{builtins_py}"
+        );
+    }
     let kw_dep_py = &stems_files.files()["witforge_deps/from_cls/items.py"];
     assert!(
         kw_dep_py.contains("_wf_importlib.import_module(\"proto.from.cls.v0_pb2\")"),

@@ -6505,13 +6505,9 @@ fn ts_command_config_generate_overlap_and_completions() {
     assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
     let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
     assert_eq!(sarif_val["version"], "2.1.0");
-    assert!(
-        !sarif_val["runs"][0]["results"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "{sarif_val:#}"
-    );
+    let sarif_results = sarif_val["runs"][0]["results"].as_array().unwrap();
+    assert!(!sarif_results.is_empty(), "{sarif_val:#}");
+    assert_eq!(sarif_results[0]["ruleId"], "WF2001", "{sarif_val:#}");
 
     // 5. Shell completions include `ts`.
     for shell in ["bash", "zsh", "fish"] {
@@ -6634,13 +6630,9 @@ fn ts_glue_command_config_generate_overlap_and_completions() {
     assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
     let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
     assert_eq!(sarif_val["version"], "2.1.0");
-    assert!(
-        !sarif_val["runs"][0]["results"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "{sarif_val:#}"
-    );
+    let sarif_results = sarif_val["runs"][0]["results"].as_array().unwrap();
+    assert!(!sarif_results.is_empty(), "{sarif_val:#}");
+    assert_eq!(sarif_results[0]["ruleId"], "WF2001", "{sarif_val:#}");
 
     // 2. `[project.<name>.typescript-glue]` in `witforge.toml` integrates with `witforge generate`.
     let cfg = base.join("witforge.toml");
@@ -6934,13 +6926,9 @@ fn py_command_config_generate_overlap_and_completions() {
     assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
     let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
     assert_eq!(sarif_val["version"], "2.1.0");
-    assert!(
-        !sarif_val["runs"][0]["results"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "{sarif_val:#}"
-    );
+    let sarif_results = sarif_val["runs"][0]["results"].as_array().unwrap();
+    assert!(!sarif_results.is_empty(), "{sarif_val:#}");
+    assert_eq!(sarif_results[0]["ruleId"], "WF2001", "{sarif_val:#}");
 
     // 2. `[project.<name>.python]` in `witforge.toml` integrates with `witforge generate`.
     let cfg = base.join("witforge.toml");
@@ -7159,13 +7147,9 @@ fn py_glue_command_config_generate_overlap_and_completions() {
     assert_eq!(drift_sarif.status.code(), Some(1), "{drift_sarif:?}");
     let sarif_val: serde_json::Value = serde_json::from_slice(&drift_sarif.stdout).unwrap();
     assert_eq!(sarif_val["version"], "2.1.0");
-    assert!(
-        !sarif_val["runs"][0]["results"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "{sarif_val:#}"
-    );
+    let sarif_results = sarif_val["runs"][0]["results"].as_array().unwrap();
+    assert!(!sarif_results.is_empty(), "{sarif_val:#}");
+    assert_eq!(sarif_results[0]["ruleId"], "WF2001", "{sarif_val:#}");
 
     // 2. `[project.<name>.python-glue]` in `witforge.toml` integrates with `witforge generate`.
     let cfg = base.join("witforge.toml");
@@ -7271,6 +7255,88 @@ fn py_glue_command_config_generate_overlap_and_completions() {
             .ends_with("bad-root.toml"),
         "{bad_root_json:#}"
     );
+
+    // 4b. Invalid configured `python-glue.proto-root`, invalid CLI `--plain-root` with `--no-config`,
+    //     and shell-expansion tokens in `python-glue.out` are all refused upfront.
+    let bad_proto_cfg = base.join("bad-proto-root.toml");
+    fs::write(
+        &bad_proto_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.python-glue]\n\
+         out = \"gen/py-bad-proto\"\n\
+         plain-root = \"plain\"\n\
+         proto-root = \"from\"\n",
+    )
+    .unwrap();
+    let bad_proto = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            bad_proto_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_proto.status.code(), Some(2), "{bad_proto:?}");
+    let bad_proto_json: serde_json::Value = serde_json::from_slice(&bad_proto.stdout).unwrap();
+    assert_eq!(bad_proto_json["diagnostics"][0]["code"], "WF9001");
+    assert!(
+        bad_proto_json["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("project.demo.python-glue.proto-root"),
+        "{bad_proto_json:#}"
+    );
+
+    let bad_cli_root = witforge()
+        .args([
+            "--format",
+            "json",
+            "py-glue",
+            wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            base.join("never-cli-out").to_str().unwrap(),
+            "--plain-root",
+            "../bad",
+            "--proto-root",
+            "proto",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad_cli_root.status.code(), Some(2), "{bad_cli_root:?}");
+    let bad_cli_json: serde_json::Value = serde_json::from_slice(&bad_cli_root.stdout).unwrap();
+    assert_eq!(bad_cli_json["diagnostics"][0]["code"], "WF9001");
+    assert!(!base.join("never-cli-out").exists());
+
+    let shell_out_cfg = base.join("shell-out.toml");
+    fs::write(
+        &shell_out_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.python-glue]\n\
+         out = \"$HOME/gen\"\n\
+         plain-root = \"plain\"\n\
+         proto-root = \"proto\"\n",
+    )
+    .unwrap();
+    let shell_out = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            shell_out_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(shell_out.status.code(), Some(2), "{shell_out:?}");
+    let shell_out_json: serde_json::Value = serde_json::from_slice(&shell_out.stdout).unwrap();
+    assert_eq!(shell_out_json["diagnostics"][0]["code"], "WF9004");
 
     // 5. Missing `proto-root` in `[project.<name>.python-glue]` aborts `witforge generate` upfront
     //    before writing earlier emitters (`python`).

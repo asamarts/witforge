@@ -154,9 +154,9 @@ the lockfile and frozen-version rules are in [`lockfile.md`](lockfile.md). Gener
 part of the release contract: the conformance matrix and `--check` gates are in
 [`conformance.md`](conformance.md).
 
-`GlueError` is a type written into generated glue source. It is part of that generated-output
-contract, not an item exported by the `witforge` library; there is no
-`witforge::emit::glue::GlueError`.
+`GlueError` (Rust glue) and `WitforgeGlueError` (TypeScript and Python glue) are types written
+into generated glue source. They are part of that generated-output contract, not items exported by
+the `witforge` library; there is no `witforge::emit::glue::GlueError`.
 
 ## CLI commands
 

@@ -103,7 +103,7 @@ fn parse_module_root(root: &str) -> Result<(usize, Vec<&str>)> {
         if !is_valid_py_ident(seg) {
             bail!("Python module root `{root}` has invalid Python identifier segment `{seg}`");
         }
-        if is_python_keyword(seg) {
+        if is_python_hard_keyword(seg) {
             bail!("Python module root `{root}` uses Python keyword `{seg}`");
         }
         segments.push(seg);
@@ -114,6 +114,13 @@ fn parse_module_root(root: &str) -> Result<(usize, Vec<&str>)> {
 fn validate_module_root_inner(root: &str) -> Result<()> {
     let _ = parse_module_root(root)?;
     Ok(())
+}
+
+/// Whether `seg` is a Python 3.11+ hard keyword (`keyword.kwlist`), which is a syntax error in
+/// `import` / `from` statements and attribute access. Soft keywords (`match`, `case`, `type`, `_`)
+/// are valid module and attribute names in Python 3.11+.
+fn is_python_hard_keyword(seg: &str) -> bool {
+    is_python_keyword(seg) && !matches!(seg, "_" | "case" | "match" | "type")
 }
 
 fn is_valid_py_ident(seg: &str) -> bool {
@@ -128,10 +135,10 @@ fn is_valid_py_ident(seg: &str) -> bool {
 /// Resolved Python module import form.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum PyModuleImport {
-    /// Static `from <from_mod> import <member>` (no Python keyword segments).
+    /// Static `from <from_mod> import <member>` (no Python hard-keyword segments).
     FromImport { from_mod: String, member: String },
     /// Dynamic `importlib.import_module(<spec>[, __package__])` when any segment is a Python
-    /// keyword (matching `protoc --python_out` for keyword proto packages like `from.class.v0`).
+    /// hard keyword (matching `protoc --python_out` for keyword proto packages like `from.class.v0`).
     ImportLib { spec: String, relative: bool },
 }
 
@@ -147,7 +154,7 @@ fn resolve_py_module(root: &str, depth: usize, rel_segments: &[String]) -> Resul
     let Some((&leaf, prefix)) = all_segs.split_last() else {
         bail!("empty Python import target");
     };
-    let has_keyword = all_segs.iter().any(|seg| is_python_keyword(seg));
+    let has_keyword = all_segs.iter().any(|seg| is_python_hard_keyword(seg));
     if leading_dots > 0 {
         let dots = ".".repeat(leading_dots + depth);
         if has_keyword {
@@ -825,6 +832,22 @@ def check_bool(value: Any, field: str) -> bool:
     return value
 
 
+def check_float(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WitforgeGlueError("InvalidState", message=field)
+    return float(value)
+
+
+def check_str(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise WitforgeGlueError("InvalidState", message=field)
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise WitforgeGlueError("InvalidState", message=field) from exc
+    return value
+
+
 def check_bytes(value: Any, field: str) -> bytes:
     if isinstance(value, bytes):
         return value
@@ -859,6 +882,26 @@ def encode_char(value: Any, field: str) -> int:
 def check_length(actual: int, expected: int, field: str) -> None:
     if actual != expected:
         raise WitforgeGlueError("InvalidLength", field=field, expected=expected, actual=actual)
+
+
+__all__ = (
+    "check_bool",
+    "check_bytes",
+    "check_float",
+    "check_length",
+    "check_s16",
+    "check_s32",
+    "check_s64",
+    "check_s8",
+    "check_str",
+    "check_u16",
+    "check_u32",
+    "check_u64",
+    "check_u8",
+    "decode_char",
+    "encode_char",
+    "require_present",
+)
 "#;
 
 // ---------------------------------------------------------------------------
@@ -1154,70 +1197,14 @@ fn dependency_shape_name(dependency: &Dependency, name: &QualifiedName) -> Strin
     )
 }
 
-fn py_attr_read(obj: &str, field: &str, getattr_fn: &str) -> String {
-    if is_python_keyword(field) {
-        format!("{getattr_fn}({obj}, {})", escape_py_string(field))
-    } else {
-        format!("{obj}.{field}")
-    }
-}
-
-fn py_attr_assign(obj: &str, field: &str, rhs: &str, setattr_fn: &str) -> String {
-    if is_python_keyword(field) {
-        format!("{setattr_fn}({obj}, {}, {rhs})", escape_py_string(field))
-    } else {
-        format!("{obj}.{field} = {rhs}")
-    }
-}
-
-struct BuiltinNames {
-    len: &'static str,
-    isinstance: &'static str,
-    getattr: &'static str,
-    setattr: &'static str,
-}
-
-impl BuiltinNames {
-    const PLAIN: Self = Self {
-        len: "len",
-        isinstance: "isinstance",
-        getattr: "getattr",
-        setattr: "setattr",
-    };
-
-    fn for_params(params: &[String], imports: &mut GlueImports) -> Self {
-        let mut names = Self::PLAIN;
-        for p in params {
-            match p.as_str() {
-                "len" => {
-                    imports.use_builtins();
-                    names.len = "_wf_builtins.len";
-                }
-                "isinstance" => {
-                    imports.use_builtins();
-                    names.isinstance = "_wf_builtins.isinstance";
-                }
-                "getattr" => {
-                    imports.use_builtins();
-                    names.getattr = "_wf_builtins.getattr";
-                }
-                "setattr" => {
-                    imports.use_builtins();
-                    names.setattr = "_wf_builtins.setattr";
-                }
-                _ => {}
-            }
-        }
-        names
-    }
-}
-
 struct InterfaceGlueEmitter<'a> {
     ctx: &'a PackageEmitContext<'a>,
     interface: &'a Interface,
     symbols: InterfaceSymbolPlan,
     local_stems: &'a BTreeMap<&'a str, &'a str>,
     imports: GlueImports,
+    module_shadowed_builtins: BTreeSet<String>,
+    local_shadowed_builtins: BTreeSet<String>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1229,6 +1216,7 @@ fn emit_interface_glue(
 ) -> Result<String> {
     let export_names = interface_glue_export_names(interface)?;
     let symbols = plan_interface_symbols(interface)?;
+    let module_shadowed_builtins: BTreeSet<String> = export_names.iter().cloned().collect();
 
     let mut emitter = InterfaceGlueEmitter {
         ctx,
@@ -1236,6 +1224,8 @@ fn emit_interface_glue(
         symbols,
         local_stems,
         imports: GlueImports::default(),
+        module_shadowed_builtins,
+        local_shadowed_builtins: BTreeSet::new(),
     };
 
     let mut body = String::new();
@@ -2137,9 +2127,54 @@ impl<'a> InterfaceGlueEmitter<'a> {
         Ok(format!("{alias}.{py_ty}"))
     }
 
+    fn builtin(&mut self, name: &'static str) -> &'static str {
+        if self.module_shadowed_builtins.contains(name)
+            || self.local_shadowed_builtins.contains(name)
+        {
+            self.imports.use_builtins();
+            match name {
+                "bool" => "_wf_builtins.bool",
+                "bytes" => "_wf_builtins.bytes",
+                "dict" => "_wf_builtins.dict",
+                "float" => "_wf_builtins.float",
+                "getattr" => "_wf_builtins.getattr",
+                "int" => "_wf_builtins.int",
+                "isinstance" => "_wf_builtins.isinstance",
+                "len" => "_wf_builtins.len",
+                "list" => "_wf_builtins.list",
+                "repr" => "_wf_builtins.repr",
+                "setattr" => "_wf_builtins.setattr",
+                "str" => "_wf_builtins.str",
+                "tuple" => "_wf_builtins.tuple",
+                "type" => "_wf_builtins.type",
+                _ => unreachable!("untracked Python builtin `{name}`"),
+            }
+        } else {
+            name
+        }
+    }
+
+    fn py_attr_read(&mut self, obj: &str, field: &str) -> String {
+        if is_python_hard_keyword(field) {
+            let getattr_fn = self.builtin("getattr");
+            format!("{getattr_fn}({obj}, {})", escape_py_string(field))
+        } else {
+            format!("{obj}.{field}")
+        }
+    }
+
+    fn py_attr_assign(&mut self, obj: &str, field: &str, rhs: &str) -> String {
+        if is_python_hard_keyword(field) {
+            let setattr_fn = self.builtin("setattr");
+            format!("{setattr_fn}({obj}, {}, {rhs})", escape_py_string(field))
+        } else {
+            format!("{obj}.{field} = {rhs}")
+        }
+    }
+
     fn plain_type(&mut self, ty: &TypeExpr) -> Result<String> {
         match ty {
-            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::Bool => Ok(self.builtin("bool").to_string()),
             TypeExpr::U8
             | TypeExpr::U16
             | TypeExpr::U32
@@ -2147,16 +2182,17 @@ impl<'a> InterfaceGlueEmitter<'a> {
             | TypeExpr::S8
             | TypeExpr::S16
             | TypeExpr::S32
-            | TypeExpr::S64 => Ok("int".to_string()),
-            TypeExpr::F32 | TypeExpr::F64 => Ok("float".to_string()),
-            TypeExpr::Char | TypeExpr::String => Ok("str".to_string()),
+            | TypeExpr::S64 => Ok(self.builtin("int").to_string()),
+            TypeExpr::F32 | TypeExpr::F64 => Ok(self.builtin("float").to_string()),
+            TypeExpr::Char | TypeExpr::String => Ok(self.builtin("str").to_string()),
             TypeExpr::Named(name) => self.plain_named_type(name),
             TypeExpr::List(elem) | TypeExpr::FixedLengthList(elem, _) => {
                 if self.ctx.model.resolves_to_u8(elem) {
-                    return Ok("bytes".to_string());
+                    return Ok(self.builtin("bytes").to_string());
                 }
                 let inner = self.plain_type(elem)?;
-                Ok(format!("tuple[{inner}, ...]"))
+                let tuple_ty = self.builtin("tuple");
+                Ok(format!("{tuple_ty}[{inner}, ...]"))
             }
             TypeExpr::Map(key, value) => {
                 self.imports.use_mapping();
@@ -2189,10 +2225,10 @@ impl<'a> InterfaceGlueEmitter<'a> {
         }
     }
 
-    fn proto_map_key_py_type(key: &TypeExpr) -> Result<&'static str> {
+    fn proto_map_key_py_type(&mut self, key: &TypeExpr) -> Result<&'static str> {
         match key {
-            TypeExpr::String => Ok("str"),
-            TypeExpr::Bool => Ok("bool"),
+            TypeExpr::String => Ok(self.builtin("str")),
+            TypeExpr::Bool => Ok(self.builtin("bool")),
             TypeExpr::U8
             | TypeExpr::U16
             | TypeExpr::U32
@@ -2201,14 +2237,15 @@ impl<'a> InterfaceGlueEmitter<'a> {
             | TypeExpr::S16
             | TypeExpr::S32
             | TypeExpr::S64
-            | TypeExpr::Char => Ok("int"),
+            | TypeExpr::Char => Ok(self.builtin("int")),
             _ => bail!("map key `{key:?}` is not a valid primitive map key"),
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn proto_direct_type(&mut self, ty: &TypeExpr, for_input: bool) -> Result<String> {
         match ty {
-            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::Bool => Ok(self.builtin("bool").to_string()),
             TypeExpr::U8
             | TypeExpr::U16
             | TypeExpr::U32
@@ -2217,13 +2254,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
             | TypeExpr::S16
             | TypeExpr::S32
             | TypeExpr::S64
-            | TypeExpr::Char => Ok("int".to_string()),
-            TypeExpr::F32 | TypeExpr::F64 => Ok("float".to_string()),
-            TypeExpr::String => Ok("str".to_string()),
+            | TypeExpr::Char => Ok(self.builtin("int").to_string()),
+            TypeExpr::F32 | TypeExpr::F64 => Ok(self.builtin("float").to_string()),
+            TypeExpr::String => Ok(self.builtin("str").to_string()),
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
                 if self.ctx.model.resolves_to_u8(element) =>
             {
-                Ok("bytes".to_string())
+                Ok(self.builtin("bytes").to_string())
             }
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
                 let inner = self.proto_singular_type(element)?;
@@ -2231,17 +2268,19 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     self.imports.use_sequence();
                     Ok(format!("_wf_Sequence[{inner}]"))
                 } else {
-                    Ok(format!("list[{inner}]"))
+                    let list_ty = self.builtin("list");
+                    Ok(format!("{list_ty}[{inner}]"))
                 }
             }
             TypeExpr::Map(key, value) => {
-                let k = Self::proto_map_key_py_type(key)?;
+                let k = self.proto_map_key_py_type(key)?;
                 let v = self.proto_singular_type(value)?;
                 if for_input {
                     self.imports.use_mapping();
                     Ok(format!("_wf_Mapping[{k}, {v}]"))
                 } else {
-                    Ok(format!("dict[{k}, {v}]"))
+                    let dict_ty = self.builtin("dict");
+                    Ok(format!("{dict_ty}[{k}, {v}]"))
                 }
             }
             TypeExpr::Option(payload) => {
@@ -2258,7 +2297,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.proto_direct_type(target, for_input),
-                    TypeDefKind::Enum(_) => Ok("int".to_string()),
+                    TypeDefKind::Enum(_) => Ok(self.builtin("int").to_string()),
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
@@ -2269,7 +2308,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                         if self.ctx.model.resolves_to_u8(element) =>
                     {
-                        Ok("bytes".to_string())
+                        Ok(self.builtin("bytes").to_string())
                     }
                     TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         let inner = self.proto_singular_type(element)?;
@@ -2277,17 +2316,19 @@ impl<'a> InterfaceGlueEmitter<'a> {
                             self.imports.use_sequence();
                             Ok(format!("_wf_Sequence[{inner}]"))
                         } else {
-                            Ok(format!("list[{inner}]"))
+                            let list_ty = self.builtin("list");
+                            Ok(format!("{list_ty}[{inner}]"))
                         }
                     }
                     TypeDefKind::Map(key, value) => {
-                        let k = Self::proto_map_key_py_type(key)?;
+                        let k = self.proto_map_key_py_type(key)?;
                         let v = self.proto_singular_type(value)?;
                         if for_input {
                             self.imports.use_mapping();
                             Ok(format!("_wf_Mapping[{k}, {v}]"))
                         } else {
-                            Ok(format!("dict[{k}, {v}]"))
+                            let dict_ty = self.builtin("dict");
+                            Ok(format!("{dict_ty}[{k}, {v}]"))
                         }
                     }
                     TypeDefKind::Option(payload) => {
@@ -2309,7 +2350,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
 
     fn proto_singular_type(&mut self, ty: &TypeExpr) -> Result<String> {
         match ty {
-            TypeExpr::Bool => Ok("bool".to_string()),
+            TypeExpr::Bool => Ok(self.builtin("bool").to_string()),
             TypeExpr::U8
             | TypeExpr::U16
             | TypeExpr::U32
@@ -2318,13 +2359,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
             | TypeExpr::S16
             | TypeExpr::S32
             | TypeExpr::S64
-            | TypeExpr::Char => Ok("int".to_string()),
-            TypeExpr::F32 | TypeExpr::F64 => Ok("float".to_string()),
-            TypeExpr::String => Ok("str".to_string()),
+            | TypeExpr::Char => Ok(self.builtin("int").to_string()),
+            TypeExpr::F32 | TypeExpr::F64 => Ok(self.builtin("float").to_string()),
+            TypeExpr::String => Ok(self.builtin("str").to_string()),
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
                 if self.ctx.model.resolves_to_u8(element) =>
             {
-                Ok("bytes".to_string())
+                Ok(self.builtin("bytes").to_string())
             }
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
                 let name = format!("WitforgeListOf{}", self.shape_name(element)?);
@@ -2353,7 +2394,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let def = self.named(name)?;
                 match &def.kind {
                     TypeDefKind::Alias(target) => self.proto_singular_type(target),
-                    TypeDefKind::Enum(_) => Ok("int".to_string()),
+                    TypeDefKind::Enum(_) => Ok(self.builtin("int").to_string()),
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
@@ -2364,7 +2405,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                         if self.ctx.model.resolves_to_u8(element) =>
                     {
-                        Ok("bytes".to_string())
+                        Ok(self.builtin("bytes").to_string())
                     }
                     TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                         let name = format!("WitforgeListOf{}", self.shape_name(element)?);
@@ -2416,7 +2457,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
     ) -> Result<String> {
         match kind {
             TypeDefKind::Alias(target) => self.foreign_proto_direct_expr(owner, target, for_input),
-            TypeDefKind::Enum(_) => Ok("int".to_string()),
+            TypeDefKind::Enum(_) => Ok(self.builtin("int").to_string()),
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
@@ -2427,7 +2468,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                 if self.ctx.model.resolves_to_u8_in(Some(owner), element) =>
             {
-                Ok("bytes".to_string())
+                Ok(self.builtin("bytes").to_string())
             }
             TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                 let inner = self.dependency_defined_proto_singular(owner, element)?;
@@ -2435,17 +2476,19 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     self.imports.use_sequence();
                     Ok(format!("_wf_Sequence[{inner}]"))
                 } else {
-                    Ok(format!("list[{inner}]"))
+                    let list_ty = self.builtin("list");
+                    Ok(format!("{list_ty}[{inner}]"))
                 }
             }
             TypeDefKind::Map(key, value) => {
-                let k = Self::proto_map_key_py_type(key)?;
+                let k = self.proto_map_key_py_type(key)?;
                 let v = self.dependency_defined_proto_singular(owner, value)?;
                 if for_input {
                     self.imports.use_mapping();
                     Ok(format!("_wf_Mapping[{k}, {v}]"))
                 } else {
-                    Ok(format!("dict[{k}, {v}]"))
+                    let dict_ty = self.builtin("dict");
+                    Ok(format!("{dict_ty}[{k}, {v}]"))
                 }
             }
             TypeDefKind::Option(payload) => {
@@ -2483,7 +2526,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
                 if self.ctx.model.resolves_to_u8_in(Some(owner), element) =>
             {
-                Ok("bytes".to_string())
+                Ok(self.builtin("bytes").to_string())
             }
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
                 let inner = self.dependency_defined_proto_singular(owner, element)?;
@@ -2491,17 +2534,19 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     self.imports.use_sequence();
                     Ok(format!("_wf_Sequence[{inner}]"))
                 } else {
-                    Ok(format!("list[{inner}]"))
+                    let list_ty = self.builtin("list");
+                    Ok(format!("{list_ty}[{inner}]"))
                 }
             }
             TypeExpr::Map(key, value) => {
-                let k = Self::proto_map_key_py_type(key)?;
+                let k = self.proto_map_key_py_type(key)?;
                 let v = self.dependency_defined_proto_singular(owner, value)?;
                 if for_input {
                     self.imports.use_mapping();
                     Ok(format!("_wf_Mapping[{k}, {v}]"))
                 } else {
-                    Ok(format!("dict[{k}, {v}]"))
+                    let dict_ty = self.builtin("dict");
+                    Ok(format!("{dict_ty}[{k}, {v}]"))
                 }
             }
             TypeExpr::Option(payload) => Ok(format!(
@@ -2515,10 +2560,10 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 );
                 self.dep_proto_ref(owner, &name)
             }
-            TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::F32 | TypeExpr::F64 => Ok("float".to_string()),
-            TypeExpr::String => Ok("str".to_string()),
-            _ => Ok("int".to_string()),
+            TypeExpr::Bool => Ok(self.builtin("bool").to_string()),
+            TypeExpr::F32 | TypeExpr::F64 => Ok(self.builtin("float").to_string()),
+            TypeExpr::String => Ok(self.builtin("str").to_string()),
+            _ => Ok(self.builtin("int").to_string()),
         }
     }
 
@@ -2529,9 +2574,9 @@ impl<'a> InterfaceGlueEmitter<'a> {
         ty: &TypeExpr,
     ) -> Result<String> {
         match ty {
-            TypeExpr::Bool => Ok("bool".to_string()),
-            TypeExpr::F32 | TypeExpr::F64 => Ok("float".to_string()),
-            TypeExpr::String => Ok("str".to_string()),
+            TypeExpr::Bool => Ok(self.builtin("bool").to_string()),
+            TypeExpr::F32 | TypeExpr::F64 => Ok(self.builtin("float").to_string()),
+            TypeExpr::String => Ok(self.builtin("str").to_string()),
             TypeExpr::U8
             | TypeExpr::U16
             | TypeExpr::U32
@@ -2540,11 +2585,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
             | TypeExpr::S16
             | TypeExpr::S32
             | TypeExpr::S64
-            | TypeExpr::Char => Ok("int".to_string()),
+            | TypeExpr::Char => Ok(self.builtin("int").to_string()),
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _)
                 if self.ctx.model.resolves_to_u8_in(Some(owner), element) =>
             {
-                Ok("bytes".to_string())
+                Ok(self.builtin("bytes").to_string())
             }
             TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
                 let name = format!(
@@ -2582,7 +2627,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         TypeDefKind::Alias(target) => {
                             self.dependency_defined_proto_singular(owner, target)
                         }
-                        TypeDefKind::Enum(_) => Ok("int".to_string()),
+                        TypeDefKind::Enum(_) => Ok(self.builtin("int").to_string()),
                         TypeDefKind::Record(_)
                         | TypeDefKind::Variant(_)
                         | TypeDefKind::Flags(_)
@@ -2594,7 +2639,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                             if self.ctx.model.resolves_to_u8_in(Some(owner), element) =>
                         {
-                            Ok("bytes".to_string())
+                            Ok(self.builtin("bytes").to_string())
                         }
                         TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
                             let wrapper = format!(
@@ -2636,7 +2681,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                             let qualified = qualify_type(Some(other), target);
                             self.dependency_defined_proto_singular(owner, &qualified)
                         }
-                        TypeDefKind::Enum(_) => Ok("int".to_string()),
+                        TypeDefKind::Enum(_) => Ok(self.builtin("int").to_string()),
                         TypeDefKind::Record(_)
                         | TypeDefKind::Variant(_)
                         | TypeDefKind::Flags(_)
@@ -2648,7 +2693,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                             if self.ctx.model.resolves_to_u8_in(Some(other), element) =>
                         {
-                            Ok("bytes".to_string())
+                            Ok(self.builtin("bytes").to_string())
                         }
                         TypeDefKind::List(_)
                         | TypeDefKind::FixedLengthList(_, _)
@@ -2678,7 +2723,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let qualified = qualify_type(Some(owner), target);
                 self.proto_singular_type(&qualified)
             }
-            TypeDefKind::Enum(_) => Ok("int".to_string()),
+            TypeDefKind::Enum(_) => Ok(self.builtin("int").to_string()),
             TypeDefKind::Record(_)
             | TypeDefKind::Variant(_)
             | TypeDefKind::Flags(_)
@@ -2689,7 +2734,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
                 if self.ctx.model.resolves_to_u8_in(Some(owner), element) =>
             {
-                Ok("bytes".to_string())
+                Ok(self.builtin("bytes").to_string())
             }
             TypeDefKind::List(_)
             | TypeDefKind::FixedLengthList(_, _)
@@ -2878,7 +2923,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &src,
                 &field.ty,
                 &identity,
-                &BuiltinNames::PLAIN,
             )?;
         }
         for stmt in stmts {
@@ -2962,7 +3006,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let case_cls = self.symbols.variant_case_names[&(def_idx, case_idx)].clone();
                 let proto_case = ident::proto_field_name(&case.name);
                 let kw = if case_idx == 0 { "if" } else { "elif" };
-                writeln!(out, "        {kw} isinstance(value, _wf_plain.{case_cls}):")?;
+                let isinstance_fn = self.builtin("isinstance");
+                writeln!(
+                    out,
+                    "        {kw} {isinstance_fn}(value, _wf_plain.{case_cls}):"
+                )?;
                 if let Some(payload) = &case.payload {
                     let mut stmts = Vec::new();
                     let mut temps = TempGen::new();
@@ -2973,20 +3021,19 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         "value.value",
                         payload,
                         &identity,
-                        &BuiltinNames::PLAIN,
                     )?;
                     for stmt in stmts {
                         writeln!(out, "{stmt}")?;
                     }
                     if self.is_proto_message_singular(payload)? {
-                        let attr = py_attr_read("_wf_out", &proto_case, "getattr");
+                        let attr = self.py_attr_read("_wf_out", &proto_case);
                         writeln!(out, "            {attr}.CopyFrom({encoded})")?;
                     } else {
-                        let assign = py_attr_assign("_wf_out", &proto_case, &encoded, "setattr");
+                        let assign = self.py_attr_assign("_wf_out", &proto_case, &encoded);
                         writeln!(out, "            {assign}")?;
                     }
                 } else {
-                    let attr = py_attr_read("_wf_out", &proto_case, "getattr");
+                    let attr = self.py_attr_read("_wf_out", &proto_case);
                     writeln!(out, "            {attr}.SetInParent()")?;
                 }
             }
@@ -3021,7 +3068,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let kw = if case_idx == 0 { "if" } else { "elif" };
                 writeln!(out, "        {kw} _wf_case == {case_lit}:")?;
                 if let Some(payload) = &case.payload {
-                    let read_expr = py_attr_read("value", &proto_case, "getattr");
+                    let read_expr = self.py_attr_read("value", &proto_case);
                     let mut stmts = Vec::new();
                     let mut temps = TempGen::new();
                     let decoded = self.emit_decode_singular(
@@ -3060,6 +3107,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let identity = format!("{}/{type_name}", self.interface.name);
         let identity_lit = escape_py_string(&identity);
         self.imports.use_error();
+        let int_ty = self.builtin("int");
+        let str_ty = self.builtin("str");
+        let bool_ty = self.builtin("bool");
+        let isinstance_fn = self.builtin("isinstance");
+        let repr_fn = self.builtin("repr");
 
         writeln!(out, "class {class_ident}:")?;
         write_docstring(out, 4, docs)?;
@@ -3067,21 +3119,21 @@ impl<'a> InterfaceGlueEmitter<'a> {
         // to_proto
         writeln!(out)?;
         writeln!(out, "    @staticmethod")?;
-        writeln!(out, "    def to_proto(value: {plain}) -> int:")?;
+        writeln!(out, "    def to_proto(value: {plain}) -> {int_ty}:")?;
         if cases.is_empty() {
             writeln!(
                 out,
-                "        _wf_bad: int | str = value if isinstance(value, (int, str)) and not isinstance(value, bool) else repr(value)"
+                "        _wf_bad: {int_ty} | {str_ty} = value if {isinstance_fn}(value, ({int_ty}, {str_ty})) and not {isinstance_fn}(value, {bool_ty}) else {repr_fn}(value)"
             )?;
             writeln!(
                 out,
                 "        raise _wf_Error(\"UnknownEnumValue\", enumeration={identity_lit}, value=_wf_bad)"
             )?;
         } else {
-            writeln!(out, "        if not isinstance(value, {plain}):")?;
+            writeln!(out, "        if not {isinstance_fn}(value, {plain}):")?;
             writeln!(
                 out,
-                "            _wf_bad: int | str = value if isinstance(value, (int, str)) and not isinstance(value, bool) else repr(value)"
+                "            _wf_bad: {int_ty} | {str_ty} = value if {isinstance_fn}(value, ({int_ty}, {str_ty})) and not {isinstance_fn}(value, {bool_ty}) else {repr_fn}(value)"
             )?;
             writeln!(
                 out,
@@ -3104,14 +3156,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
         // from_proto
         writeln!(out)?;
         writeln!(out, "    @staticmethod")?;
-        writeln!(out, "    def from_proto(value: int) -> {plain}:")?;
+        writeln!(out, "    def from_proto(value: {int_ty}) -> {plain}:")?;
         writeln!(
             out,
-            "        if isinstance(value, bool) or not isinstance(value, int):"
+            "        if {isinstance_fn}(value, {bool_ty}) or not {isinstance_fn}(value, {int_ty}):"
         )?;
         writeln!(
             out,
-            "            raise _wf_Error(\"UnknownEnumValue\", enumeration={identity_lit}, value=repr(value))"
+            "            raise _wf_Error(\"UnknownEnumValue\", enumeration={identity_lit}, value={repr_fn}(value))"
         )?;
         for (idx, case) in cases.iter().enumerate() {
             let number = self.number(&self.interface.name, type_name, &case.name)?;
@@ -3162,6 +3214,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
             return Ok(());
         }
 
+        self.imports.use_helpers();
+        let bool_fn = self.builtin("bool");
         writeln!(out)?;
         writeln!(out, "    @staticmethod")?;
         writeln!(out, "    def to_proto(value: {plain}) -> {proto_ty}:")?;
@@ -3169,11 +3223,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
         for flag in flags {
             let py_flag = py_field_ident(&flag.name, "flag")?;
             let proto_flag = ident::proto_field_name(&flag.name);
-            let assign = py_attr_assign(
+            let field_id = escape_py_string(&format!(
+                "{}/{type_name}.{}",
+                self.interface.name, flag.name
+            ));
+            let assign = self.py_attr_assign(
                 "_wf_out",
                 &proto_flag,
-                &format!("bool(value.{py_flag})"),
-                "setattr",
+                &format!("_wf_h.check_bool(value.{py_flag}, {field_id})"),
             );
             writeln!(out, "        {assign}")?;
         }
@@ -3186,8 +3243,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
         for flag in flags {
             let py_flag = py_field_ident(&flag.name, "flag")?;
             let proto_flag = ident::proto_field_name(&flag.name);
-            let read = py_attr_read("value", &proto_flag, "getattr");
-            writeln!(out, "            {py_flag}=bool({read}),")?;
+            let read = self.py_attr_read("value", &proto_flag);
+            writeln!(out, "            {py_flag}={bool_fn}({read}),")?;
         }
         writeln!(out, "        )")?;
         Ok(())
@@ -3211,6 +3268,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         self.imports.use_error();
         self.imports.use_shared("Ok");
         self.imports.use_shared("Err");
+        let isinstance_fn = self.builtin("isinstance");
 
         writeln!(out, "class {class_ident}:")?;
         write_docstring(out, 4, docs)?;
@@ -3225,7 +3283,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         writeln!(out, "    @staticmethod")?;
         writeln!(out, "    def to_proto(value: {plain}) -> {proto_ty}:")?;
         writeln!(out, "        _wf_out = {proto_ty}()")?;
-        writeln!(out, "        if isinstance(value, _wf_Ok):")?;
+        writeln!(out, "        if {isinstance_fn}(value, _wf_Ok):")?;
         if let Some(ok_ty) = &result.ok {
             let mut stmts = Vec::new();
             let mut temps = TempGen::new();
@@ -3236,7 +3294,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 "value.value",
                 ok_ty,
                 &identity,
-                &BuiltinNames::PLAIN,
             )?;
             for stmt in stmts {
                 writeln!(out, "{stmt}")?;
@@ -3249,7 +3306,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         } else {
             writeln!(out, "            _wf_out.ok.SetInParent()")?;
         }
-        writeln!(out, "        elif isinstance(value, _wf_Err):")?;
+        writeln!(out, "        elif {isinstance_fn}(value, _wf_Err):")?;
         if let Some(err_ty) = &result.err {
             let mut stmts = Vec::new();
             let mut temps = TempGen::new();
@@ -3260,7 +3317,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 "value.error",
                 err_ty,
                 &identity,
-                &BuiltinNames::PLAIN,
             )?;
             for stmt in stmts {
                 writeln!(out, "{stmt}")?;
@@ -3358,15 +3414,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
         writeln!(out, "    def to_proto(value: {plain}) -> {proto_out_ty}:")?;
         let mut stmts = Vec::new();
         let mut temps = TempGen::new();
-        let encoded = self.emit_encode_value(
-            &mut stmts,
-            8,
-            &mut temps,
-            "value",
-            target,
-            &identity,
-            &BuiltinNames::PLAIN,
-        )?;
+        let encoded =
+            self.emit_encode_value(&mut stmts, 8, &mut temps, "value", target, &identity)?;
         for stmt in stmts {
             writeln!(out, "{stmt}")?;
         }
@@ -3455,15 +3504,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         writeln!(out, "    def to_proto(value: {plain}) -> {proto_out_ty}:")?;
         let mut stmts = Vec::new();
         let mut temps = TempGen::new();
-        let encoded = self.emit_encode_value(
-            &mut stmts,
-            8,
-            &mut temps,
-            "value",
-            ty,
-            &identity,
-            &BuiltinNames::PLAIN,
-        )?;
+        let encoded = self.emit_encode_value(&mut stmts, 8, &mut temps, "value", ty, &identity)?;
         for stmt in stmts {
             writeln!(out, "{stmt}")?;
         }
@@ -3532,13 +3573,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         None => TypeExpr::List(Box::new(elem)),
                     };
                     self.emit_encode_value(
-                        &mut stmts,
-                        8,
-                        &mut temps,
-                        "value",
-                        &list_expr,
-                        &identity,
-                        &BuiltinNames::PLAIN,
+                        &mut stmts, 8, &mut temps, "value", &list_expr, &identity,
                     )?
                 };
                 for stmt in stmts {
@@ -3603,13 +3638,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     let (k, v) = self.map_types(payload)?;
                     let map_expr = TypeExpr::Map(Box::new(k), Box::new(v));
                     self.emit_encode_value(
-                        &mut stmts,
-                        8,
-                        &mut temps,
-                        "value",
-                        &map_expr,
-                        &identity,
-                        &BuiltinNames::PLAIN,
+                        &mut stmts, 8, &mut temps, "value", &map_expr, &identity,
                     )?
                 };
                 for stmt in stmts {
@@ -3661,12 +3690,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 self.imports.use_shared("NoneValue");
                 self.imports.use_shared("Some");
 
+                let isinstance_fn = self.builtin("isinstance");
                 writeln!(out)?;
                 writeln!(out, "    @staticmethod")?;
                 writeln!(out, "    def to_proto(value: {plain}) -> {proto_ty}:")?;
-                writeln!(out, "        if isinstance(value, _wf_NoneValue):")?;
+                writeln!(out, "        if {isinstance_fn}(value, _wf_NoneValue):")?;
                 writeln!(out, "            return None")?;
-                writeln!(out, "        if not isinstance(value, _wf_Some):")?;
+                writeln!(out, "        if not {isinstance_fn}(value, _wf_Some):")?;
                 writeln!(
                     out,
                     "            raise _wf_Error(\"InvalidState\", message={identity_lit})"
@@ -3694,9 +3724,12 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     let mut stmts = Vec::new();
                     let mut temps = TempGen::new();
                     if inner_is_nested {
-                        writeln!(out, "        if isinstance(value.value, _wf_NoneValue):")?;
+                        writeln!(
+                            out,
+                            "        if {isinstance_fn}(value.value, _wf_NoneValue):"
+                        )?;
                         writeln!(out, "            _wf_out.none.SetInParent()")?;
-                        writeln!(out, "        elif isinstance(value.value, _wf_Some):")?;
+                        writeln!(out, "        elif {isinstance_fn}(value.value, _wf_Some):")?;
                         let encoded = self.emit_encode_singular(
                             &mut stmts,
                             12,
@@ -3704,7 +3737,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                             "value.value.value",
                             &inner_payload,
                             &identity,
-                            &BuiltinNames::PLAIN,
                         )?;
                         for stmt in stmts {
                             writeln!(out, "{stmt}")?;
@@ -3730,7 +3762,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                             "value.value",
                             &inner_payload,
                             &identity,
-                            &BuiltinNames::PLAIN,
                         )?;
                         for stmt in stmts {
                             writeln!(out, "{stmt}")?;
@@ -3812,15 +3843,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 writeln!(out, "            return None")?;
                 let mut stmts = Vec::new();
                 let mut temps = TempGen::new();
-                let encoded = self.emit_encode_singular(
-                    &mut stmts,
-                    8,
-                    &mut temps,
-                    "value",
-                    payload,
-                    &identity,
-                    &BuiltinNames::PLAIN,
-                )?;
+                let encoded = self
+                    .emit_encode_singular(&mut stmts, 8, &mut temps, "value", payload, &identity)?;
                 for stmt in stmts {
                     writeln!(out, "{stmt}")?;
                 }
@@ -3905,7 +3929,10 @@ impl<'a> InterfaceGlueEmitter<'a> {
             let from_req_ret = match param_types.len() {
                 0 => "None".to_string(),
                 1 => param_types[0].clone(),
-                _ => format!("tuple[{}]", param_types.join(", ")),
+                _ => {
+                    let tuple_ty = self.builtin("tuple");
+                    format!("{tuple_ty}[{}]", param_types.join(", "))
+                }
             };
             let result_plain_ty = function
                 .result
@@ -3915,11 +3942,12 @@ impl<'a> InterfaceGlueEmitter<'a> {
 
             let fallback = format!("Checked protobuf helpers for `{fn_scope}`.");
             let fn_docs = combined_doc_lines(&function.docs, &function.stability, Some(&fallback));
+            let int_ty = self.builtin("int");
 
             writeln!(out, "class {internal_cls}:")?;
             write_docstring(out, 4, &fn_docs)?;
             writeln!(out)?;
-            writeln!(out, "    METHOD: _wf_Final[int] = {method_ref}")?;
+            writeln!(out, "    METHOD: _wf_Final[{int_ty}] = {method_ref}")?;
             writeln!(
                 out,
                 "    request_type: _wf_Final[type[{req_ty}]] = {req_ty}"
@@ -3940,25 +3968,29 @@ impl<'a> InterfaceGlueEmitter<'a> {
             if function.params.is_empty() {
                 writeln!(out, "        return {req_ty}()")?;
             } else {
-                let builtins = BuiltinNames::for_params(&param_idents, &mut self.imports);
+                self.local_shadowed_builtins = param_idents.iter().cloned().collect();
                 writeln!(out, "        _wf_out = {req_ty}()")?;
                 let mut stmts = Vec::new();
                 let mut temps = TempGen::new();
-                for (param, p_ident) in function.params.iter().zip(&param_idents) {
-                    let proto_param = ident::proto_field_name(&param.name);
-                    let identity = format!("{iface_name}#{}.{}", function.name, param.name);
-                    self.emit_assign_proto_field(
-                        &mut stmts,
-                        8,
-                        &mut temps,
-                        "_wf_out",
-                        &proto_param,
-                        p_ident,
-                        &param.ty,
-                        &identity,
-                        &builtins,
-                    )?;
-                }
+                let assign_result: Result<()> = (|| {
+                    for (param, p_ident) in function.params.iter().zip(&param_idents) {
+                        let proto_param = ident::proto_field_name(&param.name);
+                        let identity = format!("{iface_name}#{}.{}", function.name, param.name);
+                        self.emit_assign_proto_field(
+                            &mut stmts,
+                            8,
+                            &mut temps,
+                            "_wf_out",
+                            &proto_param,
+                            p_ident,
+                            &param.ty,
+                            &identity,
+                        )?;
+                    }
+                    Ok(())
+                })();
+                self.local_shadowed_builtins.clear();
+                assign_result?;
                 for stmt in stmts {
                     writeln!(out, "{stmt}")?;
                 }
@@ -4014,15 +4046,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let mut stmts = Vec::new();
                 let mut temps = TempGen::new();
                 self.emit_assign_proto_field(
-                    &mut stmts,
-                    8,
-                    &mut temps,
-                    "_wf_out",
-                    "result",
-                    "value",
-                    result_ty,
-                    &identity,
-                    &BuiltinNames::PLAIN,
+                    &mut stmts, 8, &mut temps, "_wf_out", "result", "value", result_ty, &identity,
                 )?;
                 for stmt in stmts {
                     writeln!(out, "{stmt}")?;
@@ -4093,12 +4117,10 @@ impl<'a> InterfaceGlueEmitter<'a> {
         src_expr: &str,
         ty: &TypeExpr,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<()> {
         let pad = " ".repeat(indent);
         let inner_pad = " ".repeat(indent + 4);
-        let encoded =
-            self.emit_encode_value(stmts, indent, temps, src_expr, ty, identity, builtins)?;
+        let encoded = self.emit_encode_value(stmts, indent, temps, src_expr, ty, identity)?;
         match self.form(ty)? {
             Form::Option => {
                 let opt_var = if encoded.starts_with("_wf_v") {
@@ -4110,24 +4132,23 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 };
                 stmts.push(format!("{pad}if {opt_var} is not None:"));
                 if self.is_option_field_proto_message(ty)? {
-                    let attr = py_attr_read(target_msg, proto_field, builtins.getattr);
+                    let attr = self.py_attr_read(target_msg, proto_field);
                     stmts.push(format!("{inner_pad}{attr}.CopyFrom({opt_var})"));
                 } else {
-                    let assign =
-                        py_attr_assign(target_msg, proto_field, &opt_var, builtins.setattr);
+                    let assign = self.py_attr_assign(target_msg, proto_field, &opt_var);
                     stmts.push(format!("{inner_pad}{assign}"));
                 }
             }
             Form::Message => {
-                let attr = py_attr_read(target_msg, proto_field, builtins.getattr);
+                let attr = self.py_attr_read(target_msg, proto_field);
                 stmts.push(format!("{pad}{attr}.CopyFrom({encoded})"));
             }
             Form::List => {
-                let attr = py_attr_read(target_msg, proto_field, builtins.getattr);
+                let attr = self.py_attr_read(target_msg, proto_field);
                 stmts.push(format!("{pad}{attr}.extend({encoded})"));
             }
             Form::Map => {
-                let attr = py_attr_read(target_msg, proto_field, builtins.getattr);
+                let attr = self.py_attr_read(target_msg, proto_field);
                 let val_is_msg = self.map_value_is_proto_message(ty)?;
                 let mk = temps.fresh();
                 let mv = temps.fresh();
@@ -4139,7 +4160,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 }
             }
             Form::Scalar | Form::Bytes | Form::Enum => {
-                let assign = py_attr_assign(target_msg, proto_field, &encoded, builtins.setattr);
+                let assign = self.py_attr_assign(target_msg, proto_field, &encoded);
                 stmts.push(format!("{pad}{assign}"));
             }
         }
@@ -4160,7 +4181,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 self.imports.use_helpers();
                 Ok(format!("_wf_h.check_bool({expr}, {id})"))
             }
-            TypeExpr::F32 | TypeExpr::F64 | TypeExpr::String => Ok(expr.to_string()),
+            TypeExpr::F32 | TypeExpr::F64 => {
+                self.imports.use_helpers();
+                Ok(format!("_wf_h.check_float({expr}, {id})"))
+            }
+            TypeExpr::String => {
+                self.imports.use_helpers();
+                Ok(format!("_wf_h.check_str({expr}, {id})"))
+            }
             TypeExpr::U8 => {
                 self.imports.use_helpers();
                 Ok(format!("_wf_h.check_u8({expr}, {id})"))
@@ -4201,7 +4229,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn emit_encode_value(
         &mut self,
         stmts: &mut Vec<String>,
@@ -4210,7 +4237,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         expr: &str,
         ty: &TypeExpr,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<String> {
         match ty {
             TypeExpr::Bool
@@ -4231,38 +4257,33 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let id = escape_py_string(identity);
                 Ok(format!("_wf_h.check_bytes({expr}, {id})"))
             }
-            TypeExpr::List(element) => self.emit_encode_list(
-                stmts, indent, temps, expr, element, None, identity, builtins,
-            ),
+            TypeExpr::List(element) => {
+                self.emit_encode_list(stmts, indent, temps, expr, element, None, identity)
+            }
             TypeExpr::FixedLengthList(element, len) if self.ctx.model.resolves_to_u8(element) => {
                 self.imports.use_helpers();
                 let pad = " ".repeat(indent);
                 let id = escape_py_string(identity);
+                let len_fn = self.builtin("len");
                 let b_var = temps.fresh();
                 stmts.push(format!("{pad}{b_var} = _wf_h.check_bytes({expr}, {id})"));
                 stmts.push(format!(
-                    "{pad}_wf_h.check_length({}({b_var}), {len}, {id})",
-                    builtins.len
+                    "{pad}_wf_h.check_length({len_fn}({b_var}), {len}, {id})"
                 ));
                 Ok(b_var)
             }
-            TypeExpr::FixedLengthList(element, len) => self.emit_encode_list(
-                stmts,
-                indent,
-                temps,
-                expr,
-                element,
-                Some(*len),
-                identity,
-                builtins,
-            ),
-            TypeExpr::Map(key, value) => {
-                self.emit_encode_map(stmts, indent, temps, expr, key, value, identity, builtins)
+            TypeExpr::FixedLengthList(element, len) => {
+                self.emit_encode_list(stmts, indent, temps, expr, element, Some(*len), identity)
             }
-            TypeExpr::Option(payload) => self
-                .emit_encode_option_direct(stmts, indent, temps, expr, payload, identity, builtins),
-            TypeExpr::Result(result) => self
-                .emit_encode_inline_result(stmts, indent, temps, expr, result, identity, builtins),
+            TypeExpr::Map(key, value) => {
+                self.emit_encode_map(stmts, indent, temps, expr, key, value, identity)
+            }
+            TypeExpr::Option(payload) => {
+                self.emit_encode_option_direct(stmts, indent, temps, expr, payload, identity)
+            }
+            TypeExpr::Result(result) => {
+                self.emit_encode_inline_result(stmts, indent, temps, expr, result, identity)
+            }
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
                     let target = self.glue_target_expr(name)?;
@@ -4270,7 +4291,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 }
                 let def = self.named(name)?;
                 if let TypeDefKind::Alias(target) = &def.kind {
-                    self.emit_encode_value(stmts, indent, temps, expr, target, identity, builtins)
+                    self.emit_encode_value(stmts, indent, temps, expr, target, identity)
                 } else {
                     let target = self.glue_target_expr(name)?;
                     Ok(format!("{target}.to_proto({expr})"))
@@ -4279,7 +4300,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     fn emit_encode_singular(
         &mut self,
         stmts: &mut Vec<String>,
@@ -4288,7 +4309,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         expr: &str,
         ty: &TypeExpr,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<String> {
         let pad = " ".repeat(indent);
         let inner_pad = " ".repeat(indent + 4);
@@ -4314,20 +4334,19 @@ impl<'a> InterfaceGlueEmitter<'a> {
             TypeExpr::FixedLengthList(element, len) if self.ctx.model.resolves_to_u8(element) => {
                 self.imports.use_helpers();
                 let id = escape_py_string(identity);
+                let len_fn = self.builtin("len");
                 let b_var = temps.fresh();
                 stmts.push(format!("{pad}{b_var} = _wf_h.check_bytes({expr}, {id})"));
                 stmts.push(format!(
-                    "{pad}_wf_h.check_length({}({b_var}), {len}, {id})",
-                    builtins.len
+                    "{pad}_wf_h.check_length({len_fn}({b_var}), {len}, {id})"
                 ));
                 Ok(b_var)
             }
             TypeExpr::List(element) => {
                 let wrapper_proto = format!("WitforgeListOf{}", self.shape_name(element)?);
                 let wrapper_ty = self.local_proto_ref(&wrapper_proto);
-                let values = self.emit_encode_list(
-                    stmts, indent, temps, expr, element, None, identity, builtins,
-                )?;
+                let values =
+                    self.emit_encode_list(stmts, indent, temps, expr, element, None, identity)?;
                 let w_var = temps.fresh();
                 stmts.push(format!("{pad}{w_var} = {wrapper_ty}()"));
                 stmts.push(format!("{pad}{w_var}.values.extend({values})"));
@@ -4344,7 +4363,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     element,
                     Some(*len),
                     identity,
-                    builtins,
                 )?;
                 let w_var = temps.fresh();
                 stmts.push(format!("{pad}{w_var} = {wrapper_ty}()"));
@@ -4359,8 +4377,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 );
                 let wrapper_ty = self.local_proto_ref(&wrapper_proto);
                 let val_is_msg = self.is_proto_message_singular(value)?;
-                let entries = self
-                    .emit_encode_map(stmts, indent, temps, expr, key, value, identity, builtins)?;
+                let entries =
+                    self.emit_encode_map(stmts, indent, temps, expr, key, value, identity)?;
                 let w_var = temps.fresh();
                 let mk = temps.fresh();
                 let mv = temps.fresh();
@@ -4383,11 +4401,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     &wrapper_proto,
                     payload,
                     identity,
-                    builtins,
                 )
             }
-            TypeExpr::Result(result) => self
-                .emit_encode_inline_result(stmts, indent, temps, expr, result, identity, builtins),
+            TypeExpr::Result(result) => {
+                self.emit_encode_inline_result(stmts, indent, temps, expr, result, identity)
+            }
             TypeExpr::Named(name) => {
                 if name.is_foreign() {
                     let (dep, def) = self
@@ -4397,7 +4415,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         TypeDefKind::Alias(target) => {
                             let qualified = qualify_type(Some(dep), target);
                             return self.emit_encode_singular(
-                                stmts, indent, temps, expr, &qualified, identity, builtins,
+                                stmts, indent, temps, expr, &qualified, identity,
                             );
                         }
                         TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _)
@@ -4466,9 +4484,9 @@ impl<'a> InterfaceGlueEmitter<'a> {
 
                 let def = self.named(name)?;
                 match &def.kind {
-                    TypeDefKind::Alias(target) => self.emit_encode_singular(
-                        stmts, indent, temps, expr, target, identity, builtins,
-                    ),
+                    TypeDefKind::Alias(target) => {
+                        self.emit_encode_singular(stmts, indent, temps, expr, target, identity)
+                    }
                     TypeDefKind::Record(_)
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Flags(_)
@@ -4550,19 +4568,19 @@ impl<'a> InterfaceGlueEmitter<'a> {
         element: &TypeExpr,
         fixed_len: Option<u32>,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<String> {
         let pad = " ".repeat(indent);
         let inner_pad = " ".repeat(indent + 4);
         if let Some(len) = fixed_len {
             self.imports.use_helpers();
             let id = escape_py_string(identity);
+            let len_fn = self.builtin("len");
             stmts.push(format!(
-                "{pad}_wf_h.check_length({}({expr}), {len}, {id})",
-                builtins.len
+                "{pad}_wf_h.check_length({len_fn}({expr}), {len}, {id})"
             ));
         }
         let elem_proto_ty = self.proto_singular_type(element)?;
+        let list_ty = self.builtin("list");
         let out_var = temps.fresh();
         let item_var = temps.fresh();
         let mut loop_stmts = Vec::new();
@@ -4573,9 +4591,8 @@ impl<'a> InterfaceGlueEmitter<'a> {
             &item_var,
             element,
             identity,
-            builtins,
         )?;
-        stmts.push(format!("{pad}{out_var}: list[{elem_proto_ty}] = []"));
+        stmts.push(format!("{pad}{out_var}: {list_ty}[{elem_proto_ty}] = []"));
         stmts.push(format!("{pad}for {item_var} in {expr}:"));
         stmts.extend(loop_stmts);
         stmts.push(format!("{inner_pad}{out_var}.append({encoded})"));
@@ -4592,12 +4609,12 @@ impl<'a> InterfaceGlueEmitter<'a> {
         key: &TypeExpr,
         value: &TypeExpr,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<String> {
         let pad = " ".repeat(indent);
         let inner_pad = " ".repeat(indent + 4);
-        let key_py_ty = Self::proto_map_key_py_type(key)?;
+        let key_py_ty = self.proto_map_key_py_type(key)?;
         let val_proto_ty = self.proto_singular_type(value)?;
+        let dict_ty = self.builtin("dict");
         let out_var = temps.fresh();
         let key_var = temps.fresh();
         let val_var = temps.fresh();
@@ -4613,10 +4630,9 @@ impl<'a> InterfaceGlueEmitter<'a> {
             &val_var,
             value,
             identity,
-            builtins,
         )?;
         stmts.push(format!(
-            "{pad}{out_var}: dict[{key_py_ty}, {val_proto_ty}] = {{}}"
+            "{pad}{out_var}: {dict_ty}[{key_py_ty}, {val_proto_ty}] = {{}}"
         ));
         stmts.push(format!("{pad}for {key_var}, {val_var} in {expr}.items():"));
         stmts.extend(loop_stmts);
@@ -4624,7 +4640,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         Ok(out_var)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn emit_encode_option_direct(
         &mut self,
         stmts: &mut Vec<String>,
@@ -4633,7 +4648,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         expr: &str,
         payload: &TypeExpr,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<String> {
         let pad = " ".repeat(indent);
         let inner_pad = " ".repeat(indent + 4);
@@ -4649,6 +4663,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             self.imports.use_error();
             self.imports.use_shared("NoneValue");
             self.imports.use_shared("Some");
+            let isinstance_fn = self.builtin("isinstance");
             let mut some_stmts = Vec::new();
             let encoded = self.emit_encode_singular(
                 &mut some_stmts,
@@ -4657,17 +4672,12 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &format!("{input_var}.value"),
                 payload,
                 identity,
-                builtins,
             )?;
-            stmts.push(format!(
-                "{pad}if {}({input_var}, _wf_Some):",
-                builtins.isinstance
-            ));
+            stmts.push(format!("{pad}if {isinstance_fn}({input_var}, _wf_Some):"));
             stmts.extend(some_stmts);
             stmts.push(format!("{inner_pad}{out_var} = {encoded}"));
             stmts.push(format!(
-                "{pad}elif not {}({input_var}, _wf_NoneValue):",
-                builtins.isinstance
+                "{pad}elif not {isinstance_fn}({input_var}, _wf_NoneValue):"
             ));
             stmts.push(format!(
                 "{inner_pad}raise _wf_Error(\"InvalidState\", message={id})"
@@ -4681,7 +4691,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &input_var,
                 payload,
                 identity,
-                builtins,
             )?;
             stmts.push(format!("{pad}if {input_var} is not None:"));
             stmts.extend(some_stmts);
@@ -4700,7 +4709,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         wrapper_proto: &str,
         payload: &TypeExpr,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<String> {
         let wrapper_ty = self.local_proto_ref(wrapper_proto);
         let pad = " ".repeat(indent);
@@ -4717,6 +4725,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             self.imports.use_error();
             self.imports.use_shared("NoneValue");
             self.imports.use_shared("Some");
+            let isinstance_fn = self.builtin("isinstance");
             let mut some_stmts = Vec::new();
             let encoded = self.emit_encode_singular(
                 &mut some_stmts,
@@ -4725,17 +4734,12 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &format!("{input_var}.value"),
                 payload,
                 identity,
-                builtins,
             )?;
             stmts.push(format!(
-                "{pad}if {}({input_var}, _wf_NoneValue):",
-                builtins.isinstance
+                "{pad}if {isinstance_fn}({input_var}, _wf_NoneValue):"
             ));
             stmts.push(format!("{inner_pad}{out_var}.none.SetInParent()"));
-            stmts.push(format!(
-                "{pad}elif {}({input_var}, _wf_Some):",
-                builtins.isinstance
-            ));
+            stmts.push(format!("{pad}elif {isinstance_fn}({input_var}, _wf_Some):"));
             stmts.extend(some_stmts);
             if payload_is_msg {
                 stmts.push(format!("{inner_pad}{out_var}.some.CopyFrom({encoded})"));
@@ -4755,7 +4759,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &input_var,
                 payload,
                 identity,
-                builtins,
             )?;
             stmts.push(format!("{pad}if {input_var} is None:"));
             stmts.push(format!("{inner_pad}{out_var}.none.SetInParent()"));
@@ -4797,7 +4800,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         w_var
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn emit_encode_inline_result(
         &mut self,
         stmts: &mut Vec<String>,
@@ -4806,13 +4808,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
         expr: &str,
         result: &ResultExpr,
         identity: &str,
-        builtins: &BuiltinNames,
     ) -> Result<String> {
         let shape = self.shape_name(&TypeExpr::Result(result.clone()))?;
         let wrapper_ty = self.local_proto_ref(&format!("Witforge{shape}"));
         self.imports.use_error();
         self.imports.use_shared("Ok");
         self.imports.use_shared("Err");
+        let isinstance_fn = self.builtin("isinstance");
 
         let pad = " ".repeat(indent);
         let inner_pad = " ".repeat(indent + 4);
@@ -4821,10 +4823,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let res_var = temps.fresh();
         stmts.push(format!("{pad}{out_var} = {wrapper_ty}()"));
         stmts.push(format!("{pad}{res_var} = {expr}"));
-        stmts.push(format!(
-            "{pad}if {}({res_var}, _wf_Ok):",
-            builtins.isinstance
-        ));
+        stmts.push(format!("{pad}if {isinstance_fn}({res_var}, _wf_Ok):"));
         if let Some(ok_ty) = &result.ok {
             let mut ok_stmts = Vec::new();
             let encoded = self.emit_encode_singular(
@@ -4834,7 +4833,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &format!("{res_var}.value"),
                 ok_ty,
                 identity,
-                builtins,
             )?;
             stmts.extend(ok_stmts);
             if self.is_proto_message_singular(ok_ty)? {
@@ -4845,10 +4843,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         } else {
             stmts.push(format!("{inner_pad}{out_var}.ok.SetInParent()"));
         }
-        stmts.push(format!(
-            "{pad}elif {}({res_var}, _wf_Err):",
-            builtins.isinstance
-        ));
+        stmts.push(format!("{pad}elif {isinstance_fn}({res_var}, _wf_Err):"));
         if let Some(err_ty) = &result.err {
             let mut err_stmts = Vec::new();
             let encoded = self.emit_encode_singular(
@@ -4858,7 +4853,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &format!("{res_var}.error"),
                 err_ty,
                 identity,
-                builtins,
             )?;
             stmts.extend(err_stmts);
             if self.is_proto_message_singular(err_ty)? {
@@ -4890,8 +4884,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 self.imports.use_helpers();
                 Ok(format!("_wf_h.check_bool({expr}, {id})"))
             }
-            TypeExpr::F32 | TypeExpr::F64 => Ok(format!("float({expr})")),
-            TypeExpr::String => Ok(expr.to_string()),
+            TypeExpr::F32 | TypeExpr::F64 => {
+                self.imports.use_helpers();
+                Ok(format!("_wf_h.check_float({expr}, {id})"))
+            }
+            TypeExpr::String => {
+                self.imports.use_helpers();
+                Ok(format!("_wf_h.check_str({expr}, {id})"))
+            }
             TypeExpr::U8 => {
                 self.imports.use_helpers();
                 Ok(format!("_wf_h.check_u8({expr}, {id})"))
@@ -4945,7 +4945,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
     ) -> Result<String> {
         let pad = " ".repeat(indent);
         let proto_field_lit = escape_py_string(proto_field);
-        let read_expr = py_attr_read(msg_expr, proto_field, "getattr");
+        let read_expr = self.py_attr_read(msg_expr, proto_field);
         match self.form(ty)? {
             Form::List | Form::Map => {
                 self.emit_decode_value(stmts, indent, temps, &read_expr, ty, identity)
@@ -5004,10 +5004,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 self.imports.use_helpers();
                 let pad = " ".repeat(indent);
                 let id = escape_py_string(identity);
+                let len_fn = self.builtin("len");
                 let b_var = temps.fresh();
                 stmts.push(format!("{pad}{b_var} = _wf_h.check_bytes({expr}, {id})"));
                 stmts.push(format!(
-                    "{pad}_wf_h.check_length(len({b_var}), {len}, {id})"
+                    "{pad}_wf_h.check_length({len_fn}({b_var}), {len}, {id})"
                 ));
                 Ok(b_var)
             }
@@ -5072,10 +5073,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 self.imports.use_helpers();
                 let pad = " ".repeat(indent);
                 let id = escape_py_string(identity);
+                let len_fn = self.builtin("len");
                 let b_var = temps.fresh();
                 stmts.push(format!("{pad}{b_var} = _wf_h.check_bytes({expr}, {id})"));
                 stmts.push(format!(
-                    "{pad}_wf_h.check_length(len({b_var}), {len}, {id})"
+                    "{pad}_wf_h.check_length({len_fn}({b_var}), {len}, {id})"
                 ));
                 Ok(b_var)
             }
@@ -5223,9 +5225,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
         if let Some(len) = fixed_len {
             self.imports.use_helpers();
             let id = escape_py_string(identity);
-            stmts.push(format!("{pad}_wf_h.check_length(len({expr}), {len}, {id})"));
+            let len_fn = self.builtin("len");
+            stmts.push(format!(
+                "{pad}_wf_h.check_length({len_fn}({expr}), {len}, {id})"
+            ));
         }
         let elem_plain_ty = self.plain_type(element)?;
+        let list_ty = self.builtin("list");
+        let tuple_fn = self.builtin("tuple");
         let out_var = temps.fresh();
         let item_var = temps.fresh();
         let mut loop_stmts = Vec::new();
@@ -5237,11 +5244,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
             element,
             identity,
         )?;
-        stmts.push(format!("{pad}{out_var}: list[{elem_plain_ty}] = []"));
+        stmts.push(format!("{pad}{out_var}: {list_ty}[{elem_plain_ty}] = []"));
         stmts.push(format!("{pad}for {item_var} in {expr}:"));
         stmts.extend(loop_stmts);
         stmts.push(format!("{inner_pad}{out_var}.append({decoded})"));
-        Ok(format!("tuple({out_var})"))
+        Ok(format!("{tuple_fn}({out_var})"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5259,6 +5266,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let inner_pad = " ".repeat(indent + 4);
         let k_plain_ty = self.plain_type(key)?;
         let v_plain_ty = self.plain_type(value)?;
+        let dict_ty = self.builtin("dict");
         let out_var = temps.fresh();
         let raw_k = temps.fresh();
         let raw_v = temps.fresh();
@@ -5272,7 +5280,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             self.emit_decode_singular(&mut loop_stmts, indent + 4, temps, &raw_v, value, identity)?;
 
         stmts.push(format!(
-            "{pad}{out_var}: dict[{k_plain_ty}, {v_plain_ty}] = {{}}"
+            "{pad}{out_var}: {dict_ty}[{k_plain_ty}, {v_plain_ty}] = {{}}"
         ));
         stmts.push(format!("{pad}for {raw_k}, {raw_v} in {expr}.items():"));
         stmts.extend(loop_stmts);
@@ -5581,6 +5589,8 @@ mod tests {
             "plain",
             "my_app.plain",
             "_internal.v2.proto",
+            "my_app.type",
+            "acme.match.case",
             ".",
             "..",
             "...",
