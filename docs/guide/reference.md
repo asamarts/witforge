@@ -250,6 +250,31 @@ metadata.
 | `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
 | `--project <NAME>` | Project name in `witforge.toml`. |
 
+### `witforge go-glue`
+
+Generate or check Go checked protobuf glue targeting `google.golang.org/protobuf`
+(`protoc-gen-go` and `protojson`, paired with `witforge proto --go-package`): root `doc.go`,
+structured `*glueerr.GlueError` implementing `error`, narrow-width and Unicode scalar helpers in
+`helpers`, per-major `<Type>ToProto` / `<Type>FromProto` conversions, per-function
+`<Fn>ToRequest` / `<Fn>FromRequest` / `<Fn>ToResponse` / `<Fn>FromResponse` helpers, typed
+`Method` constants, and `witforge_deps/` cross-major glue enforcing all 13 rows of the WIT decode
+profile plus encode-side Unicode scalar `rune`, valid UTF-8 `string`, closed-enum, non-nil
+`[]byte`, and deterministic sorted-key `map<K, V>` checks.
+
+| Option / Argument | Description |
+|---|---|
+| `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
+| `--out <DIR>` | Output directory for generated Go protobuf glue files. |
+| `--go-module <VALUE>` | Go module import path prefix for emitted glue packages (for example `example.com/acme/contracts/gen/glue`). |
+| `--plain-root <VALUE>` | Go import path prefix for generated plain Go packages (matching `witforge go --go-module`). |
+| `--proto-root <VALUE>` | Go import path prefix for generated `*.pb.go` packages (matching `witforge proto --go-package`). |
+| `--check` | Verify existing files match without writing; exits `1` on drift. |
+| `--diff` | Print a unified diff of output changes without changing the exit status. |
+| `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
+| `--config <PATH>` | Explicit `witforge.toml` path (conflicts with `--no-config`). |
+| `--no-config` | Disable upward `witforge.toml` discovery (conflicts with `--config`). |
+| `--project <NAME>` | Project name in `witforge.toml`. |
+
 ### `witforge conformance`
 
 Generate or check the versioned cross-language protobuf conformance fixture bundle
@@ -478,6 +503,11 @@ expansion.
 | `[project.<name>.go]` | no | table | Go 1.22+ stdlib plain types and interfaces generator configuration. |
 | `project.<name>.go.out` | yes (if section set) | path | Output directory for generated Go package files. |
 | `project.<name>.go.go-module` | yes (if section set) | string | Go module import path prefix for emitted packages (for example `example.com/acme/contracts/gen/plain`). |
+| `[project.<name>.go-glue]` | no | table | Checked Go protobuf glue (`google.golang.org/protobuf`) generator configuration. |
+| `project.<name>.go-glue.out` | yes (if section set) | path | Output directory for generated Go protobuf glue files. |
+| `project.<name>.go-glue.go-module` | yes (if section set) | string | Go module import path prefix for emitted glue packages (for example `example.com/acme/contracts/gen/glue`). |
+| `project.<name>.go-glue.plain-root` | yes (if section set) | string | Go import path prefix for generated plain Go packages (matching `witforge go --go-module`). |
+| `project.<name>.go-glue.proto-root` | yes (if section set) | string | Go import path prefix for generated `*.pb.go` packages (matching `witforge proto --go-package`). |
 | `[project.<name>.policy]` | no | table | Project governance policy table. |
 | `project.<name>.policy.diff-check` | no | array of strings | Default compatibility views for bare `witforge diff --check` (non-empty subset of `"wire"`, `"source"`, `"api"`, `"decode"`). |
 | `project.<name>.policy.forbid-unstable-in-release` | no | boolean | Refuse `witforge release` when any `@unstable` declaration is present (default `false`). |

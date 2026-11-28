@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use witforge::emit::{
-    glue, go, json_schema, proto, python, python_glue, rust, typescript, typescript_glue,
+    glue, go, go_glue, json_schema, proto, python, python_glue, rust, typescript, typescript_glue,
 };
 use witforge::load;
 use witforge::lock::WireLock;
@@ -300,6 +300,7 @@ fn the_committed_conformance_matrix_names_every_fixture() {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn dependency_and_serde_fixtures_cover_every_emitter() {
     for name in [
@@ -359,6 +360,18 @@ fn dependency_and_serde_fixtures_cover_every_emitter() {
                 .files()
                 .is_empty(),
             "{name} go"
+        );
+        assert!(
+            !go_glue::plan(
+                &root,
+                "example.com/witforge/deps/glue",
+                "example.com/witforge/deps/plain",
+                "example.com/witforge/deps/proto",
+            )
+            .unwrap()
+            .files()
+            .is_empty(),
+            "{name} go-glue"
         );
     }
 

@@ -375,7 +375,7 @@ fn is_go_major_version_suffix(segment: &str) -> bool {
         && digits.parse::<u64>().is_ok_and(|n| n >= 2)
 }
 
-fn root_package_name(go_module: &str, namespace: &str, name: &str) -> String {
+pub(crate) fn root_package_name(go_module: &str, namespace: &str, name: &str) -> String {
     let segments: Vec<&str> = go_module.split('/').collect();
     let candidate =
         if segments.len() >= 2 && is_go_major_version_suffix(segments[segments.len() - 1]) {
@@ -1745,7 +1745,7 @@ fn go_named_type(
 /// Write struct fields or `const` block entries matching `gofmt`'s exact alignment rules:
 /// a leading doc comment begins a new alignment group, while consecutive entries without a
 /// leading doc comment align their second column to `max_name_len + 1`.
-fn write_aligned_entries(
+pub(crate) fn write_aligned_entries(
     out: &mut String,
     entries: &[(Vec<String>, String, String)],
 ) -> Result<()> {
@@ -1770,7 +1770,7 @@ fn write_aligned_entries(
     Ok(())
 }
 
-fn combined_doc_lines(
+pub(crate) fn combined_doc_lines(
     raw_docs: &str,
     stability: &Stability,
     fallback: Option<&str>,
@@ -1830,7 +1830,7 @@ fn normalize_go_doc_lines(lines: &[String]) -> Vec<String> {
     normalized
 }
 
-fn write_doc_comment(
+pub(crate) fn write_doc_comment(
     out: &mut String,
     indent: &str,
     lines: &[String],
@@ -1917,7 +1917,7 @@ pub(crate) fn go_param_ident(wit_name: &str) -> Result<String> {
     Ok(escape_go_ident(&camel))
 }
 
-fn insert_name(
+pub(crate) fn insert_name(
     seen: &mut BTreeMap<String, String>,
     generated: &str,
     wit_name: &str,

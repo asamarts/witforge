@@ -19,7 +19,8 @@ JSON Schema, and protobuf glue.
   file options), JSON Schema (Draft 7 default, opt-in Draft 2020-12), glue,
   Markdown documentation (`doc`), strict ESM TypeScript (`ts`), checked TypeScript
   protobuf glue (`ts-glue`), Python 3.11+ stdlib (`py`), checked Python
-  protobuf glue (`py-glue`), and Go 1.22+ stdlib (`go`) emitters,
+  protobuf glue (`py-glue`), Go 1.22+ stdlib (`go`), and checked Go protobuf
+  glue (`go-glue`) emitters,
   cross-language protobuf conformance bundle (`conformance`), versioned JSON
   contract IR (`inspect`), contract `diff` (including `--git-base <REV>`),
   release-freeze enforcement, structured diagnostics (`--format human|json|sarif`),
@@ -28,7 +29,8 @@ JSON Schema, and protobuf glue.
   Action, and the Astro + Starlight documentation and promotional site under
   `site/` (deployed via `.github/workflows/docs.yml`).
 - The commands are `witforge check`, `lock`, `rust`, `proto`, `schema`, `glue`,
-  `doc`, `ts`, `ts-glue`, `py`, `py-glue`, `go`, `conformance`, `generate`, `init`, `new-version`,
+  `doc`, `ts`, `ts-glue`, `py`, `py-glue`, `go`, `go-glue`, `conformance`,
+  `generate`, `init`, `new-version`,
   `deps sync`, `release`, `retire`, `diff`, `inspect`, `freeze`, `completions`,
   and `explain`.
 - The normative specifications are [`docs/design/model.md`](docs/design/model.md),

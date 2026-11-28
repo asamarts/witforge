@@ -27,6 +27,7 @@ pub mod doc;
 pub(crate) mod docs;
 pub mod glue;
 pub mod go;
+pub mod go_glue;
 pub(crate) mod ident;
 pub mod json_schema;
 pub mod output;
@@ -206,7 +207,7 @@ mod tests {
     use std::path::Path;
 
     use super::versions::{Version, load_versions};
-    use super::{glue, go, proto, python, python_glue, rust, typescript, typescript_glue};
+    use super::{glue, go, go_glue, proto, python, python_glue, rust, typescript, typescript_glue};
     use crate::is_contract_error;
     use crate::lock::WireLock;
     use crate::model::{QualifiedName, TypeDefKind, TypeExpr};
@@ -283,6 +284,17 @@ mod tests {
             "is not in the model",
         );
         assert_internal(
+            &go_glue::plan_versions_with_options(
+                &dangling,
+                "example.com/witforge/glue",
+                "example.com/witforge/plain",
+                "example.com/witforge/proto",
+                &go_glue::GoGlueOptions::new(),
+            )
+            .unwrap_err(),
+            "is not in the model",
+        );
+        assert_internal(
             &python_glue::plan_versions_with_options(
                 &dangling,
                 "plain",
@@ -324,6 +336,17 @@ mod tests {
                 "../plain",
                 "../proto",
                 &typescript_glue::TypeScriptGlueOptions::new(),
+            )
+            .unwrap_err(),
+            "is live in the model",
+        );
+        assert_internal(
+            &go_glue::plan_versions_with_options(
+                &reserved,
+                "example.com/witforge/glue",
+                "example.com/witforge/plain",
+                "example.com/witforge/proto",
+                &go_glue::GoGlueOptions::new(),
             )
             .unwrap_err(),
             "is live in the model",

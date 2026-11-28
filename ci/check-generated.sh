@@ -32,6 +32,10 @@ fi
     --plain-root ..py --proto-root ..proto
 "${RUN[@]}" go "${WIT_ROOT}" --out "${TMP}/go" \
     --go-module example.com/witforge/generated
+"${RUN[@]}" go-glue "${WIT_ROOT}" --out "${TMP}/go-glue" \
+    --go-module example.com/witforge/generated/glue \
+    --plain-root example.com/witforge/generated \
+    --proto-root example.com/witforge/generated/proto
 "${RUN[@]}" conformance --out "${TMP}/conformance"
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options
 
@@ -49,8 +53,12 @@ fi
     --plain-root ..py --proto-root ..proto --check
 "${RUN[@]}" go "${WIT_ROOT}" --out "${TMP}/go" \
     --go-module example.com/witforge/generated --check
+"${RUN[@]}" go-glue "${WIT_ROOT}" --out "${TMP}/go-glue" \
+    --go-module example.com/witforge/generated/glue \
+    --plain-root example.com/witforge/generated \
+    --proto-root example.com/witforge/generated/proto --check
 if command -v gofmt >/dev/null 2>&1 && command -v go >/dev/null 2>&1; then
-    gofmt_diff="$(gofmt -d "${TMP}/go")"
+    gofmt_diff="$(gofmt -d "${TMP}/go" "${TMP}/go-glue")"
     if [[ -n "${gofmt_diff}" ]]; then
         echo "gofmt diff on generated Go output:" >&2
         echo "${gofmt_diff}" >&2

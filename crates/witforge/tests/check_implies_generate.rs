@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proptest::prelude::*;
 use witforge::emit::{
-    glue, go, json_schema, proto, python, python_glue, rust, typescript, typescript_glue,
+    glue, go, go_glue, json_schema, proto, python, python_glue, rust, typescript, typescript_glue,
 };
 use witforge::load;
 use witforge::lock::{LockMode, WireLock};
@@ -136,6 +136,13 @@ fn unreachable_unsupported_dependency_chains_and_cross_dep_refs_are_pruned_clean
     let py_files = python::plan(&wit_root).unwrap();
     let py_glue_files = python_glue::plan(&wit_root, "plain", "proto").unwrap();
     let go_files = go::plan(&wit_root, "example.com/witforge/prune").unwrap();
+    let go_glue_files = go_glue::plan(
+        &wit_root,
+        "example.com/witforge/prune/glue",
+        "example.com/witforge/prune/plain",
+        "example.com/witforge/prune/proto",
+    )
+    .unwrap();
     for forbidden in [
         "Hidden",
         "Wrap",
@@ -158,6 +165,7 @@ fn unreachable_unsupported_dependency_chains_and_cross_dep_refs_are_pruned_clean
             .chain(py_files.files())
             .chain(py_glue_files.files())
             .chain(go_files.files())
+            .chain(go_glue_files.files())
         {
             assert!(
                 !content.contains(forbidden),
@@ -326,6 +334,13 @@ fn proto_keyword_package_segments_pass_check_and_compile_in_protox_and_prost() {
         python::plan(&root).unwrap();
         python_glue::plan(&root, "plain", "proto").unwrap();
         go::plan(&root, "example.com/witforge/kw").unwrap();
+        go_glue::plan(
+            &root,
+            "example.com/witforge/kw/glue",
+            "example.com/witforge/kw/plain",
+            "example.com/witforge/kw/proto",
+        )
+        .unwrap();
 
         let proto_dir = base.join(format!("proto_{idx}"));
         proto_files.write(&proto_dir).unwrap();
@@ -493,6 +508,13 @@ fn every_known_generator_refusal_is_reported_by_check_with_a_code() {
         python::plan(&upper_dir).unwrap();
         python_glue::plan(&upper_dir, "plain", "proto").unwrap();
         go::plan(&upper_dir, "example.com/witforge/upper").unwrap();
+        go_glue::plan(
+            &upper_dir,
+            "example.com/witforge/upper/glue",
+            "example.com/witforge/upper/plain",
+            "example.com/witforge/upper/proto",
+        )
+        .unwrap();
     } else {
         assert!(
             upper_diags.iter().all(|d| !d.code.is_empty()),
@@ -503,6 +525,7 @@ fn every_known_generator_refusal_is_reported_by_check_with_a_code() {
     fs::remove_dir_all(&base).unwrap();
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn deterministic_property_sample_covers_passing_contracts_and_implies_generate() {
     let base = scratch_dir("prop-sample");
@@ -590,6 +613,18 @@ fn deterministic_property_sample_covers_passing_contracts_and_implies_generate()
                     contract.root_wit
                 )
             });
+            go_glue::plan(
+                &wit_root,
+                "example.com/witforge/sample/glue",
+                "example.com/witforge/sample/plain",
+                "example.com/witforge/sample/proto",
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "sample {idx}: check passed but go-glue failed: {e:#}\n{}",
+                    contract.root_wit
+                )
+            });
         }
     }
 
@@ -660,6 +695,15 @@ proptest! {
                 ("py", python::plan(&wit_root)),
                 ("py-glue", python_glue::plan(&wit_root, "plain", "proto")),
                 ("go", go::plan(&wit_root, "example.com/witforge/prop")),
+                (
+                    "go-glue",
+                    go_glue::plan(
+                        &wit_root,
+                        "example.com/witforge/prop/glue",
+                        "example.com/witforge/prop/plain",
+                        "example.com/witforge/prop/proto",
+                    ),
+                ),
             ] {
                 if let Err(err) = res {
                     let kind = if witforge::is_contract_error(&err) {

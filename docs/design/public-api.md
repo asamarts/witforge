@@ -30,6 +30,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::python` | `PythonOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options`, `version_dir_name`, `emit_version`, `emit_version_with_options` |
 | `emit::python_glue` | `PythonGlueOptions`, `validate_module_root`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options` |
 | `emit::go` | `GoOptions`, `validate_module_path`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options`, `version_dir_name`, `emit_version`, `emit_version_with_options` |
+| `emit::go_glue` | `GoGlueOptions`, `validate_module_path`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options` |
 | `emit::output` | `HeaderStyle`, `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods (including additive nested-tree `new_nested`, `insert_relative`, `insert_marker`, `is_nested`, `markers`), `validate_relative_path`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
 | `emit::polyglot` | `TargetLanguage`, case converters (`to_snake_case`, `to_upper_snake_case`, `to_pascal_case`, `to_camel_case`), keyword/escaping helpers for TypeScript/Python/Go/Java/C#, version/dependency path helpers, and `doc_lines` |
 | `conformance` | `CONFORMANCE_VERSION`, `ConformanceOptions`, `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, `vectors_json` |
@@ -66,11 +67,11 @@ The new `ChangeElement`, generated-file finding, `HeaderStyle`, `TargetLanguage`
 `ConformanceOptions`, `ConformanceBundle`, and emitter-option types
 (`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`, `ProtoOptions`,
 `ProtoPackageOptions`, `TypeScriptOptions`, `TypeScriptGlueOptions`, `PythonOptions`,
-`PythonGlueOptions`, `GoOptions`) are also
+`PythonGlueOptions`, `GoOptions`, `GoGlueOptions`) are also
 `#[non_exhaustive]`; their constructors and builders are the downstream construction boundary.
 `RustOptions`, `GlueOptions`, `SchemaOptions`, `ProtoOptions`, `ProtoPackageOptions`,
 `TypeScriptOptions`, `TypeScriptGlueOptions`, `PythonOptions`, `PythonGlueOptions`, `GoOptions`,
-and `ConformanceOptions`
+`GoGlueOptions`, and `ConformanceOptions`
 deliberately omit `Copy` so future additive options may carry non-`Copy` values without breaking
 SemVer.
 
@@ -99,11 +100,12 @@ mutated by downstream code.
 `Model.dependencies` carries standard `deps/` packages. These fields are part of the 1.0 model
 surface. For a root with dependencies, `emit::rust::plan`, `emit::proto::plan`,
 `emit::json_schema::plan`, `emit::glue::plan`, `emit::typescript::plan`,
-`emit::typescript_glue::plan`, `emit::python::plan`, `emit::python_glue::plan`, and
-`emit::go::plan` are the complete entry points: they emit the shared dependency and helper files
-(`witforge_types.ts`, `error.ts`, `helpers.ts`, `witforge_types.py`, `error.py`, `helpers.py`,
-`py.typed`, `doc.go`, `witforge_types/types.go`, `witforge_deps/`, `worlds.ts`, `worlds.py`, and
-`worlds/worlds.go`). The lower-level `emit_version`, `emit_major`, and `emit_root`
+`emit::typescript_glue::plan`, `emit::python::plan`, `emit::python_glue::plan`, `emit::go::plan`,
+and `emit::go_glue::plan` are the complete entry points: they emit the shared dependency and helper
+files (`witforge_types.ts`, `error.ts`, `helpers.ts`, `witforge_types.py`, `error.py`,
+`helpers.py`, `py.typed`, `doc.go`, `witforge_types/types.go`, `glueerr/error.go`,
+`helpers/helpers.go`, `witforge_deps/`, `worlds.ts`, `worlds.py`, and `worlds/worlds.go`). The
+lower-level `emit_version`, `emit_major`, and `emit_root`
 functions emit one local unit and do not create the shared dependency or root helper files
 themselves.
 
@@ -156,9 +158,9 @@ the lockfile and frozen-version rules are in [`lockfile.md`](lockfile.md). Gener
 part of the release contract: the conformance matrix and `--check` gates are in
 [`conformance.md`](conformance.md).
 
-`GlueError` (Rust glue) and `WitforgeGlueError` (TypeScript and Python glue) are types written
-into generated glue source. They are part of that generated-output contract, not items exported by
-the `witforge` library; there is no `witforge::emit::glue::GlueError`.
+`GlueError` (Rust and Go glue) and `WitforgeGlueError` (TypeScript and Python glue) are types
+written into generated glue source. They are part of that generated-output contract, not items
+exported by the `witforge` library; there is no `witforge::emit::glue::GlueError`.
 
 ## CLI commands
 
@@ -180,6 +182,7 @@ short Git commit and `-dirty` suffix on development builds):
 | `witforge py [<WIT_ROOT>]` | Emit or check zero-dependency Python 3.11+ stdlib dataclasses and `Protocol` interfaces | `--out`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge py-glue [<WIT_ROOT>]` | Emit or check Python protobuf glue targeting official `google.protobuf` | `--out`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge go [<WIT_ROOT>]` | Emit or check zero-dependency Go 1.22+ stdlib types and interfaces | `--out`, `--go-module`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
+| `witforge go-glue [<WIT_ROOT>]` | Emit or check Go protobuf glue targeting `google.golang.org/protobuf` | `--out`, `--go-module`, `--plain-root`, `--proto-root`, `--check`, `--diff`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge conformance` | Emit or check the versioned cross-language protobuf conformance fixture bundle | `--out`, `--polyglot-proto-options`, `--go-package`, `--java-package`, `--java-multiple-files`, `--no-java-multiple-files`, `--java-outer-classname`, `--csharp-namespace`, `--check`, `--diff` |
 | `witforge generate` | Run every configured generator across the selected project or all projects | `--check`, `--diff`, `--serde`, `--no-serde`, `--no-std`, `--std`, `--eq-hash`, `--no-eq-hash`, `--try-from`, `--no-try-from`, `--draft`, `--released`, `--config`, `--no-config`, `--project` |
 | `witforge init [DIR]` | Scaffold a new contract workspace (`wit/v0.1/`, `wire.lock`, `witforge.toml`) | `--package`, `--serde` |
