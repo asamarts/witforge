@@ -585,3 +585,192 @@ fn go_glue_fixtures_generate_check_prune_ownership_escaping_and_guards() {
 
     fs::remove_dir_all(&base).unwrap();
 }
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn go_glue_audit_regressions_named_options_aliases_synth_oneofs_imports_and_collisions() {
+    let base = scratch_dir("audit-regressions");
+    let go_module = "example.com/acme/audit/glue";
+    let plain_root = "example.com/acme/audit/plain";
+    let proto_root = "example.com/acme/audit/proto";
+
+    // 1. Distinct module-root validation (`WF9001`, not ContractError).
+    let wit_versions = fixture("versions/wit");
+    for (gm, pl, pr) in [
+        (go_module, go_module, proto_root),
+        (go_module, plain_root, go_module),
+        (go_module, plain_root, plain_root),
+    ] {
+        let err = go_glue::plan(&wit_versions, gm, pl, pr).unwrap_err();
+        assert!(!is_contract_error(&err), "{err:#}");
+        assert!(
+            witforge::error_diagnostics(&err)
+                .is_some_and(|diags| diags.iter().any(|d| d.code == "WF9001")),
+            "{err:#}"
+        );
+    }
+
+    // 2. Digit-boundary top-level `protoc-gen-go` collision (`AFoo2bar` vs `AFoo2Bar` -> `AFoo2Bar`,
+    //    distinct in raw proto and `prost`, colliding only in `protoc-gen-go`) is caught
+    //    consistently by `subset::check_diagnostics` (`WF1003`), `proto::plan`, and `go_glue::plan`.
+    let col_wit = base.join("col-wit");
+    let col_v01 = col_wit.join("v0.1");
+    fs::create_dir_all(&col_v01).unwrap();
+    fs::write(
+        col_v01.join("contract.wit"),
+        "package acme:digitcol@0.1.0;\n\
+         interface a {\n\
+           record foo2bar { x: u32 }\n\
+         }\n\
+         interface a-foo2 {\n\
+           record bar { x: u32 }\n\
+         }\n",
+    )
+    .unwrap();
+    let loaded_col = load(&col_v01).unwrap();
+    let col_diags = subset::check_diagnostics(&loaded_col);
+    assert!(
+        col_diags.iter().any(|d| d.code == "WF1003"
+            && d.message.contains("protoc-gen-go")
+            && d.message.contains("AFoo2Bar")),
+        "expected WF1003 protoc-gen-go collision for AFoo2bar vs AFoo2Bar, got: {col_diags:#?}"
+    );
+    let proto_err = witforge::emit::proto::plan(&col_wit).unwrap_err();
+    assert!(is_contract_error(&proto_err), "{proto_err:#}");
+    assert!(
+        format!("{proto_err:#}").contains("protoc-gen-go"),
+        "{proto_err:#}"
+    );
+    let glue_err = go_glue::plan(&col_wit, go_module, plain_root, proto_root).unwrap_err();
+    assert!(is_contract_error(&glue_err), "{glue_err:#}");
+    assert!(
+        format!("{glue_err:#}").contains("protoc-gen-go"),
+        "{glue_err:#}"
+    );
+
+    // 3. Reproducers for all 4 Critical findings + empty-arm guards + local alias inlining + int64 enum.
+    let reg_wit = base.join("reg-wit");
+    let reg_v01 = reg_wit.join("v0.1");
+    fs::create_dir_all(reg_v01.join("deps/dep-a")).unwrap();
+    fs::write(
+        reg_v01.join("deps/dep-a/types.wit"),
+        "package dep:a@0.1.0;\n\
+         interface types {\n\
+           enum color { red, blue }\n\
+           record tag { id: u8 }\n\
+           type opt-color = option<color>;\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        reg_v01.join("contract.wit"),
+        "package acme:reg@0.1.0;\n\
+         interface a {\n\
+           use dep:a/types@0.1.0.{opt-color, tag};\n\
+           type my-u8 = u8;\n\
+           type hash = list<u8, 4>;\n\
+           type opt-list = option<list<u16>>;\n\
+           type opt-of-opt-list = option<opt-list>;\n\
+           type opt-opt-color = option<opt-color>;\n\
+           enum level { low, high }\n\
+           variant kind { empty-arm, payload(u8) }\n\
+           type bare = result;\n\
+           record synth {\n\
+             a: u32,\n\
+             x-a: u32,\n\
+             get-x-a: u32,\n\
+             get-a: u32,\n\
+             aliased: my-u8,\n\
+             opt-tag: option<tag>,\n\
+             opt-hash: option<hash>,\n\
+             inline-results: list<result<u8, string>>,\n\
+           }\n\
+           send: func(a: u32, x-a: u32);\n\
+         }\n\
+         interface b {\n\
+           use a.{opt-list, opt-opt-color};\n\
+           type opt3 = option<opt-opt-color>;\n\
+           record holder {\n\
+             xs: list<opt-list>,\n\
+             nested: option<opt-list>,\n\
+           }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_version_first(&reg_v01);
+
+    let planned = go_glue::plan(&reg_wit, go_module, plain_root, proto_root).unwrap();
+    let a_glue = &planned.files()["v0/a/glue.go"];
+    let b_glue = &planned.files()["v0/b/glue.go"];
+    let err_go = &planned.files()["glueerr/error.go"];
+
+    // Core #1: `OptOfOptList` encodes/decodes via `WitforgeListOfU16` (not `AOptList`).
+    assert!(
+        a_glue.contains("&wf_pb.WitforgeListOfU16{Values:"),
+        "OptOfOptList must construct WitforgeListOfU16:\n{a_glue}"
+    );
+    // Core #2: `b` uses `wf_g_a.OptListToProto` / `wf_g_a.OptListFromProto` for `WitforgeOptionOfAOptList`.
+    assert!(
+        b_glue.contains("wf_g_a.OptListToProto(") && b_glue.contains("wf_g_a.OptListFromProto("),
+        "b/glue.go must use AOptList wrapper via wf_g_a:\n{b_glue}"
+    );
+    // Core #3: proto3 `optional` synthetic oneofs rename `x_a` -> `XA_` and `get_a` -> `GetA_`,
+    // while `get_x_a` stays `GetXA`.
+    for field_ref in ["wf_out.A ", "wf_out.XA_ ", "wf_out.GetXA ", "wf_out.GetA_ "] {
+        assert!(
+            a_glue.contains(field_ref),
+            "v0/a/glue.go missing synthetic-oneof-resolved field `{field_ref}`:\n{a_glue}"
+        );
+    }
+    // Core #4: `b/glue.go` (`opt3 = option<opt-opt-color>`) must not carry an unused
+    // `wf_pb_dep_a` import from probing foreign option wrappers, while `a/glue.go` only imports
+    // `wf_pb_dep_a` for its `use`-alias signatures (`OptColor*`/`Tag*`) and references it there.
+    assert!(
+        !b_glue.contains("wf_pb_dep_a"),
+        "v0/b/glue.go must not import unused wf_pb_dep_a:\n{b_glue}"
+    );
+    assert!(
+        a_glue.contains("wf_pb_dep_a.TypesTag") && a_glue.contains("wf_pb_dep_a.TypesColor"),
+        "v0/a/glue.go should use wf_pb_dep_a in re-exported signatures:\n{a_glue}"
+    );
+    // Core #6: nil `*pb.Empty` checks on unit variant, empty result, and option None arms.
+    assert!(
+        a_glue.contains("if wf_c == nil || wf_c.EmptyArm == nil"),
+        "missing unit-variant nil Empty check:\n{a_glue}"
+    );
+    assert!(
+        a_glue.contains("if wf_c == nil || wf_c.Ok == nil")
+            && a_glue.contains("if wf_c == nil || wf_c.Err == nil"),
+        "missing empty result nil Empty checks:\n{a_glue}"
+    );
+    assert!(
+        a_glue.contains("if wf_c == nil || wf_c.None == nil"),
+        "missing option None nil Empty check:\n{a_glue}"
+    );
+    // Core #7: local alias `aliased: my-u8` reports `"a/synth.aliased"`, and `opt-hash: option<hash>`
+    // calls `HashFromProto`.
+    assert!(
+        a_glue.contains("DecodeU8(*msg.Aliased, \"a/synth.aliased\")"),
+        "local alias should inline with field identity:\n{a_glue}"
+    );
+    assert!(
+        a_glue.contains("HashFromProto(msg.OptHash)"),
+        "named fixed-bytes inside option should delegate to HashFromProto:\n{a_glue}"
+    );
+    // Core #8: `UnknownEnumValue` takes `int64` and `emit_enum` passes `int64(val)` / `int64(msg)`.
+    assert!(
+        err_go.contains("func UnknownEnumValue(enumeration string, value int64) *GlueError"),
+        "UnknownEnumValue must accept int64:\n{err_go}"
+    );
+    assert!(
+        a_glue.contains("UnknownEnumValue(\"a/level\", int64(val))")
+            && a_glue.contains("UnknownEnumValue(\"a/level\", int64(msg))"),
+        "emit_enum must pass int64 without int32 truncation:\n{a_glue}"
+    );
+
+    let reg_out = base.join("reg-out");
+    planned.write(&reg_out).unwrap();
+    assert_gofmt_if_available(&reg_out);
+
+    fs::remove_dir_all(&base).unwrap();
+}

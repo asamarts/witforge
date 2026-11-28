@@ -8,16 +8,20 @@
 package conformance_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -54,29 +58,13 @@ type vector struct {
 
 func decodeJSONValue(t *testing.T, raw json.RawMessage) any {
 	t.Helper()
-	dec := json.NewDecoder(jsonBytesReader(raw))
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
 		t.Fatalf("failed to decode JSON %s: %v", string(raw), err)
 	}
 	return normalizeJSONNumbers(v)
-}
-
-type bytesReader struct {
-	b []byte
-	i int
-}
-
-func jsonBytesReader(b []byte) *bytesReader { return &bytesReader{b: b} }
-
-func (r *bytesReader) Read(p []byte) (int, error) {
-	if r.i >= len(r.b) {
-		return 0, fmt.Errorf("EOF")
-	}
-	n := copy(p, r.b[r.i:])
-	r.i += n
-	return n, nil
 }
 
 func normalizeJSONNumbers(v any) any {
@@ -123,27 +111,34 @@ func assertGlueErrorDetails(t *testing.T, ctx string, err error, wantKind, wantT
 	}
 	switch wantKind {
 	case "MissingField":
-		if ge.Field != wantTarget || ge.Enumeration != "" || ge.Message != "" {
+		if ge.Field != wantTarget || ge.Enumeration != "" || ge.Message != "" ||
+			ge.Value != 0 || ge.CodePoint != 0 || ge.Expected != 0 || ge.Actual != 0 {
 			t.Fatalf("%s: unexpected MissingField details: %+v (want field=%q)", ctx, ge, wantTarget)
 		}
 	case "IntegerOutOfRange":
-		if ge.Field != wantTarget {
-			t.Fatalf("%s: unexpected IntegerOutOfRange details: %+v (want field=%q)", ctx, ge, wantTarget)
+		if ge.Field != wantTarget || ge.Enumeration != "" || ge.Message != "" ||
+			ge.Value == 0 || ge.CodePoint != 0 || ge.Expected != 0 || ge.Actual != 0 {
+			t.Fatalf("%s: unexpected IntegerOutOfRange details: %+v (want field=%q, non-zero value)", ctx, ge, wantTarget)
 		}
 	case "UnknownEnumValue":
-		if ge.Enumeration != wantTarget {
+		if ge.Enumeration != wantTarget || ge.Field != "" || ge.Message != "" ||
+			ge.CodePoint != 0 || ge.Expected != 0 || ge.Actual != 0 {
 			t.Fatalf("%s: unexpected UnknownEnumValue details: %+v (want enum=%q)", ctx, ge, wantTarget)
 		}
 	case "UnknownCase", "InvalidState":
-		if ge.Message != wantTarget || ge.Field != "" || ge.Enumeration != "" {
+		if ge.Message != wantTarget || ge.Field != "" || ge.Enumeration != "" ||
+			ge.Value != 0 || ge.CodePoint != 0 || ge.Expected != 0 || ge.Actual != 0 {
 			t.Fatalf("%s: unexpected %s details: %+v (want message=%q)", ctx, wantKind, ge, wantTarget)
 		}
 	case "InvalidChar":
-		if ge.Field != wantTarget {
-			t.Fatalf("%s: unexpected InvalidChar details: %+v (want field=%q)", ctx, ge, wantTarget)
+		invalidScalar := ge.CodePoint > 0x10FFFF || (ge.CodePoint >= 0xD800 && ge.CodePoint <= 0xDFFF)
+		if ge.Field != wantTarget || ge.Enumeration != "" || ge.Message != "" ||
+			ge.Value != 0 || !invalidScalar || ge.Expected != 0 || ge.Actual != 0 {
+			t.Fatalf("%s: unexpected InvalidChar details: %+v (want field=%q, invalid scalar code point)", ctx, ge, wantTarget)
 		}
 	case "InvalidLength":
-		if ge.Field != wantTarget || ge.Expected == ge.Actual {
+		if ge.Field != wantTarget || ge.Enumeration != "" || ge.Message != "" ||
+			ge.Value != 0 || ge.CodePoint != 0 || ge.Expected <= 0 || ge.Actual < 0 || ge.Expected == ge.Actual {
 			t.Fatalf("%s: unexpected InvalidLength details: %+v (want field=%q)", ctx, ge, wantTarget)
 		}
 	default:
@@ -442,46 +437,70 @@ func compositesToJSON(v p_types.Composites) map[string]any {
 	}
 }
 
-func float64MatchesJSON(t *testing.T, vecID, field string, got float64, want any, isF32 bool) {
+func float32MatchesJSON(t *testing.T, vecID, field string, got float32, rawVal string) {
 	t.Helper()
-	if isF32 {
-		got = float64(float32(got))
-	}
-	if math.IsNaN(got) {
-		if want != "NaN" {
-			t.Fatalf("%s.%s: got NaN, want %#v", vecID, field, want)
+	valRaw := strings.TrimSpace(rawVal)
+	switch valRaw {
+	case `"NaN"`:
+		if !math.IsNaN(float64(got)) {
+			t.Fatalf("%s.%s: got %v, want NaN", vecID, field, got)
+		}
+		return
+	case `"Infinity"`:
+		if !math.IsInf(float64(got), 1) {
+			t.Fatalf("%s.%s: got %v, want +Inf", vecID, field, got)
+		}
+		return
+	case `"-Infinity"`:
+		if !math.IsInf(float64(got), -1) {
+			t.Fatalf("%s.%s: got %v, want -Inf", vecID, field, got)
 		}
 		return
 	}
-	if math.IsInf(got, 1) {
-		if want != "Infinity" {
-			t.Fatalf("%s.%s: got +Inf, want %#v", vecID, field, want)
+	parsed, err := strconv.ParseFloat(valRaw, 32)
+	if err != nil {
+		t.Fatalf("%s.%s: parse float32 %q: %v", vecID, field, valRaw, err)
+	}
+	want := float32(parsed)
+	if got != want {
+		t.Fatalf("%s.%s: float32 mismatch: got %v, want %v", vecID, field, got, want)
+	}
+	if got == 0 && math.Signbit(float64(got)) != math.Signbit(float64(want)) {
+		t.Fatalf("%s.%s: float32 zero sign mismatch: got signbit=%v, want signbit=%v",
+			vecID, field, math.Signbit(float64(got)), math.Signbit(float64(want)))
+	}
+}
+
+func float64MatchesJSON(t *testing.T, vecID, field string, got float64, rawVal string) {
+	t.Helper()
+	valRaw := strings.TrimSpace(rawVal)
+	switch valRaw {
+	case `"NaN"`:
+		if !math.IsNaN(got) {
+			t.Fatalf("%s.%s: got %v, want NaN", vecID, field, got)
+		}
+		return
+	case `"Infinity"`:
+		if !math.IsInf(got, 1) {
+			t.Fatalf("%s.%s: got %v, want +Inf", vecID, field, got)
+		}
+		return
+	case `"-Infinity"`:
+		if !math.IsInf(got, -1) {
+			t.Fatalf("%s.%s: got %v, want -Inf", vecID, field, got)
 		}
 		return
 	}
-	if math.IsInf(got, -1) {
-		if want != "-Infinity" {
-			t.Fatalf("%s.%s: got -Inf, want %#v", vecID, field, want)
-		}
-		return
+	want, err := strconv.ParseFloat(valRaw, 64)
+	if err != nil {
+		t.Fatalf("%s.%s: parse float64 %q: %v", vecID, field, valRaw, err)
 	}
-	var wantF float64
-	switch w := want.(type) {
-	case float64:
-		wantF = w
-	case int64:
-		wantF = float64(w)
-	default:
-		t.Fatalf("%s.%s: expected numeric JSON, got %T (%#v)", vecID, field, want, want)
+	if got != want {
+		t.Fatalf("%s.%s: float64 mismatch: got %v, want %v", vecID, field, got, want)
 	}
-	if isF32 {
-		wantF = float64(float32(wantF))
-	}
-	if got != wantF {
-		t.Fatalf("%s.%s: float mismatch: got %v, want %v", vecID, field, got, wantF)
-	}
-	if got == 0 && math.Signbit(got) != math.Signbit(wantF) {
-		t.Fatalf("%s.%s: zero sign mismatch: got signbit=%v, want signbit=%v", vecID, field, math.Signbit(got), math.Signbit(wantF))
+	if got == 0 && math.Signbit(got) != math.Signbit(want) {
+		t.Fatalf("%s.%s: float64 zero sign mismatch: got signbit=%v, want signbit=%v",
+			vecID, field, math.Signbit(got), math.Signbit(want))
 	}
 }
 
@@ -507,30 +526,15 @@ func assertScalarsEqual(t *testing.T, vecID string, a, b p_types.Scalars) {
 
 func assertScalarsPlainJSON(t *testing.T, vecID string, v p_types.Scalars, raw json.RawMessage) {
 	t.Helper()
-	// Parse manually with json.Number so `-0.0` sign bit is preserved!
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatalf("%s: failed to unmarshal scalars plain_json: %v", vecID, err)
 	}
-	parseFloatField := func(key string) any {
-		valRaw := string(fields[key])
-		if valRaw == `"NaN"` {
-			return "NaN"
-		}
-		if valRaw == `"Infinity"` {
-			return "Infinity"
-		}
-		if valRaw == `"-Infinity"` {
-			return "-Infinity"
-		}
-		f, err := strconv.ParseFloat(valRaw, 64)
-		if err != nil {
-			t.Fatalf("%s.%s: parse float %q: %v", vecID, key, valRaw, err)
-		}
-		return f
+	if len(fields) != 5 {
+		t.Fatalf("%s: expected exactly 5 fields in scalars plain_json, got %d (%v)", vecID, len(fields), fields)
 	}
-	float64MatchesJSON(t, vecID, "a-f32", float64(v.AF32), parseFloatField("a-f32"), true)
-	float64MatchesJSON(t, vecID, "a-f64", v.AF64, parseFloatField("a-f64"), false)
+	float32MatchesJSON(t, vecID, "a-f32", v.AF32, string(fields["a-f32"]))
+	float64MatchesJSON(t, vecID, "a-f64", v.AF64, string(fields["a-f64"]))
 	var wantBool bool
 	if err := json.Unmarshal(fields["a-bool"], &wantBool); err != nil || v.ABool != wantBool {
 		t.Fatalf("%s.a-bool: got %v, raw=%s", vecID, v.ABool, fields["a-bool"])
@@ -665,6 +669,12 @@ func (r decodeRunner) run(t *testing.T, vec vector, binErrors, jsonErrors map[st
 	}
 
 	// Reject path
+	if vec.Expected != "reject" {
+		t.Fatalf("%s: unexpected expected=%q (want accept or reject)", vec.ID, vec.Expected)
+	}
+	if !bytes.Equal(bytes.TrimSpace(vec.PlainJSON), []byte("null")) {
+		t.Fatalf("%s: decode-reject vector must have plain_json=null, got %s", vec.ID, string(vec.PlainJSON))
+	}
 	if vec.ErrorKind == nil || vec.ErrorTarget == nil {
 		t.Fatalf("%s: missing error expectations", vec.ID)
 	}
@@ -686,6 +696,74 @@ func (r decodeRunner) run(t *testing.T, vec vector, binErrors, jsonErrors map[st
 	jsonErrors[string(geJSON.Kind)] = true
 }
 
+func parseBigIntFromJSON(t *testing.T, ctx string, v any) *big.Int {
+	t.Helper()
+	switch x := v.(type) {
+	case int64:
+		return big.NewInt(x)
+	case string:
+		bi, ok := new(big.Int).SetString(x, 10)
+		if !ok {
+			t.Fatalf("%s: invalid decimal integer %q", ctx, x)
+		}
+		return bi
+	default:
+		t.Fatalf("%s: expected integer or decimal string, got %T (%#v)", ctx, v, v)
+		return nil
+	}
+}
+
+func parseColorFromJSON(t *testing.T, ctx string, v any) p_types.Color {
+	t.Helper()
+	switch x := v.(type) {
+	case string:
+		switch x {
+		case "red":
+			return p_types.ColorRed
+		case "green":
+			return p_types.ColorGreen
+		case "blue":
+			return p_types.ColorBlue
+		default:
+			t.Fatalf("%s: unexpected string color %q", ctx, x)
+		}
+	case int64:
+		return p_types.Color(x)
+	default:
+		t.Fatalf("%s: unexpected color %T (%#v)", ctx, v, v)
+	}
+	return 0
+}
+
+func parseSharedStatusFromJSON(t *testing.T, ctx string, v any) p_dep_shared.SharedStatus {
+	t.Helper()
+	switch x := v.(type) {
+	case string:
+		switch x {
+		case "active":
+			return p_dep_shared.SharedStatusActive
+		case "paused":
+			return p_dep_shared.SharedStatusPaused
+		default:
+			t.Fatalf("%s: unexpected string shared-status %q", ctx, x)
+		}
+	case int64:
+		return p_dep_shared.SharedStatus(x)
+	default:
+		t.Fatalf("%s: unexpected shared-status %T (%#v)", ctx, v, v)
+	}
+	return 0
+}
+
+func parsePointFromJSON(t *testing.T, ctx string, v any) p_types.Point {
+	t.Helper()
+	m := v.(map[string]any)
+	return p_types.Point{
+		X: int32(m["x"].(int64)),
+		Y: int32(m["y"].(int64)),
+	}
+}
+
 func runEncodeReject(t *testing.T, vec vector, encodeErrors map[string]bool) {
 	t.Helper()
 	if vec.Expected != "reject" || vec.ErrorKind == nil || vec.ErrorTarget == nil {
@@ -696,74 +774,171 @@ func runEncodeReject(t *testing.T, vec vector, encodeErrors map[string]bool) {
 
 	raw := decodeJSONValue(t, vec.PlainJSON).(map[string]any)
 	var err error
+	var wantExactInt *int64
+	var wantExactCodePoint *uint32
+	var wantExactLen *[2]int
+
 	switch vec.ProtoMessage {
 	case ".witforge.conformance.v0.TypesScalars":
 		var cp rune
 		if s, ok := raw["a-char"].(string); ok {
-			// Multi-rune / empty strings cannot even fit in Go `rune`; test invalid rune directly.
-			if len([]rune(s)) != 1 {
-				cp = -1
+			if len([]rune(s)) == 1 {
+				t.Fatalf("%s: expected invalid multi/empty char string, got valid single rune %q", vec.ID, s)
 			}
+			// Go's `rune` statically requires a single code point; map non-1-rune strings to -1.
+			cp = -1
 		} else if n, ok := raw["a-char-codepoint"].(int64); ok {
 			cp = rune(n)
+			if utf8.ValidRune(cp) {
+				t.Fatalf("%s: expected invalid scalar code point, got valid rune %d", vec.ID, n)
+			}
+			u := uint32(cp)
+			wantExactCodePoint = &u
+		} else {
+			t.Fatalf("%s: TypesScalars encode vector missing a-char and a-char-codepoint", vec.ID)
+		}
+		f32Val := float32(0)
+		switch x := raw["a-f32"].(type) {
+		case float64:
+			f32Val = float32(x)
+		case int64:
+			f32Val = float32(x)
+		default:
+			t.Fatalf("%s: unexpected a-f32 %T", vec.ID, raw["a-f32"])
+		}
+		f64Val := float64(0)
+		switch x := raw["a-f64"].(type) {
+		case float64:
+			f64Val = x
+		case int64:
+			f64Val = float64(x)
+		default:
+			t.Fatalf("%s: unexpected a-f64 %T", vec.ID, raw["a-f64"])
 		}
 		_, err = g_types.ScalarsToProto(p_types.Scalars{
-			AF32:    0,
-			AF64:    0,
-			ABool:   false,
+			AF32:    f32Val,
+			AF64:    f64Val,
+			ABool:   raw["a-bool"].(bool),
 			AChar:   cp,
-			AString: "",
+			AString: raw["a-string"].(string),
 		})
 	case ".witforge.conformance.v0.TypesComposites":
-		colorVal := p_types.ColorRed
-		if n, ok := raw["color"].(int64); ok {
-			colorVal = p_types.Color(n)
-		} else if raw["color"] != "red" && raw["color"] != "green" && raw["color"] != "blue" {
-			colorVal = p_types.Color(99)
+		origin := parsePointFromJSON(t, vec.ID+".origin", raw["origin"])
+		colorVal := parseColorFromJSON(t, vec.ID+".color", raw["color"])
+		permsMap := raw["perms"].(map[string]any)
+		perms := p_types.Permissions{
+			Read:    permsMap["read"].(bool),
+			Write:   permsMap["write"].(bool),
+			Execute: permsMap["execute"].(bool),
 		}
-		statusVal := p_dep_shared.SharedStatusActive
-		if n, ok := raw["foreign-status"].(int64); ok {
-			statusVal = p_dep_shared.SharedStatus(n)
-		} else if raw["foreign-status"] != "active" && raw["foreign-status"] != "archived" {
-			statusVal = p_dep_shared.SharedStatus(99)
+		choiceMap := raw["choice"].(map[string]any)
+		var choice p_types.Choice
+		switch choiceMap["case"].(string) {
+		case "unit-case":
+			choice = p_types.ChoiceUnitCase{}
+		default:
+			t.Fatalf("%s: unhandled choice case %v", vec.ID, choiceMap)
+		}
+		outcomeMap := raw["outcome"].(map[string]any)
+		var outcome p_types.Outcome
+		if okVal, ok := outcomeMap["ok"]; ok {
+			outcome = p_wt.NewOk[uint16, string](uint16(okVal.(int64)))
+		} else {
+			outcome = p_wt.NewErr[uint16, string](outcomeMap["err"].(string))
 		}
 		foreignMap := raw["foreign"].(map[string]any)
-		foreignStatus := p_dep_shared.SharedStatusActive
-		if n, ok := foreignMap["status"].(int64); ok {
-			foreignStatus = p_dep_shared.SharedStatus(n)
-		} else if foreignMap["status"] != "active" && foreignMap["status"] != "archived" {
-			foreignStatus = p_dep_shared.SharedStatus(99)
+		foreignID, parseErr := strconv.ParseUint(foreignMap["id"].(string), 10, 64)
+		if parseErr != nil {
+			t.Fatalf("%s: parse foreign.id: %v", vec.ID, parseErr)
 		}
+		foreign := p_dep_shared.SharedMeta{
+			Id:     foreignID,
+			Tag:    uint8(foreignMap["tag"].(int64)),
+			Status: parseSharedStatusFromJSON(t, vec.ID+".foreign.status", foreignMap["status"]),
+		}
+		statusVal := parseSharedStatusFromJSON(t, vec.ID+".foreign-status", raw["foreign-status"])
 		_, err = g_types.CompositesToProto(p_types.Composites{
-			Origin:        p_types.Point{X: 1, Y: 2},
+			Origin:        origin,
 			Color:         colorVal,
-			Perms:         p_types.Permissions{},
-			Choice:        p_types.ChoiceUnitCase{},
-			Outcome:       p_wt.NewOk[uint16, string](1),
-			Foreign:       p_dep_shared.SharedMeta{Id: 1, Tag: 1, Status: foreignStatus},
+			Perms:         perms,
+			Choice:        choice,
+			Outcome:       outcome,
+			Foreign:       foreign,
 			ForeignStatus: statusVal,
 		})
 	case ".witforge.conformance.v0.TypesIntegers":
-		// Go enforces exact integer widths statically (`uint8..uint64`, `int8..int64`);
-		// exercise narrow-width helpers directly for u8/u16/s8/s16 and verify the structured
-		// error constructor for 32/64-bit bounds enforced at compile time by Go's type system.
-		switch wantTarget {
-		case "types/integers.a-u8":
-			_, err = g_helpers.DecodeU8(uint32(raw["a-u8"].(int64)), wantTarget)
-		case "types/integers.a-u16":
-			_, err = g_helpers.DecodeU16(uint32(raw["a-u16"].(int64)), wantTarget)
-		case "types/integers.a-s8":
-			_, err = g_helpers.DecodeS8(int32(raw["a-s8"].(int64)), wantTarget)
-		case "types/integers.a-s16":
-			_, err = g_helpers.DecodeS16(int32(raw["a-s16"].(int64)), wantTarget)
-		case "types/integers.a-u32", "types/integers.a-u64", "types/integers.a-s32", "types/integers.a-s64":
-			err = g_glueerr.IntegerOutOfRange(wantTarget, -1)
+		// Go enforces exact integer widths statically (`uint8..uint64`, `int8..int64`); parse the
+		// exact violating integer from `vec.PlainJSON` (using `math/big.Int` for 64-bit overflows),
+		// prove it lies outside Go's static type bounds, and validate narrow-width helpers directly
+		// without wraparound casts.
+		fieldKey := strings.TrimPrefix(wantTarget, "types/integers.")
+		bi := parseBigIntFromJSON(t, vec.ID+"."+fieldKey, raw[fieldKey])
+		var lo, hi *big.Int
+		switch fieldKey {
+		case "a-u8":
+			lo, hi = big.NewInt(0), big.NewInt(math.MaxUint8)
+		case "a-u16":
+			lo, hi = big.NewInt(0), big.NewInt(math.MaxUint16)
+		case "a-u32":
+			lo, hi = big.NewInt(0), big.NewInt(math.MaxUint32)
+		case "a-u64":
+			lo, hi = big.NewInt(0), new(big.Int).SetUint64(math.MaxUint64)
+		case "a-s8":
+			lo, hi = big.NewInt(math.MinInt8), big.NewInt(math.MaxInt8)
+		case "a-s16":
+			lo, hi = big.NewInt(math.MinInt16), big.NewInt(math.MaxInt16)
+		case "a-s32":
+			lo, hi = big.NewInt(math.MinInt32), big.NewInt(math.MaxInt32)
+		case "a-s64":
+			lo, hi = big.NewInt(math.MinInt64), big.NewInt(math.MaxInt64)
 		default:
 			t.Fatalf("%s: unexpected TypesIntegers target %q", vec.ID, wantTarget)
 		}
+		if bi.Cmp(lo) >= 0 && bi.Cmp(hi) <= 0 {
+			t.Fatalf("%s: parsed value %s is unexpectedly within [%s, %s]", vec.ID, bi, lo, hi)
+		}
+		switch fieldKey {
+		case "a-u8":
+			v := bi.Int64()
+			wantExactInt = &v
+			if v > math.MaxUint8 {
+				_, err = g_helpers.DecodeU8(uint32(v), wantTarget)
+			} else {
+				err = g_glueerr.IntegerOutOfRange(wantTarget, v)
+			}
+		case "a-u16":
+			v := bi.Int64()
+			wantExactInt = &v
+			if v > math.MaxUint16 {
+				_, err = g_helpers.DecodeU16(uint32(v), wantTarget)
+			} else {
+				err = g_glueerr.IntegerOutOfRange(wantTarget, v)
+			}
+		case "a-s8":
+			v := bi.Int64()
+			wantExactInt = &v
+			_, err = g_helpers.DecodeS8(int32(v), wantTarget)
+		case "a-s16":
+			v := bi.Int64()
+			wantExactInt = &v
+			_, err = g_helpers.DecodeS16(int32(v), wantTarget)
+		case "a-u32", "a-s32":
+			v := bi.Int64()
+			wantExactInt = &v
+			err = g_glueerr.IntegerOutOfRange(wantTarget, v)
+		case "a-u64", "a-s64":
+			// Exceeds Go's static uint64/int64 bounds (verified via big.Int above); clamp sentinel
+			// sign for *GlueError.Value (int64) while preserving non-zero out-of-range value.
+			v := int64(-1)
+			if bi.Sign() > 0 {
+				v = math.MaxInt64
+			} else if bi.IsInt64() {
+				v = bi.Int64()
+			}
+			wantExactInt = &v
+			err = g_glueerr.IntegerOutOfRange(wantTarget, v)
+		}
 	case ".witforge.conformance.v0.TypesCollections":
-		// Go enforces `[N]byte` / `[N]uint16` / `[N]rune` length statically; check fixed-bytes helper
-		// or `rune` encode validation depending on error kind.
 		switch wantKind {
 		case "InvalidLength":
 			var actualLen, expectedLen int
@@ -780,32 +955,154 @@ func runEncodeReject(t *testing.T, vec vector, encodeErrors map[string]bool) {
 			default:
 				t.Fatalf("%s: unexpected fixed-length target %q", vec.ID, wantTarget)
 			}
+			if actualLen == expectedLen {
+				t.Fatalf("%s: expected length mismatch for %s, got %d", vec.ID, wantTarget, actualLen)
+			}
+			wantExactLen = &[2]int{expectedLen, actualLen}
 			err = g_helpers.CheckFixedBytes(make([]byte, actualLen), expectedLen, wantTarget)
 		case "InvalidChar":
+			charsRaw := raw["fixed-chars"].([]any)
+			var arr [2]rune
+			foundInvalid := false
+			for i, item := range charsRaw {
+				s, ok := item.(string)
+				if !ok || len([]rune(s)) != 1 {
+					arr[i] = -1
+					foundInvalid = true
+				} else {
+					arr[i] = []rune(s)[0]
+				}
+			}
+			if !foundInvalid {
+				t.Fatalf("%s: expected invalid char in fixed-chars, got %v", vec.ID, charsRaw)
+			}
 			_, err = g_types.CollectionsToProto(p_types.Collections{
-				FixedChars: [2]rune{'a', 0xD800},
+				FixedChars: arr,
 			})
 		case "IntegerOutOfRange":
-			_, err = g_helpers.DecodeU16(70000, wantTarget)
+			items := raw["fixed-u16s"].([]any)
+			var badVal int64
+			foundBad := false
+			for _, item := range items {
+				v := item.(int64)
+				if v < 0 || v > math.MaxUint16 {
+					badVal = v
+					foundBad = true
+					break
+				}
+			}
+			if !foundBad {
+				t.Fatalf("%s: expected out-of-range u16 in fixed-u16s, got %v", vec.ID, items)
+			}
+			wantExactInt = &badVal
+			if badVal > math.MaxUint16 {
+				_, err = g_helpers.DecodeU16(uint32(badVal), wantTarget)
+			} else {
+				err = g_glueerr.IntegerOutOfRange(wantTarget, badVal)
+			}
 		default:
 			t.Fatalf("%s: unexpected TypesCollections encode reject kind %q", vec.ID, wantKind)
 		}
 	case ".witforge.conformance.v0.TypesMaps":
 		switch wantKind {
 		case "IntegerOutOfRange":
-			if wantTarget == "types/maps.s8-to-point" {
-				_, err = g_helpers.DecodeS8(200, wantTarget)
-			} else {
-				_, err = g_helpers.DecodeU8(300, wantTarget)
+			switch wantTarget {
+			case "types/maps.u8-to-str":
+				m := raw["u8-to-str"].(map[string]any)
+				var badKey int64
+				found := false
+				for k := range m {
+					parsed, pErr := strconv.ParseInt(k, 10, 64)
+					if pErr != nil {
+						t.Fatalf("%s: parse u8 key %q: %v", vec.ID, k, pErr)
+					}
+					if parsed < 0 || parsed > math.MaxUint8 {
+						badKey = parsed
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("%s: expected out-of-range u8 key in %v", vec.ID, m)
+				}
+				wantExactInt = &badKey
+				if badKey > math.MaxUint8 {
+					_, err = g_helpers.DecodeU8(uint32(badKey), wantTarget)
+				} else {
+					err = g_glueerr.IntegerOutOfRange(wantTarget, badKey)
+				}
+			case "types/maps.s8-to-point":
+				m := raw["s8-to-point"].(map[string]any)
+				var badKey int64
+				found := false
+				for k := range m {
+					parsed, pErr := strconv.ParseInt(k, 10, 64)
+					if pErr != nil {
+						t.Fatalf("%s: parse s8 key %q: %v", vec.ID, k, pErr)
+					}
+					if parsed < math.MinInt8 || parsed > math.MaxInt8 {
+						badKey = parsed
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("%s: expected out-of-range s8 key in %v", vec.ID, m)
+				}
+				wantExactInt = &badKey
+				_, err = g_helpers.DecodeS8(int32(badKey), wantTarget)
+			case "types/maps.str-to-u8":
+				m := raw["str-to-u8"].(map[string]any)
+				var badVal int64
+				found := false
+				for _, val := range m {
+					v := val.(int64)
+					if v < 0 || v > math.MaxUint8 {
+						badVal = v
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("%s: expected out-of-range u8 value in %v", vec.ID, m)
+				}
+				wantExactInt = &badVal
+				if badVal > math.MaxUint8 {
+					_, err = g_helpers.DecodeU8(uint32(badVal), wantTarget)
+				} else {
+					err = g_glueerr.IntegerOutOfRange(wantTarget, badVal)
+				}
+			default:
+				t.Fatalf("%s: unexpected TypesMaps IntegerOutOfRange target %q", vec.ID, wantTarget)
 			}
 		case "InvalidChar":
-			_, err = g_types.MapsToProto(p_types.Maps{
-				CharToColor: map[rune]p_types.Color{0xD800: p_types.ColorRed},
-			})
+			m := raw["char-to-color"].(map[string]any)
+			parsedMap := make(map[rune]p_types.Color, len(m))
+			foundBad := false
+			for k, v := range m {
+				runes := []rune(k)
+				if len(runes) != 1 {
+					parsedMap[-1] = parseColorFromJSON(t, vec.ID+".char-to-color", v)
+					foundBad = true
+				} else {
+					parsedMap[runes[0]] = parseColorFromJSON(t, vec.ID+".char-to-color", v)
+				}
+			}
+			if !foundBad {
+				t.Fatalf("%s: expected invalid char key in %v", vec.ID, m)
+			}
+			_, err = g_types.MapsToProto(p_types.Maps{CharToColor: parsedMap})
 		case "UnknownEnumValue":
-			_, err = g_types.MapsToProto(p_types.Maps{
-				CharToColor: map[rune]p_types.Color{'a': p_types.Color(99)},
-			})
+			m := raw["char-to-color"].(map[string]any)
+			parsedMap := make(map[rune]p_types.Color, len(m))
+			for k, v := range m {
+				runes := []rune(k)
+				if len(runes) != 1 {
+					t.Fatalf("%s: unexpected map char key %q", vec.ID, k)
+				}
+				parsedMap[runes[0]] = parseColorFromJSON(t, vec.ID+".char-to-color", v)
+			}
+			_, err = g_types.MapsToProto(p_types.Maps{CharToColor: parsedMap})
 		default:
 			t.Fatalf("%s: unexpected TypesMaps encode reject kind %q", vec.ID, wantKind)
 		}
@@ -813,6 +1110,16 @@ func runEncodeReject(t *testing.T, vec vector, encodeErrors map[string]bool) {
 		t.Fatalf("%s: unhandled encode proto_message %q", vec.ID, vec.ProtoMessage)
 	}
 	ge := assertGlueErrorDetails(t, vec.ID+" (encode)", err, wantKind, wantTarget)
+	if wantExactInt != nil && ge.Value != *wantExactInt {
+		t.Fatalf("%s: IntegerOutOfRange Value mismatch: got %d, want %d", vec.ID, ge.Value, *wantExactInt)
+	}
+	if wantExactCodePoint != nil && ge.CodePoint != *wantExactCodePoint {
+		t.Fatalf("%s: InvalidChar CodePoint mismatch: got %#x, want %#x", vec.ID, ge.CodePoint, *wantExactCodePoint)
+	}
+	if wantExactLen != nil && (ge.Expected != wantExactLen[0] || ge.Actual != wantExactLen[1]) {
+		t.Fatalf("%s: InvalidLength mismatch: got (%d, %d), want (%d, %d)",
+			vec.ID, ge.Expected, ge.Actual, wantExactLen[0], wantExactLen[1])
+	}
 	encodeErrors[string(ge.Kind)] = true
 }
 
@@ -1045,19 +1352,68 @@ func TestGoProtobufGlueConformance(t *testing.T) {
 	}
 
 	// Verify nil-message guards and invalid UTF-8 / nil-variant / nil-bytes encode checks.
-	if _, err := g_types.IntegersFromProto(nil); err == nil {
-		t.Fatalf("IntegersFromProto(nil) must fail")
+	_, err = g_types.IntegersFromProto(nil)
+	assertGlueErrorDetails(t, "IntegersFromProto(nil)", err, "InvalidState", "types/integers")
+	_, err = g_types.ChoiceFromProto(nil)
+	assertGlueErrorDetails(t, "ChoiceFromProto(nil)", err, "UnknownCase", "types/choice")
+	_, err = g_types.PermissionsFromProto(nil)
+	assertGlueErrorDetails(t, "PermissionsFromProto(nil)", err, "InvalidState", "types/permissions")
+	_, err = g_api.EchoIntegersFromRequest(nil)
+	assertGlueErrorDetails(t, "EchoIntegersFromRequest(nil)", err, "InvalidState", "api#echo-integers.request")
+	err = g_api.NotifyFromResponse(nil)
+	assertGlueErrorDetails(t, "NotifyFromResponse(nil)", err, "InvalidState", "api#notify.response")
+
+	_, err = g_types.ChoiceToProto(nil)
+	assertGlueErrorDetails(t, "ChoiceToProto(nil)", err, "UnknownCase", "types/choice")
+	_, err = g_types.ChoiceToProto((*p_types.ChoiceSmall)(nil))
+	assertGlueErrorDetails(t, "ChoiceToProto(typed-nil-payload)", err, "UnknownCase", "types/choice")
+	_, err = g_types.ChoiceToProto((*p_types.ChoiceUnitCase)(nil))
+	assertGlueErrorDetails(t, "ChoiceToProto(typed-nil-unit)", err, "UnknownCase", "types/choice")
+
+	_, err = g_types.ScalarsToProto(p_types.Scalars{AString: string([]byte{0xff, 0xfe}), AChar: 'a'})
+	assertGlueErrorDetails(t, "invalid-utf8", err, "InvalidState", "types/scalars.a-string")
+
+	// Required nil []byte and present optional &nilSlice must preserve proto3 presence across wire.
+	nilColMsg, err := g_types.CollectionsToProto(p_types.Collections{
+		RawBytes:   nil,
+		FixedBytes: [4]byte{1, 2, 3, 4},
+		FixedU16s:  [3]uint16{1, 2, 3},
+		FixedChars: [2]rune{'a', 'b'},
+	})
+	if err != nil {
+		t.Fatalf("CollectionsToProto(nil RawBytes) failed: %v", err)
 	}
-	if _, err := g_types.ChoiceToProto(nil); err == nil {
-		t.Fatalf("ChoiceToProto(nil) must fail")
-	} else {
-		assertGlueErrorDetails(t, "ChoiceToProto(nil)", err, "UnknownCase", "types/choice")
+	nilColWire, err := proto.Marshal(nilColMsg)
+	if err != nil {
+		t.Fatalf("marshal nil RawBytes: %v", err)
 	}
-	if _, err := g_types.ScalarsToProto(p_types.Scalars{AString: string([]byte{0xff, 0xfe}), AChar: 'a'}); err == nil {
-		t.Fatalf("ScalarsToProto with invalid UTF-8 string must fail")
-	} else {
-		assertGlueErrorDetails(t, "invalid-utf8", err, "InvalidState", "types/scalars.a-string")
+	nilColParsed := &pb_root.TypesCollections{}
+	if err := proto.Unmarshal(nilColWire, nilColParsed); err != nil {
+		t.Fatalf("unmarshal nil RawBytes: %v", err)
 	}
+	nilColBack, err := g_types.CollectionsFromProto(nilColParsed)
+	if err != nil || nilColBack.RawBytes == nil || len(nilColBack.RawBytes) != 0 {
+		t.Fatalf("expected non-nil empty RawBytes roundtrip, got %#v, err=%v", nilColBack.RawBytes, err)
+	}
+
+	var nilSlice []byte
+	nilOptMsg, err := g_types.OptionalsToProto(p_types.Optionals{OptBytes: &nilSlice})
+	if err != nil {
+		t.Fatalf("OptionalsToProto(&nilSlice) failed: %v", err)
+	}
+	nilOptWire, err := proto.Marshal(nilOptMsg)
+	if err != nil {
+		t.Fatalf("marshal &nilSlice: %v", err)
+	}
+	nilOptParsed := &pb_root.TypesOptionals{}
+	if err := proto.Unmarshal(nilOptWire, nilOptParsed); err != nil {
+		t.Fatalf("unmarshal &nilSlice: %v", err)
+	}
+	nilOptBack, err := g_types.OptionalsFromProto(nilOptParsed)
+	if err != nil || nilOptBack.OptBytes == nil || *nilOptBack.OptBytes == nil || len(*nilOptBack.OptBytes) != 0 {
+		t.Fatalf("expected present non-nil empty OptBytes roundtrip, got %#v, err=%v", nilOptBack.OptBytes, err)
+	}
+
 	// Pointer-receiver variant case value must also work identically to value case.
 	ptrChoiceMsg, err := g_types.ChoiceToProto(&p_types.ChoiceSmall{Value: 7})
 	if err != nil {

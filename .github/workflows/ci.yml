@@ -620,7 +620,8 @@ jobs:
           unzip -q "$archive" -d "$RUNNER_TEMP/protoc"
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
       - name: Install hash-locked Python protobuf runtime
-        run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r ci/py-conformance/requirements.txt
+        run: |
+          python -m pip install --require-hashes --no-deps --only-binary=:all: -r ci/py-conformance/requirements.txt
       - name: Build witforge CLI
         run: cargo build --locked -p witforge-cli
       - name: Run Python checked protobuf glue conformance harness
@@ -660,15 +661,16 @@ jobs:
           echo "${PROTOC_SHA256}  $archive" | sha256sum -c -
           unzip -q "$archive" -d "$RUNNER_TEMP/protoc"
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
-      - name: Download checksum-locked Go protobuf dependencies
+      - name: Download and verify checksum-locked Go protobuf dependencies
         working-directory: ci/go-conformance
-        run: go mod download
+        run: go mod download && go mod verify
       - name: Build witforge CLI
         run: cargo build --locked -p witforge-cli
       - name: Run Go checked protobuf glue conformance harness
         shell: bash
         env:
           WITFORGE: ${{ github.workspace }}/target/debug/witforge
+          GOPROXY: "off"
         run: ci/check-go-conformance.sh
 
   # The one check branch protection requires: every job above passed, or, for the optional/

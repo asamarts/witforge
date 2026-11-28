@@ -61,6 +61,52 @@ pub fn validate_module_path(module_path: &str) -> Result<()> {
     go::validate_module_path(module_path)
 }
 
+fn validate_module_roots(go_module: &str, plain_root: &str, proto_root: &str) -> Result<()> {
+    validate_module_path(go_module)?;
+    validate_module_path(plain_root)?;
+    validate_module_path(proto_root)?;
+    if go_module == plain_root {
+        return Err(anyhow::Error::new(crate::DiagnosticError::single_located(
+            crate::diagnostic::LocatedDiagnostic::from_diagnostic(
+                crate::diagnostic::Diagnostic::error(
+                    crate::diagnostic::codes::CLI_USAGE,
+                    format!(
+                        "go-module `{go_module}` and plain-root `{plain_root}` must be \
+                             distinct Go module import paths"
+                    ),
+                ),
+            ),
+        )));
+    }
+    if go_module == proto_root {
+        return Err(anyhow::Error::new(crate::DiagnosticError::single_located(
+            crate::diagnostic::LocatedDiagnostic::from_diagnostic(
+                crate::diagnostic::Diagnostic::error(
+                    crate::diagnostic::codes::CLI_USAGE,
+                    format!(
+                        "go-module `{go_module}` and proto-root `{proto_root}` must be \
+                             distinct Go module import paths"
+                    ),
+                ),
+            ),
+        )));
+    }
+    if plain_root == proto_root {
+        return Err(anyhow::Error::new(crate::DiagnosticError::single_located(
+            crate::diagnostic::LocatedDiagnostic::from_diagnostic(
+                crate::diagnostic::Diagnostic::error(
+                    crate::diagnostic::codes::CLI_USAGE,
+                    format!(
+                        "plain-root `{plain_root}` and proto-root `{proto_root}` must be \
+                             distinct Go module import paths"
+                    ),
+                ),
+            ),
+        )));
+    }
+    Ok(())
+}
+
 /// Plan the complete nested Go protobuf glue output for a WIT root without writing.
 ///
 /// Every `v<major>.<minor>` directory is validated against the subset and its committed lockfile.
@@ -125,9 +171,7 @@ pub fn plan_with_options(
     released: Option<&Path>,
     options: &GoGlueOptions,
 ) -> Result<GeneratedFiles> {
-    validate_module_path(go_module)?;
-    validate_module_path(plain_root)?;
-    validate_module_path(proto_root)?;
+    validate_module_roots(go_module, plain_root, proto_root)?;
     let versions = load_versions_with_released(wit_root, released)?;
     plan_versions_with_options(&versions, go_module, plain_root, proto_root, options)
 }
@@ -168,9 +212,7 @@ pub fn generate_with_options(
     proto_root: &str,
     options: &GoGlueOptions,
 ) -> Result<()> {
-    validate_module_path(go_module)?;
-    validate_module_path(plain_root)?;
-    validate_module_path(proto_root)?;
+    validate_module_roots(go_module, plain_root, proto_root)?;
     ensure_outside_wit_root(wit_root, out)?;
     plan_with_options(wit_root, go_module, plain_root, proto_root, None, options)?.write(out)
 }
@@ -214,9 +256,7 @@ pub fn check_with_options(
     proto_root: &str,
     options: &GoGlueOptions,
 ) -> Result<Vec<GeneratedFileFinding>> {
-    validate_module_path(go_module)?;
-    validate_module_path(plain_root)?;
-    validate_module_path(proto_root)?;
+    validate_module_roots(go_module, plain_root, proto_root)?;
     ensure_outside_wit_root(wit_root, out)?;
     plan_with_options(wit_root, go_module, plain_root, proto_root, None, options)?.check(out)
 }
@@ -229,9 +269,7 @@ pub(crate) fn plan_versions_with_options(
     proto_root: &str,
     _options: &GoGlueOptions,
 ) -> Result<GeneratedFiles> {
-    validate_module_path(go_module)?;
-    validate_module_path(plain_root)?;
-    validate_module_path(proto_root)?;
+    validate_module_roots(go_module, plain_root, proto_root)?;
 
     // Validate protobuf generation upfront so lockfile / proto violations surface cleanly before
     // emitting glue, matching `glue`, `typescript_glue`, and `python_glue`.
@@ -347,14 +385,16 @@ pub(crate) fn protoc_go_camel_case(s: &str) -> String {
 }
 
 /// Byte-for-byte port of `google.golang.org/protobuf/compiler/protogen`'s message field and oneof
-/// conflict resolution (`protogen.go:767-795`).
+/// conflict resolution (`protogen.go:744-795`), including proto3 `optional` synthetic oneofs
+/// (`_<field>` -> `X<Field>`).
 ///
+/// Each item in `proto_fields` is `(proto_field_name, is_proto3_optional)`.
 /// Returns `(field_go_names, oneof_go_name)` in proto declaration order.
 fn resolve_proto_message_fields(
-    proto_field_names: &[String],
+    proto_fields: &[(String, bool)],
     oneof_name: Option<&str>,
 ) -> (Vec<String>, Option<String>) {
-    let mut used: BTreeSet<String> = [
+    let mut used: BTreeMap<String, bool> = [
         "Reset",
         "String",
         "ProtoMessage",
@@ -365,27 +405,32 @@ fn resolve_proto_message_fields(
         "Descriptor",
     ]
     .into_iter()
-    .map(str::to_string)
+    .map(|name| (name.to_string(), true))
     .collect();
 
     let mut make_unique = |base: String, has_getter: bool| -> String {
         let mut name = base;
-        while used.contains(&name) || (has_getter && used.contains(&format!("Get{name}"))) {
+        while used.get(&name).copied().unwrap_or(false)
+            || (has_getter && used.get(&format!("Get{name}")).copied().unwrap_or(false))
+        {
             name.push('_');
         }
-        used.insert(name.clone());
-        if has_getter {
-            used.insert(format!("Get{name}"));
-        }
+        used.insert(name.clone(), true);
+        used.insert(format!("Get{name}"), has_getter);
         name
     };
 
-    let mut resolved_fields = Vec::with_capacity(proto_field_names.len());
+    let mut resolved_fields = Vec::with_capacity(proto_fields.len());
     let mut resolved_oneof = None;
-    for (idx, raw) in proto_field_names.iter().enumerate() {
+    for (idx, (raw, is_proto3_optional)) in proto_fields.iter().enumerate() {
         let field_name = make_unique(protoc_go_camel_case(raw), true);
         resolved_fields.push(field_name);
-        if idx == 0
+        if *is_proto3_optional {
+            // protoc synthesizes a single-field oneof `_<raw>` for every proto3 `optional` field;
+            // protogen reserves `GoCamelCase("_<raw>")` (`X<Field>`) without skipping synthetic
+            // oneofs (`protogen.go:785-795`).
+            let _ = make_unique(protoc_go_camel_case(&format!("_{raw}")), false);
+        } else if idx == 0
             && let Some(oneof) = oneof_name
         {
             resolved_oneof = Some(make_unique(protoc_go_camel_case(oneof), false));
@@ -517,11 +562,11 @@ func MissingField(field string) *GlueError {
 }
 
 // UnknownEnumValue constructs an UnknownEnumValue GlueError.
-func UnknownEnumValue(enumeration string, value int32) *GlueError {
+func UnknownEnumValue(enumeration string, value int64) *GlueError {
 	return &GlueError{
 		Kind:        KindUnknownEnumValue,
 		Enumeration: enumeration,
-		Value:       int64(value),
+		Value:       value,
 	}
 }
 
@@ -950,6 +995,13 @@ enum Form {
     Option,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionDirectKind {
+    PointerScalarOrEnum,
+    Bytes,
+    Message,
+}
+
 /// Planned Go package-level symbol names for one glue package (preventing any possible collision
 /// between `<Type>ToProto`/`<Type>FromProto`, `<Fn>ToRequest`/... and `Method`/`Method<Fn>`).
 struct GlueSymbolPlan {
@@ -1000,11 +1052,7 @@ fn plan_glue_symbols(interface: &Interface) -> Result<GlueSymbolPlan> {
     let (method_type_name, method_const_names) = if interface.functions.is_empty() {
         (None, Vec::new())
     } else {
-        let method_ty = if used.contains_key("Method") {
-            "WitforgeMethod".to_string()
-        } else {
-            "Method".to_string()
-        };
+        let method_ty = "Method".to_string();
         used.insert(method_ty.clone(), "method enum".to_string());
         let mut consts = Vec::with_capacity(interface.functions.len());
         for (idx, function) in interface.functions.iter().enumerate() {
@@ -1266,10 +1314,14 @@ fn emit_reexport_glue(
                 let req_ty = format!("*{}", emitter.local_proto_ref(&req_proto));
                 let resp_ty = format!("*{}", emitter.local_proto_ref(&resp_proto));
 
+                let fn_scope = format!("{}#{}", interface.name, function.name);
                 let mut param_names = Vec::with_capacity(function.params.len());
                 let mut param_types = Vec::with_capacity(function.params.len());
+                let mut seen_params = BTreeMap::new();
                 for param in &function.params {
-                    param_names.push(go_param_ident(&param.name)?);
+                    let p_name = go_param_ident(&param.name)?;
+                    insert_name(&mut seen_params, &p_name, &param.name, &fn_scope)?;
+                    param_names.push(p_name);
                     param_types.push(emitter.plain_type(&param.ty)?);
                 }
                 let param_sig: Vec<String> = param_names
@@ -1480,6 +1532,122 @@ impl<'a> InterfaceGlueEmitter<'a> {
         }
     }
 
+    fn resolve_local_named_option(
+        &self,
+        ty: &TypeExpr,
+    ) -> Result<Option<(QualifiedName, TypeExpr)>> {
+        let mut current = ty;
+        let mut seen = BTreeSet::new();
+        while let TypeExpr::Named(name) = current {
+            if name.is_foreign() || !seen.insert(name.clone()) {
+                return Ok(None);
+            }
+            match &self.named(name)?.kind {
+                TypeDefKind::Alias(target) => current = target,
+                TypeDefKind::Option(inner_payload)
+                    if matches!(
+                        self.form(inner_payload)?,
+                        Form::List | Form::Map | Form::Option
+                    ) =>
+                {
+                    return Ok(Some((name.clone(), inner_payload.clone())));
+                }
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    fn resolve_local_alias_target(&self, name: &QualifiedName) -> Result<Option<TypeExpr>> {
+        if name.is_foreign() {
+            return Ok(None);
+        }
+        let TypeDefKind::Alias(first) = &self.named(name)?.kind else {
+            return Ok(None);
+        };
+        let mut current = first;
+        let mut seen = BTreeSet::new();
+        seen.insert(name.clone());
+        while let TypeExpr::Named(next) = current {
+            if next.is_foreign() || !seen.insert(next.clone()) {
+                break;
+            }
+            if let TypeDefKind::Alias(target) = &self.named(next)?.kind {
+                current = target;
+            } else {
+                break;
+            }
+        }
+        Ok(Some(current.clone()))
+    }
+
+    fn resolve_inline_result(&self, ty: &TypeExpr) -> Result<Option<ResultExpr>> {
+        match ty {
+            TypeExpr::Result(result) => Ok(Some(result.clone())),
+            TypeExpr::Named(name) => {
+                if let Some(TypeExpr::Result(result)) = self.resolve_local_alias_target(name)? {
+                    Ok(Some(result))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn is_bytes_in(&self, context: Option<&'a Dependency>, ty: &TypeExpr) -> Result<bool> {
+        match ty {
+            TypeExpr::List(element) | TypeExpr::FixedLengthList(element, _) => {
+                Ok(self.ctx.model.resolves_to_u8_in(context, element))
+            }
+            TypeExpr::Named(name) => {
+                let (dep, def) = self.resolve_type_def(context, name)?;
+                match &def.kind {
+                    TypeDefKind::Alias(target) => self.is_bytes_in(dep, target),
+                    TypeDefKind::List(element) | TypeDefKind::FixedLengthList(element, _) => {
+                        Ok(self.ctx.model.resolves_to_u8_in(dep, element))
+                    }
+                    _ => Ok(false),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn proto_singular_needs_ptr(&self, ty: &TypeExpr) -> Result<bool> {
+        Ok(matches!(self.form(ty)?, Form::Scalar | Form::Enum))
+    }
+
+    fn option_direct_kind(&self, ty: &TypeExpr) -> Result<OptionDirectKind> {
+        let (owner, payload) = self.option_payload_with_owner(None, ty)?;
+        if self.is_proto_message_singular_in(owner, &payload)? {
+            Ok(OptionDirectKind::Message)
+        } else if self.is_bytes_in(owner, &payload)? {
+            Ok(OptionDirectKind::Bytes)
+        } else {
+            Ok(OptionDirectKind::PointerScalarOrEnum)
+        }
+    }
+
+    fn is_proto3_optional_field(&self, ty: &TypeExpr) -> Result<bool> {
+        match self.form(ty)? {
+            Form::Scalar | Form::Bytes | Form::Enum => Ok(true),
+            Form::Option => {
+                let (owner, payload) = self.option_payload_with_owner(None, ty)?;
+                let payload_form = if owner.is_some() {
+                    self.foreign_form_expr(owner, &payload)?
+                } else {
+                    self.form(&payload)?
+                };
+                Ok(matches!(
+                    payload_form,
+                    Form::Scalar | Form::Bytes | Form::Enum
+                ))
+            }
+            Form::Message | Form::List | Form::Map => Ok(false),
+        }
+    }
+
     fn is_nested_option_payload(&self, payload: &TypeExpr) -> bool {
         self.ctx
             .model
@@ -1676,42 +1844,23 @@ impl<'a> InterfaceGlueEmitter<'a> {
     }
 
     fn resolve_primitive_map_key(&self, ty: &TypeExpr) -> Result<TypeExpr> {
+        self.resolve_primitive_map_key_in(None, ty)
+    }
+
+    fn resolve_primitive_map_key_in(
+        &self,
+        context: Option<&'a Dependency>,
+        ty: &TypeExpr,
+    ) -> Result<TypeExpr> {
         match ty {
             TypeExpr::Named(name) => {
-                let (dep, def) = self.resolve_type_def(None, name)?;
+                let (dep, def) = self.resolve_type_def(context, name)?;
                 match &def.kind {
-                    TypeDefKind::Alias(target) => {
-                        let qualified = qualify_type(dep, target);
-                        self.resolve_primitive_map_key(&qualified)
-                    }
+                    TypeDefKind::Alias(target) => self.resolve_primitive_map_key_in(dep, target),
                     _ => bail!("map key `{name}` is not a primitive"),
                 }
             }
             other => Ok(other.clone()),
-        }
-    }
-
-    fn fixed_bytes_len(&self, ty: &TypeExpr) -> Result<Option<u32>> {
-        match ty {
-            TypeExpr::FixedLengthList(elem, len) if self.ctx.model.resolves_to_u8(elem) => {
-                Ok(Some(*len))
-            }
-            TypeExpr::Named(name) => {
-                let (dep, def) = self.resolve_type_def(None, name)?;
-                match &def.kind {
-                    TypeDefKind::FixedLengthList(elem, len)
-                        if self.ctx.model.resolves_to_u8_in(dep, elem) =>
-                    {
-                        Ok(Some(*len))
-                    }
-                    TypeDefKind::Alias(target) => {
-                        let qualified = qualify_type(dep, target);
-                        self.fixed_bytes_len(&qualified)
-                    }
-                    _ => Ok(None),
-                }
-            }
-            _ => Ok(None),
         }
     }
 
@@ -2191,7 +2340,15 @@ impl<'a> InterfaceGlueEmitter<'a> {
     }
 
     fn proto_map_key_go_type(&self, key: &TypeExpr) -> Result<&'static str> {
-        match self.resolve_primitive_map_key(key)? {
+        self.proto_map_key_go_type_in(None, key)
+    }
+
+    fn proto_map_key_go_type_in(
+        &self,
+        context: Option<&'a Dependency>,
+        key: &TypeExpr,
+    ) -> Result<&'static str> {
+        match self.resolve_primitive_map_key_in(context, key)? {
             TypeExpr::String => Ok("string"),
             TypeExpr::Bool => Ok("bool"),
             TypeExpr::U8 | TypeExpr::U16 | TypeExpr::U32 | TypeExpr::Char => Ok("uint32"),
@@ -2449,7 +2606,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 Ok(format!("[]{inner}"))
             }
             TypeDefKind::Map(key, value) => {
-                let k = self.proto_map_key_go_type(key)?;
+                let k = self.proto_map_key_go_type_in(Some(owner), key)?;
                 let v = self.dependency_defined_proto_singular(owner, value)?;
                 Ok(format!("map[{k}]{v}"))
             }
@@ -2500,7 +2657,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 Ok(format!("[]{inner}"))
             }
             TypeExpr::Map(key, value) => {
-                let k = self.proto_map_key_go_type(key)?;
+                let k = self.proto_map_key_go_type_in(Some(owner), key)?;
                 let v = self.dependency_defined_proto_singular(owner, value)?;
                 Ok(format!("map[{k}]{v}"))
             }
@@ -2853,10 +3010,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let identity = format!("{}/{type_name}", self.interface.name);
         let identity_lit = escape_go_string(&identity);
 
-        let raw_proto_fields: Vec<String> = fields
-            .iter()
-            .map(|f| ident::proto_field_name(&f.name))
-            .collect();
+        let mut raw_proto_fields = Vec::with_capacity(fields.len());
+        for f in fields {
+            raw_proto_fields.push((
+                ident::proto_field_name(&f.name),
+                self.is_proto3_optional_field(&f.ty)?,
+            ));
+        }
         let (pb_fields, _) = resolve_proto_message_fields(&raw_proto_fields, None);
 
         // ToProto
@@ -2964,9 +3124,9 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let identity_lit = escape_go_string(&identity);
         let err_pkg = self.err_pkg();
 
-        let raw_proto_cases: Vec<String> = cases
+        let raw_proto_cases: Vec<(String, bool)> = cases
             .iter()
-            .map(|c| ident::proto_field_name(&c.name))
+            .map(|c| (ident::proto_field_name(&c.name), false))
             .collect();
         let (pb_case_fields, pb_oneof_opt) =
             resolve_proto_message_fields(&raw_proto_cases, Some("witforge_value"));
@@ -3085,13 +3245,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     self.plain_symbols.variant_case_names[&(def_idx, case_idx)].clone();
                 let wrapper_struct = format!("{pb_pkg}.{proto_name}_{pb_field}");
                 writeln!(out, "\tcase *{wrapper_struct}:")?;
-                writeln!(out, "\t\tif wf_c == nil {{")?;
-                writeln!(
-                    out,
-                    "\t\t\treturn nil, {err_pkg}.UnknownCase({identity_lit})"
-                )?;
-                writeln!(out, "\t\t}}")?;
                 if let Some(payload) = &case.payload {
+                    writeln!(out, "\t\tif wf_c == nil {{")?;
+                    writeln!(
+                        out,
+                        "\t\t\treturn nil, {err_pkg}.UnknownCase({identity_lit})"
+                    )?;
+                    writeln!(out, "\t\t}}")?;
                     let read_expr = format!("wf_c.{pb_field}");
                     let mut dec_stmts = Vec::new();
                     let mut dec_temps = TempGen::new();
@@ -3112,6 +3272,12 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         "\t\treturn {plain_pkg}.{case_struct}{{Value: {decoded}}}, nil"
                     )?;
                 } else {
+                    writeln!(out, "\t\tif wf_c == nil || wf_c.{pb_field} == nil {{")?;
+                    writeln!(
+                        out,
+                        "\t\t\treturn nil, {err_pkg}.UnknownCase({identity_lit})"
+                    )?;
+                    writeln!(out, "\t\t}}")?;
                     writeln!(out, "\t\treturn {plain_pkg}.{case_struct}{{}}, nil")?;
                 }
             }
@@ -3152,7 +3318,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         if cases.is_empty() {
             writeln!(
                 out,
-                "\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int32(val))"
+                "\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int64(val))"
             )?;
         } else {
             let plain_pkg = self.local_plain_pkg();
@@ -3167,7 +3333,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             writeln!(out, "\tdefault:")?;
             writeln!(
                 out,
-                "\t\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int32(val))"
+                "\t\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int64(val))"
             )?;
             writeln!(out, "\t}}")?;
         }
@@ -3183,7 +3349,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         if cases.is_empty() {
             writeln!(
                 out,
-                "\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int32(msg))"
+                "\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int64(msg))"
             )?;
         } else {
             let plain_pkg = self.local_plain_pkg();
@@ -3198,7 +3364,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             writeln!(out, "\tdefault:")?;
             writeln!(
                 out,
-                "\t\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int32(msg))"
+                "\t\treturn 0, {err_pkg}.UnknownEnumValue({identity_lit}, int64(msg))"
             )?;
             writeln!(out, "\t}}")?;
         }
@@ -3225,9 +3391,9 @@ impl<'a> InterfaceGlueEmitter<'a> {
         let identity_lit = escape_go_string(&identity);
         let err_pkg = self.err_pkg();
 
-        let raw_proto_flags: Vec<String> = flags
+        let raw_proto_flags: Vec<(String, bool)> = flags
             .iter()
-            .map(|f| ident::proto_field_name(&f.name))
+            .map(|f| (ident::proto_field_name(&f.name), false))
             .collect();
         let (pb_flags, _) = resolve_proto_message_fields(&raw_proto_flags, None);
 
@@ -3384,13 +3550,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
         writeln!(out, "\t}}")?;
         writeln!(out, "\tswitch wf_c := msg.Value.(type) {{")?;
         writeln!(out, "\tcase *{pb_pkg}.{proto_name}_Ok:")?;
-        writeln!(out, "\t\tif wf_c == nil {{")?;
-        writeln!(
-            out,
-            "\t\t\treturn wf_zero, {err_pkg}.UnknownCase({identity_lit})"
-        )?;
-        writeln!(out, "\t\t}}")?;
         if let Some(ok_ty) = &result.ok {
+            writeln!(out, "\t\tif wf_c == nil {{")?;
+            writeln!(
+                out,
+                "\t\t\treturn wf_zero, {err_pkg}.UnknownCase({identity_lit})"
+            )?;
+            writeln!(out, "\t\t}}")?;
             let mut dec_stmts = Vec::new();
             let mut dec_temps = TempGen::new();
             let decoded = self.emit_decode_singular(
@@ -3410,19 +3576,25 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 "\t\treturn {shared_pkg}.NewOk[{ok_plain_ty}, {err_plain_ty}]({decoded}), nil"
             )?;
         } else {
+            writeln!(out, "\t\tif wf_c == nil || wf_c.Ok == nil {{")?;
+            writeln!(
+                out,
+                "\t\t\treturn wf_zero, {err_pkg}.UnknownCase({identity_lit})"
+            )?;
+            writeln!(out, "\t\t}}")?;
             writeln!(
                 out,
                 "\t\treturn {shared_pkg}.NewOk[struct{{}}, {err_plain_ty}](struct{{}}{{}}), nil"
             )?;
         }
         writeln!(out, "\tcase *{pb_pkg}.{proto_name}_Err:")?;
-        writeln!(out, "\t\tif wf_c == nil {{")?;
-        writeln!(
-            out,
-            "\t\t\treturn wf_zero, {err_pkg}.UnknownCase({identity_lit})"
-        )?;
-        writeln!(out, "\t\t}}")?;
         if let Some(err_ty) = &result.err {
+            writeln!(out, "\t\tif wf_c == nil {{")?;
+            writeln!(
+                out,
+                "\t\t\treturn wf_zero, {err_pkg}.UnknownCase({identity_lit})"
+            )?;
+            writeln!(out, "\t\t}}")?;
             let mut dec_stmts = Vec::new();
             let mut dec_temps = TempGen::new();
             let decoded = self.emit_decode_singular(
@@ -3442,6 +3614,12 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 "\t\treturn {shared_pkg}.NewErr[{ok_plain_ty}, {err_plain_ty}]({decoded}), nil"
             )?;
         } else {
+            writeln!(out, "\t\tif wf_c == nil || wf_c.Err == nil {{")?;
+            writeln!(
+                out,
+                "\t\t\treturn wf_zero, {err_pkg}.UnknownCase({identity_lit})"
+            )?;
+            writeln!(out, "\t\t}}")?;
             writeln!(
                 out,
                 "\t\treturn {shared_pkg}.NewErr[{ok_plain_ty}, struct{{}}](struct{{}}{{}}), nil"
@@ -3788,6 +3966,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     &proto_wrapper_go,
                     &identity,
                     "nil",
+                    false,
                 )?;
                 for stmt in stmts {
                     writeln!(out, "{stmt}")?;
@@ -3819,6 +3998,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     &identity_lit,
                     &err_pkg,
                     "wf_zero",
+                    false,
                 )?;
                 if dec_stmts.iter().any(|s| s.contains("wf_zero")) {
                     writeln!(out, "\tvar wf_zero {plain}")?;
@@ -3832,8 +4012,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             Form::Scalar | Form::Bytes | Form::Enum | Form::Message => {
                 // Flat option: plain type is `*InnerPlain`; proto type is `[]byte` (for Bytes),
                 // `*pb.Msg` (for Message), or `*ProtoScalar` / `*pb.Enum` (for Scalar/Enum).
-                let singular_proto = self.proto_singular_type(payload)?;
-                let needs_ptr = !singular_proto.starts_with('*') && singular_proto != "[]byte";
+                let needs_ptr = self.proto_singular_needs_ptr(payload)?;
 
                 write_doc_comment(out, "", docs_to, deprecated)?;
                 writeln!(
@@ -3871,7 +4050,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let mut dec_stmts = Vec::new();
                 let mut dec_temps = TempGen::new();
                 let read_src = if needs_ptr { "*msg" } else { "msg" };
-                let decoded = self.emit_decode_singular(
+                let decoded = self.emit_decode_singular_inner(
                     &mut dec_stmts,
                     "\t",
                     &mut dec_temps,
@@ -3879,6 +4058,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     payload,
                     &identity,
                     "nil",
+                    !needs_ptr,
                 )?;
                 for stmt in dec_stmts {
                     writeln!(out, "{stmt}")?;
@@ -3906,6 +4086,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         wrapper_go_name: &str,
         identity: &str,
         err_ret: &str,
+        use_local_named_wrapper: bool,
     ) -> Result<()> {
         let sub_indent = format!("{indent}\t");
         let none_assign = format!(
@@ -3915,7 +4096,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             self.resolve_foreign_named(option_ty)?
         {
             let target = self.glue_fn_prefix(&foreign_name)?;
-            let proto_direct = self.proto_direct_type(option_ty)?;
+            let direct_kind = self.option_direct_kind(option_ty)?;
             let tmp = temps.fresh();
             stmts.push(format!(
                 "{indent}{tmp}, wf_err_val := {target}ToProto({inner_src})"
@@ -3926,12 +4107,9 @@ impl<'a> InterfaceGlueEmitter<'a> {
             stmts.push(format!("{indent}if {tmp} == nil {{"));
             stmts.push(none_assign);
             stmts.push(format!("{indent}}} else {{"));
-            let some_val = if proto_direct.starts_with('*')
-                && !self.is_option_direct_proto_message(option_ty)?
-            {
-                format!("*{tmp}")
-            } else {
-                tmp
+            let some_val = match direct_kind {
+                OptionDirectKind::PointerScalarOrEnum => format!("*{tmp}"),
+                OptionDirectKind::Bytes | OptionDirectKind::Message => tmp,
             };
             stmts.push(format!(
                 "{sub_indent}{out_var} = &{pb_pkg}.{wrapper_go_name}{{Value: &{pb_pkg}.{wrapper_go_name}_Some{{Some: {some_val}}}}}"
@@ -3940,17 +4118,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
             return Ok(());
         }
 
-        // Local named option whose payload is List/Map/Option (so the inner `oneof some` arm is
-        // the named wrapper message itself, e.g. `TypesOptU16List` or `TypesOptNested`!).
-        if let TypeExpr::Named(local_name) = option_ty
-            && !local_name.is_foreign()
-            && let TypeDefKind::Option(inner_payload) = &self.named(local_name)?.kind
-            && matches!(
-                self.form(inner_payload)?,
-                Form::List | Form::Map | Form::Option
-            )
+        // Only anonymous `WitforgeOptionOf<LocalOpt>` wrappers (`use_local_named_wrapper == true`)
+        // embed the local named wrapper message directly as `some` (following local alias chains);
+        // named outer options (`emit_option`) unwrap to `singular(inner_payload)` per `proto.rs`.
+        if use_local_named_wrapper
+            && let Some((local_name, _)) = self.resolve_local_named_option(option_ty)?
         {
-            let target = self.glue_fn_prefix(local_name)?;
+            let target = self.glue_fn_prefix(&local_name)?;
             let tmp = temps.fresh();
             stmts.push(format!(
                 "{indent}{tmp}, wf_err_val := {target}ToProto({inner_src})"
@@ -4008,11 +4182,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
         Ok(())
     }
 
-    fn is_option_direct_proto_message(&self, ty: &TypeExpr) -> Result<bool> {
-        let (owner, payload) = self.option_payload_with_owner(None, ty)?;
-        self.is_proto_message_singular_in(owner, &payload)
-    }
-
     fn option_payload_with_owner(
         &self,
         context: Option<&'a Dependency>,
@@ -4048,6 +4217,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         identity_lit: &str,
         err_pkg: &str,
         err_ret: &str,
+        use_local_named_wrapper: bool,
     ) -> Result<String> {
         let out_var = temps.fresh();
         let option_plain_ty = self.plain_type(option_ty)?;
@@ -4056,7 +4226,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             "{indent}switch wf_c := ({wrapper_src}).Value.(type) {{"
         ));
         stmts.push(format!("{indent}case *{pb_pkg}.{wrapper_go_name}_None:"));
-        stmts.push(format!("{indent}\tif wf_c == nil {{"));
+        stmts.push(format!("{indent}\tif wf_c == nil || wf_c.None == nil {{"));
         stmts.push(format!(
             "{indent}\t\treturn {err_ret}, {err_pkg}.InvalidState({identity_lit})"
         ));
@@ -4070,9 +4240,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 .model
                 .resolves_to_option_in(Some(&dep), &foreign_inner);
             let target = self.glue_fn_prefix(&foreign_name)?;
-            let proto_direct = self.proto_direct_type(option_ty)?;
-            let needs_ptr_wrap =
-                proto_direct.starts_with('*') && !self.is_option_direct_proto_message(option_ty)?;
+            let direct_kind = self.option_direct_kind(option_ty)?;
 
             if inner_is_nested {
                 let shared_pkg = self.shared_types_pkg();
@@ -4085,26 +4253,25 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 stmts.push(format!("{indent}\t{out_var} = nil"));
             }
             stmts.push(format!("{indent}case *{pb_pkg}.{wrapper_go_name}_Some:"));
-            stmts.push(format!("{indent}\tif wf_c == nil {{"));
+            if direct_kind == OptionDirectKind::Message {
+                stmts.push(format!("{indent}\tif wf_c == nil || wf_c.Some == nil {{"));
+            } else {
+                stmts.push(format!("{indent}\tif wf_c == nil {{"));
+            }
             stmts.push(format!(
                 "{indent}\t\treturn {err_ret}, {err_pkg}.InvalidState({identity_lit})"
             ));
             stmts.push(format!("{indent}\t}}"));
-            if self.is_option_direct_proto_message(option_ty)? {
-                stmts.push(format!("{indent}\tif wf_c.Some == nil {{"));
-                stmts.push(format!(
-                    "{indent}\t\treturn {err_ret}, {err_pkg}.InvalidState({identity_lit})"
-                ));
-                stmts.push(format!("{indent}\t}}"));
-            }
-            let arg = if needs_ptr_wrap {
-                let h = self.helpers_pkg();
-                format!("{h}.Ptr(wf_c.Some)")
-            } else if proto_direct == "[]byte" {
-                let h = self.helpers_pkg();
-                format!("{h}.NonNilBytes(wf_c.Some)")
-            } else {
-                "wf_c.Some".to_string()
+            let arg = match direct_kind {
+                OptionDirectKind::PointerScalarOrEnum => {
+                    let h = self.helpers_pkg();
+                    format!("{h}.Ptr(wf_c.Some)")
+                }
+                OptionDirectKind::Bytes => {
+                    let h = self.helpers_pkg();
+                    format!("{h}.NonNilBytes(wf_c.Some)")
+                }
+                OptionDirectKind::Message => "wf_c.Some".to_string(),
             };
             let dec_tmp = temps.fresh();
             stmts.push(format!(
@@ -4114,19 +4281,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
             stmts.push(format!("{indent}\t\treturn {err_ret}, wf_err_val"));
             stmts.push(format!("{indent}\t}}"));
             stmts.push(format!("{indent}\t{out_var} = {dec_tmp}"));
-        } else if let TypeExpr::Named(local_name) = option_ty
-            && !local_name.is_foreign()
-            && let TypeDefKind::Option(inner_payload) = &self.named(local_name)?.kind
-            && matches!(
-                self.form(inner_payload)?,
-                Form::List | Form::Map | Form::Option
-            )
+        } else if use_local_named_wrapper
+            && let Some((local_name, inner_payload)) = self.resolve_local_named_option(option_ty)?
         {
-            let target = self.glue_fn_prefix(local_name)?;
-            let inner_is_nested = self.is_nested_option_payload(inner_payload);
+            let target = self.glue_fn_prefix(&local_name)?;
+            let inner_is_nested = self.is_nested_option_payload(&inner_payload);
             if inner_is_nested {
                 let shared_pkg = self.shared_types_pkg();
-                let inner_inner_ty = self.plain_type(inner_payload)?;
+                let inner_inner_ty = self.plain_type(&inner_payload)?;
                 stmts.push(format!(
                     "{indent}\t{out_var} = {shared_pkg}.None[{inner_inner_ty}]()"
                 ));
@@ -4150,6 +4312,10 @@ impl<'a> InterfaceGlueEmitter<'a> {
         } else {
             let inner_payload = self.option_payload(option_ty)?;
             let inner_is_nested = self.is_nested_option_payload(&inner_payload);
+            let some_is_ptr_msg = matches!(
+                self.form(&inner_payload)?,
+                Form::Message | Form::List | Form::Map | Form::Option
+            );
             let sub_indent = format!("{indent}\t");
             if inner_is_nested {
                 let shared_pkg = self.shared_types_pkg();
@@ -4161,12 +4327,16 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 stmts.push(format!("{indent}\t{out_var} = nil"));
             }
             stmts.push(format!("{indent}case *{pb_pkg}.{wrapper_go_name}_Some:"));
-            stmts.push(format!("{indent}\tif wf_c == nil {{"));
+            if some_is_ptr_msg {
+                stmts.push(format!("{indent}\tif wf_c == nil || wf_c.Some == nil {{"));
+            } else {
+                stmts.push(format!("{indent}\tif wf_c == nil {{"));
+            }
             stmts.push(format!(
                 "{indent}\t\treturn {err_ret}, {err_pkg}.InvalidState({identity_lit})"
             ));
             stmts.push(format!("{indent}\t}}"));
-            let decoded = self.emit_decode_singular(
+            let decoded = self.emit_decode_singular_inner(
                 stmts,
                 &sub_indent,
                 temps,
@@ -4174,6 +4344,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 &inner_payload,
                 identity,
                 err_ret,
+                some_is_ptr_msg,
             )?;
             if inner_is_nested {
                 let shared_pkg = self.shared_types_pkg();
@@ -4252,7 +4423,10 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 insert_name(&mut seen_params, &p_name, &param.name, &fn_scope)?;
                 param_names.push(p_name);
                 param_types.push(self.plain_type(&param.ty)?);
-                raw_proto_params.push(ident::proto_field_name(&param.name));
+                raw_proto_params.push((
+                    ident::proto_field_name(&param.name),
+                    self.is_proto3_optional_field(&param.ty)?,
+                ));
             }
             let (pb_param_fields, _) = resolve_proto_message_fields(&raw_proto_params, None);
             let param_sig: Vec<String> = param_names
@@ -4516,8 +4690,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     stmts.push(format!("{sub_indent}{target_msg}.{pb_field} = {encoded}"));
                     stmts.push(format!("{indent}}}"));
                 } else {
-                    let singular_proto = self.proto_singular_type(&payload)?;
-                    let needs_ptr = !singular_proto.starts_with('*') && singular_proto != "[]byte";
+                    let needs_ptr = self.proto_singular_needs_ptr(&payload)?;
                     stmts.push(format!("{indent}if {src} != nil {{"));
                     let sub_indent = format!("{indent}\t");
                     let encoded = self.emit_encode_singular(
@@ -4583,7 +4756,16 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     "{indent}\treturn {err_ret}, {err_pkg}.MissingField({identity_lit})"
                 ));
                 stmts.push(format!("{indent}}}"));
-                self.emit_decode_value(stmts, indent, temps, &field_access, ty, identity, err_ret)
+                self.emit_decode_value_inner(
+                    stmts,
+                    indent,
+                    temps,
+                    &field_access,
+                    ty,
+                    identity,
+                    err_ret,
+                    true,
+                )
             }
             Form::List | Form::Map => {
                 self.emit_decode_value(stmts, indent, temps, &field_access, ty, identity, err_ret)
@@ -4602,7 +4784,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 }
                 let payload = self.option_payload(ty)?;
                 let out_var = temps.fresh();
-                let plain_ty = self.plain_type(ty)?;
                 if self.is_nested_option_payload(&payload) {
                     let shared_pkg = self.shared_types_pkg();
                     let inner_plain_ty = self.plain_type(&payload)?;
@@ -4611,7 +4792,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     ));
                     stmts.push(format!("{indent}if {field_access} != nil {{"));
                     let sub_indent = format!("{indent}\t");
-                    let decoded = self.emit_decode_singular(
+                    let decoded = self.emit_decode_singular_inner(
                         stmts,
                         &sub_indent,
                         temps,
@@ -4619,15 +4800,15 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         &payload,
                         identity,
                         err_ret,
+                        true,
                     )?;
                     stmts.push(format!(
                         "{sub_indent}{out_var} = {shared_pkg}.Some({decoded})"
                     ));
                     stmts.push(format!("{indent}}}"));
                 } else {
-                    let singular_proto = self.proto_singular_type(&payload)?;
-                    let needs_deref =
-                        !singular_proto.starts_with('*') && singular_proto != "[]byte";
+                    let plain_ty = self.plain_type(ty)?;
+                    let needs_deref = self.proto_singular_needs_ptr(&payload)?;
                     stmts.push(format!("{indent}var {out_var} {plain_ty}"));
                     stmts.push(format!("{indent}if {field_access} != nil {{"));
                     let sub_indent = format!("{indent}\t");
@@ -4636,7 +4817,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     } else {
                         field_access
                     };
-                    let decoded = self.emit_decode_singular(
+                    let decoded = self.emit_decode_singular_inner(
                         stmts,
                         &sub_indent,
                         temps,
@@ -4644,6 +4825,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         &payload,
                         identity,
                         err_ret,
+                        !needs_deref,
                     )?;
                     let addr_tmp = temps.fresh();
                     stmts.push(format!("{sub_indent}{addr_tmp} := {decoded}"));
@@ -4788,8 +4970,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
             TypeExpr::Option(payload) => {
                 // Direct value encoding for an anonymous option (used when emitting an alias to
                 // `option<T>`).
-                let singular_proto = self.proto_singular_type(payload)?;
-                let opt_proto = Self::proto_optional_type(&singular_proto);
+                let opt_proto = self.proto_direct_type(ty)?;
                 let out_var = temps.fresh();
                 stmts.push(format!("{indent}var {out_var} {opt_proto}"));
                 if self.is_nested_option_payload(payload) {
@@ -4807,7 +4988,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     stmts.push(format!("{sub_indent}{out_var} = {encoded}"));
                     stmts.push(format!("{indent}}}"));
                 } else {
-                    let needs_ptr = !singular_proto.starts_with('*') && singular_proto != "[]byte";
+                    let needs_ptr = self.proto_singular_needs_ptr(payload)?;
                     stmts.push(format!("{indent}if {src} != nil {{"));
                     let sub_indent = format!("{indent}\t");
                     let encoded = self.emit_encode_singular(
@@ -4833,6 +5014,10 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 self.emit_encode_inline_result(stmts, indent, temps, src, result, identity, err_ret)
             }
             TypeExpr::Named(name) => {
+                if let Some(target) = self.resolve_local_alias_target(name)? {
+                    return self
+                        .emit_encode_value(stmts, indent, temps, src, &target, identity, err_ret);
+                }
                 let target = self.glue_fn_prefix(name)?;
                 let tmp = temps.fresh();
                 stmts.push(format!(
@@ -4846,7 +5031,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     fn emit_decode_value(
         &mut self,
         stmts: &mut Vec<String>,
@@ -4856,6 +5041,21 @@ impl<'a> InterfaceGlueEmitter<'a> {
         ty: &TypeExpr,
         identity: &str,
         err_ret: &str,
+    ) -> Result<String> {
+        self.emit_decode_value_inner(stmts, indent, temps, src, ty, identity, err_ret, false)
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn emit_decode_value_inner(
+        &mut self,
+        stmts: &mut Vec<String>,
+        indent: &str,
+        temps: &mut TempGen,
+        src: &str,
+        ty: &TypeExpr,
+        identity: &str,
+        err_ret: &str,
+        non_nil_proven: bool,
     ) -> Result<String> {
         let identity_lit = escape_go_string(identity);
         match ty {
@@ -5041,7 +5241,6 @@ impl<'a> InterfaceGlueEmitter<'a> {
             }
             TypeExpr::Option(payload) => {
                 let out_var = temps.fresh();
-                let plain_ty = self.plain_type(ty)?;
                 if self.is_nested_option_payload(payload) {
                     let shared_pkg = self.shared_types_pkg();
                     let inner_plain_ty = self.plain_type(payload)?;
@@ -5050,7 +5249,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     ));
                     stmts.push(format!("{indent}if {src} != nil {{"));
                     let sub_indent = format!("{indent}\t");
-                    let decoded = self.emit_decode_singular(
+                    let decoded = self.emit_decode_singular_inner(
                         stmts,
                         &sub_indent,
                         temps,
@@ -5058,15 +5257,15 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         payload,
                         identity,
                         err_ret,
+                        true,
                     )?;
                     stmts.push(format!(
                         "{sub_indent}{out_var} = {shared_pkg}.Some({decoded})"
                     ));
                     stmts.push(format!("{indent}}}"));
                 } else {
-                    let singular_proto = self.proto_singular_type(payload)?;
-                    let needs_deref =
-                        !singular_proto.starts_with('*') && singular_proto != "[]byte";
+                    let plain_ty = self.plain_type(ty)?;
+                    let needs_deref = self.proto_singular_needs_ptr(payload)?;
                     stmts.push(format!("{indent}var {out_var} {plain_ty}"));
                     stmts.push(format!("{indent}if {src} != nil {{"));
                     let sub_indent = format!("{indent}\t");
@@ -5075,7 +5274,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     } else {
                         src.to_string()
                     };
-                    let decoded = self.emit_decode_singular(
+                    let decoded = self.emit_decode_singular_inner(
                         stmts,
                         &sub_indent,
                         temps,
@@ -5083,6 +5282,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                         payload,
                         identity,
                         err_ret,
+                        !needs_deref,
                     )?;
                     let addr_tmp = temps.fresh();
                     stmts.push(format!("{sub_indent}{addr_tmp} := {decoded}"));
@@ -5091,10 +5291,29 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 }
                 Ok(out_var)
             }
-            TypeExpr::Result(result) => {
-                self.emit_decode_inline_result(stmts, indent, temps, src, result, identity, err_ret)
-            }
+            TypeExpr::Result(result) => self.emit_decode_inline_result(
+                stmts,
+                indent,
+                temps,
+                src,
+                result,
+                identity,
+                err_ret,
+                non_nil_proven,
+            ),
             TypeExpr::Named(name) => {
+                if let Some(target) = self.resolve_local_alias_target(name)? {
+                    return self.emit_decode_value_inner(
+                        stmts,
+                        indent,
+                        temps,
+                        src,
+                        &target,
+                        identity,
+                        err_ret,
+                        non_nil_proven,
+                    );
+                }
                 let target = self.glue_fn_prefix(name)?;
                 let tmp = temps.fresh();
                 stmts.push(format!(
@@ -5191,13 +5410,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     &wrapper_go_name,
                     identity,
                     err_ret,
+                    true,
                 )?;
                 Ok(out_var)
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     fn emit_decode_singular(
         &mut self,
         stmts: &mut Vec<String>,
@@ -5208,44 +5428,58 @@ impl<'a> InterfaceGlueEmitter<'a> {
         identity: &str,
         err_ret: &str,
     ) -> Result<String> {
+        self.emit_decode_singular_inner(stmts, indent, temps, src, ty, identity, err_ret, false)
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn emit_decode_singular_inner(
+        &mut self,
+        stmts: &mut Vec<String>,
+        indent: &str,
+        temps: &mut TempGen,
+        src: &str,
+        ty: &TypeExpr,
+        identity: &str,
+        err_ret: &str,
+        non_nil_proven: bool,
+    ) -> Result<String> {
         let identity_lit = escape_go_string(identity);
         match self.form(ty)? {
-            Form::Scalar | Form::Enum => {
-                self.emit_decode_value(stmts, indent, temps, src, ty, identity, err_ret)
-            }
-            Form::Bytes => {
-                // Inside oneof/repeated/map/option-some, a bytes slice is valid even if empty,
-                // while fixed-length bytes checks exact length N.
-                if let Some(len) = self.fixed_bytes_len(ty)? {
-                    let h = self.helpers_pkg();
-                    let arr = temps.fresh();
-                    stmts.push(format!(
-                        "{indent}if wf_err_val := {h}.CheckFixedBytes({src}, {len}, {identity_lit}); wf_err_val != nil {{"
-                    ));
-                    stmts.push(format!("{indent}\treturn {err_ret}, wf_err_val"));
-                    stmts.push(format!("{indent}}}"));
-                    stmts.push(format!("{indent}var {arr} [{len}]byte"));
-                    stmts.push(format!("{indent}copy({arr}[:], {src})"));
-                    return Ok(arr);
-                }
+            Form::Scalar | Form::Enum | Form::Bytes => {
                 self.emit_decode_value(stmts, indent, temps, src, ty, identity, err_ret)
             }
             Form::Message => {
-                let err_pkg = self.err_pkg();
-                stmts.push(format!("{indent}if {src} == nil {{"));
-                stmts.push(format!(
-                    "{indent}\treturn {err_ret}, {err_pkg}.MissingField({identity_lit})"
-                ));
-                stmts.push(format!("{indent}}}"));
-                self.emit_decode_value(stmts, indent, temps, src, ty, identity, err_ret)
+                if let Some(result) = self.resolve_inline_result(ty)? {
+                    return self.emit_decode_inline_result(
+                        stmts,
+                        indent,
+                        temps,
+                        src,
+                        &result,
+                        identity,
+                        err_ret,
+                        non_nil_proven,
+                    );
+                }
+                if !non_nil_proven {
+                    let err_pkg = self.err_pkg();
+                    stmts.push(format!("{indent}if {src} == nil {{"));
+                    stmts.push(format!(
+                        "{indent}\treturn {err_ret}, {err_pkg}.MissingField({identity_lit})"
+                    ));
+                    stmts.push(format!("{indent}}}"));
+                }
+                self.emit_decode_value_inner(stmts, indent, temps, src, ty, identity, err_ret, true)
             }
             Form::List => {
-                let err_pkg = self.err_pkg();
-                stmts.push(format!("{indent}if {src} == nil {{"));
-                stmts.push(format!(
-                    "{indent}\treturn {err_ret}, {err_pkg}.MissingField({identity_lit})"
-                ));
-                stmts.push(format!("{indent}}}"));
+                if !non_nil_proven {
+                    let err_pkg = self.err_pkg();
+                    stmts.push(format!("{indent}if {src} == nil {{"));
+                    stmts.push(format!(
+                        "{indent}\treturn {err_ret}, {err_pkg}.MissingField({identity_lit})"
+                    ));
+                    stmts.push(format!("{indent}}}"));
+                }
                 self.emit_decode_value(
                     stmts,
                     indent,
@@ -5257,12 +5491,14 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 )
             }
             Form::Map => {
-                let err_pkg = self.err_pkg();
-                stmts.push(format!("{indent}if {src} == nil {{"));
-                stmts.push(format!(
-                    "{indent}\treturn {err_ret}, {err_pkg}.MissingField({identity_lit})"
-                ));
-                stmts.push(format!("{indent}}}"));
+                if !non_nil_proven {
+                    let err_pkg = self.err_pkg();
+                    stmts.push(format!("{indent}if {src} == nil {{"));
+                    stmts.push(format!(
+                        "{indent}\treturn {err_ret}, {err_pkg}.MissingField({identity_lit})"
+                    ));
+                    stmts.push(format!("{indent}}}"));
+                }
                 self.emit_decode_value(
                     stmts,
                     indent,
@@ -5282,11 +5518,13 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 let pb_pkg = pb_pkg.to_string();
                 let wrapper_go_name = wrapper_go_name.to_string();
                 let err_pkg = self.err_pkg();
-                stmts.push(format!("{indent}if {src} == nil {{"));
-                stmts.push(format!(
-                    "{indent}\treturn {err_ret}, {err_pkg}.InvalidState({identity_lit})"
-                ));
-                stmts.push(format!("{indent}}}"));
+                if !non_nil_proven {
+                    stmts.push(format!("{indent}if {src} == nil {{"));
+                    stmts.push(format!(
+                        "{indent}\treturn {err_ret}, {err_pkg}.InvalidState({identity_lit})"
+                    ));
+                    stmts.push(format!("{indent}}}"));
+                }
                 self.emit_decode_option_wrapper_body(
                     stmts,
                     indent,
@@ -5299,6 +5537,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
                     &identity_lit,
                     &err_pkg,
                     err_ret,
+                    true,
                 )
             }
         }
@@ -5376,6 +5615,7 @@ impl<'a> InterfaceGlueEmitter<'a> {
         result: &ResultExpr,
         identity: &str,
         err_ret: &str,
+        non_nil_proven: bool,
     ) -> Result<String> {
         let shape = self.shape_name(&TypeExpr::Result(result.clone()))?;
         let wrapper_go = protoc_go_camel_case(&format!("Witforge{shape}"));
@@ -5397,19 +5637,21 @@ impl<'a> InterfaceGlueEmitter<'a> {
         stmts.push(format!(
             "{indent}var {out_var} {shared_pkg}.Result[{ok_plain}, {err_plain}]"
         ));
-        stmts.push(format!("{indent}if {src} == nil {{"));
-        stmts.push(format!(
-            "{indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
-        ));
-        stmts.push(format!("{indent}}}"));
+        if !non_nil_proven {
+            stmts.push(format!("{indent}if {src} == nil {{"));
+            stmts.push(format!(
+                "{indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
+            ));
+            stmts.push(format!("{indent}}}"));
+        }
         stmts.push(format!("{indent}switch wf_c := ({src}).Value.(type) {{"));
         stmts.push(format!("{indent}case *{pb_pkg}.{wrapper_go}_Ok:"));
-        stmts.push(format!("{sub_indent}if wf_c == nil {{"));
-        stmts.push(format!(
-            "{sub_indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
-        ));
-        stmts.push(format!("{sub_indent}}}"));
         if let Some(ok_ty) = &result.ok {
+            stmts.push(format!("{sub_indent}if wf_c == nil {{"));
+            stmts.push(format!(
+                "{sub_indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
+            ));
+            stmts.push(format!("{sub_indent}}}"));
             let dec = self.emit_decode_singular(
                 stmts,
                 &sub_indent,
@@ -5423,17 +5665,22 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 "{sub_indent}{out_var} = {shared_pkg}.NewOk[{ok_plain}, {err_plain}]({dec})"
             ));
         } else {
+            stmts.push(format!("{sub_indent}if wf_c == nil || wf_c.Ok == nil {{"));
+            stmts.push(format!(
+                "{sub_indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
+            ));
+            stmts.push(format!("{sub_indent}}}"));
             stmts.push(format!(
                 "{sub_indent}{out_var} = {shared_pkg}.NewOk[struct{{}}, {err_plain}](struct{{}}{{}})"
             ));
         }
         stmts.push(format!("{indent}case *{pb_pkg}.{wrapper_go}_Err:"));
-        stmts.push(format!("{sub_indent}if wf_c == nil {{"));
-        stmts.push(format!(
-            "{sub_indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
-        ));
-        stmts.push(format!("{sub_indent}}}"));
         if let Some(err_ty) = &result.err {
+            stmts.push(format!("{sub_indent}if wf_c == nil {{"));
+            stmts.push(format!(
+                "{sub_indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
+            ));
+            stmts.push(format!("{sub_indent}}}"));
             let dec = self.emit_decode_singular(
                 stmts,
                 &sub_indent,
@@ -5447,6 +5694,11 @@ impl<'a> InterfaceGlueEmitter<'a> {
                 "{sub_indent}{out_var} = {shared_pkg}.NewErr[{ok_plain}, {err_plain}]({dec})"
             ));
         } else {
+            stmts.push(format!("{sub_indent}if wf_c == nil || wf_c.Err == nil {{"));
+            stmts.push(format!(
+                "{sub_indent}\treturn {err_ret}, {err_pkg}.UnknownCase({identity_lit})"
+            ));
+            stmts.push(format!("{sub_indent}}}"));
             stmts.push(format!(
                 "{sub_indent}{out_var} = {shared_pkg}.NewErr[{ok_plain}, struct{{}}](struct{{}}{{}})"
             ));
@@ -5475,11 +5727,11 @@ mod tests {
 
         let (fields, oneof) = resolve_proto_message_fields(
             &[
-                "string".to_string(),
-                "reset".to_string(),
-                "marshal".to_string(),
-                "descriptor".to_string(),
-                "normal_field".to_string(),
+                ("string".to_string(), true),
+                ("reset".to_string(), true),
+                ("marshal".to_string(), true),
+                ("descriptor".to_string(), false),
+                ("normal_field".to_string(), true),
             ],
             None,
         );
@@ -5495,19 +5747,43 @@ mod tests {
         );
         assert_eq!(oneof, None);
 
+        // Proto3 `optional` synthetic oneof `_a` -> `XA` collides with later `x_a`, renaming it
+        // to `XA_`, while `get_x_a` stays `GetXA` because oneofs have `hasGetter = false`.
+        let (synth_fields, _) = resolve_proto_message_fields(
+            &[
+                ("a".to_string(), true),
+                ("x_a".to_string(), true),
+                ("get_x_a".to_string(), true),
+                ("get_a".to_string(), true),
+            ],
+            None,
+        );
+        assert_eq!(synth_fields, vec!["A", "XA_", "GetXA", "GetA_"]);
+
         // Variant with a case named `witforge_value` shifts the oneof field to `WitforgeValue_`.
         let (case_fields, variant_oneof) = resolve_proto_message_fields(
-            &["witforge_value".to_string(), "string".to_string()],
+            &[
+                ("witforge_value".to_string(), false),
+                ("string".to_string(), false),
+            ],
             Some("witforge_value"),
         );
         assert_eq!(case_fields, vec!["WitforgeValue", "String_"]);
         assert_eq!(variant_oneof.as_deref(), Some("WitforgeValue_"));
 
-        // Module path validation rejects bad paths as non-ContractError (`WF9001`).
+        // Module path validation rejects bad paths and equal roots as operational WF9001.
         for bad in ["", "../rel", "example.com/con/pkg", "example.com/pkg~1"] {
             let err = validate_module_path(bad).unwrap_err();
             assert!(!crate::is_contract_error(&err), "{bad}: {err:#}");
         }
         validate_module_path("example.com/acme/contracts/gen/glue").unwrap();
+        for (gm, pl, pr) in [
+            ("example.com/same", "example.com/same", "example.com/proto"),
+            ("example.com/same", "example.com/plain", "example.com/same"),
+            ("example.com/glue", "example.com/same", "example.com/same"),
+        ] {
+            let err = validate_module_roots(gm, pl, pr).unwrap_err();
+            assert!(!crate::is_contract_error(&err), "{gm}/{pl}/{pr}: {err:#}");
+        }
     }
 }

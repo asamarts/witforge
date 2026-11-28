@@ -64,15 +64,35 @@ if command -v gofmt >/dev/null 2>&1 && command -v go >/dev/null 2>&1; then
         echo "${gofmt_diff}" >&2
         exit 1
     fi
-    cp -R "${TMP}/go" "${TMP}/go-check"
-    printf 'module example.com/witforge/generated\n\ngo 1.22\n' >"${TMP}/go-check/go.mod"
-    (
-        cd "${TMP}/go-check"
-        GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
-            go build ./...
-        GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
-            go vet ./...
-    )
+    go_ver="$(GOTOOLCHAIN=local go env GOVERSION 2>/dev/null || true)"
+    go_minor=0
+    if [[ "${go_ver}" =~ ^go([0-9]+)\.([0-9]+) ]]; then
+        if (( BASH_REMATCH[1] > 1 )); then
+            go_minor=999
+        elif (( BASH_REMATCH[1] == 1 )); then
+            go_minor="${BASH_REMATCH[2]}"
+        fi
+    fi
+    if (( go_minor >= 22 )); then
+        cp -R "${TMP}/go" "${TMP}/go-check"
+        printf 'module example.com/witforge/generated\n\ngo 1.22\n' >"${TMP}/go-check/go.mod"
+        (
+            cd "${TMP}/go-check"
+            GOTOOLCHAIN=local GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
+                go build ./...
+            GOTOOLCHAIN=local GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
+                go vet ./...
+        )
+        cp -R "${TMP}/go-glue" "${TMP}/go-glue-check"
+        printf 'module example.com/witforge/generated/glue\n\ngo 1.22\n' >"${TMP}/go-glue-check/go.mod"
+        (
+            cd "${TMP}/go-glue-check"
+            GOTOOLCHAIN=local GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
+                go build . ./glueerr ./helpers
+            GOTOOLCHAIN=local GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
+                go vet . ./glueerr ./helpers
+        )
+    fi
 fi
 "${RUN[@]}" conformance --out "${TMP}/conformance" --check
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options --check

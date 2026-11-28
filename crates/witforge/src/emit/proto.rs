@@ -605,6 +605,7 @@ struct Emitter<'a> {
     package: String,
     top_names: BTreeMap<String, String>,
     prost_top_names: BTreeMap<String, String>,
+    go_proto_top_names: BTreeMap<String, String>,
     prost_oneof_modules: BTreeMap<String, String>,
     enum_values: BTreeMap<String, String>,
     wrappers: BTreeMap<String, String>,
@@ -668,6 +669,11 @@ impl<'a> Emitter<'a> {
             ident::prost_type_ident(EMPTY),
             "shared Empty message".to_string(),
         );
+        let mut go_proto_top_names = BTreeMap::new();
+        go_proto_top_names.insert(
+            crate::emit::go_glue::protoc_go_camel_case(EMPTY),
+            "shared Empty message".to_string(),
+        );
         let live_keys = model
             .members()?
             .into_iter()
@@ -681,6 +687,7 @@ impl<'a> Emitter<'a> {
             package,
             top_names,
             prost_top_names,
+            go_proto_top_names,
             prost_oneof_modules: BTreeMap::new(),
             enum_values: BTreeMap::new(),
             wrappers: BTreeMap::new(),
@@ -3187,6 +3194,17 @@ impl<'a> Emitter<'a> {
             }
         } else {
             self.prost_top_names.insert(prost_name, source.clone());
+        }
+        let go_proto_name = crate::emit::go_glue::protoc_go_camel_case(name);
+        if let Some(previous) = self.go_proto_top_names.get(&go_proto_name) {
+            if previous != &source {
+                contract_bail!(
+                    "protoc-gen-go type name `{go_proto_name}` is produced by both {previous} and {source}"
+                );
+            }
+        } else {
+            self.go_proto_top_names
+                .insert(go_proto_name, source.clone());
         }
         self.top_names.insert(name.to_string(), source);
         Ok(())

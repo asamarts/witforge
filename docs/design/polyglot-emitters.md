@@ -110,13 +110,19 @@ contracts never trigger `validate_relative_path` (`WF9004`).
     `witforge_deps/__init__.py`, `witforge_deps/<ns>_<pkg>/__init__.py`, `worlds.py`,
     `convert.py`.
 - **Go (`witforge go`, `witforge go-glue`):**
-  - Root `doc.go`, shared generic `witforge_types/types.go`, and one Go package directory per
-    versioned interface using fixed Go source filenames
+  - `witforge go`: root `doc.go`, shared generic `witforge_types/types.go`, and one Go package
+    directory per versioned interface using fixed Go source filenames
     (`v<major>_<minor>/<iface_dir>/types.go`, `witforge_deps/<ns>_<pkg>/<iface_dir>/types.go`,
     `worlds/worlds.go`, `convert/convert.go`), never naming files `<interface>.go`, so WIT
     interface names ending in `-test`, `-linux`, `-windows`, or `-amd64` never trigger Go's
     implicit `_test.go` or `_<GOOS>.go` / `_<GOARCH>.go` build-tag exclusions. Exact import path
     prefix is configured via `--go-module` / `go-module`.
+  - `witforge go-glue`: root `doc.go`, structured error package `glueerr/error.go`, shared
+    conversion helpers `helpers/helpers.go`, one Go package directory per highest-minor live major
+    interface (`v<major>/<iface_dir>/glue.go`), and `witforge_deps/<ns>_<pkg>/<iface_dir>/glue.go`
+    (or `witforge_deps/v<m>/<ns>_<pkg>/<iface_dir>/glue.go` with canonical-owner forwarding).
+    Import prefixes are configured via `--go-module`, `--plain-root`, and `--proto-root`
+    (`go-module`, `plain-root`, `proto-root` in `[project.<name>.go-glue]`).
 - **Java (`witforge java`, `witforge java-glue`):**
   - Standard nested package directory matching `--java-package` / `java-package`, e.g.
     `<pkg_path>/v<major>_<minor>/<interface>/<Type>.java`, one public top-level type per `.java`
@@ -257,15 +263,15 @@ All five languages expose the exact same seven error kinds matching Rust's `Glue
 | `MissingField` | `field` | Absent required `optional` scalar/string/bytes/enum or message field |
 | `UnknownEnumValue` | `enumeration`, `value` | Zero (`*_UNSPECIFIED`) or unknown enum tag |
 | `UnknownCase` | `message` | Unset or unknown `oneof` case on a variant, named result, or synthesized `WitforgeResultOf*` wrapper |
-| `InvalidState` | `message` | Synthesized `WitforgeOptionOf*` option wrapper with unset `oneof` |
-| `InvalidChar` | `field`, `value` | Non-Unicode-scalar code point (UTF-16 surrogate or `> 0x10FFFF`) |
+| `InvalidState` | `message` | Synthesized `WitforgeOptionOf*` option wrapper with unset `oneof`, `nil` protobuf message/request/response, or invalid UTF-8 `string` |
+| `InvalidChar` | `field`, `value` (Go: `Field`, `CodePoint uint32`) | Non-Unicode-scalar code point (UTF-16 surrogate or `> 0x10FFFF`) |
 | `InvalidLength` | `field`, `expected`, `actual` | `list<T, N>` shorter or longer than exact length `N` |
 
 Language-specific error types:
 
 - **TypeScript:** `export class WitforgeGlueError extends Error` with `readonly kind: GlueErrorKind` and typed detail fields.
 - **Python:** `class WitforgeGlueError(ValueError)` with `kind: GlueErrorKind` (`Literal[...]`) and detail attributes.
-- **Go:** `type GlueError struct` implementing `error` with `Kind GlueErrorKind` and detail fields (`*GlueError`).
+- **Go:** `type GlueError struct` in package `glueerr` implementing `error` with `Kind ErrorKind` and typed detail fields (`Field`, `Enumeration`, `Message`, `Value`, `CodePoint`, `Expected`, `Actual`) (`*glueerr.GlueError`).
 - **Java:** `public final class WitforgeGlueException extends Exception` (or runtime/checked per `W13-009` with `GlueErrorKind kind()`).
 - **C#:** `public sealed class WitforgeGlueException : Exception` with `GlueErrorKind Kind` and detail properties.
 

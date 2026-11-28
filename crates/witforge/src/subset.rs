@@ -1705,12 +1705,17 @@ fn check_package_generated_collisions(
     let mut rust_traits: BTreeMap<String, String> = BTreeMap::new();
     let mut proto_types: BTreeMap<String, String> = BTreeMap::new();
     let mut prost_types: BTreeMap<String, String> = BTreeMap::new();
+    let mut go_proto_types: BTreeMap<String, String> = BTreeMap::new();
     let mut prost_oneof_mods: BTreeMap<String, String> = BTreeMap::new();
     let mut proto_enum_vals: BTreeMap<String, String> = BTreeMap::new();
 
     proto_types.insert("Empty".to_string(), "shared Empty message".to_string());
     prost_types.insert(
         ident::prost_type_ident("Empty"),
+        "shared Empty message".to_string(),
+    );
+    go_proto_types.insert(
+        crate::emit::go_glue::protoc_go_camel_case("Empty"),
         "shared Empty message".to_string(),
     );
 
@@ -1842,6 +1847,7 @@ fn check_package_generated_collisions(
             }
             let proto_name = ident::proto_type_name(iface_name, type_name);
             let prost_name = ident::prost_type_ident(&proto_name);
+            let go_proto_name = crate::emit::go_glue::protoc_go_camel_case(&proto_name);
             let source = format!("type {iface_name}/{type_name}");
             if let Some(prev) = proto_types.insert(proto_name.clone(), source.clone()) {
                 sink.refuse_collision(
@@ -1854,6 +1860,15 @@ fn check_package_generated_collisions(
                     &location,
                     format!(
                         "prost type name `{prost_name}` is produced by both {prev} and {source}"
+                    ),
+                    def_span,
+                );
+            } else if let Some(prev) = go_proto_types.insert(go_proto_name.clone(), source.clone())
+            {
+                sink.refuse_collision(
+                    &location,
+                    format!(
+                        "protoc-gen-go type name `{go_proto_name}` is produced by both {prev} and {source}"
                     ),
                     def_span,
                 );
@@ -2055,6 +2070,7 @@ fn check_package_generated_collisions(
             for suffix in ["Request", "Response"] {
                 let msg_name = ident::proto_function_message_name(iface_name, func_name, suffix);
                 let msg_prost = ident::prost_type_ident(&msg_name);
+                let msg_go = crate::emit::go_glue::protoc_go_camel_case(&msg_name);
                 let msg_source = format!("function {iface_name}/{func_name} {suffix}");
                 if let Some(prev) = proto_types.insert(msg_name.clone(), msg_source.clone()) {
                     sink.refuse_collision(
@@ -2070,6 +2086,15 @@ fn check_package_generated_collisions(
                         &fn_location,
                         format!(
                             "prost type name `{msg_prost}` is produced by both {prev} and {msg_source}"
+                        ),
+                        func_span,
+                    );
+                } else if let Some(prev) = go_proto_types.insert(msg_go.clone(), msg_source.clone())
+                {
+                    sink.refuse_collision(
+                        &fn_location,
+                        format!(
+                            "protoc-gen-go type name `{msg_go}` is produced by both {prev} and {msg_source}"
                         ),
                         func_span,
                     );
@@ -2141,6 +2166,7 @@ fn check_package_generated_collisions(
             );
         }
         if !iface_ci_dup {
+            let method_go = crate::emit::go_glue::protoc_go_camel_case(&method_enum);
             if let Some(prev) = proto_types.insert(method_enum.clone(), method_source.clone()) {
                 sink.refuse_collision(
                     format!("{pkg}/{iface_name}"),
@@ -2156,6 +2182,16 @@ fn check_package_generated_collisions(
                     format!("{pkg}/{iface_name}"),
                     format!(
                         "prost type name `{method_prost}` is produced by both {prev} and {method_source}"
+                    ),
+                    iface.span,
+                );
+            } else if let Some(prev) =
+                go_proto_types.insert(method_go.clone(), method_source.clone())
+            {
+                sink.refuse_collision(
+                    format!("{pkg}/{iface_name}"),
+                    format!(
+                        "protoc-gen-go type name `{method_go}` is produced by both {prev} and {method_source}"
                     ),
                     iface.span,
                 );

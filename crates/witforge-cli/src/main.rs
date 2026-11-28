@@ -1244,6 +1244,15 @@ fn resolve_paths(
                 None,
             ));
         };
+        if matches!(emitter, Emitter::GoGlue)
+            && (go_module.is_none() || plain_root.is_none() || proto_root.is_none())
+        {
+            return Err(op_error(
+                codes::CLI_USAGE,
+                "go-glue requires --go-module, --plain-root, and --proto-root (or use --config)",
+                None,
+            ));
+        }
         if needs_roots && (plain_root.is_none() || proto_root.is_none()) {
             let cmd = match emitter {
                 Emitter::TypeScriptGlue => "ts-glue",
@@ -1431,6 +1440,15 @@ fn resolve_paths(
         | Emitter::Python
         | Emitter::PythonGlue => None,
     });
+    if matches!(emitter, Emitter::GoGlue)
+        && (go_module.is_none() || plain_root.is_none() || proto_root.is_none())
+    {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "go-glue requires --go-module, --plain-root, and --proto-root (or a configuration section)",
+            Some(config_path.display().to_string()),
+        ));
+    }
     if needs_roots && (plain_root.is_none() || proto_root.is_none()) {
         let cmd = match emitter {
             Emitter::TypeScriptGlue => "ts-glue",
@@ -1822,6 +1840,42 @@ fn validate_configured_module_roots(config: &ConfigFile, config_path: &Path) -> 
                 return Err(op_error(
                     codes::CLI_USAGE,
                     format!("invalid project.{proj_name}.go-glue.proto-root: {err:#}"),
+                    path_str,
+                ));
+            }
+            if let (Some(go_module), Some(plain_root)) = (&go_glue.go_module, &go_glue.plain_root)
+                && go_module == plain_root
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "invalid project.{proj_name}.go-glue: go-module and plain-root must be \
+                         distinct Go module import paths"
+                    ),
+                    path_str,
+                ));
+            }
+            if let (Some(go_module), Some(proto_root)) = (&go_glue.go_module, &go_glue.proto_root)
+                && go_module == proto_root
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "invalid project.{proj_name}.go-glue: go-module and proto-root must be \
+                         distinct Go module import paths"
+                    ),
+                    path_str,
+                ));
+            }
+            if let (Some(plain_root), Some(proto_root)) = (&go_glue.plain_root, &go_glue.proto_root)
+                && plain_root == proto_root
+            {
+                return Err(op_error(
+                    codes::CLI_USAGE,
+                    format!(
+                        "invalid project.{proj_name}.go-glue: plain-root and proto-root must be \
+                         distinct Go module import paths"
+                    ),
                     path_str,
                 ));
             }
@@ -2334,6 +2388,7 @@ fn regenerate_command(
     root: Option<&Path>,
     out: Option<&Path>,
     released: Option<&Path>,
+    go_module: Option<&str>,
     plain_root: Option<&str>,
     proto_root: Option<&str>,
     serde_flag: Option<bool>,
@@ -2350,19 +2405,14 @@ fn regenerate_command(
     if let Some(out) = out {
         let _ = write!(command, " --out {}", shell_quote(out));
     }
+    if let Some(go_module) = go_module {
+        push_cli_option(&mut command, "--go-module", go_module);
+    }
     if let Some(plain_root) = plain_root {
-        let _ = write!(
-            command,
-            " --plain-root {}",
-            shell_quote(Path::new(plain_root))
-        );
+        push_cli_option(&mut command, "--plain-root", plain_root);
     }
     if let Some(proto_root) = proto_root {
-        let _ = write!(
-            command,
-            " --proto-root {}",
-            shell_quote(Path::new(proto_root))
-        );
+        push_cli_option(&mut command, "--proto-root", proto_root);
     }
     match serde_flag {
         Some(true) => command.push_str(" --serde"),
@@ -2480,6 +2530,7 @@ fn rust(options: &RustOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.released.as_deref(),
         None,
         None,
+        None,
         serde_override,
         no_std_override,
         eq_hash_override,
@@ -2549,6 +2600,7 @@ fn proto(options: &ProtoOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         None,
         None,
         None,
+        None,
         Some(&proto_overrides),
     );
     run_generator(
@@ -2598,6 +2650,7 @@ fn schema(options: &SchemaOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         None,
         None,
         None,
@@ -2669,6 +2722,7 @@ fn glue(options: &GlueOptions, reporter: &mut Reporter) -> Result<ExitCode> {
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         options.plain_root.as_deref(),
         options.proto_root.as_deref(),
         None,
@@ -2723,6 +2777,7 @@ fn doc_command(options: &DocOptions, reporter: &mut Reporter) -> Result<ExitCode
         None,
         None,
         None,
+        None,
     );
     run_generator(
         &files,
@@ -2761,6 +2816,7 @@ fn ts_command(options: &TsOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         None,
         None,
         None,
@@ -2820,6 +2876,7 @@ fn ts_glue_command(options: &TsGlueOptions, reporter: &mut Reporter) -> Result<E
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         options.plain_root.as_deref(),
         options.proto_root.as_deref(),
         None,
@@ -2866,6 +2923,7 @@ fn py_command(options: &PyOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         None,
         None,
         None,
@@ -2925,6 +2983,7 @@ fn py_glue_command(options: &PyGlueOptions, reporter: &mut Reporter) -> Result<E
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        None,
         options.plain_root.as_deref(),
         options.proto_root.as_deref(),
         None,
@@ -2963,12 +3022,13 @@ fn go_command(options: &GoOptions, reporter: &mut Reporter) -> Result<ExitCode> 
     emit::go::validate_module_path(go_module)?;
     guard_output_root(&paths)?;
     let files = emit::go::plan_with_released(&paths.root, go_module, paths.released.as_deref())?;
-    let mut regen = regenerate_command(
+    let regen = regenerate_command(
         "go",
         &options.config,
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        options.go_module.as_deref(),
         None,
         None,
         None,
@@ -2978,9 +3038,6 @@ fn go_command(options: &GoOptions, reporter: &mut Reporter) -> Result<ExitCode> 
         None,
         None,
     );
-    if let Some(go_module) = options.go_module.as_deref() {
-        push_cli_option(&mut regen, "--go-module", go_module);
-    }
     run_generator(
         &files,
         &paths.out,
@@ -3017,9 +3074,48 @@ fn go_glue_command(options: &GoGlueOptions, reporter: &mut Reporter) -> Result<E
         .proto_root
         .as_deref()
         .context("go-glue requires --proto-root or a config go-glue section")?;
-    emit::go_glue::validate_module_path(go_module)?;
-    emit::go_glue::validate_module_path(plain_root)?;
-    emit::go_glue::validate_module_path(proto_root)?;
+    if let Err(err) = emit::go_glue::validate_module_path(go_module) {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!("invalid --go-module: {err:#}"),
+            None,
+        ));
+    }
+    if let Err(err) = emit::go_glue::validate_module_path(plain_root) {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!("invalid --plain-root: {err:#}"),
+            None,
+        ));
+    }
+    if let Err(err) = emit::go_glue::validate_module_path(proto_root) {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            format!("invalid --proto-root: {err:#}"),
+            None,
+        ));
+    }
+    if go_module == plain_root {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "--go-module and --plain-root must be distinct Go module import paths",
+            None,
+        ));
+    }
+    if go_module == proto_root {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "--go-module and --proto-root must be distinct Go module import paths",
+            None,
+        ));
+    }
+    if plain_root == proto_root {
+        return Err(op_error(
+            codes::CLI_USAGE,
+            "--plain-root and --proto-root must be distinct Go module import paths",
+            None,
+        ));
+    }
     guard_output_root(&paths)?;
     let files = emit::go_glue::plan_with_released(
         &paths.root,
@@ -3028,12 +3124,13 @@ fn go_glue_command(options: &GoGlueOptions, reporter: &mut Reporter) -> Result<E
         proto_root,
         paths.released.as_deref(),
     )?;
-    let mut regen = regenerate_command(
+    let regen = regenerate_command(
         "go-glue",
         &options.config,
         options.root.as_deref(),
         options.out.as_deref(),
         options.released.as_deref(),
+        options.go_module.as_deref(),
         options.plain_root.as_deref(),
         options.proto_root.as_deref(),
         None,
@@ -3043,9 +3140,6 @@ fn go_glue_command(options: &GoGlueOptions, reporter: &mut Reporter) -> Result<E
         None,
         None,
     );
-    if let Some(go_module) = options.go_module.as_deref() {
-        push_cli_option(&mut regen, "--go-module", go_module);
-    }
     run_generator(
         &files,
         &paths.out,

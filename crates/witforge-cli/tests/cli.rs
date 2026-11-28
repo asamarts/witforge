@@ -1619,17 +1619,43 @@ fn every_command_validates_the_released_manifest() {
                 witforge.arg(&wit).arg("--out").arg(&out);
             }
         }
-        if name == "glue" {
-            witforge.args([
-                "--plain-root",
-                "crate::plain",
-                "--proto-root",
-                "crate::proto",
-            ]);
+        match name {
+            "glue" => {
+                witforge.args([
+                    "--plain-root",
+                    "crate::plain",
+                    "--proto-root",
+                    "crate::proto",
+                ]);
+            }
+            "ts-glue" => {
+                witforge.args(["--plain-root", "../plain", "--proto-root", "../proto"]);
+            }
+            "py-glue" => {
+                witforge.args(["--plain-root", "..plain", "--proto-root", "..proto"]);
+            }
+            "go" => {
+                witforge.args(["--go-module", "example.com/test/plain"]);
+            }
+            "go-glue" => {
+                witforge.args([
+                    "--go-module",
+                    "example.com/test/glue",
+                    "--plain-root",
+                    "example.com/test/plain",
+                    "--proto-root",
+                    "example.com/test/proto",
+                ]);
+            }
+            _ => {}
         }
         witforge
     };
-    for name in ["check", "lock", "rust", "proto", "glue"] {
+    let all_commands = [
+        "check", "lock", "rust", "proto", "schema", "glue", "doc", "ts", "ts-glue", "py",
+        "py-glue", "go", "go-glue",
+    ];
+    for name in all_commands {
         let output = command(name)
             .arg("--released")
             .arg(&missing)
@@ -1659,7 +1685,7 @@ fn every_command_validates_the_released_manifest() {
 
     // The default manifest is validated too: `<WIT_DIR>/../released` and `<WIT_ROOT>/released`.
     fs::write(wit.join("released"), "v0.1\nv0.1\n").unwrap();
-    for name in ["check", "lock", "rust", "proto", "glue"] {
+    for name in all_commands {
         let output = command(name).output().unwrap();
         assert_eq!(output.status.code(), Some(2), "{name} default: {output:?}");
         assert!(
@@ -8233,8 +8259,27 @@ fn go_glue_command_config_generate_overlap_and_completions() {
     let overlap_json: serde_json::Value = serde_json::from_slice(&overlap_gen.stdout).unwrap();
     assert_eq!(overlap_json["diagnostics"][0]["code"], "WF9004");
 
-    // 4. Invalid configured `go-glue.{go-module,plain-root,proto-root}`, missing required keys,
-    //    and shell-expansion tokens in `go-glue.out` are refused upfront before writing anything.
+    // 3b. Single-command `--out` overlap with another configured emitter is refused (WF9004).
+    let single_overlap = witforge()
+        .args([
+            "--format",
+            "json",
+            "go-glue",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--out",
+            base.join("gen/go-plain").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(single_overlap.status.code(), Some(2), "{single_overlap:?}");
+    let single_overlap_json: serde_json::Value =
+        serde_json::from_slice(&single_overlap.stdout).unwrap();
+    assert_eq!(single_overlap_json["diagnostics"][0]["code"], "WF9004");
+
+    // 4. Invalid configured `go-glue.{go-module,plain-root,proto-root}`, equal roots,
+    //    missing required keys, cross-emitter upfront validation, and shell-expansion tokens
+    //    in `go-glue.out` are refused upfront before writing anything.
     for (bad_key, bad_toml) in [
         (
             "project.demo.go-glue.go-module",
@@ -8253,6 +8298,12 @@ fn go_glue_command_config_generate_overlap_and_completions() {
             "go-module = \"example.com/ok/glue\"\n\
              plain-root = \"example.com/ok/plain\"\n\
              proto-root = \"example.com/con/proto\"\n",
+        ),
+        (
+            "project.demo.go-glue",
+            "go-module = \"example.com/same/root\"\n\
+             plain-root = \"example.com/same/root\"\n\
+             proto-root = \"example.com/ok/proto\"\n",
         ),
     ] {
         let bad_cfg = base.join(format!("bad-{bad_key}.toml"));
@@ -8291,34 +8342,301 @@ fn go_glue_command_config_generate_overlap_and_completions() {
             "{bad_json:#}"
         );
         assert!(!base.join(format!("gen/never-rust-{bad_key}")).exists());
+
+        // Cross-emitter upfront validation: invoking `rust` against a config with invalid
+        // `go-glue` roots also fails upfront with WF9001 without writing Rust output.
+        let cross_res = witforge()
+            .args([
+                "--format",
+                "json",
+                "rust",
+                "--config",
+                bad_cfg.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            cross_res.status.code(),
+            Some(2),
+            "cross {bad_key}: {cross_res:?}"
+        );
+        let cross_json: serde_json::Value = serde_json::from_slice(&cross_res.stdout).unwrap();
+        assert_eq!(cross_json["diagnostics"][0]["code"], "WF9001");
+        assert!(!base.join(format!("gen/never-rust-{bad_key}")).exists());
     }
 
-    let missing_keys_cfg = base.join("missing-keys.toml");
-    fs::write(
-        &missing_keys_cfg,
-        "version = 1\n\
-         [project.demo]\n\
-         root = \"wit\"\n\
-         [project.demo.go-glue]\n\
-         out = \"gen/never-missing\"\n\
-         go-module = \"example.com/ok/glue\"\n",
-    )
-    .unwrap();
-    let missing_res = witforge()
-        .args([
+    // Shell-expansion tokens (`$HOME/...` and `~/...`) in `go-glue.out` are refused upfront (WF9004).
+    for (label, raw_out) in [("dollar", "$HOME/gen/go-glue"), ("tilde", "~/gen/go-glue")] {
+        let shell_cfg = base.join(format!("shell-{label}.toml"));
+        fs::write(
+            &shell_cfg,
+            format!(
+                "version = 1\n\
+                 [project.demo]\n\
+                 root = \"wit\"\n\
+                 [project.demo.rust]\n\
+                 out = \"gen/never-shell-{label}\"\n\
+                 [project.demo.go-glue]\n\
+                 out = \"{raw_out}\"\n\
+                 go-module = \"example.com/ok/glue\"\n\
+                 plain-root = \"example.com/ok/plain\"\n\
+                 proto-root = \"example.com/ok/proto\"\n"
+            ),
+        )
+        .unwrap();
+        let shell_res = witforge()
+            .args([
+                "--format",
+                "json",
+                "generate",
+                "--config",
+                shell_cfg.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(shell_res.status.code(), Some(2), "{label}: {shell_res:?}");
+        let shell_json: serde_json::Value = serde_json::from_slice(&shell_res.stdout).unwrap();
+        assert_eq!(shell_json["diagnostics"][0]["code"], "WF9004");
+        assert!(!base.join(format!("gen/never-shell-{label}")).exists());
+    }
+
+    // Missing any individual required key in `[project.<name>.go-glue]` blocks `generate` upfront
+    // before writing an earlier emitter (`rust`).
+    for (label, partial_toml) in [
+        (
+            "no-go-module",
+            "plain-root = \"example.com/ok/plain\"\nproto-root = \"example.com/ok/proto\"\n",
+        ),
+        (
+            "no-plain-root",
+            "go-module = \"example.com/ok/glue\"\nproto-root = \"example.com/ok/proto\"\n",
+        ),
+        (
+            "no-proto-root",
+            "go-module = \"example.com/ok/glue\"\nplain-root = \"example.com/ok/plain\"\n",
+        ),
+    ] {
+        let missing_keys_cfg = base.join(format!("missing-{label}.toml"));
+        fs::write(
+            &missing_keys_cfg,
+            format!(
+                "version = 1\n\
+                 [project.demo]\n\
+                 root = \"wit\"\n\
+                 [project.demo.rust]\n\
+                 out = \"gen/never-missing-rust-{label}\"\n\
+                 [project.demo.go-glue]\n\
+                 out = \"gen/never-missing-{label}\"\n\
+                 {partial_toml}"
+            ),
+        )
+        .unwrap();
+        let missing_res = witforge()
+            .args([
+                "--format",
+                "json",
+                "generate",
+                "--config",
+                missing_keys_cfg.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            missing_res.status.code(),
+            Some(2),
+            "{label}: {missing_res:?}"
+        );
+        let missing_json: serde_json::Value = serde_json::from_slice(&missing_res.stdout).unwrap();
+        assert_eq!(missing_json["diagnostics"][0]["code"], "WF9001");
+        assert!(
+            !base
+                .join(format!("gen/never-missing-rust-{label}"))
+                .exists()
+        );
+
+        // Direct `witforge go-glue --config` with missing root key also names all three flags.
+        let direct_cfg_missing = witforge()
+            .args([
+                "--format",
+                "json",
+                "go-glue",
+                "--config",
+                missing_keys_cfg.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            direct_cfg_missing.status.code(),
+            Some(2),
+            "direct {label}: {direct_cfg_missing:?}"
+        );
+        let direct_cfg_json: serde_json::Value =
+            serde_json::from_slice(&direct_cfg_missing.stdout).unwrap();
+        assert_eq!(direct_cfg_json["diagnostics"][0]["code"], "WF9001");
+        let msg = direct_cfg_json["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap();
+        assert!(
+            msg.contains("--go-module")
+                && msg.contains("--plain-root")
+                && msg.contains("--proto-root"),
+            "{msg}"
+        );
+    }
+
+    // Invalid and missing CLI flags with `--no-config` fail with WF9001 naming the flag and
+    // never create the output directory.
+    let never_cli_out = base.join("never-cli-out");
+    for (flag, args) in [
+        (
+            "--go-module",
+            vec![
+                "--go-module",
+                "example.com/bad;alias",
+                "--plain-root",
+                plain_root,
+                "--proto-root",
+                proto_root,
+            ],
+        ),
+        (
+            "--plain-root",
+            vec![
+                "--go-module",
+                go_module,
+                "--plain-root",
+                "../relative",
+                "--proto-root",
+                proto_root,
+            ],
+        ),
+        (
+            "--proto-root",
+            vec![
+                "--go-module",
+                go_module,
+                "--plain-root",
+                plain_root,
+                "--proto-root",
+                "example.com/con/proto",
+            ],
+        ),
+        (
+            "--go-module",
+            vec![
+                "--go-module",
+                plain_root,
+                "--plain-root",
+                plain_root,
+                "--proto-root",
+                proto_root,
+            ],
+        ),
+    ] {
+        let mut cmd = witforge();
+        cmd.args([
             "--format",
             "json",
-            "generate",
-            "--config",
-            missing_keys_cfg.to_str().unwrap(),
+            "go-glue",
+            wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            never_cli_out.to_str().unwrap(),
+        ]);
+        cmd.args(&args);
+        let res = cmd.output().unwrap();
+        assert_eq!(res.status.code(), Some(2), "{flag}: {res:?}");
+        let json: serde_json::Value = serde_json::from_slice(&res.stdout).unwrap();
+        assert_eq!(json["diagnostics"][0]["code"], "WF9001");
+        assert!(
+            json["diagnostics"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(flag),
+            "{json:#}"
+        );
+        assert!(!never_cli_out.exists());
+    }
+
+    // Direct `go-glue --no-config` missing any of the three root flags names all three in one error.
+    for omitted in [
+        vec!["--plain-root", plain_root, "--proto-root", proto_root],
+        vec!["--go-module", go_module, "--proto-root", proto_root],
+        vec!["--go-module", go_module, "--plain-root", plain_root],
+        vec![],
+    ] {
+        let mut cmd = witforge();
+        cmd.args([
+            "--format",
+            "json",
+            "go-glue",
+            wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            never_cli_out.to_str().unwrap(),
+        ]);
+        cmd.args(&omitted);
+        let res = cmd.output().unwrap();
+        assert_eq!(res.status.code(), Some(2), "{omitted:?}: {res:?}");
+        let json: serde_json::Value = serde_json::from_slice(&res.stdout).unwrap();
+        assert_eq!(json["diagnostics"][0]["code"], "WF9001");
+        let msg = json["diagnostics"][0]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("--go-module")
+                && msg.contains("--plain-root")
+                && msg.contains("--proto-root"),
+            "{msg}"
+        );
+    }
+
+    // Upward `witforge.toml` discovery vs `cli_complete` bypass: all 5 CLI arguments ignore a
+    // malformed enclosing `witforge.toml`, while omitting any one of the three root flags triggers
+    // discovery and fails on the malformed config.
+    let disc_dir = base.join("discovery");
+    fs::create_dir_all(&disc_dir).unwrap();
+    fs::write(disc_dir.join("witforge.toml"), "not valid toml = [[[\n").unwrap();
+    let disc_out = disc_dir.join("cli-complete-out");
+    let complete_bypass = witforge()
+        .current_dir(&disc_dir)
+        .args([
+            "go-glue",
+            wit.to_str().unwrap(),
+            "--out",
+            disc_out.to_str().unwrap(),
+            "--go-module",
+            go_module,
+            "--plain-root",
+            plain_root,
+            "--proto-root",
+            proto_root,
         ])
         .output()
         .unwrap();
-    assert_eq!(missing_res.status.code(), Some(2), "{missing_res:?}");
-    let missing_json: serde_json::Value = serde_json::from_slice(&missing_res.stdout).unwrap();
-    assert_eq!(missing_json["diagnostics"][0]["code"], "WF9001");
+    assert_eq!(
+        complete_bypass.status.code(),
+        Some(0),
+        "{complete_bypass:?}"
+    );
+    assert!(disc_out.join("doc.go").is_file());
+    for partial in [
+        vec!["--plain-root", plain_root, "--proto-root", proto_root],
+        vec!["--go-module", go_module, "--proto-root", proto_root],
+        vec!["--go-module", go_module, "--plain-root", plain_root],
+    ] {
+        let mut cmd = witforge();
+        cmd.current_dir(&disc_dir).args([
+            "go-glue",
+            wit.to_str().unwrap(),
+            "--out",
+            disc_dir.join("never-disc").to_str().unwrap(),
+        ]);
+        cmd.args(&partial);
+        let res = cmd.output().unwrap();
+        assert_eq!(res.status.code(), Some(2), "discovery {partial:?}: {res:?}");
+    }
 
-    // Upfront `guard_output_root` in `witforge generate`: `go-glue.out` inside `wit/` stops `go`.
+    // Upfront `guard_output_root` in `witforge generate`: `go-glue.out` inside `wit/` stops `go`
+    // and reports WF9004.
     let inside_wit_cfg = base.join("inside-wit.toml");
     fs::write(
         &inside_wit_cfg,
@@ -8346,7 +8664,52 @@ fn go_glue_command_config_generate_overlap_and_completions() {
         .output()
         .unwrap();
     assert_eq!(inside_gen.status.code(), Some(2), "{inside_gen:?}");
+    let inside_json: serde_json::Value = serde_json::from_slice(&inside_gen.stdout).unwrap();
+    assert_eq!(inside_json["diagnostics"][0]["code"], "WF9004");
     assert!(!base.join("gen/never-written-go").exists());
+
+    // `--released` skips a retired major when generating `go-glue`.
+    let rel_wit = base.join("rel-two-major");
+    for (ver_dir, pkg_ver) in [("v0.1", "0.1.0"), ("v1.0", "1.0.0")] {
+        let dir = rel_wit.join(ver_dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("contract.wit"),
+            format!(
+                "package acme:retire@{pkg_ver};\ninterface api {{ record item {{ id: u32 }} }}\n"
+            ),
+        )
+        .unwrap();
+        let lock_out = witforge()
+            .args(["lock", dir.to_str().unwrap(), "--first"])
+            .output()
+            .unwrap();
+        assert_eq!(lock_out.status.code(), Some(0), "{lock_out:?}");
+    }
+    let rel_manifest = rel_wit.join("custom-released");
+    fs::write(&rel_manifest, "v0.1 retired\nv1.0\n").unwrap();
+    let rel_out = base.join("released-glue-out");
+    let rel_run = witforge()
+        .args([
+            "go-glue",
+            rel_wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            rel_out.to_str().unwrap(),
+            "--go-module",
+            go_module,
+            "--plain-root",
+            plain_root,
+            "--proto-root",
+            proto_root,
+            "--released",
+            rel_manifest.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(rel_run.status.code(), Some(0), "{rel_run:?}");
+    assert!(!rel_out.join("v0").exists(), "retired v0 must be omitted");
+    assert!(rel_out.join("v1/api/glue.go").is_file());
 
     // 5. CLI overrides + regenerate hint quoting `~` + `--quiet`.
     let override_out = base.join("override-glue");
@@ -8411,28 +8774,55 @@ fn go_glue_command_config_generate_overlap_and_completions() {
         "{hint_stderr}"
     );
 
-    // 6. Shell completions include `go-glue` and do not complete local `_files` in Zsh for module roots.
+    // 6. Shell completions include `go-glue` and its flags across bash, zsh, and fish, and do not
+    //    complete local `_files` in Zsh for module roots.
     for shell in ["bash", "zsh", "fish"] {
         let comp = witforge().args(["completions", shell]).output().unwrap();
         assert_eq!(comp.status.code(), Some(0), "{shell}: {comp:?}");
         let script = String::from_utf8(comp.stdout).unwrap();
         assert!(script.contains("go-glue"), "{shell} missing go-glue");
-        if shell == "zsh" {
-            let section = script
-                .split("_witforge_go_glue()")
-                .nth(1)
-                .and_then(|s| s.split("\n}\n").next())
-                .expect("zsh completion missing _witforge_go_glue");
-            for flag in ["--go-module", "--plain-root", "--proto-root"] {
-                let line = section
-                    .lines()
-                    .find(|l| l.contains(flag))
-                    .unwrap_or_else(|| panic!("zsh _witforge_go_glue missing {flag}:\n{section}"));
-                assert!(
-                    !line.contains(":_files"),
-                    "zsh completion must not offer _files for {flag}: {line}"
-                );
+        match shell {
+            "bash" => {
+                let section = script
+                    .split("go-glue)")
+                    .nth(1)
+                    .and_then(|s| s.split(";;").next())
+                    .expect("bash completion missing go-glue case");
+                for flag in ["--go-module", "--plain-root", "--proto-root"] {
+                    assert!(
+                        section.contains(flag),
+                        "bash go-glue case missing {flag}:\n{section}"
+                    );
+                }
             }
+            "zsh" => {
+                let section = script
+                    .split("_witforge_go_glue()")
+                    .nth(1)
+                    .and_then(|s| s.split("\n}\n").next())
+                    .expect("zsh completion missing _witforge_go_glue");
+                for flag in ["--go-module", "--plain-root", "--proto-root"] {
+                    let line = section
+                        .lines()
+                        .find(|l| l.contains(flag))
+                        .unwrap_or_else(|| {
+                            panic!("zsh _witforge_go_glue missing {flag}:\n{section}")
+                        });
+                    assert!(
+                        !line.contains(":_files"),
+                        "zsh completion must not offer _files for {flag}: {line}"
+                    );
+                }
+            }
+            "fish" => {
+                for flag in ["-l go-module", "-l plain-root", "-l proto-root"] {
+                    let found = script.lines().any(|l| {
+                        l.contains("__fish_seen_subcommand_from go-glue") && l.contains(flag)
+                    });
+                    assert!(found, "fish completion missing go-glue {flag}");
+                }
+            }
+            _ => unreachable!(),
         }
     }
 
