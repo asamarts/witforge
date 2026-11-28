@@ -49,6 +49,23 @@ fi
     --plain-root ..py --proto-root ..proto --check
 "${RUN[@]}" go "${WIT_ROOT}" --out "${TMP}/go" \
     --go-module example.com/witforge/generated --check
+if command -v gofmt >/dev/null 2>&1 && command -v go >/dev/null 2>&1; then
+    gofmt_diff="$(gofmt -d "${TMP}/go")"
+    if [[ -n "${gofmt_diff}" ]]; then
+        echo "gofmt diff on generated Go output:" >&2
+        echo "${gofmt_diff}" >&2
+        exit 1
+    fi
+    cp -R "${TMP}/go" "${TMP}/go-check"
+    printf 'module example.com/witforge/generated\n\ngo 1.22\n' >"${TMP}/go-check/go.mod"
+    (
+        cd "${TMP}/go-check"
+        GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
+            go build ./...
+        GOPATH="${TMP}/gopath" GOCACHE="${TMP}/gocache" GOMODCACHE="${TMP}/gomodcache" \
+            go vet ./...
+    )
+fi
 "${RUN[@]}" conformance --out "${TMP}/conformance" --check
 "${RUN[@]}" conformance --out "${TMP}/conformance-poly" --polyglot-proto-options --check
 

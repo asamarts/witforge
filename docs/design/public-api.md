@@ -29,6 +29,7 @@ The public surface is the modules and items below. Within 1.x:
 | `emit::typescript_glue` | `TypeScriptGlueOptions`, `validate_import_root`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options` |
 | `emit::python` | `PythonOptions`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options`, `version_dir_name`, `emit_version`, `emit_version_with_options` |
 | `emit::python_glue` | `PythonGlueOptions`, `validate_module_root`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options` |
+| `emit::go` | `GoOptions`, `validate_module_path`, `plan`, `plan_with_released`, `plan_with_options`, `generate`, `generate_with_options`, `check`, `check_with_options`, `version_dir_name`, `emit_version`, `emit_version_with_options` |
 | `emit::output` | `HeaderStyle`, `GeneratedFiles`, `GeneratedFileFinding`, `GeneratedFileStatus` and their documented methods (including additive nested-tree `new_nested`, `insert_relative`, `insert_marker`, `is_nested`, `markers`), `validate_relative_path`, `ensure_outside_wit_root`, `ensure_outside_released`, `ensure_distinct_output_roots`, `resolve_output_root` |
 | `emit::polyglot` | `TargetLanguage`, case converters (`to_snake_case`, `to_upper_snake_case`, `to_pascal_case`, `to_camel_case`), keyword/escaping helpers for TypeScript/Python/Go/Java/C#, version/dependency path helpers, and `doc_lines` |
 | `conformance` | `CONFORMANCE_VERSION`, `ConformanceOptions`, `ConformanceBundle`, `plan`, `generate`, `check`, `check_with_command`, `unified_diff`, `vectors_json` |
@@ -65,11 +66,11 @@ The new `ChangeElement`, generated-file finding, `HeaderStyle`, `TargetLanguage`
 `ConformanceOptions`, `ConformanceBundle`, and emitter-option types
 (`RustOptions`, `GlueOptions`, `SchemaOptions`, `JsonSchemaDraft`, `ProtoOptions`,
 `ProtoPackageOptions`, `TypeScriptOptions`, `TypeScriptGlueOptions`, `PythonOptions`,
-`PythonGlueOptions`) are also
+`PythonGlueOptions`, `GoOptions`) are also
 `#[non_exhaustive]`; their constructors and builders are the downstream construction boundary.
 `RustOptions`, `GlueOptions`, `SchemaOptions`, `ProtoOptions`, `ProtoPackageOptions`,
-`TypeScriptOptions`, `TypeScriptGlueOptions`, `PythonOptions`, `PythonGlueOptions`, and
-`ConformanceOptions`
+`TypeScriptOptions`, `TypeScriptGlueOptions`, `PythonOptions`, `PythonGlueOptions`, `GoOptions`,
+and `ConformanceOptions`
 deliberately omit `Copy` so future additive options may carry non-`Copy` values without breaking
 SemVer.
 
@@ -101,7 +102,7 @@ surface. For a root with dependencies, `emit::rust::plan`, `emit::proto::plan`,
 `emit::typescript_glue::plan`, `emit::python::plan`, `emit::python_glue::plan`, and
 `emit::go::plan` are the complete entry points: they emit the shared dependency and helper files
 (`witforge_types.ts`, `error.ts`, `helpers.ts`, `witforge_types.py`, `error.py`, `helpers.py`,
-`py.typed`, `witforge_types/types.go`, `witforge_deps/`, `worlds.ts`, `worlds.py`, and
+`py.typed`, `doc.go`, `witforge_types/types.go`, `witforge_deps/`, `worlds.ts`, `worlds.py`, and
 `worlds/worlds.go`). The lower-level `emit_version`, `emit_major`, and `emit_root`
 functions emit one local unit and do not create the shared dependency or root helper files
 themselves.

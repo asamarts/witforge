@@ -411,10 +411,10 @@ fn go_fixtures_generate_check_prune_ownership_edge_names_and_deprecations() {
         );
     }
 
-    // 5. Go special directory names (`internal`, `testdata`, `vendor`, `con`, `my-test`),
-    //    GOOS/GOARCH suffixes (`api-linux`, `api-amd64`), keywords/predeclared params,
-    //    variant/enum suffix collision disambiguation, triple options, empty types, and
-    //    Go `// Deprecated:` doc comments.
+    // 5. Go special directory/package names (`internal`, `testdata`, `vendor`, `con`, `my-test`,
+    //    `main`, `init`, `documentation`), GOOS/GOARCH suffixes (`api-linux`), keyword/predeclared
+    //    params, variant/enum suffix collision disambiguation, resolved aliases, named structural
+    //    types, `+build`-safe doc comments, and Go `// Deprecated:` doc comments.
     let edge_wit = base.join("edge-wit");
     let edge_v01 = edge_wit.join("v0.1");
     fs::create_dir_all(&edge_v01).unwrap();
@@ -427,27 +427,54 @@ fn go_fixtures_generate_check_prune_ownership_edge_names_and_deprecations() {
          interface testdata { record c { id: u8 } }\n\
          interface vendor { record d { id: u8 } }\n\
          interface my-test { record e { id: u8 } }\n\
+         interface main { record m { id: u8 } }\n\
+         interface init { record i { id: u8 } }\n\
+         interface documentation { record doc-entry { title: string } }\n\
          interface api-linux {\n\
-           use con.{a};\n\
+           use con.{a as renamed-a};\n\
            use internal.{b};\n\
            use testdata.{c};\n\
            use vendor.{d};\n\
            use my-test.{e};\n\
+           use main.{m};\n\
+           use init.{i};\n\
+           use documentation.{doc-entry};\n\
+           type byte-alias = u8;\n\
+           type byte-slice = list<byte-alias>;\n\
+           type fixed-byte-arr = list<byte-alias, 4>;\n\
+           type opt-u32 = option<u32>;\n\
+           type nested-via-alias = option<opt-u32>;\n\
+           type named-list = list<u16>;\n\
+           type named-map = map<string, u32>;\n\
            record foo-bar { n: u8 }\n\
            variant foo { bar(u16), unit }\n\
            record baz-qux { n: u8 }\n\
            enum baz { qux, other }\n\
-           /// Multi-line block doc.\n\
-           /// Second doc line.\n\
+           ///   Multi-line block doc.\n\
+           ///\n\
+           ///\n\
+           ///   +build ignore\n\
+           ///     indented_snippet()\n\
            @since(version = 0.1.0)\n\
            @deprecated(version = 0.1.0)\n\
            record holder {\n\
-             a: a,\n\
+             a: renamed-a,\n\
              b: b,\n\
              c: c,\n\
              d: d,\n\
              e: e,\n\
+             m: m,\n\
+             i: i,\n\
+             doc-entry: doc-entry,\n\
              triple: option<option<option<u8>>>,\n\
+             opt-list: option<list<u16>>,\n\
+             opt-map: option<map<string, u8>>,\n\
+             opt-var: option<foo>,\n\
+             bs: byte-slice,\n\
+             fb: fixed-byte-arr,\n\
+             nva: nested-via-alias,\n\
+             nl: named-list,\n\
+             nm: named-map,\n\
            }\n\
            call: func(%type: string, %string: u32, %error: bool, len: u8, h: holder) -> option<holder>;\n\
          }\n",
@@ -457,12 +484,16 @@ fn go_fixtures_generate_check_prune_ownership_edge_names_and_deprecations() {
 
     let edge_files = go::plan(&edge_wit, "example.com/acme/edge").unwrap();
     for expected in [
+        "doc.go",
         "v0_1/empty/types.go",
         "v0_1/con_/types.go",
         "v0_1/internal_/types.go",
         "v0_1/testdata_/types.go",
         "v0_1/vendor_/types.go",
         "v0_1/my_test_/types.go",
+        "v0_1/main_/types.go",
+        "v0_1/init_/types.go",
+        "v0_1/documentation_/types.go",
         "v0_1/api_linux/types.go",
     ] {
         assert!(
@@ -478,19 +509,417 @@ fn go_fixtures_generate_check_prune_ownership_edge_names_and_deprecations() {
     let linux_go = &edge_files.files()["v0_1/api_linux/types.go"];
     for needle in [
         "package api_linux",
+        "type RenamedA = wf_if_con_.A",
+        "type ByteAlias = uint8",
+        "type ByteSlice = []byte",
+        "type FixedByteArr = [4]byte",
+        "type OptU32 = *uint32",
+        "type NestedViaAlias = wf_types.Option[OptU32]",
+        "type NamedList = []uint16",
+        "type NamedMap = map[string]uint32",
         "type Foo_Bar struct {",
         "type FooUnit struct{}",
         "Baz_Qux  Baz = 1",
         "BazOther Baz = 2",
         "// Multi-line block doc.",
+        "// \\+build ignore",
+        "// indented_snippet()",
         "// Stable since WIT version 0.1.0.",
         "// Deprecated: Deprecated in WIT version 0.1.0.",
-        "Triple wf_types.Option[wf_types.Option[*uint8]]",
+        "Triple   wf_types.Option[wf_types.Option[*uint8]]",
+        "OptList  *[]uint16",
+        "OptMap   *map[string]uint8",
+        "OptVar   *Foo",
         "Call(type_ string, string_ uint32, error_ bool, len_ uint8, h Holder) *Holder",
     ] {
         assert!(
             linux_go.contains(needle),
             "v0_1/api_linux/types.go missing `{needle}`:\n{linux_go}"
+        );
+    }
+    assert!(
+        !linux_go.contains("// +build"),
+        "raw `+build` directive must never appear in emitted Go:\n{linux_go}"
+    );
+    assert!(
+        !linux_go.contains("//\n//\n"),
+        "consecutive blank doc lines must be collapsed:\n{linux_go}"
+    );
+
+    fs::remove_dir_all(&base).unwrap();
+}
+
+/// Detect whether `gofmt` and Go 1.22+ are available on `PATH` for live Tier 1+ verification.
+fn go_toolchain_available() -> bool {
+    let gofmt_ok = std::process::Command::new("gofmt")
+        .arg("-h")
+        .output()
+        .is_ok();
+    if !gofmt_ok {
+        return false;
+    }
+    let Ok(out) = std::process::Command::new("go").arg("version").output() else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Parse `go version go<major>.<minor>...`
+    let Some(ver) = text
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("go"))
+    else {
+        return false;
+    };
+    let mut parts = ver.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts
+        .next()
+        .map(|s| {
+            s.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    major > 1 || (major == 1 && minor >= 22)
+}
+
+fn verify_live_go_tree(work_root: &Path, module: &str, out: &Path, extra_test: Option<&str>) {
+    let diff = std::process::Command::new("gofmt")
+        .args(["-d", out.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(diff.status.success(), "gofmt failed: {diff:?}");
+    assert!(
+        diff.stdout.is_empty(),
+        "gofmt diff on `{}`:\n{}",
+        out.display(),
+        String::from_utf8_lossy(&diff.stdout)
+    );
+
+    let build_dir = work_root.join(format!(
+        "go-verify-{}",
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    copy_dir_recursive(out, &build_dir);
+    fs::write(
+        build_dir.join("go.mod"),
+        format!("module {module}\n\ngo 1.22\n"),
+    )
+    .unwrap();
+    if let Some(test_src) = extra_test {
+        fs::write(build_dir.join("verify_test.go"), test_src).unwrap();
+    }
+
+    let gopath = work_root.join("gopath");
+    let gocache = work_root.join("gocache");
+    let gomodcache = work_root.join("gomodcache");
+    for args in [
+        vec!["build", "./..."],
+        vec!["vet", "./..."],
+        vec!["test", "./..."],
+    ] {
+        let status = std::process::Command::new("go")
+            .args(&args)
+            .current_dir(&build_dir)
+            .env("GOPATH", &gopath)
+            .env("GOCACHE", &gocache)
+            .env("GOMODCACHE", &gomodcache)
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "`go {}` failed in {}:\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            build_dir.display(),
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let ty = entry.file_type().unwrap();
+        let target = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn go_standalone_emit_version_transitive_deps_worlds_collisions_and_live_toolchain() {
+    let base = scratch_dir("advanced-and-live");
+
+    // 1. Standalone `emit_version` / `emit_version_with_options`, `ensure_outside_wit_root`,
+    //    and invalid module path error classification (`WF9001`, non-`ContractError`).
+    let conf_bundle = base.join("conf");
+    witforge::conformance::generate(
+        &conf_bundle,
+        &witforge::conformance::ConformanceOptions::new(),
+    )
+    .unwrap();
+    let conf_wit = conf_bundle.join("wit");
+    let v01_model =
+        witforge::model::build(&witforge::load(&conf_wit.join("v0.1")).unwrap()).unwrap();
+    let single = go::emit_version(&v01_model, "example.com/witforge/conf").unwrap();
+    assert_eq!(
+        single,
+        go::emit_version_with_options(&v01_model, "example.com/witforge/conf", &GoOptions::new())
+            .unwrap()
+    );
+    assert!(single.contains_key("types/types.go"));
+    assert!(single.contains_key("api/types.go"));
+    assert!(!single.contains_key("doc.go"));
+    assert!(single["types/types.go"].contains("example.com/witforge/conf/witforge_types"));
+    let bad_mod_err = go::emit_version(&v01_model, "example.com/con/pkg").unwrap_err();
+    assert!(!is_contract_error(&bad_mod_err), "{bad_mod_err:#}");
+    assert!(
+        witforge::error_diagnostics(&bad_mod_err)
+            .unwrap_or_default()
+            .iter()
+            .any(|d| d.code == witforge::diagnostic::codes::CLI_USAGE),
+        "{bad_mod_err:#}"
+    );
+    assert!(
+        go::generate(
+            &conf_wit,
+            &conf_wit.join("inside"),
+            "example.com/witforge/conf"
+        )
+        .is_err()
+    );
+    assert!(
+        go::check(
+            &conf_wit,
+            &conf_wit.join("inside"),
+            "example.com/witforge/conf"
+        )
+        .is_err()
+    );
+
+    // 2. Transitive multi-major deps (`dep-b -> dep-a`), alias collision `_2` (`a:b/c-d` vs
+    //    `a:b-c/d`), mixed empty/non-empty worlds with differing key lengths (`v0_1`, `v10_0`,
+    //    `v100_0`) and deprecated world, plus `main`/`init`/`documentation` interfaces and
+    //    `+build` doc comments.
+    let wit = base.join("complex-wit");
+    for (ver_dir, pkg_ver, dep_b_ver, b_extra, has_world) in [
+        ("v0.1", "0.1.0", "0.1.0", "", true),
+        ("v10.0", "10.0.0", "10.0.0", "extra: bool,", false),
+        ("v100.0", "100.0.0", "0.1.0", "", true),
+    ] {
+        let dir = wit.join(ver_dir);
+        let dep_a = dir.join("deps/dep-a");
+        let dep_b = dir.join("deps/dep-b");
+        let dep_c1 = dir.join("deps/a-b");
+        let dep_c2 = dir.join("deps/a-bc");
+        for d in [&dep_a, &dep_b, &dep_c1, &dep_c2] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(
+            dep_a.join("a.wit"),
+            "package dep:a@0.1.0;\ninterface base { record id { raw: u64 } }\n",
+        )
+        .unwrap();
+        fs::write(
+            dep_b.join("b.wit"),
+            format!(
+                "package dep:b@{dep_b_ver};\n\
+                 interface wrap {{\n\
+                   use dep:a/base@0.1.0.{{id}};\n\
+                   enum state {{ ok, fail }}\n\
+                   record box {{ id: id, state: state, {b_extra} }}\n\
+                 }}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dep_c1.join("c1.wit"),
+            "package a:b@0.1.0;\ninterface c-d { record left { v: u8 } }\n",
+        )
+        .unwrap();
+        fs::write(
+            dep_c2.join("c2.wit"),
+            "package a:b-c@0.1.0;\ninterface d { record right { v: u8 } }\n",
+        )
+        .unwrap();
+        let world_decl = if has_world {
+            format!(
+                "/// World doc.\n\
+                 /// +build ignore\n\
+                 @since(version = {pkg_ver})\n\
+                 @deprecated(version = {pkg_ver})\n\
+                 world svc {{\n\
+                   import dep:b/wrap@{dep_b_ver};\n\
+                   export api;\n\
+                 }}\n"
+            )
+        } else {
+            String::new()
+        };
+        fs::write(
+            dir.join("contract.wit"),
+            format!(
+                "package acme:complex@{pkg_ver};\n\
+                 interface main {{ record entry {{ v: u32 }} }}\n\
+                 interface init {{ record seed {{ v: u32 }} }}\n\
+                 interface documentation {{ record note {{ text: string }} }}\n\
+                 interface api {{\n\
+                   use dep:b/wrap@{dep_b_ver}.{{box, state}};\n\
+                   use a:b/c-d@0.1.0.{{left}};\n\
+                   use a:b-c/d@0.1.0.{{right}};\n\
+                   use main.{{entry}};\n\
+                   use init.{{seed}};\n\
+                   use documentation.{{note}};\n\
+                   /// +build linux\n\
+                   record payload {{\n\
+                     b: box,\n\
+                     s: state,\n\
+                     l: left,\n\
+                     r: right,\n\
+                     e: entry,\n\
+                     seed: seed,\n\
+                     n: note,\n\
+                   }}\n\
+                 }}\n\
+                 {world_decl}"
+            ),
+        )
+        .unwrap();
+        lock_version_first(&dir);
+    }
+
+    let complex_out = base.join("complex-go");
+    let complex_mod = "example.com/acme/main/v2";
+    go::generate(&wit, &complex_out, complex_mod).unwrap();
+    assert_eq!(go::check(&wit, &complex_out, complex_mod).unwrap(), []);
+
+    let complex_plan = go::plan(&wit, complex_mod).unwrap();
+    // Root `doc.go` escapes `main` -> `package main_`.
+    assert!(complex_plan.files()["doc.go"].contains("package main_\n"));
+    // `a:b/c-d` and `a:b-c/d` both want `wf_dep_a_b_c_d`; second gets `_2`.
+    let api_v01 = &complex_plan.files()["v0_1/api/types.go"];
+    assert!(api_v01.contains("wf_dep_a_b_c_d "), "{api_v01}");
+    assert!(api_v01.contains("wf_dep_a_b_c_d_2 "), "{api_v01}");
+    // Canonical owner re-export for `v100` pointing at `v0`.
+    let v100_dep = &complex_plan.files()["witforge_deps/v100/dep_b/wrap/types.go"];
+    assert!(v100_dep.contains("type Box = wf_owner.Box"), "{v100_dep}");
+    // Worlds alignment across `v0_1`, `v10_0`, `v100_0` + deprecated world + empty V10_0.
+    let worlds_go = &complex_plan.files()["worlds/worlds.go"];
+    assert!(worlds_go.contains("var V10_0 = []World{}"), "{worlds_go}");
+    assert!(worlds_go.contains("\"v0_1\":   V0_1,"), "{worlds_go}");
+    assert!(worlds_go.contains("\"v10_0\":  V10_0,"), "{worlds_go}");
+    assert!(worlds_go.contains("\"v100_0\": V100_0,"), "{worlds_go}");
+    assert!(worlds_go.contains("// \\+build ignore"), "{worlds_go}");
+    assert!(worlds_go.contains("// Deprecated:"), "{worlds_go}");
+
+    // 3. Cross-major dependency directory collision (`v0.1` uses `my-ns:dep`, `v1.0` uses
+    //    `my:ns-dep`) is reported as a `ContractError` when merging `witforge_deps/`.
+    let coll_wit = base.join("dep-coll-wit");
+    let coll_v01 = coll_wit.join("v0.1");
+    let coll_v10 = coll_wit.join("v1.0");
+    fs::create_dir_all(coll_v01.join("deps/d1")).unwrap();
+    fs::create_dir_all(coll_v10.join("deps/d2")).unwrap();
+    fs::write(
+        coll_v01.join("deps/d1/d.wit"),
+        "package my-ns:dep@0.1.0;\ninterface a { record x { v: u8 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        coll_v01.join("contract.wit"),
+        "package acme:coll@0.1.0;\n\
+         interface api {\n\
+           use my-ns:dep/a@0.1.0.{x};\n\
+           record pair { x: x }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_version_first(&coll_v01);
+    fs::write(
+        coll_v10.join("deps/d2/d.wit"),
+        "package my:ns-dep@0.1.0;\ninterface b { record y { v: u8 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        coll_v10.join("contract.wit"),
+        "package acme:coll@1.0.0;\n\
+         interface api {\n\
+           use my:ns-dep/b@0.1.0.{y};\n\
+           record pair { y: y }\n\
+         }\n",
+    )
+    .unwrap();
+    lock_version_first(&coll_v10);
+    let coll_err = go::plan(&coll_wit, "example.com/acme/coll").unwrap_err();
+    assert!(is_contract_error(&coll_err), "{coll_err:#}");
+
+    // 4. Live Go 1.22+ toolchain verification (`gofmt -d`, `go build`, `go vet`, `go test`)
+    //    when `go` >= 1.22 and `gofmt` are installed on PATH.
+    if go_toolchain_available() {
+        let conf_go = base.join("conf-go");
+        go::generate(&conf_wit, &conf_go, "example.com/witforge/conf").unwrap();
+        verify_live_go_tree(
+            &base,
+            "example.com/witforge/conf",
+            &conf_go,
+            Some(
+                "package conf_test\n\n\
+                 import (\n\
+                 \t\"testing\"\n\
+                 \t\"example.com/witforge/conf/v0_1/types\"\n\
+                 \t\"example.com/witforge/conf/witforge_types\"\n\
+                 )\n\n\
+                 func TestConformancePlainGo(t *testing.T) {\n\
+                 \tvar zero types.Color\n\
+                 \tif zero.Valid() || zero.String() != \"\" {\n\
+                 \t\tt.Fatalf(\"zero color must be invalid\")\n\
+                 \t}\n\
+                 \tif !types.ColorRed.Valid() || types.ColorRed.String() != \"red\" {\n\
+                 \t\tt.Fatalf(\"ColorRed mismatch\")\n\
+                 \t}\n\
+                 \tvar nilPtr *uint16\n\
+                 \tsomeNil := witforge_types.Some(nilPtr)\n\
+                 \tif !someNil.Some || someNil.Value != nil {\n\
+                 \t\tt.Fatalf(\"Some(nil) collapsed\")\n\
+                 \t}\n\
+                 \tvar ch types.Choice = types.ChoiceFixed{Value: [2]uint16{1, 2}}\n\
+                 \tif _, ok := ch.(types.ChoiceFixed); !ok {\n\
+                 \t\tt.Fatalf(\"ChoiceFixed mismatch\")\n\
+                 \t}\n\
+                 }\n",
+            ),
+        );
+
+        verify_live_go_tree(
+            &base,
+            complex_mod,
+            &complex_out,
+            Some(
+                "package main__test\n\n\
+                 import (\n\
+                 \t\"testing\"\n\
+                 \tv0wrap \"example.com/acme/main/v2/witforge_deps/v0/dep_b/wrap\"\n\
+                 \tv100wrap \"example.com/acme/main/v2/witforge_deps/v100/dep_b/wrap\"\n\
+                 \t\"example.com/acme/main/v2/worlds\"\n\
+                 )\n\n\
+                 func TestComplexEdgeGo(t *testing.T) {\n\
+                 \tvar a v0wrap.Box = v100wrap.Box{State: v100wrap.StateOk}\n\
+                 \tif !a.State.Valid() || a.State.String() != \"ok\" {\n\
+                 \t\tt.Fatalf(\"canonical alias mismatch: %+v\", a)\n\
+                 \t}\n\
+                 \tif len(worlds.V10_0) != 0 || len(worlds.ByVersion[\"v100_0\"]) != 1 {\n\
+                 \t\tt.Fatalf(\"worlds mismatch\")\n\
+                 \t}\n\
+                 }\n",
+            ),
         );
     }
 

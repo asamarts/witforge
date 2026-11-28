@@ -26,7 +26,7 @@
 //! witforge py-glue [<wit-root>] [--out DIR] [--plain-root PATH] [--proto-root PATH]
 //!                  [--config PATH | --no-config] [--project NAME] [--check] [--diff]
 //!                  [--released PATH]
-//! witforge go    [<wit-root>] [--out DIR] [--go-module PATH] [--config PATH | --no-config]
+//! witforge go    [<wit-root>] [--out DIR] [--go-module VALUE] [--config PATH | --no-config]
 //!                [--project NAME] [--check] [--diff] [--released PATH]
 //! witforge conformance --out DIR [--polyglot-proto-options] [--go-package VALUE]
 //!                      [--java-package VALUE] [--java-multiple-files | --no-java-multiple-files]
@@ -447,8 +447,8 @@ struct GoOptions {
     /// Output root for generated Go package files.
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
-    /// Go module import path prefix for emitted packages (for example `example.com/acme/gen/go`).
-    #[arg(long = "go-module", value_name = "PATH")]
+    /// Go module import path prefix for emitted packages (for example `example.com/acme/contracts/gen/plain`).
+    #[arg(long = "go-module", value_name = "VALUE")]
     go_module: Option<String>,
     /// Check generated output without writing.
     #[arg(long)]
@@ -3925,6 +3925,31 @@ fn generate_command(options: &GenerateOptions, reporter: &mut Reporter) -> Resul
     let mut had_operational = false;
     let mut ran_any = false;
     let multi_project = config.project.len() > 1;
+
+    // Validate output-root guards (outside WIT root and released directories) for every planned
+    // emitter before any earlier emitter writes files to disk.
+    for (proj_name, emitters) in &planned {
+        let cfg_args = ConfigArgs {
+            config: Some(config_path.clone()),
+            no_config: false,
+            project: if multi_project {
+                Some(proj_name.clone())
+            } else {
+                None
+            },
+        };
+        for &emitter in emitters {
+            let paths = resolve_paths(
+                emitter,
+                &cfg_args,
+                PathOverrides {
+                    released: options.released.clone(),
+                    ..PathOverrides::default()
+                },
+            )?;
+            guard_output_root(&paths)?;
+        }
+    }
 
     for (proj_name, emitters) in planned {
         let cfg_args = ConfigArgs {

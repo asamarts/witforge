@@ -110,7 +110,8 @@ contracts never trigger `validate_relative_path` (`WF9004`).
     `witforge_deps/__init__.py`, `witforge_deps/<ns>_<pkg>/__init__.py`, `worlds.py`,
     `convert.py`.
 - **Go (`witforge go`, `witforge go-glue`):**
-  - One Go package directory per versioned interface using fixed Go source filenames
+  - Root `doc.go`, shared generic `witforge_types/types.go`, and one Go package directory per
+    versioned interface using fixed Go source filenames
     (`v<major>_<minor>/<iface_dir>/types.go`, `witforge_deps/<ns>_<pkg>/<iface_dir>/types.go`,
     `worlds/worlds.go`, `convert/convert.go`), never naming files `<interface>.go`, so WIT
     interface names ending in `-test`, `-linux`, `-windows`, or `-amd64` never trigger Go's
@@ -218,7 +219,7 @@ collide with another WIT identifier. All doc strings are normalized first throug
 | `list<T, N>` | `readonly T[]` (tuple for small `N` or length-checked array) | `tuple[T, ...]` (length `N` checked) | `[N]T` | `List<T>` (length `N` checked) | `IReadOnlyList<T>` (length `N` checked) |
 | `map<K, V>` | `ReadonlyMap<K, V>` | `Mapping[K, V]` / `dict[K, V]` | `map[K]V` | `Map<K, V>` (`Map.copyOf`) | `IReadOnlyDictionary<K, V>` (value-equality override on records) |
 | `option<T>` | `Option<T>` (`{ readonly tag: "none" } \| { readonly tag: "some"; readonly value: T }`) | `T \| None` (or `Option[T]` wrapper when nested `option<option<T>>`) | `*T` (or generic `Option[T]` struct when nested `option<option<T>>`) | `Optional<T>` (`Optional<Optional<T>>` nests directly without collapsing) | `T?` (or `WitforgeOption<T>` struct when nested, since C# `Nullable<Nullable<T>>` / `string??` is invalid) |
-| `result<T, E>` | `{ readonly tag: "ok"; readonly value: T } \| { readonly tag: "err"; readonly error: E }` | `Ok[T] \| Err[E]` frozen dataclasses | `Result[T, E]` struct / sealed interface | `sealed interface Result<T, E> permits Ok, Err` | `abstract record Result<T, E>` + `sealed record Ok` / `Err` |
+| `result<T, E>` | `{ readonly tag: "ok"; readonly value: T } \| { readonly tag: "err"; readonly error: E }` | `Ok[T] \| Err[E]` frozen dataclasses | `Result[T, E]` struct (`NewOk` / `NewErr`) | `sealed interface Result<T, E> permits Ok, Err` | `abstract record Result<T, E>` + `sealed record Ok` / `Err` |
 | `result<T>` / `result<_, E>` / bare `result` | Omit payload property on unit side (`{ readonly tag: "ok" }` / `{ readonly tag: "err" }`) | `Ok[T]` / `Err[None]` (or unit `Ok[None]` / `Err[None]`) | `Result[T, struct{}]` / `Result[struct{}, E]` / `Result[struct{}, struct{}]` | `Result<T, WitforgeUnit>` / `Result<WitforgeUnit, E>` / `Result<WitforgeUnit, WitforgeUnit>` (`enum WitforgeUnit { INSTANCE }`) | `Result<T, WitforgeUnit>` / `Result<WitforgeUnit, E>` / `Result<WitforgeUnit, WitforgeUnit>` (`readonly record struct WitforgeUnit`) |
 
 Note on `option<option<T>>`: TypeScript uses uniform tagged `Option<T>` and Java's
@@ -233,7 +234,7 @@ explicitly so `Some(None)` never collapses into `None`.
 |---|---|---|---|---|---|
 | `record` | `export interface` with `readonly` properties | `@dataclass(frozen=True, slots=True)` | `type Name struct { ... }` | `public record Name(...)` | `public sealed record Name(...)` |
 | `variant` (payload & payload-less cases) | Discriminated union on `readonly tag: "..."` (unit cases omit `value`) | `Union` of `@dataclass(frozen=True, slots=True)` case classes (unit cases have zero fields) | Sealed interface with unexported marker method + case structs (unit cases are empty `struct{}`) | `public sealed interface Name permits ...` + case `record`s (unit cases are zero-component `record Case()`) | `public abstract record Name` (private ctor) + nested `public sealed record` cases (unit cases are `sealed record Case()`) |
-| `enum` | String union type + `const` object of values | `class Name(StrEnum)` (Python 3.11+ `enum.StrEnum`) | `type Name uint32` + `const` values + `Valid() bool` | `public enum Name` | `public enum Name` |
+| `enum` | String union type + `const` object of values | `class Name(StrEnum)` (Python 3.11+ `enum.StrEnum`) | `type Name uint32` + `const` values + `Valid() bool` + `String() string` | `public enum Name` | `public enum Name` |
 | `flags` | `export interface` of `readonly <flag>: boolean` | `@dataclass(frozen=True, slots=True)` of `bool` fields | `type Name struct` of `bool` fields | `public record Name(...)` of `boolean` fields | `public sealed record Name(...)` of `bool` properties |
 | `type a = b` / `use ... as` | `export type A = B;` | `A: TypeAlias = B` (`from typing import TypeAlias`, Python 3.11 compatible) | `type A = B` | Resolved target type (Java has no type aliases; Javadoc notes alias origin) | `global using` or resolved target type |
 | `interface` (with functions) | `export interface Name { ... }` | `class Name(Protocol): ...` | `type Name interface { ... }` | `public interface Name { ... }` | `public interface I<Name> { ... }` |

@@ -7729,7 +7729,7 @@ fn go_command_config_generate_overlap_and_completions() {
     let shell_out_json: serde_json::Value = serde_json::from_slice(&shell_out.stdout).unwrap();
     assert_eq!(shell_out_json["diagnostics"][0]["code"], "WF9004");
 
-    // 5. Shell completions include `go` and `--go-module`.
+    // 5. Shell completions include `go` and `--go-module` (without local `_files` in Zsh).
     for (shell, flag) in [
         ("bash", "--go-module"),
         ("zsh", "--go-module"),
@@ -7742,7 +7742,238 @@ fn go_command_config_generate_overlap_and_completions() {
             script.contains(flag),
             "{shell} completion missing `{flag}`:\n{script}"
         );
+        if shell == "zsh" {
+            assert!(
+                !script.contains("--go-module=[")
+                    || !script
+                        .lines()
+                        .any(|line| line.contains("--go-module") && line.contains(":_files")),
+                "zsh completion must not complete local files for `--go-module`:\n{script}"
+            );
+        }
     }
+
+    // 6. CLI `--go-module` precedence over config, missing `--go-module` (`WF9001`),
+    //    single-command `--out` overlap refusal (`WF9004`), `--project`/`--released`/`--quiet`,
+    //    cross-emitter upfront validation of bad `go.go-module`, upfront `guard_output_root` in
+    //    `witforge generate` (no partial writes from earlier emitters), regenerate hint with
+    //    shell-quoted `~`, and upward `witforge.toml` discovery vs `cli_complete` bypass.
+    let override_out = base.join("override-go");
+    let override_run = witforge()
+        .args([
+            "go",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--project",
+            "demo",
+            "--out",
+            override_out.to_str().unwrap(),
+            "--go-module",
+            "example.com/override/custom~rc1",
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(override_run.status.code(), Some(0), "{override_run:?}");
+    assert!(override_run.stdout.is_empty(), "{override_run:?}");
+    assert!(
+        fs::read_to_string(override_out.join("doc.go"))
+            .unwrap()
+            .contains("package custom_rc1\n")
+    );
+
+    // Regenerate hint quotes `~` in `--go-module` and reproduces cleanly.
+    let hint_target = override_out.join("witforge_types/types.go");
+    let hint_orig = fs::read_to_string(&hint_target).unwrap();
+    fs::write(&hint_target, format!("{hint_orig}// drifted\n")).unwrap();
+    let hint_chk = witforge()
+        .args([
+            "go",
+            wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            override_out.to_str().unwrap(),
+            "--go-module",
+            "example.com/override/custom~rc1",
+            "--check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(hint_chk.status.code(), Some(1), "{hint_chk:?}");
+    let hint_stderr = String::from_utf8_lossy(&hint_chk.stderr);
+    assert!(
+        hint_stderr.contains("'example.com/override/custom~rc1'"),
+        "expected shell-quoted `~` in regenerate hint:\n{hint_stderr}"
+    );
+
+    // Missing `--go-module` with `--no-config` and missing `go-module` in config -> WF9001, exit 2.
+    let no_mod_cli = witforge()
+        .args([
+            "--format",
+            "json",
+            "go",
+            wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            base.join("no-mod-out").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(no_mod_cli.status.code(), Some(2), "{no_mod_cli:?}");
+    let no_mod_json: serde_json::Value = serde_json::from_slice(&no_mod_cli.stdout).unwrap();
+    assert_eq!(no_mod_json["diagnostics"][0]["code"], "WF9001");
+
+    let no_mod_cfg_run = witforge()
+        .args([
+            "--format",
+            "json",
+            "go",
+            "--config",
+            missing_mod_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(no_mod_cfg_run.status.code(), Some(2), "{no_mod_cfg_run:?}");
+    let no_mod_cfg_json: serde_json::Value =
+        serde_json::from_slice(&no_mod_cfg_run.stdout).unwrap();
+    assert_eq!(no_mod_cfg_json["diagnostics"][0]["code"], "WF9001");
+
+    // Single-command `--out` overlapping configured `rust.out` -> WF9004, exit 2.
+    let single_overlap = witforge()
+        .args([
+            "--format",
+            "json",
+            "go",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--out",
+            base.join("gen/rust").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(single_overlap.status.code(), Some(2), "{single_overlap:?}");
+    let single_overlap_json: serde_json::Value =
+        serde_json::from_slice(&single_overlap.stdout).unwrap();
+    assert_eq!(single_overlap_json["diagnostics"][0]["code"], "WF9004");
+
+    // Cross-emitter validation: running `witforge rust --config bad-go-mod.toml` fails upfront.
+    let cross_bad = witforge()
+        .args([
+            "--format",
+            "json",
+            "rust",
+            "--config",
+            bad_mod_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(cross_bad.status.code(), Some(2), "{cross_bad:?}");
+    let cross_bad_json: serde_json::Value = serde_json::from_slice(&cross_bad.stdout).unwrap();
+    assert_eq!(cross_bad_json["diagnostics"][0]["code"], "WF9001");
+
+    // Upfront `guard_output_root` in `witforge generate`: when `go.out` is inside `wit/`,
+    // `rust.out` (which runs earlier) must NOT be created or written.
+    let inside_wit_cfg = base.join("inside-wit.toml");
+    fs::write(
+        &inside_wit_cfg,
+        "version = 1\n\
+         [project.demo]\n\
+         root = \"wit\"\n\
+         [project.demo.rust]\n\
+         out = \"gen/never-written-rust\"\n\
+         [project.demo.go]\n\
+         out = \"wit/inside-go\"\n\
+         go-module = \"example.com/witforge/inside\"\n",
+    )
+    .unwrap();
+    let inside_gen = witforge()
+        .args([
+            "--format",
+            "json",
+            "generate",
+            "--config",
+            inside_wit_cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(inside_gen.status.code(), Some(2), "{inside_gen:?}");
+    let inside_json: serde_json::Value = serde_json::from_slice(&inside_gen.stdout).unwrap();
+    assert_eq!(inside_json["diagnostics"][0]["code"], "WF9004");
+    assert!(
+        !base.join("gen/never-written-rust").exists(),
+        "earlier emitter must not write when a later emitter fails output-root guard"
+    );
+
+    // Explicit `--released` retiring `v0.1` skips `v0_1/` in emitted Go output.
+    let rel_manifest = wit.join("custom.released");
+    fs::write(&rel_manifest, "v0.1 retired\n").unwrap();
+    let rel_out = base.join("rel-go");
+    let rel_run = witforge()
+        .args([
+            "go",
+            wit.to_str().unwrap(),
+            "--no-config",
+            "--out",
+            rel_out.to_str().unwrap(),
+            "--go-module",
+            "example.com/witforge/rel",
+            "--released",
+            rel_manifest.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(rel_run.status.code(), Some(0), "{rel_run:?}");
+    assert!(!rel_out.join("v0_1").exists());
+    assert!(rel_out.join("v0_2/types/types.go").is_file());
+
+    // Upward `witforge.toml` discovery vs `cli_complete` bypass.
+    let disc_dir = base.join("discover");
+    fs::create_dir_all(&disc_dir).unwrap();
+    fs::write(
+        disc_dir.join("witforge.toml"),
+        "version = 1\n\
+         [project.bad]\n\
+         root = \"nonexistent-wit\"\n\
+         [project.bad.go]\n\
+         out = \"gen/bad\"\n\
+         go-module = \"example.com/bad;stray\"\n",
+    )
+    .unwrap();
+    let bypass_out = base.join("bypass-go");
+    let bypass = witforge()
+        .current_dir(&disc_dir)
+        .args([
+            "go",
+            wit.to_str().unwrap(),
+            "--out",
+            bypass_out.to_str().unwrap(),
+            "--go-module",
+            "example.com/witforge/bypass",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        bypass.status.code(),
+        Some(0),
+        "cli-complete `witforge go` must ignore stray witforge.toml: {bypass:?}"
+    );
+    let discover_err = witforge()
+        .current_dir(&disc_dir)
+        .args([
+            "--format",
+            "json",
+            "go",
+            wit.to_str().unwrap(),
+            "--out",
+            base.join("disc-fail").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        discover_err.status.code(),
+        Some(2),
+        "omitting `--go-module` must discover stray witforge.toml and reject its bad go-module: {discover_err:?}"
+    );
 
     fs::remove_dir_all(&base).unwrap();
 }

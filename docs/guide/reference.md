@@ -230,9 +230,10 @@ fixed-length list, and map-key checks.
 
 ### `witforge go`
 
-Generate or check zero-dependency, `gofmt`-formatted Go 1.22+ stdlib packages: structs for records
-and flags, typed `uint32` enums with `Valid()` and `String()`, sealed variant interfaces with case
-structs, native fixed-length arrays (`[N]T`), exact signed/unsigned integer widths (`uint8..uint64`,
+Generate or check zero-dependency, `gofmt`-formatted Go 1.22+ stdlib packages: root `doc.go`,
+structs for records and flags, typed `uint32` enums with `Valid()` and `String()`, sealed variant
+interfaces with case structs, Go `interface` declarations for function-bearing WIT interfaces,
+native fixed-length arrays (`[N]T`), exact signed/unsigned integer widths (`uint8..uint64`,
 `int8..int64`), Unicode `rune`, shared generic `Option[T]` / `Result[T, E]` helpers in
 `witforge_types`, `witforge_deps/` packages with cross-major canonical-owner aliases, and `worlds`
 metadata.
@@ -241,7 +242,7 @@ metadata.
 |---|---|
 | `[WIT_ROOT]` | WIT root containing `v<major>.<minor>` version directories. |
 | `--out <DIR>` | Output directory for generated Go package files. |
-| `--go-module <PATH>` | Go module import path prefix for emitted packages (for example `example.com/acme/contracts/gen/go`). |
+| `--go-module <VALUE>` | Go module import path prefix for emitted packages (for example `example.com/acme/contracts/gen/plain`). |
 | `--check` | Verify existing files match without writing; exits `1` on drift. |
 | `--diff` | Print a unified diff of output changes without changing the exit status. |
 | `--released <PATH>` | Released-version manifest path (defaults to `<WIT_ROOT>/released`). |
@@ -476,7 +477,7 @@ expansion.
 | `project.<name>.python-glue.proto-root` | yes (if section set) | string | Python package root for generated `protoc --python_out` `*_pb2.py` modules (dotted absolute path or relative package path). |
 | `[project.<name>.go]` | no | table | Go 1.22+ stdlib plain types and interfaces generator configuration. |
 | `project.<name>.go.out` | yes (if section set) | path | Output directory for generated Go package files. |
-| `project.<name>.go.go-module` | yes (if section set) | string | Go module import path prefix for emitted packages (for example `example.com/acme/contracts/gen/go`). |
+| `project.<name>.go.go-module` | yes (if section set) | string | Go module import path prefix for emitted packages (for example `example.com/acme/contracts/gen/plain`). |
 | `[project.<name>.policy]` | no | table | Project governance policy table. |
 | `project.<name>.policy.diff-check` | no | array of strings | Default compatibility views for bare `witforge diff --check` (non-empty subset of `"wire"`, `"source"`, `"api"`, `"decode"`). |
 | `project.<name>.policy.forbid-unstable-in-release` | no | boolean | Refuse `witforge release` when any `@unstable` declaration is present (default `false`). |

@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use witforge::emit::{
-    glue, json_schema, proto, python, python_glue, rust, typescript, typescript_glue,
+    glue, go, json_schema, proto, python, python_glue, rust, typescript, typescript_glue,
 };
 use witforge::load;
 use witforge::lock::WireLock;
@@ -240,7 +240,7 @@ fn the_conformance_fixture_covers_the_model_and_emitter_surface() {
         assert_ne!(source, "", "{file_name}");
         assert!(!source.contains('\r'), "{file_name}");
     }
-    let go_files = witforge::emit::go::emit_version(&model, "example.com/witforge/conf").unwrap();
+    let go_files = go::emit_version(&model, "example.com/witforge/conf").unwrap();
     assert!(!go_files.is_empty());
     for (file_name, source) in &go_files {
         assert_ne!(source, "", "{file_name}");
@@ -354,7 +354,7 @@ fn dependency_and_serde_fixtures_cover_every_emitter() {
             "{name} py-glue"
         );
         assert!(
-            !witforge::emit::go::plan(&root, "example.com/witforge/deps")
+            !go::plan(&root, "example.com/witforge/deps")
                 .unwrap()
                 .files()
                 .is_empty(),

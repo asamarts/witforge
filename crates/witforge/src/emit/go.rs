@@ -55,16 +55,18 @@ pub fn version_dir_name(model: &Model) -> String {
 /// Validate a Go module import path prefix (`--go-module` / `go-module`).
 ///
 /// The module path is the Go import prefix under which the emitted package tree is imported (for
-/// example `github.com/acme/contracts/gen/go` or `example.com/app/gen/go`). Every emitted package
-/// appends its directory path (`witforge_types`, `v0_1/<iface>`, `witforge_deps/...`, `worlds`) to
-/// this prefix.
+/// example `github.com/acme/contracts/gen/plain` or `example.com/app/gen/plain`). Every emitted
+/// package appends its directory path (`witforge_types`, `v0_1/<iface>`, `witforge_deps/...`,
+/// `worlds`) to this prefix.
 ///
 /// # Errors
 ///
 /// Returns an operational error (`WF9001`) if `module_path` is empty, contains whitespace, quotes,
 /// backslashes, semicolons, control characters, leading/trailing `/`, empty segments, `.` or `..`
-/// segments, segments starting with `-` or `.` or ending with `.`, or characters outside Go's
-/// module import path alphabet (`[A-Za-z0-9._~+-]`).
+/// segments, segments starting with `-` or `.` or ending with `.`, Windows reserved device names
+/// before the first `.` (`CON`, `PRN`, `AUX`, `NUL`, `COM0`..`9`, `LPT0`..`9`), Windows 8.3
+/// short-name suffixes (`~<digits>` before the first `.`), or characters outside Go's module
+/// import path alphabet (`[A-Za-z0-9._~+-]`).
 pub fn validate_module_path(module_path: &str) -> Result<()> {
     validate_module_path_inner(module_path)
         .map_err(|err| operational_error(codes::CLI_USAGE, format!("{err:#}"), None))
@@ -104,6 +106,22 @@ fn validate_module_path_inner(path: &str) -> Result<()> {
             bail!(
                 "invalid Go module path `{path}`: segment `{segment}` contains unsupported \
                  characters"
+            );
+        }
+        let short = segment.split('.').next().unwrap_or(segment);
+        if is_windows_reserved_stem(short) {
+            bail!(
+                "invalid Go module path `{path}`: segment `{segment}` uses Windows reserved name \
+                 `{short}` disallowed by Go's module path rules"
+            );
+        }
+        if let Some((_, suffix)) = short.rsplit_once('~')
+            && !suffix.is_empty()
+            && suffix.bytes().all(|b| b.is_ascii_digit())
+        {
+            bail!(
+                "invalid Go module path `{path}`: segment `{segment}` contains trailing `~digits` \
+                 short-name suffix disallowed by Go's module path rules"
             );
         }
     }
@@ -219,7 +237,7 @@ pub fn check_with_options(
 /// Emitted interface packages import shared `Option`/`Result` helpers from
 /// `<go_module>/witforge_types` and pinned dependencies from `<go_module>/witforge_deps/<pkg>`;
 /// use [`plan`] (or [`generate`]) for the complete self-contained Go package tree including
-/// `witforge_types/types.go`, `witforge_deps/`, and `worlds/worlds.go`.
+/// root `doc.go`, `witforge_types/types.go`, `witforge_deps/`, and `worlds/worlds.go`.
 ///
 /// # Errors
 ///
@@ -391,7 +409,12 @@ fn root_package_name(go_module: &str, namespace: &str, name: &str) -> String {
     if pkg.as_bytes()[0].is_ascii_digit() {
         pkg = format!("p_{pkg}");
     }
-    if is_go_keyword(&pkg) || is_go_predeclared(&pkg) || pkg.ends_with("_test") || pkg == "_" {
+    if is_go_keyword(&pkg)
+        || is_go_predeclared(&pkg)
+        || matches!(pkg.as_str(), "main" | "init" | "documentation")
+        || pkg.ends_with("_test")
+        || pkg == "_"
+    {
         pkg.push('_');
     }
     pkg
@@ -1277,7 +1300,7 @@ fn emit_record(
             foreign_resolver,
             imports,
         )?;
-        let docs = polyglot::doc_lines(&field.docs);
+        let docs = normalize_go_doc_lines(&polyglot::doc_lines(&field.docs));
         entries.push((docs, field_name, field_ty));
     }
 
@@ -1304,7 +1327,7 @@ fn emit_flags(
     for flag in flags {
         let flag_name = go_exported_ident(&flag.name, "flag")?;
         insert_name(&mut seen_flags, &flag_name, &flag.name, &scope)?;
-        let docs = polyglot::doc_lines(&flag.docs);
+        let docs = normalize_go_doc_lines(&polyglot::doc_lines(&flag.docs));
         entries.push((docs, flag_name, "bool".to_string()));
     }
 
@@ -1329,7 +1352,7 @@ fn emit_enum(
         let mut entries: Vec<(Vec<String>, String, String)> = Vec::with_capacity(cases.len());
         for (case_idx, case) in cases.iter().enumerate() {
             let const_name = symbols.enum_const_names[&(def_idx, case_idx)].clone();
-            let docs = polyglot::doc_lines(&case.docs);
+            let docs = normalize_go_doc_lines(&polyglot::doc_lines(&case.docs));
             let discriminant = case_idx + 1;
             entries.push((docs, const_name, format!("{type_name} = {discriminant}")));
         }
@@ -1776,13 +1799,45 @@ fn combined_doc_lines(
     lines
 }
 
+fn sanitize_go_doc_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.strip_prefix("+build").is_some_and(|rest| {
+        rest.is_empty() || rest.starts_with(|ch: char| ch.is_ascii_whitespace())
+    }) {
+        // Neutralize Go legacy `+build` constraint lines so `go vet` never rejects them as
+        // misplaced build tags and `gofmt` never hoists `//go:build` above line 1's header.
+        format!("\\{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_go_doc_lines(lines: &[String]) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(lines.len());
+    for line in lines {
+        let cleaned = sanitize_go_doc_line(line);
+        if cleaned.is_empty() {
+            if !normalized.is_empty() && !normalized.last().is_some_and(String::is_empty) {
+                normalized.push(String::new());
+            }
+        } else {
+            normalized.push(cleaned);
+        }
+    }
+    while normalized.last().is_some_and(String::is_empty) {
+        normalized.pop();
+    }
+    normalized
+}
+
 fn write_doc_comment(
     out: &mut String,
     indent: &str,
     lines: &[String],
     deprecated_note: Option<&str>,
 ) -> Result<()> {
-    for line in lines {
+    let normalized = normalize_go_doc_lines(lines);
+    for line in &normalized {
         if line.is_empty() {
             writeln!(out, "{indent}//")?;
         } else {
@@ -1790,8 +1845,12 @@ fn write_doc_comment(
         }
     }
     if let Some(note) = deprecated_note {
-        let clean_note = polyglot::doc_lines(note).join(" ");
-        if !lines.is_empty() {
+        let clean_note = normalize_go_doc_lines(&polyglot::doc_lines(note))
+            .into_iter()
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !normalized.is_empty() {
             writeln!(out, "{indent}//")?;
         }
         writeln!(out, "{indent}// Deprecated: {clean_note}")?;
@@ -1810,7 +1869,10 @@ pub(crate) fn safe_interface_pkg_name(wit_name: &str) -> Result<String> {
     if is_go_keyword(&pkg)
         || is_go_predeclared(&pkg)
         || is_windows_reserved_stem(&pkg)
-        || matches!(pkg.as_str(), "internal" | "testdata" | "vendor")
+        || matches!(
+            pkg.as_str(),
+            "internal" | "testdata" | "vendor" | "main" | "init" | "documentation"
+        )
         || pkg.ends_with("_test")
     {
         pkg.push('_');
@@ -1896,6 +1958,7 @@ pub(crate) fn escape_go_string(value: &str) -> String {
 mod tests {
     use super::*;
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn module_path_validation_and_go_package_guards_handle_special_names() {
         for valid in [
@@ -1925,6 +1988,12 @@ mod tests {
             "example.com/has\"quote",
             "example.com/back\\slash",
             "example.com/bad@ver",
+            "example.com/con/gen",
+            "example.com/nul.v1/gen",
+            "example.com/COM1/gen",
+            "example.com/pkg~1",
+            "example.com/progra~1/gen",
+            "example.com/foo~42.bar",
         ] {
             assert!(
                 validate_module_path(invalid).is_err(),
@@ -1932,8 +2001,9 @@ mod tests {
             );
         }
 
-        // Go keywords, predeclared names, Windows reserved stems, Go special directories, and
-        // `_test` external-test package suffixes are all escaped deterministically.
+        // Go keywords, predeclared names, Windows reserved stems, Go special directories,
+        // Go special package names (`main`, `init`, `documentation`), and `_test` external-test
+        // package suffixes are all escaped deterministically.
         assert_eq!(safe_interface_pkg_name("types").unwrap(), "types");
         assert_eq!(safe_interface_pkg_name("my-api").unwrap(), "my_api");
         assert_eq!(safe_interface_pkg_name("type").unwrap(), "type_");
@@ -1943,6 +2013,12 @@ mod tests {
         assert_eq!(safe_interface_pkg_name("internal").unwrap(), "internal_");
         assert_eq!(safe_interface_pkg_name("testdata").unwrap(), "testdata_");
         assert_eq!(safe_interface_pkg_name("vendor").unwrap(), "vendor_");
+        assert_eq!(safe_interface_pkg_name("main").unwrap(), "main_");
+        assert_eq!(safe_interface_pkg_name("init").unwrap(), "init_");
+        assert_eq!(
+            safe_interface_pkg_name("documentation").unwrap(),
+            "documentation_"
+        );
         assert_eq!(safe_interface_pkg_name("my-test").unwrap(), "my_test_");
         assert_eq!(safe_interface_pkg_name("api-linux").unwrap(), "api_linux");
 
@@ -1974,6 +2050,45 @@ mod tests {
         assert_eq!(
             root_package_name("example.com/acme/my-test", "acme", "app"),
             "my_test_"
+        );
+        assert_eq!(
+            root_package_name("example.com/acme/main", "acme", "app"),
+            "main_"
+        );
+        assert_eq!(
+            root_package_name("example.com/acme/MAIN/v2", "acme", "app"),
+            "main_"
+        );
+        assert_eq!(
+            root_package_name("example.com/acme/init", "acme", "app"),
+            "init_"
+        );
+        assert_eq!(
+            root_package_name("example.com/acme/documentation", "acme", "app"),
+            "documentation_"
+        );
+
+        // Doc comment normalization collapses consecutive blank lines, strips indentation, and
+        // neutralizes Go `+build` directives.
+        let mut rendered = String::new();
+        write_doc_comment(
+            &mut rendered,
+            "",
+            &[
+                String::new(),
+                "  Summary line.  ".to_string(),
+                String::new(),
+                String::new(),
+                "    +build ignore".to_string(),
+                "\tcode()".to_string(),
+                String::new(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            rendered,
+            "// Summary line.\n//\n// \\+build ignore\n// code()\n"
         );
     }
 }
